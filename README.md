@@ -23,7 +23,7 @@ Current version: 0.2.0
 To install the SDK, you can use pip:
 
 ```bash
-pip install llm_api_adapter
+pip install llm-api-adapter
 ```
 
 **Note:** You will need to obtain API keys from each LLM provider you wish to use (OpenAI, Anthropic, Google). Refer to their respective documentation for instructions on obtaining API keys.
