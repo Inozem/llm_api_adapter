@@ -237,3 +237,8 @@ pip install -r requirements-test.txt
 
 *   `unit/`: Contains unit tests for individual components.
 *   `integration/`: Contains integration tests to verify the interaction between different parts of the system.
+
+## License
+
+This project is licensed under the terms of the MIT License.  
+See the [LICENSE](LICENSE) file for details.
