@@ -108,11 +108,11 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, and Google.
 
-- **OpenAI**: You can use models like `gpt-4o-mini`, `gpt-4o`, `gpt-4-turbo`, `gpt-4`, `gpt-4-turbo-preview`, `gpt-3.5-turbo`. Set the `organization` parameter to `openai` and specify the `model` name.
+- **OpenAI**: You can use models like `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4.5-preview`, `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-4`, `gpt-4-turbo-preview`, `gpt-3.5-turbo`. Set the `organization` parameter to `openai` and specify the `model` name.
 
-- **Anthropic**: Available models include `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`, `claude-3-sonnet-20240229`, `claude-3-haiku-20240307`. Set the `organization` parameter to `anthropic` and specify the desired `model`.
+- **Anthropic**: Available models include `claude-opus-4-20250514`, `claude-sonnet-4-20250514`, `claude-3-sonnet-20240229`, `claude-3-haiku-20240307`, `claude-3-5-sonnet-latest`, `claude-3-haiku-20240307`. Set the `organization` parameter to `anthropic` and specify the desired `model`.
 
-- **Google**: Models such as `gemini-1.5-flash`, `gemini-1.5-flash-8b`, `gemini-1.5-pro` can be used. Set the `organization` parameter to `google` and specify the `model`.
+- **Google**: Models such as `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`, `gemini-2.0-flash-lite` can be used. Set the `organization` parameter to `google` and specify the `model`.
 
 Example:
 
