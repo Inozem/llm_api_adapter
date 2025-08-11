@@ -6,7 +6,8 @@ This SDK for Python allows you to use LLM APIs from various companies and models
 
 ### Version
 
-Current version: 0.1.0
+Current version: 0.2.0
+
 
 ## Features
 
@@ -19,41 +20,14 @@ Current version: 0.1.0
 
 ## Installation
 
-To install the SDK, you can clone the repository and install the necessary dependencies.
-
-To clone the repository, use the following command:
+To install the SDK, you can use pip:
 
 ```bash
-git clone https://github.com/Inozem/docker-ssl-manager.git
+pip install llm_api_adapter
 ```
 
-Since the SDK uses Pydantic, you'll need to install it manually:
+**Note:** You will need to obtain API keys from each LLM provider you wish to use (OpenAI, Anthropic, Google). Refer to their respective documentation for instructions on obtaining API keys.
 
-```bash
-pip install pydantic
-```
-
-The SDK also allows for flexible integration by letting you install only the dependencies you need for specific LLM providers. For example:
-
-- To use OpenAI's API:
-
-  ```bash
-  pip install openai==0.28
-  ```
-
-- To use Anthropic's API:
-
-  ```bash
-  pip install anthropic
-  ```
-
-- To use Google's API:
-
-  ```bash
-  pip install google-generativeai
-  ```
-
-This approach helps to avoid unnecessary dependencies if you don't plan to use certain providers.
 
 ## Getting Started
 
@@ -62,8 +36,9 @@ This approach helps to avoid unnecessary dependencies if you don't plan to use c
 To start using the adapter, you need to import the necessary components:
 
 ```python
-from llm_api_adapter.messages.chat_message import AIMessage, Prompt, UserMessage
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter.models.messages.chat_message import (
+    AIMessage, Prompt, UserMessage
+)                                               
 ```
 
 ### Sending a Simple Request
@@ -187,7 +162,9 @@ print(google_response.content)
 Here is a comprehensive example that showcases all possible message types and interactions:
 
 ```python
-from llm_api_adapter.messages.chat_message import Prompt, UserMessage, AIMessage
+from llm_api_adapter.models.messages.chat_message import (
+    AIMessage, Prompt, UserMessage
+)                                               
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 messages = [
@@ -231,4 +208,31 @@ The `ChatResponse` object returned by `generate_chat_answer` includes several at
 
 ## Testing
 
-The SDK currently does not have automated tests, but they are under development. In the meantime, you can manually verify functionality by using the provided example scripts.
+This project uses `pytest` for testing. Tests are located in the `tests/` directory.
+
+### Running Tests
+
+To run all tests, use the following command:
+
+```bash
+pytest
+```
+
+Alternatively, you can run the tests using the `tests_runner.py` script:
+
+```bash
+python tests/tests_runner.py
+```
+
+### Dependencies
+
+Ensure you have the required dependencies installed. You can install them using:
+
+```bash
+pip install -r requirements-test.txt
+```
+
+### Test Structure
+
+*   `unit/`: Contains unit tests for individual components.
+*   `integration/`: Contains integration tests to verify the interaction between different parts of the system.

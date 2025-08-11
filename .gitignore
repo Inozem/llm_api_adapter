@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+# Ensure local egg-info and package metadata are ignored
+*.egg-info/
+llm_api_adapter.egg-info/
+
 # Distribution / packaging
 .Python
 build/

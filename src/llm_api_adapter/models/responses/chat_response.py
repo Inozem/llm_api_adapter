@@ -1,14 +1,14 @@
+from dataclasses import dataclass, field
 from typing import Optional
 
-from pydantic import BaseModel
 
-
-class ChatResponse(BaseModel):
+@dataclass
+class ChatResponse:
     model: Optional[str] = None
     response_id: Optional[str] = None
     timestamp: Optional[int] = None
     tokens_used: Optional[int] = None
-    content: str
+    content: str = field(default_factory=str)
     finish_reason: Optional[str] = None
 
     @classmethod
@@ -24,19 +24,22 @@ class ChatResponse(BaseModel):
 
     @classmethod
     def from_anthropic_response(cls, api_response: dict) -> "ChatResponse":
-        tokens_used = api_response.usage.input_tokens + api_response.usage.output_tokens
+        print(f"API response {api_response}")
+        usage = api_response.get("usage")
+        tokens_used = usage.get("input_tokens") + usage.get("output_tokens")
         return cls(
-            model=api_response.model,
-            response_id=api_response.id,
+            model=api_response.get("model"),
+            response_id=api_response.get("id"),
             tokens_used=tokens_used,
-            content=api_response.content[0].text,
-            finish_reason=api_response.stop_reason
+            content=api_response.get("content")[0].get("text"),
+            finish_reason=api_response.get("stop_reason")
         )
 
     @classmethod
     def from_google_response(cls, api_response: dict) -> "ChatResponse":
+        first_candidate = api_response["candidates"][0]
         return cls(
-            tokens_used=api_response.usage_metadata.total_token_count,
-            content=api_response.candidates[0].content.parts[0].text,
-            finish_reason=str(api_response.candidates[0].finish_reason.name)
+            tokens_used=api_response["usageMetadata"]["totalTokenCount"],
+            content=first_candidate["content"]["parts"][0]["text"],
+            finish_reason=str(first_candidate["finishReason"])
         )
