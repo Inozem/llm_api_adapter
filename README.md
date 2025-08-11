@@ -211,7 +211,11 @@ The `ChatResponse` object returned by `generate_chat_answer` includes several at
 
 This project uses `pytest` for testing. Tests are located in the `tests/` directory.
 
-### Running Tests
+## Development & Testing
+
+> **Note**  
+> This section is intended for developers working with the source code from GitHub.  
+> It is **not** relevant for users installing the package from PyPI.
 
 To run all tests, use the following command:
 
