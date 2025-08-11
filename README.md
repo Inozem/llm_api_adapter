@@ -8,6 +8,7 @@ This SDK for Python allows you to use LLM APIs from various companies and models
 
 Current version: 0.2.0
 
+
 ## Features
 
 - **Unified Interface**: Work seamlessly with different LLM providers using a single, consistent API.
@@ -38,7 +39,6 @@ To start using the adapter, you need to import the necessary components:
 from llm_api_adapter.models.messages.chat_message import (
     AIMessage, Prompt, UserMessage
 )                                               
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 ```
 
 ### Sending a Simple Request
