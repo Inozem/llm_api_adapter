@@ -38,7 +38,8 @@ To start using the adapter, you need to import the necessary components:
 ```python
 from llm_api_adapter.models.messages.chat_message import (
     AIMessage, Prompt, UserMessage
-)                                               
+)
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 ```
 
 ### Sending a Simple Request
