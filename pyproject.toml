@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-api-adapter"
+version = "0.2.0"
+keywords = ["llm", "adapter", "lightweight", "api"]
+description = "Lightweight, pluggable adapter for multiple LLM APIs (OpenAI, Anthropic, Google)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
+authors = [{name = "Sergey Inozemtsev"}]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Typing :: Typed",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = ["requests>=2.32"]
+
+[project.urls]
+Repository = "https://github.com/Inozem/llm_api_adapter/"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["llm_api_adapter*"]
+exclude = ["tests*", "*/tests*"]

@@ -1,0 +1,9 @@
+# Exclude compiled python files and caches
+global-exclude *.py[cod]
+prune **/__pycache__
+prune **/.pytest_cache
+
+# Exclude macOS metadata and other common artifacts
+global-exclude .DS_Store
+global-exclude *.egg-info
+prune **/*.egg-info
