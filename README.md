@@ -1,5 +1,6 @@
 # LLM API Adapter SDK for Python
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/llm-api-adapter?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/llm-api-adapter)
+[![Coverage Status](https://img.shields.io/codecov/c/github/inozem/llm-api-adapter/main.svg)](https://codecov.io/gh/inozem/llm-api-adapter)
 
 ## Overview
 
