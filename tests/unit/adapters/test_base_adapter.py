@@ -12,7 +12,7 @@ class DummyClient:
         return {"choices": [{"message": {"content": "dummy response"}}]}
 
 class _TestAdapter(LLMAdapterBase):
-    def generate_chat_answer(self, messages, **kwargs):
+    def chat(self, messages, **kwargs):
         try:
             raw_response = self.client.chat_completion(messages, **kwargs)
             return ChatResponse(**raw_response)
@@ -39,7 +39,7 @@ def mock_chat_completion_success():
     ) as mock_chat_completion:
         yield mock_chat_completion, mock_response
 
-def test_generate_chat_answer_success(adapter, mock_chat_completion_success):
+def test_chat_success(adapter, mock_chat_completion_success):
     mock_chat, mock_response = mock_chat_completion_success
     messages = [
         type('Prompt', (), {'content': 'system prompt', 'role': 'system'})(),
@@ -47,7 +47,7 @@ def test_generate_chat_answer_success(adapter, mock_chat_completion_success):
     ]
     method = "__init__"
     with patch.object(ChatResponse, method, return_value=None) as mock_init:
-        response = adapter.generate_chat_answer(messages)
+        response = adapter.chat(messages)
         mock_chat.assert_called_once()
         mock_init.assert_called_once_with(**mock_response)
         assert response is None or isinstance(response, ChatResponse)
@@ -76,7 +76,7 @@ def test_parameter_validation(adapter, temperature, max_tokens, top_p, valid):
             with pytest.raises(ValueError):
                 adapter._validate_parameter("top_p", top_p, 0, 1)
 
-def test_generate_chat_answer_handles_llmapi_error(adapter):
+def test_chat_handles_llmapi_error(adapter):
     messages = [
         type("Prompt", (), {"content": "system prompt", "role": "system"})(),
         type("Message", (), {"content": "hello", "role": "user"})(),
@@ -84,10 +84,10 @@ def test_generate_chat_answer_handles_llmapi_error(adapter):
     with patch.object(
         DummyClient, "chat_completion", side_effect=LLMAPIError("API error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.generate_chat_answer(messages)
+        adapter.chat(messages)
         mock_handle_error.assert_called_once()
 
-def test_generate_chat_answer_handles_generic_exception(adapter):
+def test_chat_handles_generic_exception(adapter):
     messages = [
         type("Prompt", (), {"content": "system prompt", "role": "system"})(),
         type("Message", (), {"content": "hello", "role": "user"})(),
@@ -95,5 +95,5 @@ def test_generate_chat_answer_handles_generic_exception(adapter):
     with patch.object(
         DummyClient, "chat_completion", side_effect=Exception("Generic error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.generate_chat_answer(messages)
+        adapter.chat(messages)
         mock_handle_error.assert_called_once()

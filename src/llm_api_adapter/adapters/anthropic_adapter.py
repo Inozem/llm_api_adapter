@@ -23,7 +23,7 @@ class AnthropicAdapter(LLMAdapterBase):
         "claude-3-haiku-20240307"
     ])
 
-    def generate_chat_answer(
+    def chat(
         self,
         messages: List[Message],
         max_tokens: Optional[int] = 256,

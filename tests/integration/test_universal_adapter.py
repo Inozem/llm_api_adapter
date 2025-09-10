@@ -42,7 +42,7 @@ def anthropic_client_mock():
         })
         yield mock
 
-def test_openai_generate_chat_answer(openai_client_mock):
+def test_openai_chat(openai_client_mock):
     messages = [
         Prompt("You are an assistant."),
         UserMessage("Hi! Can you explain?"),
@@ -54,25 +54,25 @@ def test_openai_generate_chat_answer(openai_client_mock):
         model="gpt-4",
         api_key="dummy_key"
     )
-    response = adapter.generate_chat_answer(messages=messages)
+    response = adapter.chat(messages=messages)
     assert response.content == "Hello from mocked OpenAI!"
 
-def test_google_generate_chat_answer(google_client_mock):
+def test_google_chat(google_client_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="google",
         model="gemini-2.5-pro",
         api_key="dummy_key"
     )
     messages = [UserMessage("Hello")]
-    resp = adapter.generate_chat_answer(messages=messages)
+    resp = adapter.chat(messages=messages)
     assert resp.content == "Hello from mocked Google!"
 
-def test_anthropic_generate_chat_answer(anthropic_client_mock):
+def test_anthropic_chat(anthropic_client_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="anthropic",
         model="claude-opus-4-20250514",
         api_key="dummy_key"
     )
     messages = [UserMessage("Hello")]
-    resp = adapter.generate_chat_answer(messages=messages)
+    resp = adapter.chat(messages=messages)
     assert resp.content == "Hello from mocked Anthropic!"

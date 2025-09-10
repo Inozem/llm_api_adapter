@@ -22,7 +22,7 @@ class GoogleAdapter(LLMAdapterBase):
         "gemini-2.0-flash-lite"
     ])
 
-    def generate_chat_answer(
+    def chat(
         self,
         messages: List[Message],
         max_tokens: Optional[int] = 256,

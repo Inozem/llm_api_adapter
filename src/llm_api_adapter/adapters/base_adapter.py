@@ -16,9 +16,9 @@ class LLMAdapterBase(ABC):
 
     def __post_init__(self):
         if len(self.api_key) < 1:
-            erroe_message = "api_key must be a non-empty string"
-            logger.error(erroe_message)
-            raise ValueError(erroe_message)
+            error_message = "api_key must be a non-empty string"
+            logger.error(error_message)
+            raise ValueError(error_message)
         if self.model not in self.verified_models:
             warnings.warn(
                 (f"Model '{self.model}' is not verified for this adapter. "
@@ -28,7 +28,7 @@ class LLMAdapterBase(ABC):
             logger.warning(f"Unverified model used: {self.model}")
 
     @abstractmethod
-    def generate_chat_answer(self, **kwargs) -> ChatResponse:
+    def chat(self, **kwargs) -> ChatResponse:
         """
         Generates a response based on the provided conversation.
         """

@@ -27,7 +27,7 @@ class OpenAIAdapter(LLMAdapterBase):
         "gpt-3.5-turbo",
     ])
 
-    def generate_chat_answer(
+    def chat(
         self,
         messages: List[Message],
         max_tokens: Optional[int] = 256,
