@@ -40,7 +40,7 @@ def test_chat_success(adapter, mock_chat_completion_success):
     with patch.object(
         ChatResponse, method, return_value=ChatResponse()
     ) as mock_from_response:
-        response = adapter.chat(messages)
+        response = adapter.generate_chat_answer(messages)
         mock_chat.assert_called_once()
         mock_from_response.assert_called_once_with(mock_response)
         assert isinstance(response, ChatResponse)
@@ -68,7 +68,7 @@ def test_chat_handles_llmapi_error(adapter):
     with patch.object(
         ClaudeSyncClient, method, side_effect=LLMAPIError("API error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.chat(messages)
+        adapter.generate_chat_answer(messages)
         mock_handle_error.assert_called_once()
 
 def test_chat_handles_generic_exception(adapter):
@@ -80,5 +80,5 @@ def test_chat_handles_generic_exception(adapter):
     with patch.object(
         ClaudeSyncClient, method, side_effect=Exception("Generic error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.chat(messages)
+        adapter.generate_chat_answer(messages)
         mock_handle_error.assert_called_once()

@@ -27,6 +27,9 @@ class OpenAISyncClient:
         }
 
     def chat_completion(self, model: str, **kwargs):
+        if model.startswith(("gpt-4.1", "gpt-5", "o1")):
+            if "max_tokens" in kwargs:
+                kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
         url = f"{self.endpoint}/chat/completions"
         payload = {"model": model, **kwargs}
         response = self._send_request(url, payload)

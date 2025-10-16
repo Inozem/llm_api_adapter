@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import logging
-from typing import FrozenSet, List, Optional
+from typing import List, Optional
 
 from ..adapters.base_adapter import LLMAdapterBase
 from ..errors.llm_api_error import LLMAPIError
@@ -14,19 +14,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AnthropicAdapter(LLMAdapterBase):
     company: str = "anthropic"
-    verified_models: FrozenSet[str] = frozenset([
-        "claude-opus-4-20250514",
-        "claude-sonnet-4-20250514",
-        "claude-3-7-sonnet-latest",
-        "claude-3-5-haiku-latest",
-        "claude-3-5-sonnet-latest",
-        "claude-3-haiku-20240307"
-    ])
 
-    def chat(
+    def generate_chat_answer(
         self,
         messages: List[Message],
-        max_tokens: Optional[int] = 256,
+        max_tokens: Optional[int] = None,
         temperature: float = 1.0,
         top_p: float = 1.0
     ) -> ChatResponse:
@@ -56,7 +48,14 @@ class AnthropicAdapter(LLMAdapterBase):
                 top_p=top_p,
                 system=system_prompt,
             )
-            return ChatResponse.from_anthropic_response(response)
+            chat_response = ChatResponse.from_anthropic_response(response)
+            if self.pricing:
+                chat_response.apply_pricing(
+                    price_input_per_token=self.pricing.in_per_token,
+                    price_output_per_token=self.pricing.out_per_token,
+                    currency=self.pricing.currency
+                )
+            return chat_response
         except LLMAPIError as e:
             self.handle_error(e, self.company)
         except Exception as e:
