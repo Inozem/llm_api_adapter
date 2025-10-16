@@ -54,7 +54,7 @@ def test_openai_chat(openai_client_mock):
         model="gpt-4",
         api_key="dummy_key"
     )
-    response = adapter.chat(messages=messages)
+    response = adapter.generate_chat_answer(messages=messages)
     assert response.content == "Hello from mocked OpenAI!"
 
 def test_google_chat(google_client_mock):
@@ -64,7 +64,7 @@ def test_google_chat(google_client_mock):
         api_key="dummy_key"
     )
     messages = [UserMessage("Hello")]
-    resp = adapter.chat(messages=messages)
+    resp = adapter.generate_chat_answer(messages=messages)
     assert resp.content == "Hello from mocked Google!"
 
 def test_anthropic_chat(anthropic_client_mock):
@@ -74,5 +74,5 @@ def test_anthropic_chat(anthropic_client_mock):
         api_key="dummy_key"
     )
     messages = [UserMessage("Hello")]
-    resp = adapter.chat(messages=messages)
+    resp = adapter.generate_chat_answer(messages=messages)
     assert resp.content == "Hello from mocked Anthropic!"
