@@ -14,37 +14,6 @@ def adapter():
         model="gemini-2.5-pro"
     )
 
-@pytest.fixture
-def mock_chat_completion_success():
-    mock_response = {
-        "choices": [{"message": {"content": "This is a test completion."}}]
-    }
-    method = "chat_completion"
-    with patch.object(
-        GeminiSyncClient, method, return_value=mock_response
-    ) as mock_chat_completion:
-        yield mock_chat_completion, mock_response
-
-def test_generate_chat_answer_success(adapter, mock_chat_completion_success):
-    mock_chat, mock_response = mock_chat_completion_success
-    messages = []
-    if adapter.verified_models:
-        adapter.model = next(iter(adapter.verified_models))
-    else:
-        adapter.model = "gemini-2.5-pro"
-    messages = [
-        type('Prompt', (), {'content': 'system prompt', 'role': 'system'})(),
-        type('Message', (), {'content': 'hello', 'role': 'user'})()
-    ]
-    method = "from_google_response"
-    with patch.object(
-        ChatResponse, method, return_value=ChatResponse()
-    ) as mock_from_response:
-        response = adapter.generate_chat_answer(messages)
-        mock_chat.assert_called_once()
-        mock_from_response.assert_called_once_with(mock_response)
-        assert isinstance(response, ChatResponse)
-
 @pytest.mark.parametrize("temperature,max_tokens,top_p,valid", [
     (1.0, 256, 1.0, True),
     (-0.1, 256, 1.0, False),
@@ -69,7 +38,7 @@ def test_parameter_validation(adapter, temperature, max_tokens, top_p, valid):
             with pytest.raises(ValueError):
                 adapter._validate_parameter("top_p", top_p, 0, 1)
 
-def test_generate_chat_answer_handles_llmapi_error(adapter):
+def test_chat_handles_llmapi_error(adapter):
     messages = [
         type("Prompt", (), {"content": "system prompt", "role": "system"})(),
         type("Message", (), {"content": "hello", "role": "user"})(),
@@ -81,7 +50,7 @@ def test_generate_chat_answer_handles_llmapi_error(adapter):
         adapter.generate_chat_answer(messages)
         mock_handle_error.assert_called_once()
 
-def test_generate_chat_answer_handles_generic_exception(adapter):
+def test_chat_handles_generic_exception(adapter):
     messages = [
         type("Prompt", (), {"content": "system prompt", "role": "system"})(),
         type("Message", (), {"content": "hello", "role": "user"})(),
@@ -92,3 +61,33 @@ def test_generate_chat_answer_handles_generic_exception(adapter):
     ), patch.object(adapter, "handle_error") as mock_handle_error:
         adapter.generate_chat_answer(messages)
         mock_handle_error.assert_called_once()
+
+def test_pricing_is_applied_when_present(adapter):
+    adapter.pricing = type("P", (), {
+        "in_per_token": 0.001, "out_per_token": 0.002, "currency": "USD"
+    })()
+    fake_response = {"some": "google response"}
+    fake_chat_response = ChatResponse()
+    patch_chat_completion = patch.object(
+        GeminiSyncClient, "chat_completion", return_value=fake_response
+    )
+    patch_from_google_response = patch.object(
+        ChatResponse, "from_google_response", return_value=fake_chat_response
+    )
+    patch_apply_pricing = patch.object(ChatResponse, "apply_pricing")
+    with (
+        patch_chat_completion as mock_client,
+        patch_from_google_response as mock_from,
+        patch_apply_pricing as mock_apply
+    ):
+        result = adapter.generate_chat_answer([
+            type("Message", (), {"content": "hi", "role": "user"})()
+        ], max_tokens=10)
+    mock_client.assert_called_once()
+    mock_from.assert_called_once_with(fake_response)
+    mock_apply.assert_called_once_with(
+        price_input_per_token=adapter.pricing.in_per_token,
+        price_output_per_token=adapter.pricing.out_per_token,
+        currency=adapter.pricing.currency,
+    )
+    assert result is fake_chat_response

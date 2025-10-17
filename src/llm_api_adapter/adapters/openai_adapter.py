@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import logging
-from typing import FrozenSet, List, Optional
+from typing import List, Optional
 
 from ..adapters.base_adapter import LLMAdapterBase
 from ..errors.llm_api_error import LLMAPIError
@@ -14,23 +14,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class OpenAIAdapter(LLMAdapterBase):
     company: str = "openai"
-    verified_models: FrozenSet[str] = frozenset([
-        "gpt-4.1",
-        "gpt-4.1-mini",
-        "gpt-4.1-nano",
-        "gpt-4.5-preview",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "gpt-4-turbo",
-        "gpt-4",
-        "gpt-4-turbo-preview",
-        "gpt-3.5-turbo",
-    ])
 
     def generate_chat_answer(
         self,
         messages: List[Message],
-        max_tokens: Optional[int] = 256,
+        max_tokens: Optional[int] = None,
         temperature: float = 1.0,
         top_p: float = 1.0
     ) -> ChatResponse:
@@ -54,8 +42,16 @@ class OpenAIAdapter(LLMAdapterBase):
                 temperature=temperature,
                 top_p=top_p,
             )
-            return ChatResponse.from_openai_response(response)
+            chat_response = ChatResponse.from_openai_response(response)
+            if self.pricing:
+                chat_response.apply_pricing(
+                    price_input_per_token=self.pricing.in_per_token,
+                    price_output_per_token=self.pricing.out_per_token,
+                    currency=self.pricing.currency
+                )
+            return chat_response
         except LLMAPIError as e:
-            self.handle_error(e, self.company)
+            self.handle_error(e)
         except Exception as e:
-            self.handle_error(e, self.company)
+            error_message = getattr(e, "text", None) or str(e)
+            self.handle_error(error=e, error_message=error_message)
