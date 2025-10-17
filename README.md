@@ -1,8 +1,6 @@
 # LLM API Adapter SDK for Python
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/llm-api-adapter?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/llm-api-adapter)
 
-[![PyPI Downloads](https://static.pepy.tech/personalized-badge/llm-api-adapter?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/llm-api-adapter)
-
 ## Overview
 
 This lightweight SDK for Python allows you to use LLM APIs from various providers and models through a unified interface. It is designed to be minimal, dependency-free, and easy to integrate into any Python project. Currently, the project supports API integration for OpenAI, Anthropic, and Google, focusing on chat functionality with consistent cost tracking and unified error handling.
