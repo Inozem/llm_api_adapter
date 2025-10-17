@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import logging
-from typing import FrozenSet, List, Optional
+from typing import List, Optional
 
 from ..adapters.base_adapter import LLMAdapterBase
 from ..errors.llm_api_error import LLMAPIError
@@ -14,18 +14,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class GoogleAdapter(LLMAdapterBase):
     company: str = "google"
-    verified_models: FrozenSet[str] = frozenset([
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-lite"
-    ])
 
-    def chat(
+    def generate_chat_answer(
         self,
         messages: List[Message],
-        max_tokens: Optional[int] = 256,
+        max_tokens: Optional[int] = None,
         temperature: float = 1.0,
         top_p: float = 1.0
     ) -> ChatResponse:
@@ -65,8 +58,16 @@ class GoogleAdapter(LLMAdapterBase):
                 model=self.model,
                 **payload
             )
-            return ChatResponse.from_google_response(response_json)
+            chat_response = ChatResponse.from_google_response(response_json)
+            if self.pricing:
+                chat_response.apply_pricing(
+                    price_input_per_token=self.pricing.in_per_token,
+                    price_output_per_token=self.pricing.out_per_token,
+                    currency=self.pricing.currency
+                )
+            return chat_response
         except LLMAPIError as e:
-            self.handle_error(e, self.company)
+            self.handle_error(e)
         except Exception as e:
-            self.handle_error(e, self.company)
+            error_message = getattr(e, "text", None) or str(e)
+            self.handle_error(error=e, error_message=error_message)

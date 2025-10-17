@@ -11,38 +11,8 @@ from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 def adapter():
     return OpenAIAdapter(
         api_key="test_api_key",
-        model="gpt-4"
+        model="gpt-5"
     )
-
-@pytest.fixture
-def mock_chat_completion_success():
-    mock_response = {
-        "choices": [{"message": {"content": "This is a test completion."}}]
-    }
-    method = "chat_completion"
-    with patch.object(
-        OpenAISyncClient, method, return_value=mock_response
-    ) as mock_chat_completion:
-        yield mock_chat_completion, mock_response
-
-def test_chat_success(adapter, mock_chat_completion_success):
-    mock_chat, mock_response = mock_chat_completion_success
-    if adapter.verified_models:
-        adapter.model = next(iter(adapter.verified_models))
-    else:
-        adapter.model = "gpt-4"
-    messages = [
-        type('Prompt', (), {'content': 'system prompt', 'role': 'system'})(),
-        type('Message', (), {'content': 'hello', 'role': 'user'})()
-    ]
-    method = "from_openai_response"
-    with patch.object(
-        ChatResponse, method, return_value=ChatResponse()
-    ) as mock_from_response:
-        response = adapter.chat(messages)
-        mock_chat.assert_called_once()
-        mock_from_response.assert_called_once_with(mock_response)
-        assert isinstance(response, ChatResponse)
 
 @pytest.mark.parametrize("temperature,max_tokens,top_p,valid", [
     (1.0, 256, 1.0, True),
@@ -77,7 +47,7 @@ def test_chat_handles_llmapi_error(adapter):
     with patch.object(
         OpenAISyncClient, method, side_effect=LLMAPIError("API error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.chat(messages)
+        adapter.generate_chat_answer(messages)
         mock_handle_error.assert_called_once()
 
 def test_chat_handles_generic_exception(adapter):
@@ -89,5 +59,35 @@ def test_chat_handles_generic_exception(adapter):
     with patch.object(
         OpenAISyncClient, method, side_effect=Exception("Generic error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.chat(messages)
+        adapter.generate_chat_answer(messages)
         mock_handle_error.assert_called_once()
+
+def test_pricing_is_applied_when_present(adapter):
+    adapter.pricing = type("P", (), {
+        "in_per_token": 0.001, "out_per_token": 0.002, "currency": "USD"
+    })()
+    fake_response = {"some": "openai response"}
+    fake_chat_response = ChatResponse()
+    patch_chat_completion = patch.object(
+        OpenAISyncClient, "chat_completion", return_value=fake_response
+    )
+    patch_from_openai_response = patch.object(
+        ChatResponse, "from_openai_response", return_value=fake_chat_response
+    )
+    patch_apply_pricing = patch.object(ChatResponse, "apply_pricing")
+    with (
+        patch_chat_completion as mock_client,
+        patch_from_openai_response as mock_from,
+        patch_apply_pricing as mock_apply
+    ):
+        result = adapter.generate_chat_answer([
+            type("Message", (), {"content": "hi", "role": "user"})()
+        ], max_tokens=10)
+    mock_client.assert_called_once()
+    mock_from.assert_called_once_with(fake_response)
+    mock_apply.assert_called_once_with(
+        price_input_per_token=adapter.pricing.in_per_token,
+        price_output_per_token=adapter.pricing.out_per_token,
+        currency=adapter.pricing.currency,
+    )
+    assert result is fake_chat_response

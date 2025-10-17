@@ -25,6 +25,11 @@ class GeminiSyncClient:
         }
 
     def chat_completion(self, model: str, **kwargs):
+        if model.startswith(("gemini-2.5")):
+            gen_cfg = kwargs.get("generationConfig", {})
+            if "maxOutputTokens" in gen_cfg:
+                gen_cfg.pop("maxOutputTokens", None)
+                kwargs["generationConfig"] = gen_cfg
         url = f"{self.endpoint}/models/{model}:generateContent"
         payload = {"model": model, **kwargs}
         response = self._send_request(url, payload)
