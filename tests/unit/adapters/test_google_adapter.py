@@ -61,3 +61,33 @@ def test_chat_handles_generic_exception(adapter):
     ), patch.object(adapter, "handle_error") as mock_handle_error:
         adapter.generate_chat_answer(messages)
         mock_handle_error.assert_called_once()
+
+def test_pricing_is_applied_when_present(adapter):
+    adapter.pricing = type("P", (), {
+        "in_per_token": 0.001, "out_per_token": 0.002, "currency": "USD"
+    })()
+    fake_response = {"some": "google response"}
+    fake_chat_response = ChatResponse()
+    patch_chat_completion = patch.object(
+        GeminiSyncClient, "chat_completion", return_value=fake_response
+    )
+    patch_from_google_response = patch.object(
+        ChatResponse, "from_google_response", return_value=fake_chat_response
+    )
+    patch_apply_pricing = patch.object(ChatResponse, "apply_pricing")
+    with (
+        patch_chat_completion as mock_client,
+        patch_from_google_response as mock_from,
+        patch_apply_pricing as mock_apply
+    ):
+        result = adapter.generate_chat_answer([
+            type("Message", (), {"content": "hi", "role": "user"})()
+        ], max_tokens=10)
+    mock_client.assert_called_once()
+    mock_from.assert_called_once_with(fake_response)
+    mock_apply.assert_called_once_with(
+        price_input_per_token=adapter.pricing.in_per_token,
+        price_output_per_token=adapter.pricing.out_per_token,
+        currency=adapter.pricing.currency,
+    )
+    assert result is fake_chat_response

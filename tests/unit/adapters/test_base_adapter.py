@@ -22,9 +22,9 @@ class _TestAdapter(LLMAdapterBase):
 @pytest.fixture
 def adapter():
     adapter_instance = _TestAdapter(
-        company="dummy_company_name",
+        company="openai",
         api_key="dummy_key",
-        model="dummy-model",
+        model="gpt-5",
     )
     adapter_instance.client = DummyClient()
     return adapter_instance

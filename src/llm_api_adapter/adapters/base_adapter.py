@@ -54,7 +54,7 @@ class LLMAdapterBase(ABC):
             raise ValueError(error_message)
         return value
 
-    @classmethod
-    def handle_error(cls, error: Exception, company: str):
-        logger.error(f"Error in company {company}: {error}")
+    def handle_error(self, error: Exception):
+        logger.error(f"Error with the provider '{self.company}' "
+                     f"the model '{self.model}': {error}")
         raise error

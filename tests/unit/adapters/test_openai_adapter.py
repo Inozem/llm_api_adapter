@@ -11,7 +11,7 @@ from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 def adapter():
     return OpenAIAdapter(
         api_key="test_api_key",
-        model="gpt-4"
+        model="gpt-5"
     )
 
 @pytest.mark.parametrize("temperature,max_tokens,top_p,valid", [
@@ -61,3 +61,33 @@ def test_chat_handles_generic_exception(adapter):
     ), patch.object(adapter, "handle_error") as mock_handle_error:
         adapter.generate_chat_answer(messages)
         mock_handle_error.assert_called_once()
+
+def test_pricing_is_applied_when_present(adapter):
+    adapter.pricing = type("P", (), {
+        "in_per_token": 0.001, "out_per_token": 0.002, "currency": "USD"
+    })()
+    fake_response = {"some": "openai response"}
+    fake_chat_response = ChatResponse()
+    patch_chat_completion = patch.object(
+        OpenAISyncClient, "chat_completion", return_value=fake_response
+    )
+    patch_from_openai_response = patch.object(
+        ChatResponse, "from_openai_response", return_value=fake_chat_response
+    )
+    patch_apply_pricing = patch.object(ChatResponse, "apply_pricing")
+    with (
+        patch_chat_completion as mock_client,
+        patch_from_openai_response as mock_from,
+        patch_apply_pricing as mock_apply
+    ):
+        result = adapter.generate_chat_answer([
+            type("Message", (), {"content": "hi", "role": "user"})()
+        ], max_tokens=10)
+    mock_client.assert_called_once()
+    mock_from.assert_called_once_with(fake_response)
+    mock_apply.assert_called_once_with(
+        price_input_per_token=adapter.pricing.in_per_token,
+        price_output_per_token=adapter.pricing.out_per_token,
+        currency=adapter.pricing.currency,
+    )
+    assert result is fake_chat_response

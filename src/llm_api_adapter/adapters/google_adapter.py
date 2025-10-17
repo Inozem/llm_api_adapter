@@ -67,6 +67,7 @@ class GoogleAdapter(LLMAdapterBase):
                 )
             return chat_response
         except LLMAPIError as e:
-            self.handle_error(e, self.company)
+            self.handle_error(e)
         except Exception as e:
-            self.handle_error(e, self.company)
+            error_message = getattr(e, "text", None) or str(e)
+            self.handle_error(error=e, error_message=error_message)

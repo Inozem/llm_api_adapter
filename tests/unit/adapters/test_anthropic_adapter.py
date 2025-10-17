@@ -11,7 +11,7 @@ from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 def adapter():
     return AnthropicAdapter(
         api_key="test_api_key",
-        model="claude-3-5-sonnet-latest"
+        model="claude-sonnet-4-5"
     )
 
 @pytest.mark.parametrize("temperature,width,valid", [
@@ -51,3 +51,30 @@ def test_chat_handles_generic_exception(adapter):
     ), patch.object(adapter, "handle_error") as mock_handle_error:
         adapter.generate_chat_answer(messages)
         mock_handle_error.assert_called_once()
+
+def test_pricing_is_applied_when_present(adapter):
+    adapter.pricing = type("P", (), {
+        "in_per_token": 0.001, "out_per_token": 0.002, "currency": "USD"
+    })()
+    fake_response = {"some": "anthropic response"}
+    fake_chat_response = ChatResponse(content="fake")
+    patch_chat_completion = patch.object(
+        ClaudeSyncClient, "chat_completion", return_value=fake_response
+    )
+    patch_from_anthropic = patch.object(
+        ChatResponse, "from_anthropic_response", return_value=fake_chat_response
+    )
+    patch_apply_pricing = patch.object(ChatResponse, "apply_pricing")
+    with (
+        patch_chat_completion,
+        patch_from_anthropic as mock_from,
+        patch_apply_pricing as mock_apply
+    ):
+        adapter.generate_chat_answer([type("Message", (), {
+            "content": "hi", "role": "user"
+        })()])
+        mock_apply.assert_called_once_with(
+            price_input_per_token=adapter.pricing.in_per_token,
+            price_output_per_token=adapter.pricing.out_per_token,
+            currency=adapter.pricing.currency,
+        )
