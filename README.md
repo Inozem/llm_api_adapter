@@ -2,11 +2,11 @@
 
 ## Overview
 
-This SDK for Python allows you to use LLM APIs from various companies and models through a unified interface. Currently, the project supports API integration for the following companies: OpenAI, Anthropic, and Google. At this stage, only the chat functionality is implemented.
+This lightweight SDK for Python allows you to use LLM APIs from various providers and models through a unified interface. It is designed to be minimal, dependency-free, and easy to integrate into any Python project. Currently, the project supports API integration for OpenAI, Anthropic, and Google, focusing on chat functionality with consistent cost tracking and unified error handling.
 
 ### Version
 
-Current version: 0.2.0
+Current version: 0.2.1
 
 
 ## Features
@@ -17,6 +17,8 @@ Current version: 0.2.0
 - **Extensible Design**: Built to easily extend support for additional providers and new functionalities in the future.
 - **Error Handling**: Standardized error messages across all supported LLMs, simplifying integration and debugging.
 - **Flexible Configuration**: Manage request parameters like temperature, max tokens, and other settings for fine-tuned control.
+- **Token and Cost Accounting**: Automatic calculation of token usage and cost per request.
+- **Pricing Registry**: Model prices are stored in a unified JSON registry with per-model input/output pricing and currency support.
 
 ## Installation
 
@@ -59,7 +61,7 @@ messages = [
 
 adapter = UniversalLLMAPIAdapter(
     organization="openai",
-    model="gpt-3.5-turbo",
+    model="gpt-5",
     api_key=openai_api_key
 )
 
@@ -74,7 +76,7 @@ print(response.content)
 
 ### Parameters
 
-- **max\_tokens**: The maximum number of tokens to generate in the response. This limits the length of the output. Default value: `256`.
+- **max\_tokens**: The maximum number of tokens to generate in the response. This limits the length of the output.
 
 - **temperature**: Controls the randomness of the response. Higher values (e.g., 0.8) make the output more random, while lower values (e.g., 0.2) make it more focused and deterministic. Default value: `1.0` (range: 0 to 2).
 
@@ -108,18 +110,16 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, and Google.
 
-- **OpenAI**: You can use models like `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4.5-preview`, `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-4`, `gpt-4-turbo-preview`, `gpt-3.5-turbo`. Set the `organization` parameter to `openai` and specify the `model` name.
-
-- **Anthropic**: Available models include `claude-opus-4-20250514`, `claude-sonnet-4-20250514`, `claude-3-sonnet-20240229`, `claude-3-haiku-20240307`, `claude-3-5-sonnet-latest`, `claude-3-haiku-20240307`. Set the `organization` parameter to `anthropic` and specify the desired `model`.
-
-- **Google**: Models such as `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`, `gemini-2.0-flash-lite` can be used. Set the `organization` parameter to `google` and specify the `model`.
+- **OpenAI**: You can use models like `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
+- **Anthropic**: Available models include `claude-sonnet-4-5`, `claude-opus-4-1`, `claude-opus-4-0`, `claude-sonnet-4-0`, `claude-3-7-sonnet-latest`, `claude-3-5-haiku-latest`, `claude-3-haiku-20240307`.
+- **Google**: Models such as `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`, `gemini-2.0-flash-lite` can be used.
 
 Example:
 
 ```python
 adapter = UniversalLLMAPIAdapter(
     organization="openai",
-    model="gpt-3.5-turbo",
+    model="gpt-5",
     api_key=openai_api_key
 )
 ```
@@ -135,7 +135,7 @@ Here is an example of how to switch between different LLM providers using the SD
 ```python
 gpt = UniversalLLMAPIAdapter(
     organization="openai",
-    model="gpt-3.5-turbo",
+    model="gpt-5",
     api_key=openai_api_key
 )
 gpt_response = gpt.generate_chat_answer(messages=messages)
@@ -143,7 +143,7 @@ print(gpt_response.content)
 
 claude = UniversalLLMAPIAdapter(
     organization="anthropic",
-    model="claude-3-haiku-20240307",
+    model="claude-sonnet-4-5",
     api_key=anthropic_api_key
 )
 claude_response = claude.generate_chat_answer(messages=messages)
@@ -151,7 +151,7 @@ print(claude_response.content)
 
 google = UniversalLLMAPIAdapter(
     organization="google",
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     api_key=google_api_key
 )
 google_response = google.generate_chat_answer(messages=messages)
@@ -185,7 +185,7 @@ messages = [
 
 adapter = UniversalLLMAPIAdapter(
     organization="openai",
-    model="gpt-3.5-turbo",
+    model="gpt-5",
     api_key=openai_api_key
 )
 
@@ -198,14 +198,56 @@ response = adapter.generate_chat_answer(
 print(response.content)
 ```
 
-The `ChatResponse` object returned by `generate_chat_answer` includes several attributes that provide additional details about the response. These attributes will contain data only if they are included in the response from the LLM:
+The `ChatResponse` object returned by `generate_chat_answer` includes:
 
-- **model**: The model that generated the response.
-- **response_id**: A unique identifier for the response.
-- **timestamp**: The time at which the response was generated.
-- **tokens_used**: The number of tokens used for the response.
-- **content**: The actual text content generated by the model.
-- **finish_reason**: The reason why the generation was finished (e.g., "stop" or "length").
+1. **model**: The model that generated the response.
+2. **response\_id**: Unique identifier for the response.
+3. **timestamp**: Response generation time.
+4. **usage**: Object containing `input_tokens`, `output_tokens`, and `total_tokens`.
+5. **currency**: The currency used for cost calculation.
+6. **cost\_input**: Cost of input tokens.
+7. **cost\_output**: Cost of output tokens.
+8. **cost\_total**: Total combined cost.
+9. **content**: The generated text response.
+10. **finish\_reason**: Reason why generation stopped (e.g., `"stop"`, `"length"`).
+
+## Token Usage and Pricing
+
+### Token Usage and Pricing Example
+
+```python
+google = UniversalLLMAPIAdapter(
+    organization="google",
+    model="gemini-2.5-flash",
+    api_key=google_api_key
+)
+
+response = google.generate_chat_answer(**chat_params)
+
+print(response.usage.input_tokens, "tokens", f"({response.cost_input} {response.currency})")
+print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")
+print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
+```
+
+### Overriding Pricing or Currency
+
+```python
+google = UniversalLLMAPIAdapter(
+    organization="google",
+    model="gemini-2.5-flash",
+    api_key=google_api_key
+)
+
+google.pricing.set_in_per_1m(1.5)
+google.pricing.set_out_per_1m(3)
+google.pricing.set_currency("EUR")
+
+response = google.generate_chat_answer(**chat_params)
+print(response.content)
+print(response.usage.input_tokens, "tokens", f"({response.cost_input} {response.currency})")
+print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")
+print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
+```
 
 ## Testing
 
