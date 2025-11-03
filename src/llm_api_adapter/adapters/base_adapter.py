@@ -2,10 +2,11 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass
 import logging
-from typing import Optional
+from typing import Any, Optional
 import warnings
 
 from ..llm_registry.llm_registry import Pricing, LLM_REGISTRY
+from ..models.messages.chat_message import Messages
 from ..models.responses.chat_response import ChatResponse
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ class LLMAdapterBase(ABC):
                 self.pricing = deepcopy(base_pricing) if base_pricing else None
 
     @abstractmethod
-    def generate_chat_answer(self, **kwargs) -> ChatResponse:
+    def chat(self, **kwargs) -> ChatResponse:
         """
         Generates a response based on the provided conversation.
         """
@@ -53,8 +54,25 @@ class LLMAdapterBase(ABC):
             logger.error(error_message)
             raise ValueError(error_message)
         return value
+    
+    def _normalize_messages(self, messages: Any) -> Messages:
+        if isinstance(messages, Messages):
+            return messages
+        if isinstance(messages, list):
+            return Messages(messages)
+        raise TypeError("messages must be a list or Messages instance")
 
     def handle_error(self, error: Exception):
         logger.error(f"Error with the provider '{self.company}' "
                      f"the model '{self.model}': {error}")
         raise error
+
+    # ---------------- LEGACY ---------------- #
+    def generate_chat_answer(self, **kwargs) -> ChatResponse:
+        """Deprecated: use .chat() instead."""
+        warnings.warn(
+            "'generate_chat_answer' is deprecated, use 'chat' instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self.chat(**kwargs)

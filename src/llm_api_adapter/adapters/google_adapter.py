@@ -5,7 +5,7 @@ from typing import List, Optional
 from ..adapters.base_adapter import LLMAdapterBase
 from ..errors.llm_api_error import LLMAPIError
 from ..llms.google.sync_client import GeminiSyncClient
-from ..models.messages.chat_message import Message
+from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse
 
 logger = logging.getLogger(__name__)
@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 class GoogleAdapter(LLMAdapterBase):
     company: str = "google"
 
-    def generate_chat_answer(
+    def chat(
         self,
-        messages: List[Message],
+        messages: List[Message] | Messages,
         max_tokens: Optional[int] = None,
         temperature: float = 1.0,
         top_p: float = 1.0
@@ -29,30 +29,18 @@ class GoogleAdapter(LLMAdapterBase):
             name="top_p", value=top_p, min_value=0, max_value=1
         )
         try:
-            transformed_messages = []
-            prompt = None
-            for msg in messages:
-                if hasattr(msg, "role") and hasattr(msg, "content"):
-                    if msg.role == "system" or isinstance(msg, ()):
-                        pass
-                    if isinstance(msg, type) and msg == "Prompt":
-                        prompt = {
-                            "parts": [{"text": msg.content}]
-                        }
-                    else:
-                        transformed_messages.append({
-                            "role": "user" if msg.role == "user" else "model",
-                            "parts": [{"text": msg.content}]
-                        })
+            normalized_messages = self._normalize_messages(messages)
+            system_prompt, transformed_messages = normalized_messages.to_google()
             payload = {
                 "contents": transformed_messages,
-                **({"system_instruction": prompt} if prompt else {}),
                 "generationConfig": {
                     "maxOutputTokens": max_tokens,
                     "temperature": temperature,
                     "topP": top_p,
                 },
             }
+            if system_prompt:
+                payload["system_instruction"] = {"parts": [{"text": system_prompt}]}
             client = GeminiSyncClient(self.api_key)
             response_json = client.chat_completion(
                 model=self.model,
