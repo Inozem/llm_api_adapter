@@ -72,7 +72,3 @@ def test_messages_post_init_dict_unsupported_role_raises():
     with pytest.raises(ValueError) as excinfo:
         Messages(items=[{"role": "unknown", "content": "x"}])
     assert "Unsupported role: unknown" in str(excinfo.value)
-
-def test_messages_post_init_dict_with_valid_role_raises_type_error_due_to_current_impl():
-    with pytest.raises(TypeError):
-        Messages(items=[{"role": "user", "content": "x"}])

@@ -45,7 +45,7 @@ class Messages:
     items: List[Any]
 
     def __post_init__(self):
-        allowed_roles = {cls.role for cls in Message.__subclasses__()}
+        allowed_roles = {cls.role: cls for cls in Message.__subclasses__()}
         normalized = []
         for item in self.items:
             if isinstance(item, Message):
@@ -58,7 +58,7 @@ class Messages:
                     raise ValueError("Missing 'content' in message data")
                 if role not in allowed_roles:
                     raise ValueError(f"Unsupported role: {role}")
-                normalized.append(Message(role=role, content=content))
+                normalized.append(allowed_roles[role](content=content))
             else:
                 raise TypeError(f"Unsupported message type: {type(item)}")
         self.items = normalized

@@ -7,7 +7,7 @@ This lightweight SDK for Python allows you to use LLM APIs from various provider
 
 ### Version
 
-Current version: 0.2.1
+Current version: 0.2.2
 
 
 ## Features
@@ -66,7 +66,7 @@ adapter = UniversalLLMAPIAdapter(
     api_key=openai_api_key
 )
 
-response = adapter.generate_chat_answer(
+response = adapter.chat(
     messages=messages,
     max_tokens=max_tokens,
     temperature=temperature,
@@ -111,8 +111,8 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, and Google.
 
-- **OpenAI**: You can use models like `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
-- **Anthropic**: Available models include `claude-sonnet-4-5`, `claude-opus-4-1`, `claude-opus-4-0`, `claude-sonnet-4-0`, `claude-3-7-sonnet-latest`, `claude-3-5-haiku-latest`, `claude-3-haiku-20240307`.
+- **OpenAI**: You can use models like `gpt-5-pro`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
+- **Anthropic**: Available models include `claude-sonnet-4-5`, `claude-haiku-4-5`, `claude-opus-4-1`, `claude-opus-4-0`, `claude-sonnet-4-0`, `claude-3-7-sonnet-latest`, `claude-3-5-haiku-latest`, `claude-3-haiku-20240307`.
 - **Google**: Models such as `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`, `gemini-2.0-flash-lite` can be used.
 
 Example:
@@ -139,7 +139,7 @@ gpt = UniversalLLMAPIAdapter(
     model="gpt-5",
     api_key=openai_api_key
 )
-gpt_response = gpt.generate_chat_answer(messages=messages)
+gpt_response = gpt.chat(messages=messages)
 print(gpt_response.content)
 
 claude = UniversalLLMAPIAdapter(
@@ -147,7 +147,7 @@ claude = UniversalLLMAPIAdapter(
     model="claude-sonnet-4-5",
     api_key=anthropic_api_key
 )
-claude_response = claude.generate_chat_answer(messages=messages)
+claude_response = claude.chat(messages=messages)
 print(claude_response.content)
 
 google = UniversalLLMAPIAdapter(
@@ -155,7 +155,7 @@ google = UniversalLLMAPIAdapter(
     model="gemini-2.5-flash",
     api_key=google_api_key
 )
-google_response = google.generate_chat_answer(messages=messages)
+google_response = google.chat(messages=messages)
 print(google_response.content)
 ```
 
@@ -190,7 +190,7 @@ adapter = UniversalLLMAPIAdapter(
     api_key=openai_api_key
 )
 
-response = adapter.generate_chat_answer(
+response = adapter.chat(
     messages=messages,
     max_tokens=256,
     temperature=1.0,
@@ -199,7 +199,7 @@ response = adapter.generate_chat_answer(
 print(response.content)
 ```
 
-The `ChatResponse` object returned by `generate_chat_answer` includes:
+The `ChatResponse` object returned by `chat` includes:
 
 1. **model**: The model that generated the response.
 2. **response\_id**: Unique identifier for the response.
@@ -223,7 +223,7 @@ google = UniversalLLMAPIAdapter(
     api_key=google_api_key
 )
 
-response = google.generate_chat_answer(**chat_params)
+response = google.chat(**chat_params)
 
 print(response.usage.input_tokens, "tokens", f"({response.cost_input} {response.currency})")
 print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")
@@ -243,7 +243,7 @@ google.pricing.set_in_per_1m(1.5)
 google.pricing.set_out_per_1m(3)
 google.pricing.set_currency("EUR")
 
-response = google.generate_chat_answer(**chat_params)
+response = google.chat(**chat_params)
 print(response.content)
 print(response.usage.input_tokens, "tokens", f"({response.cost_input} {response.currency})")
 print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")

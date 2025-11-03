@@ -23,10 +23,11 @@ def test_selects_adapter_and_delegates(monkeypatch):
         classmethod(lambda cls: [FakeAdapter]),
         raising=False,
     )
-    ua = UniversalLLMAPIAdapter(organization="Anthropic", model="claude-2",
-                                api_key="sk-test")
+    ua = UniversalLLMAPIAdapter(
+        organization="Anthropic", model="claude-sonnet-4-5", api_key="sk-test"
+    )
     assert isinstance(ua.adapter, FakeAdapter)
-    assert ua.adapter.model == "claude-2"
+    assert ua.adapter.model == "claude-sonnet-4-5"
     assert ua.adapter.api_key == "sk-test"
     assert ua.greet("Alice") == "hello Alice from Anthropic"
 
