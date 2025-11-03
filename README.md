@@ -83,6 +83,22 @@ print(response.content)
 
 - **top\_p**: Limits the response to a certain cumulative probability. This is used to create more focused and coherent responses by considering only the highest probability options. Default value: `1.0` (range: 0 to 1).
 
+### Alternative Message Format
+
+In addition to the built-in message classes, the SDK also supports the standard OpenAI-style message format for quick adoption and compatibility:
+
+```python
+messages = [
+    {"role": "system", "content": "You are a friendly assistant who answers only yes or no."},
+    {"role": "user", "content": "Do you know how AI learns?"},
+    {"role": "assistant", "content": "Yes."},
+    {"role": "user", "content": "Can you explain it in one sentence?"}
+]
+
+response = adapter.chat(messages=messages, max_tokens=50)
+print(response.content)
+```
+
 ## Handling Errors
 
 ### Common Errors
