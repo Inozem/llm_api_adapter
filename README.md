@@ -98,6 +98,8 @@ messages = [
 response = adapter.chat(messages=messages, max_tokens=50)
 print(response.content)
 ```
+> **Note**  
+> The adapter automatically normalizes message input — you can mix custom message classes and OpenAI-style dicts in one list.
 
 ## Handling Errors
 
