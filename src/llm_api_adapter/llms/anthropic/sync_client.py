@@ -28,7 +28,9 @@ class ClaudeSyncClient:
         }
 
     def chat_completion(self, model: str, **kwargs):
-        if model.startswith(("claude-sonnet-4-5", "claude-opus-4-1")):
+        if model.startswith(
+            ("claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5")
+        ):
             if "top_p" in kwargs:
                 kwargs.pop("top_p", None)
         url = f"{self.endpoint}/messages"
