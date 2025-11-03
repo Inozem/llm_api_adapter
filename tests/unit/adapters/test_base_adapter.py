@@ -12,7 +12,7 @@ class DummyClient:
         return {"choices": [{"message": {"content": "dummy response"}}]}
 
 class _TestAdapter(LLMAdapterBase):
-    def generate_chat_answer(self, messages, **kwargs):
+    def chat(self, messages, **kwargs):
         try:
             raw_response = self.client.chat_completion(messages, **kwargs)
             return ChatResponse(**raw_response)
@@ -61,7 +61,7 @@ def test_chat_handles_llmapi_error(adapter):
     with patch.object(
         DummyClient, "chat_completion", side_effect=LLMAPIError("API error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.generate_chat_answer(messages)
+        adapter.chat(messages)
         mock_handle_error.assert_called_once()
 
 def test_chat_handles_generic_exception(adapter):
@@ -72,5 +72,5 @@ def test_chat_handles_generic_exception(adapter):
     with patch.object(
         DummyClient, "chat_completion", side_effect=Exception("Generic error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.generate_chat_answer(messages)
+        adapter.chat(messages)
         mock_handle_error.assert_called_once()

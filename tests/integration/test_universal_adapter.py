@@ -54,7 +54,7 @@ def test_openai_chat(openai_client_mock):
         model="gpt-5",
         api_key="dummy_key"
     )
-    response = adapter.generate_chat_answer(messages=messages)
+    response = adapter.chat(messages=messages)
     assert response.content == "Hello from mocked OpenAI!"
 
 def test_google_chat(google_client_mock):
@@ -64,7 +64,7 @@ def test_google_chat(google_client_mock):
         api_key="dummy_key"
     )
     messages = [UserMessage("Hello")]
-    resp = adapter.generate_chat_answer(messages=messages)
+    resp = adapter.chat(messages=messages)
     assert resp.content == "Hello from mocked Google!"
 
 def test_anthropic_chat(anthropic_client_mock):
@@ -74,7 +74,7 @@ def test_anthropic_chat(anthropic_client_mock):
         api_key="dummy_key"
     )
     messages = [UserMessage("Hello")]
-    resp = adapter.generate_chat_answer(messages=messages)
+    resp = adapter.chat(messages=messages)
     assert resp.content == "Hello from mocked Anthropic!"
 
 def test_google_usage_and_pricing(google_client_mock):
@@ -89,7 +89,7 @@ def test_google_usage_and_pricing(google_client_mock):
     adapter.pricing.set_currency("EUR")
 
     messages = [UserMessage("Hello")]
-    resp = adapter.generate_chat_answer(messages=messages)
+    resp = adapter.chat(messages=messages)
 
     # The mocked Google response provides totalTokenCount = 42
     assert resp.usage.total_tokens == 42
@@ -108,7 +108,7 @@ def test_anthropic_tokens_and_pricing(anthropic_client_mock):
     adapter.pricing.set_currency("USD")
 
     messages = [UserMessage("Hello")]
-    resp = adapter.generate_chat_answer(messages=messages)
+    resp = adapter.chat(messages=messages)
 
     # The mocked Anthropic response provides input_tokens=5 and output_tokens=7
     assert resp.usage.input_tokens == 5
