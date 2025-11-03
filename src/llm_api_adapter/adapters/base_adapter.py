@@ -62,10 +62,13 @@ class LLMAdapterBase(ABC):
             return Messages(messages)
         raise TypeError("messages must be a list or Messages instance")
 
-    def handle_error(self, error: Exception, error_message: str):
-        logger.error(f"Error with the provider '{self.company}' "
-                     f"the model '{self.model}': {error}. {error_message}")
-        raise error
+    def handle_error(self, error: Exception, error_message: Optional[str] = None):
+        err_msg = (f"Error with the provider '{self.company}' "
+               f"the model '{self.model}': {error_message}. ")
+        if error_message:
+            err_msg += f"{error_message}"
+        logger.error(err_msg)
+        raise
 
     # ---------------- LEGACY ---------------- #
     def generate_chat_answer(self, **kwargs) -> ChatResponse:

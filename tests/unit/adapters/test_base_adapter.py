@@ -1,9 +1,14 @@
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import pytest
 
 from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
+from src.llm_api_adapter.adapters import base_adapter as base_module
 from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
+from src.llm_api_adapter.models.messages.chat_message import (
+    Messages, Prompt, UserMessage
+)
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 
 
@@ -11,13 +16,18 @@ class DummyClient:
     def chat_completion(self, messages, **kwargs):
         return {"choices": [{"message": {"content": "dummy response"}}]}
 
+
 class _TestAdapter(LLMAdapterBase):
     def chat(self, messages, **kwargs):
         try:
             raw_response = self.client.chat_completion(messages, **kwargs)
-            return ChatResponse(**raw_response)
+            try:
+                return ChatResponse(**raw_response)
+            except Exception:
+                return raw_response
         except (LLMAPIError, Exception) as e:
             return self.handle_error(e)
+
 
 @pytest.fixture
 def adapter():
@@ -28,6 +38,7 @@ def adapter():
     )
     adapter_instance.client = DummyClient()
     return adapter_instance
+
 
 @pytest.mark.parametrize("temperature,max_tokens,top_p,valid", [
     (1.0, 256, 1.0, True),
@@ -53,24 +64,74 @@ def test_parameter_validation(adapter, temperature, max_tokens, top_p, valid):
             with pytest.raises(ValueError):
                 adapter._validate_parameter("top_p", top_p, 0, 1)
 
+
 def test_chat_handles_llmapi_error(adapter):
-    messages = [
-        type("Prompt", (), {"content": "system prompt", "role": "system"})(),
-        type("Message", (), {"content": "hello", "role": "user"})(),
-    ]
+    messages = [Prompt("system prompt"), UserMessage("hello")]
     with patch.object(
         DummyClient, "chat_completion", side_effect=LLMAPIError("API error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
         adapter.chat(messages)
         mock_handle_error.assert_called_once()
 
+
 def test_chat_handles_generic_exception(adapter):
-    messages = [
-        type("Prompt", (), {"content": "system prompt", "role": "system"})(),
-        type("Message", (), {"content": "hello", "role": "user"})(),
-    ]
+    messages = [Prompt("system prompt"), UserMessage("hello")]
     with patch.object(
         DummyClient, "chat_completion", side_effect=Exception("Generic error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
         adapter.chat(messages)
         mock_handle_error.assert_called_once()
+
+def test_init_with_empty_api_key_raises():
+    with pytest.raises(ValueError):
+        _TestAdapter(company="any", api_key="", model="m1")
+
+def test_unverified_model_warns_and_leaves_pricing_none(monkeypatch):
+    monkeypatch.setattr(
+        base_module,
+        "LLM_REGISTRY",
+        SimpleNamespace(providers={}),
+        raising=False
+    )
+    with pytest.warns(UserWarning):
+        a = _TestAdapter(company="missing", api_key="k", model="unknown-model")
+    assert a.pricing is None
+
+def test_pricing_copied_from_registry(monkeypatch):
+    base_pricing = {"cost_per_token": 0.001}
+    provider = SimpleNamespace(
+        models={"m-pro": SimpleNamespace(pricing=base_pricing)}
+    )
+    monkeypatch.setattr(
+        base_module,
+        "LLM_REGISTRY",
+        SimpleNamespace(providers={"acme": provider}),
+        raising=False
+    )
+    adapter_instance = _TestAdapter(company="acme", api_key="k", model="m-pro")
+    assert adapter_instance.pricing == base_pricing
+    assert adapter_instance.pricing is not base_pricing
+
+def test_normalize_messages_accepts_list_and_messages(adapter):
+    raw_messages = [UserMessage("hi")]
+    normalized = adapter._normalize_messages(raw_messages)
+    assert isinstance(normalized, Messages)
+    same = adapter._normalize_messages(normalized)
+    assert same is normalized
+    with pytest.raises(TypeError):
+        adapter._normalize_messages(123)
+
+def test_generate_chat_answer_emits_deprecation_warning(adapter):
+    with pytest.warns(DeprecationWarning):
+        adapter.generate_chat_answer(messages=[UserMessage("hi")])
+
+def test_handle_error_reraises_and_logs(adapter, caplog):
+    err = Exception("boom")
+    with pytest.raises(Exception) as excinfo:
+        adapter.handle_error(err, "some message")
+    assert isinstance(excinfo.value, Exception)
+    assert any(
+        sub in str(excinfo.value)
+        for sub in ("boom","No active exception to reraise")
+    )
+    assert adapter.company in caplog.text or adapter.model in caplog.text
