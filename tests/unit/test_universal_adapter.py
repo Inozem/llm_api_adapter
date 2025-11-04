@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+
 import pytest
 
 import src.llm_api_adapter.universal_adapter as universal_module
@@ -7,7 +8,7 @@ from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 def test_selects_adapter_and_delegates(monkeypatch):
     @dataclass
     class FakeAdapter(universal_module.LLMAdapterBase):
-        company: str = "Anthropic"
+        company: str = "anthropic"
         model: str = ""
         api_key: str = ""
 
@@ -24,13 +25,12 @@ def test_selects_adapter_and_delegates(monkeypatch):
         raising=False,
     )
     ua = UniversalLLMAPIAdapter(
-        organization="Anthropic", model="claude-sonnet-4-5", api_key="sk-test"
+        organization="anthropic", model="claude-sonnet-4-5", api_key="sk-test"
     )
     assert isinstance(ua.adapter, FakeAdapter)
     assert ua.adapter.model == "claude-sonnet-4-5"
     assert ua.adapter.api_key == "sk-test"
-    assert ua.greet("Alice") == "hello Alice from Anthropic"
-
+    assert ua.greet("Alice") == "hello Alice from anthropic"
 
 def test_unsupported_organization_raises(monkeypatch):
     @dataclass
@@ -49,22 +49,22 @@ def test_unsupported_organization_raises(monkeypatch):
         raising=False,
     )
     with pytest.raises(ValueError, match="Unsupported organization: UnknownCorp"):
-        UniversalLLMAPIAdapter(organization="UnknownCorp", model="gpt", api_key="k")
+        UniversalLLMAPIAdapter(
+            organization="UnknownCorp", model="gpt", api_key="k"
+        )
 
 def test_invalid_inputs_raise_value_error():
     with pytest.raises(ValueError, match="Invalid organization"):
         UniversalLLMAPIAdapter(organization="", model="m", api_key="k")
-
     with pytest.raises(ValueError, match="Invalid model"):
         UniversalLLMAPIAdapter(organization="Anthropic", model="", api_key="k")
-
     with pytest.raises(ValueError, match="Invalid API key"):
         UniversalLLMAPIAdapter(organization="Anthropic", model="m", api_key="")
 
 def test_getattr_missing_raises_attribute_error(monkeypatch):
     @dataclass
     class FakeAdapter(universal_module.LLMAdapterBase):
-        company: str = "Anthropic"
+        company: str = "anthropic"
         model: str = ""
         api_key: str = ""
 
@@ -77,6 +77,8 @@ def test_getattr_missing_raises_attribute_error(monkeypatch):
         classmethod(lambda cls: [FakeAdapter]),
         raising=False,
     )
-    ua = UniversalLLMAPIAdapter(organization="Anthropic", model="m", api_key="k")
+    ua = UniversalLLMAPIAdapter(
+        organization="anthropic", model="claude-sonnet-4-5", api_key="k"
+    )
     with pytest.raises(AttributeError):
         ua.nonexistent_method()

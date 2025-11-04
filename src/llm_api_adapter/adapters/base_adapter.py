@@ -28,8 +28,8 @@ class LLMAdapterBase(ABC):
             model_spec = provider.models.get(self.model) if provider else None
             if not model_spec:
                 warnings.warn(
-                    (f"Model '{self.model}' is not verified for this adapter. "
-                     "Continuing with the selected adapter."),
+                    (f"Model '{self.model}' is not verified for the {self.company} adapter. "
+                     f"Continuing with the selected adapter."),
                     UserWarning
                 )
                 logger.warning(f"Unverified model used: {self.model}")

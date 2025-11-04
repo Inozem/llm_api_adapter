@@ -34,7 +34,7 @@ def google_client_mock():
 def anthropic_client_mock():
     with requests_mock.Mocker() as mock:
         mock.post("https://api.anthropic.com/v1/messages", json={
-            "model": "claude-v1",
+            "model": "claude-sonnet-4-5",
             "id": "response123",
             "usage": {"input_tokens": 5, "output_tokens": 7},
             "content": [{"text": "Hello from mocked Anthropic!"}],
@@ -57,13 +57,48 @@ def test_openai_chat(openai_client_mock):
     response = adapter.chat(messages=messages)
     assert response.content == "Hello from mocked OpenAI!"
 
+def test_openai_chat_with_raw_dict_messages(openai_client_mock):
+    messages = [
+        {"role": "system", "content": "You are a friendly assistant who answers only yes or no."},
+        {"role": "user", "content": "Do you know how AI learns?"},
+        {"role": "assistant", "content": "Yes."},
+        {"role": "user", "content": "Can you explain it in one sentence?"}
+    ]
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai",
+        model="gpt-5",
+        api_key="dummy_key"
+    )
+    resp = adapter.chat(messages=messages)
+    assert resp.content == "Hello from mocked OpenAI!"
+
 def test_google_chat(google_client_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="google",
         model="gemini-2.5-pro",
         api_key="dummy_key"
     )
-    messages = [UserMessage("Hello")]
+    messages = [
+        Prompt("You are an assistant."),
+        UserMessage("Hi! Can you explain?"),
+        AIMessage("Sure!"),
+        UserMessage("How does AI learn?"),
+    ]
+    resp = adapter.chat(messages=messages)
+    assert resp.content == "Hello from mocked Google!"
+
+def test_google_chat_with_raw_dict_messages(google_client_mock):
+    messages = [
+        {"role": "system", "content": "You are a friendly assistant who answers only yes or no."},
+        {"role": "user", "content": "Do you know how AI learns?"},
+        {"role": "assistant", "content": "Yes."},
+        {"role": "user", "content": "Can you explain it in one sentence?"}
+    ]
+    adapter = UniversalLLMAPIAdapter(
+        organization="google",
+        model="gemini-2.5-pro",
+        api_key="dummy_key"
+    )
     resp = adapter.chat(messages=messages)
     assert resp.content == "Hello from mocked Google!"
 
@@ -73,7 +108,27 @@ def test_anthropic_chat(anthropic_client_mock):
         model="claude-sonnet-4-5",
         api_key="dummy_key"
     )
-    messages = [UserMessage("Hello")]
+    messages = [
+        Prompt("You are an assistant."),
+        UserMessage("Hi! Can you explain?"),
+        AIMessage("Sure!"),
+        UserMessage("How does AI learn?"),
+    ]
+    resp = adapter.chat(messages=messages)
+    assert resp.content == "Hello from mocked Anthropic!"
+
+def test_anthropic_chat_with_raw_dict_messages(anthropic_client_mock):
+    messages = [
+        {"role": "system", "content": "You are a friendly assistant who answers only yes or no."},
+        {"role": "user", "content": "Do you know how AI learns?"},
+        {"role": "assistant", "content": "Yes."},
+        {"role": "user", "content": "Can you explain it in one sentence?"}
+    ]
+    adapter = UniversalLLMAPIAdapter(
+        organization="anthropic",
+        model="claude-sonnet-4-5",
+        api_key="dummy_key"
+    )
     resp = adapter.chat(messages=messages)
     assert resp.content == "Hello from mocked Anthropic!"
 
