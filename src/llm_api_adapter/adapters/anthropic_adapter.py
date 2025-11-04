@@ -18,7 +18,7 @@ class AnthropicAdapter(LLMAdapterBase):
     def chat(
         self,
         messages: List[Message] | Messages,
-        max_tokens: Optional[int] = None,
+        max_tokens: int,
         temperature: float = 1.0,
         top_p: float = 1.0
     ) -> ChatResponse:
