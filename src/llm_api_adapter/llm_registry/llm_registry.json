@@ -1,10 +1,11 @@
 {
-  "schema_version": 1,
-  "effective_date": "2025-10-16",
+  "schema_version": 2,
+  "effective_date": "2025-11-03",
   "providers": {
     "openai": {
       "currency": "USD",
       "models": {
+        "gpt-5-pro": {"pricing": {"in_per_1m": 15.0, "out_per_1m": 120.0}},
         "gpt-5": {"pricing": {"in_per_1m": 1.25, "out_per_1m": 10.0}},
         "gpt-5-mini": {"pricing": {"in_per_1m": 0.25, "out_per_1m": 2.0}},
         "gpt-5-nano": {"pricing": {"in_per_1m": 0.05, "out_per_1m": 0.4}},
@@ -19,6 +20,7 @@
       "currency": "USD",
       "models": {
         "claude-sonnet-4-5": {"pricing": {"in_per_1m": 3.0, "out_per_1m": 15.0}},
+        "claude-haiku-4-5": {"pricing": {"in_per_1m": 1.0, "out_per_1m": 5.0}},
         "claude-opus-4-1": {"pricing": {"in_per_1m": 15.0, "out_per_1m": 75.0}},
         "claude-opus-4-0": {"pricing": {"in_per_1m": 15.0, "out_per_1m": 75.0}},
         "claude-sonnet-4-0": {"pricing": {"in_per_1m": 3.0, "out_per_1m": 15.0}},

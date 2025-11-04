@@ -5,7 +5,7 @@ from typing import List, Optional
 from ..adapters.base_adapter import LLMAdapterBase
 from ..errors.llm_api_error import LLMAPIError
 from ..llms.anthropic.sync_client import ClaudeSyncClient
-from ..models.messages.chat_message import Message, Prompt
+from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse
 
 logger = logging.getLogger(__name__)
@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 class AnthropicAdapter(LLMAdapterBase):
     company: str = "anthropic"
 
-    def generate_chat_answer(
+    def chat(
         self,
-        messages: List[Message],
+        messages: List[Message] | Messages,
         max_tokens: Optional[int] = None,
         temperature: float = 1.0,
         top_p: float = 1.0
@@ -29,16 +29,8 @@ class AnthropicAdapter(LLMAdapterBase):
             name="top_p", value=top_p, min_value=0, max_value=1
         )
         try:
-            system_prompt = ""
-            transformed_messages = []
-            for msg in messages:
-                if isinstance(msg, Prompt):
-                    system_prompt = msg.content
-                else:
-                    transformed_messages.append({
-                        "role": msg.role,
-                        "content": msg.content
-                    })
+            normalized_messages = self._normalize_messages(messages)
+            system_prompt, transformed_messages = normalized_messages.to_anthropic()
             client = ClaudeSyncClient(api_key=self.api_key)
             response = client.chat_completion(
                 model=self.model,

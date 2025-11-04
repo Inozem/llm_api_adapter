@@ -5,6 +5,7 @@ import pytest
 from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
 from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
 from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
+from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 
 @pytest.fixture
@@ -39,27 +40,21 @@ def test_parameter_validation(adapter, temperature, max_tokens, top_p, valid):
                 adapter._validate_parameter("top_p", top_p, 0, 1)
 
 def test_chat_handles_llmapi_error(adapter):
-    messages = [
-        type("Prompt", (), {"content": "system prompt", "role": "system"})(),
-        type("Message", (), {"content": "hello", "role": "user"})(),
-    ]
+    messages = [Prompt("system prompt"), UserMessage("hello")]
     method = "chat_completion"
     with patch.object(
         GeminiSyncClient, method, side_effect=LLMAPIError("API error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.generate_chat_answer(messages)
+        adapter.chat(messages)
         mock_handle_error.assert_called_once()
 
 def test_chat_handles_generic_exception(adapter):
-    messages = [
-        type("Prompt", (), {"content": "system prompt", "role": "system"})(),
-        type("Message", (), {"content": "hello", "role": "user"})(),
-    ]
+    messages = [Prompt("system prompt"), UserMessage("hello")]
     method = "chat_completion"
     with patch.object(
         GeminiSyncClient, method, side_effect=Exception("Generic error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.generate_chat_answer(messages)
+        adapter.chat(messages)
         mock_handle_error.assert_called_once()
 
 def test_pricing_is_applied_when_present(adapter):
@@ -80,8 +75,8 @@ def test_pricing_is_applied_when_present(adapter):
         patch_from_google_response as mock_from,
         patch_apply_pricing as mock_apply
     ):
-        result = adapter.generate_chat_answer([
-            type("Message", (), {"content": "hi", "role": "user"})()
+        result = adapter.chat([
+            UserMessage("hi")
         ], max_tokens=10)
     mock_client.assert_called_once()
     mock_from.assert_called_once_with(fake_response)
