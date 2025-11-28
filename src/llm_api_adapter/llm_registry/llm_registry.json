@@ -1,15 +1,26 @@
 {
   "schema_version": 3,
-  "effective_date": "2025-11-23",
+  "effective_date": "2025-11-28",
   "providers": {
     "openai": {
       "currency": "USD",
       "models": {
-        "gpt-5.1": {"pricing": {"in_per_1m": 1.25, "out_per_1m": 10.0}},
-        "gpt-5-pro": {"pricing": {"in_per_1m": 15.0, "out_per_1m": 120.0}},
-        "gpt-5": {"pricing": {"in_per_1m": 1.25, "out_per_1m": 10.0}},
-        "gpt-5-mini": {"pricing": {"in_per_1m": 0.25, "out_per_1m": 2.0}},
-        "gpt-5-nano": {"pricing": {"in_per_1m": 0.05, "out_per_1m": 0.4}},
+        "gpt-5.1": {
+          "pricing": {"in_per_1m": 1.25, "out_per_1m": 10.0},
+          "is_reasoning": true
+        },
+        "gpt-5": {
+          "pricing": {"in_per_1m": 1.25, "out_per_1m": 10.0},
+          "is_reasoning": true
+        },
+        "gpt-5-mini": {
+          "pricing": {"in_per_1m": 0.25, "out_per_1m": 2.0},
+          "is_reasoning": true
+        },
+        "gpt-5-nano": {
+          "pricing": {"in_per_1m": 0.05, "out_per_1m": 0.4},
+          "is_reasoning": true
+        },
         "gpt-4.1": {"pricing": {"in_per_1m": 2.0, "out_per_1m": 8.0}},
         "gpt-4.1-mini": {"pricing": {"in_per_1m": 0.4, "out_per_1m": 1.6}},
         "gpt-4.1-nano": {"pricing": {"in_per_1m": 0.1, "out_per_1m": 0.4}},
@@ -20,6 +31,7 @@
     "anthropic": {
       "currency": "USD",
       "models": {
+        "claude-opus-4-5": {"pricing": {"in_per_1m": 5.0, "out_per_1m": 25.0}},
         "claude-sonnet-4-5": {"pricing": {"in_per_1m": 3.0, "out_per_1m": 15.0}},
         "claude-haiku-4-5": {"pricing": {"in_per_1m": 1.0, "out_per_1m": 5.0}},
         "claude-opus-4-1": {"pricing": {"in_per_1m": 15.0, "out_per_1m": 75.0}},
