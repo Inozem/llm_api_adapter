@@ -57,11 +57,16 @@ class ChatResponse:
             output_tokens=u.get("output_tokens", 0),
             total_tokens=u.get("input_tokens", 0) + u.get("output_tokens", 0),
         )
+        content = api_response.get("content", [])
+        first_text = next(
+            (block.get("text") for block in content if block.get("type") == "text"),
+            None
+        )
         return cls(
             model=api_response.get("model"),
             response_id=api_response.get("id"),
             usage=usage,
-            content=api_response.get("content")[0].get("text"),
+            content=first_text,
             finish_reason=api_response.get("stop_reason"),
         )
 

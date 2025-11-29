@@ -20,7 +20,8 @@ class AnthropicAdapter(LLMAdapterBase):
         messages: List[Message] | Messages,
         max_tokens: int,
         temperature: float = 1.0,
-        top_p: float = 1.0
+        top_p: float = 1.0,
+        reasoning_level: Optional[str | int] = None
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature", value=temperature, min_value=0, max_value=2
@@ -32,14 +33,23 @@ class AnthropicAdapter(LLMAdapterBase):
             normalized_messages = self._normalize_messages(messages)
             system_prompt, transformed_messages = normalized_messages.to_anthropic()
             client = ClaudeSyncClient(api_key=self.api_key)
-            response = client.chat_completion(
-                model=self.model,
-                messages=transformed_messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                system=system_prompt,
-            )
+            params = {
+                "model": self.model,
+                "messages": transformed_messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+                "system": system_prompt,
+            }
+            if reasoning_level:
+                normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
+                if normalized_reasoning_level:
+                    params["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": normalized_reasoning_level
+                    }
+            params = {k: v for k, v in params.items() if v is not None}
+            response = client.chat_completion(**params)
             chat_response = ChatResponse.from_anthropic_response(response)
             if self.pricing:
                 chat_response.apply_pricing(
@@ -53,3 +63,24 @@ class AnthropicAdapter(LLMAdapterBase):
         except Exception as e:
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
+
+    def _normalize_reasoning_level(self, level: str | int) -> str:
+        minimum_level = 1024
+        normalized_level = None
+        if not self.is_reasoning:
+            raise ValueError(f"Model does not support reasoning.")
+        if isinstance(level, bool):
+            raise ValueError("Invalid type for level: bool is not accepted")
+        if isinstance(level, str):
+            if level in self.reasoning_levels:
+                normalized_level = self.reasoning_levels[level]
+            raise ValueError(f"Unknown reasoning level key: {level!r}. "
+                            f"Valid keys: {list(self.reasoning_levels.keys())}")
+        if isinstance(level, int):
+            normalized_level = level
+        if normalized_level:
+            if normalized_level >= minimum_level:
+                return normalized_level
+            return minimum_level
+        raise ValueError("Invalid type for level: expected int or str, "
+                         f"got {type(level).__name__!r}")

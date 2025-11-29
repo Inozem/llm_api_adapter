@@ -58,17 +58,20 @@ class OpenAIAdapter(LLMAdapterBase):
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
 
-    def _normalize_reasoning_level(self, level: str | int) -> int | str:
+    def _normalize_reasoning_level(self, level: str | int) -> str:
         if not self.is_reasoning:
             raise ValueError(f"Model does not support reasoning.")
+        if isinstance(level, bool):
+            raise ValueError("Invalid type for level: bool is not accepted")
         if isinstance(level, str):
             if level in self.reasoning_levels:
                 return level
             raise ValueError(f"Unknown reasoning level key: {level!r}. "
-                             f"Valid keys: {list(self.reasoning_levels)}")
+                            f"Valid keys: {list(self.reasoning_levels.keys())}")
         if isinstance(level, int):
             for key, val in self.reasoning_levels.items():
                 if level <= val:
                     return key
             return list(self.reasoning_levels.keys())[-1]
-        return level
+        raise ValueError("Invalid type for level: expected int or str, "
+                         f"got {type(level).__name__!r}")

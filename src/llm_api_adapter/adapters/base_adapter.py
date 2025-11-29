@@ -86,8 +86,6 @@ class LLMAdapterBase(ABC):
     def handle_error(self, error: Exception, error_message: Optional[str] = None):
         err_msg = (f"Error with the provider '{self.company}' "
                f"the model '{self.model}': {error_message}. ")
-        if error_message:
-            err_msg += f"{error_message}"
         logger.error(err_msg)
         raise
 
