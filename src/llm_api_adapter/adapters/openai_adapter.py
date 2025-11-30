@@ -33,6 +33,7 @@ class OpenAIAdapter(LLMAdapterBase):
             normalized_messages = self._normalize_messages(messages)
             transformed_messages = normalized_messages.to_openai()
             normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
+            print(f"normalized_reasoning_level: {normalized_reasoning_level}")
             client = OpenAISyncClient(api_key=self.api_key)
             params = {
                 "model": self.model,
@@ -58,9 +59,11 @@ class OpenAIAdapter(LLMAdapterBase):
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
 
-    def _normalize_reasoning_level(self, level: str | int) -> str:
+    def _normalize_reasoning_level(self, level: str | int | None) -> str:
         if not self.is_reasoning:
             raise ValueError(f"Model does not support reasoning.")
+        if self.is_reasoning and level is None:
+            return "none"
         if isinstance(level, bool):
             raise ValueError("Invalid type for level: bool is not accepted")
         if isinstance(level, str):
