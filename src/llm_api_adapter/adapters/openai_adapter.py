@@ -33,7 +33,6 @@ class OpenAIAdapter(LLMAdapterBase):
             normalized_messages = self._normalize_messages(messages)
             transformed_messages = normalized_messages.to_openai()
             normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
-            print(f"normalized_reasoning_level: {normalized_reasoning_level}")
             client = OpenAISyncClient(api_key=self.api_key)
             params = {
                 "model": self.model,
