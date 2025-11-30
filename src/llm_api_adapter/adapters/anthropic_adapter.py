@@ -74,8 +74,9 @@ class AnthropicAdapter(LLMAdapterBase):
         if isinstance(level, str):
             if level in self.reasoning_levels:
                 normalized_level = self.reasoning_levels[level]
-            raise ValueError(f"Unknown reasoning level key: {level!r}. "
-                            f"Valid keys: {list(self.reasoning_levels.keys())}")
+            else:
+                raise ValueError(f"Unknown reasoning level key: {level!r}. "
+                                 f"Valid keys: {list(self.reasoning_levels.keys())}")
         if isinstance(level, int):
             normalized_level = level
         if normalized_level:
