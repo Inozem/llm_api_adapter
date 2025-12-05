@@ -28,15 +28,17 @@ class ClaudeSyncClient:
         }
 
     def chat_completion(self, model: str, **kwargs):
+        url = f"{self.endpoint}/messages"
+        payload = self._prepare_chat_payload_for_model(model, kwargs)
+        response = self._send_request(url, payload)
+        return response.json()
+
+    def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
         if model.startswith(
             ("claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5")
         ):
-            if "top_p" in kwargs:
-                kwargs.pop("top_p", None)
-        url = f"{self.endpoint}/messages"
-        payload = {"model": model, **kwargs}
-        response = self._send_request(url, payload)
-        return response.json()
+            kwargs.pop("top_p", None)
+        return {"model": model, **kwargs}
 
     def _send_request(self, url, payload):
         try:
