@@ -5,6 +5,7 @@ import warnings
 
 from ..adapters.base_adapter import LLMAdapterBase
 from ..errors.llm_api_error import LLMAPIError
+from ..errors.config_errors import LLMConfigError
 from ..llms.anthropic.sync_client import ClaudeSyncClient
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse
@@ -45,6 +46,11 @@ class AnthropicAdapter(LLMAdapterBase):
             if reasoning_level:
                 normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
                 if normalized_reasoning_level:
+                    self.validate_reasoning_and_tokens(
+                        max_tokens=max_tokens,
+                        reasoning_level=reasoning_level,
+                        normalized_reasoning_level=normalized_reasoning_level
+                    )
                     params["thinking"] = {
                         "type": "enabled",
                         "budget_tokens": normalized_reasoning_level
@@ -65,7 +71,7 @@ class AnthropicAdapter(LLMAdapterBase):
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
 
-    def _normalize_reasoning_level(self, level: str | int) -> str | None:
+    def _normalize_reasoning_level(self, level: str | int) -> int | None:
         minimum_level = 1024
         normalized_level = None
         if level and not self.is_reasoning:
@@ -87,6 +93,28 @@ class AnthropicAdapter(LLMAdapterBase):
         if normalized_level:
             if normalized_level >= minimum_level:
                 return normalized_level
+            warning_message = (
+                f"Reasoning level '{level}' is below the minimum supported value {minimum_level}; "
+                f"using {minimum_level} instead.")
+            warnings.warn(warning_message, UserWarning)
+            logger.info(warning_message)
             return minimum_level
         raise ValueError("Invalid type for level: expected int or str, "
                          f"got {type(level).__name__!r}")
+    
+    def validate_reasoning_and_tokens(
+        self,
+        max_tokens: int,
+        reasoning_level: int | str,
+        normalized_reasoning_level: int
+    ) -> None:
+        if max_tokens <= normalized_reasoning_level:
+            raise LLMConfigError(
+            detail=(
+                f"Provided max_tokens={max_tokens}, "
+                f"reasoning_level={normalized_reasoning_level} "
+                f"(requested '{reasoning_level}'). "
+                f"Increase max_tokens above {normalized_reasoning_level} "
+                "or reduce reasoning_level."
+            )
+        )
