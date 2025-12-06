@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import logging
 from typing import List, Optional
+import warnings
 
 from ..adapters.base_adapter import LLMAdapterBase
 from ..errors.llm_api_error import LLMAPIError
@@ -58,9 +59,13 @@ class OpenAIAdapter(LLMAdapterBase):
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
 
-    def _normalize_reasoning_level(self, level: str | int | None) -> str:
-        if not self.is_reasoning:
-            raise ValueError(f"Model does not support reasoning.")
+    def _normalize_reasoning_level(self, level: str | int | None) -> str | None:
+        if level and not self.is_reasoning:
+            warning_message = (f"Model '{self.model}' does not support reasoning "
+                               "— reasoning disabled.")
+            warnings.warn(warning_message, UserWarning)
+            logger.info(warning_message)
+            return None
         if self.is_reasoning and level is None:
             return "none"
         if isinstance(level, bool):

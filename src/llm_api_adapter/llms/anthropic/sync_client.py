@@ -60,7 +60,7 @@ class ClaudeSyncClient:
     def _handle_http_error(self, http_err):
         status_code = http_err.response.status_code
         try:
-            error_json = http_err.response.json()
+            error_json = http_err.response.json().get("error")
             error_type = error_json.get("type")
             error_message = error_json.get("message")
         except Exception:
