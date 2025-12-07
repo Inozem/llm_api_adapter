@@ -26,7 +26,7 @@ def test_from_anthropic_response(monkeypatch):
         "usage": {"input_tokens": 30, "output_tokens": 70},
         "model": "claude-2",
         "id": "anthropic123",
-        "content": [{"text": "Hello from Anthropic!"}],
+        "content": [{"type": "text", "text": "Hello from Anthropic!"}],
         "stop_reason": "end"
     }
     monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)

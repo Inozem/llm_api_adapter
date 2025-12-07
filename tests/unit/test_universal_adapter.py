@@ -18,6 +18,9 @@ def test_selects_adapter_and_delegates(monkeypatch):
         def greet(self, name: str) -> str:
             return f"hello {name} from {self.company}"
 
+        def _normalize_reasoning_level(self, reasoning_level):
+            return reasoning_level
+
     monkeypatch.setattr(
         universal_module.LLMAdapterBase,
         "__subclasses__",
@@ -70,6 +73,9 @@ def test_getattr_missing_raises_attribute_error(monkeypatch):
 
         def chat(self, *args, **kwargs):
             return {"response": "ok"}
+        
+        def _normalize_reasoning_level(self, reasoning_level):
+            return reasoning_level
 
     monkeypatch.setattr(
         universal_module.LLMAdapterBase,

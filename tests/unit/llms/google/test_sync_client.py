@@ -57,7 +57,7 @@ def test_send_request_exceptions(
 @pytest.mark.parametrize("status_code,error_status,expected_exception", [
     (401, "UNAUTHENTICATED", LLMAPIAuthorizationError),
     (429, "RESOURCE_EXHAUSTED", LLMAPIRateLimitError),
-    (400, "INVALID_ARGUMENT", LLMAPIAuthorizationError),
+    (400, "PERMISSION_DENIED", LLMAPIAuthorizationError),
     (500, "INTERNAL", LLMAPIServerError),
 ])
 @patch("src.llm_api_adapter.llms.google.sync_client.requests.post")

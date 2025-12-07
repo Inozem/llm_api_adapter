@@ -37,7 +37,7 @@ def anthropic_client_mock():
             "model": "claude-sonnet-4-5",
             "id": "response123",
             "usage": {"input_tokens": 5, "output_tokens": 7},
-            "content": [{"text": "Hello from mocked Anthropic!"}],
+            "content": [{"type": "text", "text": "Hello from mocked Anthropic!"}],
             "stop_reason": "stop"
         })
         yield mock
@@ -114,7 +114,7 @@ def test_anthropic_chat(anthropic_client_mock):
         AIMessage("Sure!"),
         UserMessage("How does AI learn?"),
     ]
-    resp = adapter.chat(messages=messages)
+    resp = adapter.chat(messages=messages, max_tokens=2000)
     assert resp.content == "Hello from mocked Anthropic!"
 
 def test_anthropic_chat_with_raw_dict_messages(anthropic_client_mock):
@@ -129,7 +129,7 @@ def test_anthropic_chat_with_raw_dict_messages(anthropic_client_mock):
         model="claude-sonnet-4-5",
         api_key="dummy_key"
     )
-    resp = adapter.chat(messages=messages)
+    resp = adapter.chat(messages=messages, max_tokens=2000)
     assert resp.content == "Hello from mocked Anthropic!"
 
 def test_google_usage_and_pricing(google_client_mock):
@@ -163,7 +163,7 @@ def test_anthropic_tokens_and_pricing(anthropic_client_mock):
     adapter.pricing.set_currency("USD")
 
     messages = [UserMessage("Hello")]
-    resp = adapter.chat(messages=messages)
+    resp = adapter.chat(messages=messages, max_tokens="2000")
 
     # The mocked Anthropic response provides input_tokens=5 and output_tokens=7
     assert resp.usage.input_tokens == 5

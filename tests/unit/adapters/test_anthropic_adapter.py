@@ -35,7 +35,7 @@ def test_chat_handles_llmapi_error(adapter):
     with patch.object(
         ClaudeSyncClient, method, side_effect=LLMAPIError("API error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.chat(messages)
+        adapter.chat(messages=messages, max_tokens=2000)
         mock_handle_error.assert_called_once()
 
 def test_chat_handles_generic_exception(adapter):
@@ -44,7 +44,7 @@ def test_chat_handles_generic_exception(adapter):
     with patch.object(
         ClaudeSyncClient, method, side_effect=Exception("Generic error")
     ), patch.object(adapter, "handle_error") as mock_handle_error:
-        adapter.chat(messages)
+        adapter.chat(messages=messages, max_tokens=2000)
         mock_handle_error.assert_called_once()
 
 def test_pricing_is_applied_when_present(adapter):
