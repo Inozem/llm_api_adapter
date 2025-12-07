@@ -7,7 +7,7 @@ This lightweight SDK for Python allows you to use LLM APIs from various provider
 
 ### Version
 
-Current version: 0.2.2
+Current version: 0.2.3
 
 
 ## Features
@@ -20,6 +20,7 @@ Current version: 0.2.2
 - **Flexible Configuration**: Manage request parameters like temperature, max tokens, and other settings for fine-tuned control.
 - **Token and Cost Accounting**: Automatic calculation of token usage and cost per request.
 - **Pricing Registry**: Model prices are stored in a unified JSON registry with per-model input/output pricing and currency support.
+- **Unified Reasoning Support**: A single `reasoning_level` parameter that works identically across all providers.
 
 ## Installation
 
@@ -107,6 +108,8 @@ print(response.content)
 
 The SDK provides a set of standardized errors for easier debugging and integration:
 
+### API Errors
+
 - **LLMAPIError**: Base class for all API-related errors. This error is also used for any unexpected LLM API errors.
 
 - **LLMAPIAuthorizationError**: Raised when authentication or authorization fails.
@@ -123,15 +126,21 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 - **LLMAPIUsageLimitError**: Raised when usage limits are exceeded.
 
+### Config Errors
+
+- **LLMConfigError**: Raised when the request configuration is invalid or incompatible.
+
+- **LLMReasoningLevelError**: Raised only for Anthropic models when max_tokens is less than reasoning_level.
+
 ## Configuration and Management
 
 ### Using Different Providers and Models
 
 The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, and Google.
 
-- **OpenAI**: You can use models like `gpt-5-pro`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
+- **OpenAI**: You can use models like `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
 - **Anthropic**: Available models include `claude-sonnet-4-5`, `claude-haiku-4-5`, `claude-opus-4-1`, `claude-opus-4-0`, `claude-sonnet-4-0`, `claude-3-7-sonnet-latest`, `claude-3-5-haiku-latest`, `claude-3-haiku-20240307`.
-- **Google**: Models such as `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`, `gemini-2.0-flash-lite` can be used.
+- **Google**: Models such as `gemini-3-pro-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`, `gemini-2.0-flash-lite` can be used.
 
 Example:
 
@@ -229,6 +238,79 @@ The `ChatResponse` object returned by `chat` includes:
 8. **cost\_total**: Total combined cost.
 9. **content**: The generated text response.
 10. **finish\_reason**: Reason why generation stopped (e.g., `"stop"`, `"length"`).
+
+## Reasoning Support
+
+This section describes the unified `reasoning_level` parameter that works the same way for all supported providers and their models.
+
+```python
+response = adapter.chat(
+    messages=[UserMessage("Solve this step-by-step")],
+    reasoning_level=2048,
+)
+```
+
+### Default behavior
+
+If `reasoning_level` is not passed, reasoning is:
+
+- fully disabled where the provider allows it, or
+- reduced to the minimal supported level if it cannot be turned off.
+
+This keeps behavior consistent when switching providers or models.
+
+### `reasoning_level` parameter
+
+`reasoning_level` is optional and provider‑agnostic.
+
+Supported forms:
+
+- **int** — explicit numeric level
+- **str** — one of: `"none"`, `"low"`, `"medium"`, `"high"`
+
+Internal mapping:
+
+```json
+{
+  "none": 0,
+  "low": 100,
+  "medium": 1000,
+  "high": 10000
+}
+```
+
+String values are automatically converted to numbers, and numeric values can be normalized back to named levels.
+
+### Usage examples
+
+```python
+# Named level
+response = adapter.chat(
+    messages=[UserMessage("Explain this")],
+    reasoning_level="medium",
+)
+
+# Explicit numeric level
+response = adapter.chat(
+    messages=[UserMessage("Solve this step-by-step")],
+    reasoning_level=2048,
+)
+
+# Reasoning disabled (default)
+response = adapter.chat(
+    messages=[UserMessage("Simple answer, no reasoning")],
+)
+```
+
+### Provider independence
+
+`reasoning_level` has the same semantics for all providers:
+
+- same parameter name
+- same string levels
+- same numeric mapping
+
+This allows switching between OpenAI, Anthropic, and Google without changing reasoning configuration in your code.
 
 ## Token Usage and Pricing
 
