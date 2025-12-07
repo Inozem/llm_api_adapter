@@ -27,13 +27,18 @@ class OpenAISyncClient:
         }
 
     def chat_completion(self, model: str, **kwargs):
+        url = f"{self.endpoint}/chat/completions"
+        payload = self._prepare_chat_payload_for_model(model, kwargs)
+        response = self._send_request(url, payload)
+        return response.json()
+
+    def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
         if model.startswith(("gpt-4.1", "gpt-5", "o1")):
             if "max_tokens" in kwargs:
                 kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
-        url = f"{self.endpoint}/chat/completions"
-        payload = {"model": model, **kwargs}
-        response = self._send_request(url, payload)
-        return response.json()
+        if "reasoning_effort" in kwargs and model in ("gpt-5-nano, gpt-5-mini"):
+            kwargs["reasoning_effort"] = "minimal"
+        return {"model": model, **kwargs}
 
     def _send_request(self, url, payload):
         try:

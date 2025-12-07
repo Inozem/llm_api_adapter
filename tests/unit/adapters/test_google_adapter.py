@@ -86,3 +86,53 @@ def test_pricing_is_applied_when_present(adapter):
         currency=adapter.pricing.currency,
     )
     assert result is fake_chat_response
+
+def test_chat_includes_system_instruction_in_payload(adapter):
+    from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
+    messages = [Prompt("system prompt"), UserMessage("hello")]
+    fake_response = {"some": "google response"}
+    with patch.object(GeminiSyncClient, "chat_completion", return_value=fake_response) as mock_client, \
+         patch.object(ChatResponse, "from_google_response", return_value=ChatResponse()):
+        adapter.chat(messages, max_tokens=5)
+    kwargs = mock_client.call_args[1]
+    assert "contents" in kwargs
+    assert "system_instruction" in kwargs
+    assert isinstance(kwargs["system_instruction"], dict)
+
+def test_chat_adds_thinking_config_when_reasoning_level_set(adapter):
+    from src.llm_api_adapter.models.messages.chat_message import UserMessage
+    adapter.is_reasoning = True
+    adapter.reasoning_levels = {"medium": 5}
+    fake_response = {"some": "google response"}
+    with patch.object(GeminiSyncClient, "chat_completion", return_value=fake_response) as mock_client, \
+         patch.object(ChatResponse, "from_google_response", return_value=ChatResponse()):
+        adapter.chat([UserMessage("hi")], reasoning_level="medium")
+    kwargs = mock_client.call_args[1]
+    assert "generationConfig" in kwargs
+    gen_cfg = kwargs["generationConfig"]
+    assert "thinkingConfig" in gen_cfg
+    assert isinstance(gen_cfg["thinkingConfig"], dict)
+    assert gen_cfg["thinkingConfig"]["includeThoughts"] is False
+
+def test_normalize_reasoning_level_bool_raises(adapter):
+    with pytest.raises(ValueError):
+        adapter._normalize_reasoning_level(True)
+
+def test_normalize_reasoning_level_unknown_string_raises(adapter):
+    adapter.is_reasoning = True
+    adapter.reasoning_levels = {"low": 1}
+    with pytest.raises(ValueError):
+        adapter._normalize_reasoning_level("unknown_key")
+
+def test_normalize_reasoning_level_int_clamped_and_returns(adapter):
+    adapter.is_reasoning = True
+    adapter.reasoning_levels = {"low": 1}
+    assert adapter._normalize_reasoning_level(-1) == 0
+    assert adapter._normalize_reasoning_level(3) == 3
+
+def test_normalize_reasoning_level_warns_if_model_not_supporting(adapter):
+    adapter.is_reasoning = False
+    adapter.reasoning_levels = {"medium": 5}
+    with pytest.warns(UserWarning):
+        result = adapter._normalize_reasoning_level("medium")
+    assert result is None

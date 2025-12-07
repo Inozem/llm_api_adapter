@@ -26,6 +26,7 @@ class Pricing:
 class ModelSpec:
     name: str
     pricing: Optional[Pricing] = None
+    is_reasoning: bool = False
 
     @classmethod
     def from_dict(cls, name: str, d: Dict[str, Any]) -> "ModelSpec":
@@ -36,7 +37,8 @@ class ModelSpec:
             pricing = Pricing(in_per_token, out_per_token)
         else:
             pricing = None
-        return cls(name=name, pricing=pricing)
+        is_reasoning = bool(d.get("is_reasoning", False))
+        return cls(name=name, pricing=pricing, is_reasoning=is_reasoning)
 
 
 @dataclass(frozen=True)

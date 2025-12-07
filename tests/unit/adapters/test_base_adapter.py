@@ -18,6 +18,10 @@ class DummyClient:
 
 
 class _TestAdapter(LLMAdapterBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.client = DummyClient()
+
     def chat(self, messages, **kwargs):
         try:
             raw_response = self.client.chat_completion(messages, **kwargs)
@@ -25,8 +29,13 @@ class _TestAdapter(LLMAdapterBase):
                 return ChatResponse(**raw_response)
             except Exception:
                 return raw_response
-        except (LLMAPIError, Exception) as e:
+        except LLMAPIError as e:
             return self.handle_error(e)
+        except Exception as e:
+            return self.handle_error(e)
+    
+    def _normalize_reasoning_level(self, reasoning_level):
+        return reasoning_level
 
 
 @pytest.fixture

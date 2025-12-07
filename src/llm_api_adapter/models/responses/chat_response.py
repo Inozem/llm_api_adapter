@@ -1,5 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Optional
+import warnings
+
+from ...errors.llm_api_error import LLMAPIError
 
 
 @dataclass
@@ -30,12 +33,19 @@ class ChatResponse:
             output_tokens=u.get("completion_tokens", 0),
             total_tokens=u.get("total_tokens", 0),
         )
+        text = api_response["choices"][0]["message"]["content"]
+        if not text or not text.strip():
+            warnings.warn(
+                "OpenAI returned empty content. "
+                "The model may have stopped early due to a low max_tokens value.",
+                UserWarning,
+            )
         return cls(
             model=api_response.get("model"),
             response_id=api_response.get("id"),
             timestamp=api_response.get("created"),
             usage=usage,
-            content=api_response["choices"][0]["message"]["content"],
+            content=text,
             finish_reason=api_response["choices"][0].get("finish_reason"),
         )
 
@@ -47,11 +57,16 @@ class ChatResponse:
             output_tokens=u.get("output_tokens", 0),
             total_tokens=u.get("input_tokens", 0) + u.get("output_tokens", 0),
         )
+        content = api_response.get("content", [])
+        first_text = next(
+            (block.get("text") for block in content if block.get("type") == "text"),
+            None
+        )
         return cls(
             model=api_response.get("model"),
             response_id=api_response.get("id"),
             usage=usage,
-            content=api_response.get("content")[0].get("text"),
+            content=first_text,
             finish_reason=api_response.get("stop_reason"),
         )
 
@@ -65,9 +80,17 @@ class ChatResponse:
             total_tokens=u.get("totalTokenCount", 0),
         )
         first_candidate = api_response["candidates"][0]
+        content = first_candidate.get("content", {})
+        parts = content.get("parts")
+        if not parts or not isinstance(parts, list):
+            raise LLMAPIError(
+                "Google API returned malformed response",
+                detail="content.parts missing — likely max_output_tokens too small"
+            )
+        text = parts[0].get("text")
         return cls(
             usage=usage,
-            content=first_candidate["content"]["parts"][0]["text"],
+            content=text,
             finish_reason=str(first_candidate.get("finishReason")),
         )
 

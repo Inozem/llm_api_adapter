@@ -23,7 +23,7 @@ def test_llmapierror_message_and_detail():
     [
         (LLMAPIAuthorizationError, "Authentication or authorization failed.",
          ["InvalidAuthenticationError", "AuthenticationError"],
-         ["INVALID_ARGUMENT", "PERMISSION_DENIED"],
+         ["PERMISSION_DENIED"],
          ["AuthenticationError", "PermissionError"]),
         (LLMAPIRateLimitError, "Rate limit exceeded.",
          ["RateLimitError"],

@@ -20,7 +20,7 @@ class LLMAPIAuthorizationError(LLMAPIError):
     """Raised when authentication or authorization fails."""
     message: str = "Authentication or authorization failed."
     openai_api_errors = ["InvalidAuthenticationError", "AuthenticationError"]
-    google_api_errors = ["INVALID_ARGUMENT", "PERMISSION_DENIED"]
+    google_api_errors = ["PERMISSION_DENIED"]
     anthropic_api_errors = ["AuthenticationError", "PermissionError"]
 
 

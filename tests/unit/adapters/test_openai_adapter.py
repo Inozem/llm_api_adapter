@@ -86,3 +86,40 @@ def test_pricing_is_applied_when_present(adapter):
         currency=adapter.pricing.currency,
     )
     assert result is fake_chat_response
+
+def test_normalize_reasoning_level_disabled_warns_and_returns_none(adapter):
+    adapter.is_reasoning = False
+    with pytest.warns(UserWarning) as record:
+        res = adapter._normalize_reasoning_level("low")
+    assert res is None
+    assert any("does not support reasoning" in str(w.message) for w in record)
+
+def test_normalize_reasoning_level_enabled_none_returns_none_string(adapter):
+    adapter.is_reasoning = True
+    res = adapter._normalize_reasoning_level(None)
+    assert res == "none"
+
+def test_normalize_reasoning_level_bool_raises(adapter):
+    adapter.is_reasoning = True
+    with pytest.raises(ValueError, match="bool is not accepted"):
+        adapter._normalize_reasoning_level(True)
+
+def test_normalize_reasoning_level_valid_string_key_returns_key(adapter):
+    adapter.is_reasoning = True
+    adapter.reasoning_levels = {"low": 1, "medium": 5, "high": 10}
+    assert adapter._normalize_reasoning_level("medium") == "medium"
+
+def test_normalize_reasoning_level_invalid_string_key_raises(adapter):
+    adapter.is_reasoning = True
+    adapter.reasoning_levels = {"low": 1, "medium": 5}
+    with pytest.raises(ValueError) as exc:
+        adapter._normalize_reasoning_level("unknown")
+    assert "Unknown reasoning level key" in str(exc.value)
+    assert "low" in str(exc.value) and "medium" in str(exc.value)
+
+def test_normalize_reasoning_level_int_maps_to_correct_key(adapter):
+    adapter.is_reasoning = True
+    adapter.reasoning_levels = {"low": 1, "medium": 5, "high": 10}
+    assert adapter._normalize_reasoning_level(0) == "low"
+    assert adapter._normalize_reasoning_level(3) == "medium"
+    assert adapter._normalize_reasoning_level(100) == "high"

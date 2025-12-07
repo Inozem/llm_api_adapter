@@ -25,15 +25,28 @@ class GeminiSyncClient:
         }
 
     def chat_completion(self, model: str, **kwargs):
-        if model.startswith(("gemini-2.5")):
-            gen_cfg = kwargs.get("generationConfig", {})
-            if "maxOutputTokens" in gen_cfg:
-                gen_cfg.pop("maxOutputTokens", None)
-                kwargs["generationConfig"] = gen_cfg
         url = f"{self.endpoint}/models/{model}:generateContent"
-        payload = {"model": model, **kwargs}
+        payload = self._prepare_chat_payload_for_model(model, kwargs)
         response = self._send_request(url, payload)
         return response.json()
+
+    def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
+        gen_cfg = kwargs.get("generationConfig", {})
+        if "maxOutputTokens" in gen_cfg:
+            if model.startswith(("gemini-2.5")):
+                gen_cfg.pop("maxOutputTokens", None)
+                kwargs["generationConfig"] = gen_cfg
+        if "thinkingConfig" in gen_cfg:
+            MIN_THINKING_BUDGET = {
+                "gemini-2.5-flash-lite": 512,
+                "gemini-2.5-pro": 128,
+            }
+            thinking_config = gen_cfg["thinkingConfig"]
+            thinking_budget = thinking_config.get("thinkingBudget")
+            min_budget = MIN_THINKING_BUDGET.get(model)
+            if min_budget is None or thinking_budget < min_budget:
+                thinking_config["thinkingBudget"] = min_budget
+        return {"model": model, **kwargs}
 
     def _send_request(self, url, payload):
         try:
