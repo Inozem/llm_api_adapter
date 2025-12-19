@@ -31,7 +31,7 @@ jobs:
           pip install -r tests/requirements-test.txt
 
       - name: Unit & Integration Tests
-        run: python tests_runner.py
+        run: python tests/tests_runner.py
 
   publish-testpypi:
     name: Publish to TestPyPI (dev)
