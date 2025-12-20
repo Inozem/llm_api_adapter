@@ -35,7 +35,7 @@ class ClaudeSyncClient:
 
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
         if model.startswith(
-            ("claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5")
+            ("claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5", "claude-opus-4-5")
         ):
             kwargs.pop("top_p", None)
         return {"model": model, **kwargs}

@@ -37,7 +37,8 @@ class OpenAISyncClient:
             if "max_tokens" in kwargs:
                 kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
         if "reasoning_effort" in kwargs and model in ("gpt-5-nano, gpt-5-mini"):
-            kwargs["reasoning_effort"] = "minimal"
+            if kwargs["reasoning_effort"] == "none":
+                kwargs["reasoning_effort"] = "minimal"
         return {"model": model, **kwargs}
 
     def _send_request(self, url, payload):
