@@ -7,7 +7,7 @@ This lightweight SDK for Python allows you to use LLM APIs from various provider
 
 ### Version
 
-Current version: 0.2.3
+Current version: 0.2.4
 
 
 ## Features
