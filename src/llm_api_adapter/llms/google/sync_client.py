@@ -24,10 +24,10 @@ class GeminiSyncClient:
             "Content-Type": "application/json"
         }
 
-    def chat_completion(self, model: str, **kwargs):
+    def chat_completion(self, model: str, timeout_s: float | None = None, **kwargs):
         url = f"{self.endpoint}/models/{model}:generateContent"
         payload = self._prepare_chat_payload_for_model(model, kwargs)
-        response = self._send_request(url, payload)
+        response = self._send_request(url, payload, timeout_s)
         return response.json()
 
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
@@ -48,10 +48,10 @@ class GeminiSyncClient:
                 thinking_config["thinkingBudget"] = min_budget
         return {"model": model, **kwargs}
 
-    def _send_request(self, url, payload):
+    def _send_request(self, url: str, payload: dict, timeout_s: float):
         try:
             response = requests.post(
-                url, headers=self._headers(), json=payload, timeout=30
+                url, headers=self._headers(), json=payload,  timeout=timeout_s,
             )
             response.raise_for_status()
         except requests.exceptions.Timeout as e:

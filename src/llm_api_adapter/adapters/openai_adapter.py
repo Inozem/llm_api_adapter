@@ -22,7 +22,8 @@ class OpenAIAdapter(LLMAdapterBase):
         max_tokens: Optional[int] = None,
         temperature: float = 1.0,
         top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None
+        reasoning_level: Optional[str | int] = None,
+        timeout_s: Optional[float] = None
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature", value=temperature, min_value=0, max_value=2
@@ -41,10 +42,10 @@ class OpenAIAdapter(LLMAdapterBase):
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "top_p": top_p,
-                "reasoning_effort": normalized_reasoning_level, 
+                "reasoning_effort": normalized_reasoning_level,
             }
             params = {k: v for k, v in params.items() if v is not None}
-            response = client.chat_completion(**params)
+            response = client.chat_completion(timeout=timeout_s, **params)
             chat_response = ChatResponse.from_openai_response(response)
             if self.pricing:
                 chat_response.apply_pricing(

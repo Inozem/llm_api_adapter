@@ -22,7 +22,8 @@ class GoogleAdapter(LLMAdapterBase):
         max_tokens: Optional[int] = None,
         temperature: float = 1.0,
         top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None
+        reasoning_level: Optional[str | int] = None,
+        timeout_s: Optional[float] = None,
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature", value=temperature, min_value=0, max_value=2
@@ -54,6 +55,7 @@ class GoogleAdapter(LLMAdapterBase):
             client = GeminiSyncClient(self.api_key)
             response_json = client.chat_completion(
                 model=self.model,
+                timeout_s=timeout_s,
                 **payload
             )
             chat_response = ChatResponse.from_google_response(response_json)
