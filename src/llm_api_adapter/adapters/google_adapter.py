@@ -75,7 +75,7 @@ class GoogleAdapter(LLMAdapterBase):
     def _normalize_reasoning_level(self, level: str | int | None) -> str | None:
         minimum_level = 0
         normalized_level = None
-        if level and not self.is_reasoning:
+        if level is not None and not self.is_reasoning:
             warning_message = (f"Model '{self.model}' does not support reasoning "
                                "— reasoning disabled.")
             warnings.warn(warning_message, UserWarning)
@@ -91,7 +91,7 @@ class GoogleAdapter(LLMAdapterBase):
                                  f"Valid keys: {list(self.reasoning_levels.keys())}")
         if isinstance(level, int):
             normalized_level = level
-        if normalized_level:
+        if normalized_level is not None:
             if normalized_level >= minimum_level:
                 return normalized_level
             return minimum_level
