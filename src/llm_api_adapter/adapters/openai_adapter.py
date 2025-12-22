@@ -69,6 +69,8 @@ class OpenAIAdapter(LLMAdapterBase):
             return None
         if self.is_reasoning and level is None:
             return "none"
+        if level is None:
+            return None
         if isinstance(level, bool):
             raise ValueError("Invalid type for level: bool is not accepted")
         if isinstance(level, str):
