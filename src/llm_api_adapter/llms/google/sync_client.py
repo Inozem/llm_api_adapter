@@ -76,15 +76,9 @@ class GeminiSyncClient:
             error_status = ""
             error_message = None
         detail = error_message or str(http_err)
-        error_map = {
-            401: LLMAPIAuthorizationError,
-            429: LLMAPIRateLimitError,
-        }
-        if status_code in error_map:
-            raise error_map[status_code](detail=detail)
-        elif error_status in LLMAPIAuthorizationError.google_api_errors:
+        if self._is_google_auth_error(status_code, error_status, error_message):
             raise LLMAPIAuthorizationError(detail=detail)
-        elif error_status in LLMAPIRateLimitError.google_api_errors:
+        elif status_code == 429 or error_status in LLMAPIRateLimitError.google_api_errors:
             raise LLMAPIRateLimitError(detail=detail)
         elif 400 <= status_code < 500:
             raise LLMAPIClientError(detail=detail)
@@ -95,3 +89,21 @@ class GeminiSyncClient:
             raise LLMAPIServerError(detail=detail)
         else:
             raise LLMAPIClientError(detail=detail)
+
+    def _is_google_auth_error(self, status_code, error_status, error_message: str | None) -> bool:
+        if status_code in (401, 403):
+            return True
+        if error_status in LLMAPIAuthorizationError.google_api_errors:
+            return True
+        if error_message:
+            msg = error_message.lower()
+            return any(
+                k in msg
+                for k in (
+                    "api key not valid",
+                    "api key invalid",
+                    "api key not found",
+                    "invalid api key",
+                )
+            )
+        return False
