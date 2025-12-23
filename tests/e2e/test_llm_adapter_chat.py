@@ -1,4 +1,5 @@
 from math import isclose
+import time
 
 import pytest
 
@@ -8,6 +9,8 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 @pytest.mark.e2e
 def test_chat_accepts_basic_params_and_returns_contract(providers):
     for p in providers:
+        sleep = 3
+        time.sleep(sleep)
         for model in p["models"]:
             adapter = UniversalLLMAPIAdapter(
                 organization=p["name"],
@@ -43,6 +46,8 @@ def test_chat_accepts_basic_params_and_returns_contract(providers):
 @pytest.mark.e2e
 def test_chat_with_reasoning_level_returns_valid_contract(providers):
     for p in providers:
+        sleep = 3
+        time.sleep(sleep)
         for model in p["models"]:
             adapter = UniversalLLMAPIAdapter(
                 organization=p["name"],
