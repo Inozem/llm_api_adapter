@@ -41,7 +41,7 @@ class OpenAISyncClient:
                 kwargs["reasoning_effort"] = "minimal"
         return {"model": model, **kwargs}
 
-    def _send_request(self, url: str, payload: dict, timeout: float):
+    def _send_request(self, url: str, payload: dict, timeout: float | None = None):
         try:
             response = requests.post(
                 url, headers=self._headers(), json=payload, timeout=timeout

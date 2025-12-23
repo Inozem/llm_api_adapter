@@ -48,7 +48,7 @@ class GeminiSyncClient:
                 thinking_config["thinkingBudget"] = min_budget
         return {"model": model, **kwargs}
 
-    def _send_request(self, url: str, payload: dict, timeout_s: float):
+    def _send_request(self, url: str, payload: dict, timeout_s: float | None = None):
         try:
             response = requests.post(
                 url, headers=self._headers(), json=payload,  timeout=timeout_s,
