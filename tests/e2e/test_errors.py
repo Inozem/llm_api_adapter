@@ -38,4 +38,4 @@ def test_chat_timeout_error(providers):
                 temperature=1.0,
             )
             with pytest.raises(LLMAPITimeoutError):
-                adapter.chat(**base_kwargs, **{"timeout_s": 0.001})
+                adapter.chat(**base_kwargs, **{"timeout_s": 0.1})
