@@ -64,8 +64,8 @@ jobs:
           verbose: true
           skip-existing: true
 
-  post-publish-integration:
-    name: Integration tests (post-publish)
+  post-publish-e2e:
+    name: e2e tests (post-publish)
     runs-on: ubuntu-latest
     needs: publish-testpypi
 
