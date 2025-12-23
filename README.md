@@ -8,7 +8,7 @@ This lightweight SDK for Python allows you to use LLM APIs from various provider
 
 ### Version
 
-Current version: 0.2.4
+Current version: 0.2.5
 
 
 ## Features
@@ -22,6 +22,7 @@ Current version: 0.2.4
 - **Token and Cost Accounting**: Automatic calculation of token usage and cost per request.
 - **Pricing Registry**: Model prices are stored in a unified JSON registry with per-model input/output pricing and currency support.
 - **Unified Reasoning Support**: A single `reasoning_level` parameter that works identically across all providers.
+- **Request Timeouts:** Per-request timeout control with a unified `timeout_s` parameter.
 
 ## Installation
 
@@ -240,6 +241,51 @@ The `ChatResponse` object returned by `chat` includes:
 9. **content**: The generated text response.
 10. **finish\_reason**: Reason why generation stopped (e.g., `"stop"`, `"length"`).
 
+## Timeout Support
+
+The SDK supports per-request timeouts for all providers.
+
+### timeout\_s parameter
+
+`timeout_s` defines the maximum time (in seconds) the SDK will wait for an LLM response.
+
+If the timeout is exceeded, the request is aborted and `LLMAPITimeoutError` is raised.
+
+### Example
+
+```python
+chat_params = {
+    "messages": messages,
+    "timeout_s": 2.5
+}
+gpt = UniversalLLMAPIAdapter(
+    organization="openai",
+    model="gpt-5.2",
+    api_key=openai_api_key
+)
+response = gpt.chat(**chat_params)
+```
+
+### Notes
+
+- Timeout is applied uniformly across all providers.
+- The parameter is optional; if omitted, the provider default is used.
+- Timeout affects the full request lifecycle (network + model execution).
+
+### Handling timeout errors
+
+Timeouts raise a dedicated exception that can be handled explicitly:
+
+```python
+from llm_api_adapter.errors.llm_api_error import LLMAPITimeoutError
+
+try:
+    response = gpt.chat(**chat_params)
+except LLMAPITimeoutError:
+    # retry, fallback, or abort
+    print("LLM request timed out")
+```
+
 ## Reasoning Support
 
 This section describes the unified `reasoning_level` parameter that works the same way for all supported providers and their models.
@@ -432,30 +478,35 @@ Use this only in development.
 
 This project uses `pytest` for testing. Tests are located in the `tests/` directory.
 
-To run all tests, use the following command:
+### Test suites
+
+- **unit**: fast, offline, no real provider calls
+- **integration**: adapter-level integration tests (may use mocked/provider-shaped responses)
+- **e2e**: real API calls against providers (requires API keys)
+
+### Running tests
+
+Run everything:
 
 ```bash
 pytest
 ```
 
-Alternatively, you can run the tests using the `tests_runner.py` script:
+Run by marker:
 
 ```bash
-python tests/tests_runner.py
+pytest -m unit
+pytest -m integration
+pytest -m e2e
 ```
 
-### Dependencies
+### E2E requirements
 
-Ensure you have the required dependencies installed. You can install them using:
+E2E tests require provider API keys to be present in environment variables:
 
-```bash
-pip install -r requirements-test.txt
-```
-
-### Test Structure
-
-*   `unit/`: Contains unit tests for individual components.
-*   `integration/`: Contains integration tests to verify the interaction between different parts of the system.
+- `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `GOOGLE_API_KEY`
 
 ## License
 
