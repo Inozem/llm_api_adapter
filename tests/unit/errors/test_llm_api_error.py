@@ -11,6 +11,7 @@ from src.llm_api_adapter.errors.llm_api_error import (
     LLMAPIUsageLimitError,
 )
 
+@pytest.mark.unit
 def test_llmapierror_message_and_detail():
     err = LLMAPIError(message="Error occurred", detail="Detailed info")
     assert str(err) == "Error occurred Detail: Detailed info"
@@ -51,6 +52,7 @@ def test_llmapierror_message_and_detail():
          []),
     ],
 )
+@pytest.mark.unit
 def test_error_subclasses_attributes(
     error_class, default_message, openai_errors, google_errors, anthropic_errors
 ):

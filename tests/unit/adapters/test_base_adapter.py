@@ -57,6 +57,7 @@ def adapter():
     (1.0, 256, -0.1, False),
     (1.0, 256, 1.1, False),
 ])
+@pytest.mark.unit
 def test_parameter_validation(adapter, temperature, max_tokens, top_p, valid):
     if valid:
         temp_result = adapter._validate_parameter(
@@ -73,7 +74,7 @@ def test_parameter_validation(adapter, temperature, max_tokens, top_p, valid):
             with pytest.raises(ValueError):
                 adapter._validate_parameter("top_p", top_p, 0, 1)
 
-
+@pytest.mark.unit
 def test_chat_handles_llmapi_error(adapter):
     messages = [Prompt("system prompt"), UserMessage("hello")]
     with patch.object(
@@ -82,7 +83,7 @@ def test_chat_handles_llmapi_error(adapter):
         adapter.chat(messages)
         mock_handle_error.assert_called_once()
 
-
+@pytest.mark.unit
 def test_chat_handles_generic_exception(adapter):
     messages = [Prompt("system prompt"), UserMessage("hello")]
     with patch.object(
@@ -91,10 +92,12 @@ def test_chat_handles_generic_exception(adapter):
         adapter.chat(messages)
         mock_handle_error.assert_called_once()
 
+@pytest.mark.unit
 def test_init_with_empty_api_key_raises():
     with pytest.raises(ValueError):
         _TestAdapter(company="any", api_key="", model="m1")
 
+@pytest.mark.unit
 def test_unverified_model_warns_and_leaves_pricing_none(monkeypatch):
     monkeypatch.setattr(
         base_module,
@@ -106,6 +109,7 @@ def test_unverified_model_warns_and_leaves_pricing_none(monkeypatch):
         a = _TestAdapter(company="missing", api_key="k", model="unknown-model")
     assert a.pricing is None
 
+@pytest.mark.unit
 def test_pricing_copied_from_registry(monkeypatch):
     base_pricing = {"cost_per_token": 0.001}
     provider = SimpleNamespace(
@@ -121,6 +125,7 @@ def test_pricing_copied_from_registry(monkeypatch):
     assert adapter_instance.pricing == base_pricing
     assert adapter_instance.pricing is not base_pricing
 
+@pytest.mark.unit
 def test_normalize_messages_accepts_list_and_messages(adapter):
     raw_messages = [UserMessage("hi")]
     normalized = adapter._normalize_messages(raw_messages)
@@ -130,10 +135,12 @@ def test_normalize_messages_accepts_list_and_messages(adapter):
     with pytest.raises(TypeError):
         adapter._normalize_messages(123)
 
+@pytest.mark.unit
 def test_generate_chat_answer_emits_deprecation_warning(adapter):
     with pytest.warns(DeprecationWarning):
         adapter.generate_chat_answer(messages=[UserMessage("hi")])
 
+@pytest.mark.unit
 def test_handle_error_reraises_and_logs(adapter, caplog):
     err = Exception("boom")
     with pytest.raises(Exception) as excinfo:

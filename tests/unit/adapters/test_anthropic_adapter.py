@@ -21,6 +21,7 @@ def adapter():
     (2.1, 256, False),
     (0.0, 256, True),
 ])
+@pytest.mark.unit
 def test_temperature_validation(adapter, temperature, width, valid):
     if valid:
         result = adapter._validate_parameter("temperature", temperature, 0, 2)
@@ -29,6 +30,7 @@ def test_temperature_validation(adapter, temperature, width, valid):
         with pytest.raises(ValueError):
             adapter._validate_parameter("temperature", temperature, 0, 2)
 
+@pytest.mark.unit
 def test_chat_handles_llmapi_error(adapter):
     messages = [Prompt("system prompt"), UserMessage("hello")]
     method = "chat_completion"
@@ -38,6 +40,7 @@ def test_chat_handles_llmapi_error(adapter):
         adapter.chat(messages=messages, max_tokens=2000)
         mock_handle_error.assert_called_once()
 
+@pytest.mark.unit
 def test_chat_handles_generic_exception(adapter):
     messages = [Prompt("system prompt"), UserMessage("hello")]
     method = "chat_completion"
@@ -47,6 +50,7 @@ def test_chat_handles_generic_exception(adapter):
         adapter.chat(messages=messages, max_tokens=2000)
         mock_handle_error.assert_called_once()
 
+@pytest.mark.unit
 def test_pricing_is_applied_when_present(adapter):
     adapter.pricing = type("P", (), {
         "in_per_token": 0.001, "out_per_token": 0.002, "currency": "USD"
@@ -74,23 +78,27 @@ def test_pricing_is_applied_when_present(adapter):
             currency=adapter.pricing.currency,
         )
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_int_below_minimum_warns(adapter):
     adapter.is_reasoning = True
     with pytest.warns(UserWarning):
         result = adapter._normalize_reasoning_level(512)
     assert result == 1024
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_bool_raises(adapter):
     adapter.is_reasoning = True
     with pytest.raises(ValueError):
         adapter._normalize_reasoning_level(True)
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_unknown_str_raises(adapter):
     adapter.is_reasoning = True
     adapter.reasoning_levels = {"low": 2048}
     with pytest.raises(ValueError):
         adapter._normalize_reasoning_level("unknown-key")
 
+@pytest.mark.unit
 def test_chat_sets_thinking_when_reasoning_level_provided(adapter):
     adapter.is_reasoning = True
     adapter.reasoning_levels = {"high": 4096}
@@ -105,6 +113,7 @@ def test_chat_sets_thinking_when_reasoning_level_provided(adapter):
         assert kwargs["thinking"]["type"] == "enabled"
         assert kwargs["thinking"]["budget_tokens"] == 4096
 
+@pytest.mark.unit
 def test_validate_reasoning_and_tokens_raises_llmconfigerror(adapter):
     from src.llm_api_adapter.errors.config_errors import LLMConfigError
     with pytest.raises(LLMConfigError):
