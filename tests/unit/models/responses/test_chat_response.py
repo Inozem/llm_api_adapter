@@ -1,5 +1,8 @@
+import pytest
+
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 
+@pytest.mark.unit
 def test_from_openai_response():
     api_response = {
         "model": "gpt-4",
@@ -21,6 +24,7 @@ def test_from_openai_response():
     assert response.content == "Hello from OpenAI!"
     assert response.finish_reason == "stop"
 
+@pytest.mark.unit
 def test_from_anthropic_response(monkeypatch):
     api_response = {
         "usage": {"input_tokens": 30, "output_tokens": 70},
@@ -37,6 +41,7 @@ def test_from_anthropic_response(monkeypatch):
     assert response.content == "Hello from Anthropic!"
     assert response.finish_reason == "end"
 
+@pytest.mark.unit
 def test_from_google_response():
     api_response = {
         "candidates": [

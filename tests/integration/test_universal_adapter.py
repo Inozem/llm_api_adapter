@@ -42,6 +42,7 @@ def anthropic_client_mock():
         })
         yield mock
 
+@pytest.mark.integration
 def test_openai_chat(openai_client_mock):
     messages = [
         Prompt("You are an assistant."),
@@ -57,6 +58,7 @@ def test_openai_chat(openai_client_mock):
     response = adapter.chat(messages=messages)
     assert response.content == "Hello from mocked OpenAI!"
 
+@pytest.mark.integration
 def test_openai_chat_with_raw_dict_messages(openai_client_mock):
     messages = [
         {"role": "system", "content": "You are a friendly assistant who answers only yes or no."},
@@ -72,6 +74,7 @@ def test_openai_chat_with_raw_dict_messages(openai_client_mock):
     resp = adapter.chat(messages=messages)
     assert resp.content == "Hello from mocked OpenAI!"
 
+@pytest.mark.integration
 def test_google_chat(google_client_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="google",
@@ -87,6 +90,7 @@ def test_google_chat(google_client_mock):
     resp = adapter.chat(messages=messages)
     assert resp.content == "Hello from mocked Google!"
 
+@pytest.mark.integration
 def test_google_chat_with_raw_dict_messages(google_client_mock):
     messages = [
         {"role": "system", "content": "You are a friendly assistant who answers only yes or no."},
@@ -102,6 +106,7 @@ def test_google_chat_with_raw_dict_messages(google_client_mock):
     resp = adapter.chat(messages=messages)
     assert resp.content == "Hello from mocked Google!"
 
+@pytest.mark.integration
 def test_anthropic_chat(anthropic_client_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="anthropic",
@@ -117,6 +122,7 @@ def test_anthropic_chat(anthropic_client_mock):
     resp = adapter.chat(messages=messages, max_tokens=2000)
     assert resp.content == "Hello from mocked Anthropic!"
 
+@pytest.mark.integration
 def test_anthropic_chat_with_raw_dict_messages(anthropic_client_mock):
     messages = [
         {"role": "system", "content": "You are a friendly assistant who answers only yes or no."},
@@ -132,6 +138,7 @@ def test_anthropic_chat_with_raw_dict_messages(anthropic_client_mock):
     resp = adapter.chat(messages=messages, max_tokens=2000)
     assert resp.content == "Hello from mocked Anthropic!"
 
+@pytest.mark.integration
 def test_google_usage_and_pricing(google_client_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="google",
@@ -151,6 +158,7 @@ def test_google_usage_and_pricing(google_client_mock):
     assert resp.cost_total == 0
     assert resp.currency == "EUR"
 
+@pytest.mark.integration
 def test_anthropic_tokens_and_pricing(anthropic_client_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="anthropic",

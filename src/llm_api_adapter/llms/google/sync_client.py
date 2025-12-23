@@ -24,10 +24,10 @@ class GeminiSyncClient:
             "Content-Type": "application/json"
         }
 
-    def chat_completion(self, model: str, **kwargs):
+    def chat_completion(self, model: str, timeout_s: float | None = None, **kwargs):
         url = f"{self.endpoint}/models/{model}:generateContent"
         payload = self._prepare_chat_payload_for_model(model, kwargs)
-        response = self._send_request(url, payload)
+        response = self._send_request(url, payload, timeout_s)
         return response.json()
 
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
@@ -48,10 +48,10 @@ class GeminiSyncClient:
                 thinking_config["thinkingBudget"] = min_budget
         return {"model": model, **kwargs}
 
-    def _send_request(self, url, payload):
+    def _send_request(self, url: str, payload: dict, timeout_s: float | None = None):
         try:
             response = requests.post(
-                url, headers=self._headers(), json=payload, timeout=30
+                url, headers=self._headers(), json=payload,  timeout=timeout_s,
             )
             response.raise_for_status()
         except requests.exceptions.Timeout as e:
@@ -76,15 +76,9 @@ class GeminiSyncClient:
             error_status = ""
             error_message = None
         detail = error_message or str(http_err)
-        error_map = {
-            401: LLMAPIAuthorizationError,
-            429: LLMAPIRateLimitError,
-        }
-        if status_code in error_map:
-            raise error_map[status_code](detail=detail)
-        elif error_status in LLMAPIAuthorizationError.google_api_errors:
+        if self._is_google_auth_error(status_code, error_status, error_message):
             raise LLMAPIAuthorizationError(detail=detail)
-        elif error_status in LLMAPIRateLimitError.google_api_errors:
+        elif status_code == 429 or error_status in LLMAPIRateLimitError.google_api_errors:
             raise LLMAPIRateLimitError(detail=detail)
         elif 400 <= status_code < 500:
             raise LLMAPIClientError(detail=detail)
@@ -95,3 +89,21 @@ class GeminiSyncClient:
             raise LLMAPIServerError(detail=detail)
         else:
             raise LLMAPIClientError(detail=detail)
+
+    def _is_google_auth_error(self, status_code, error_status, error_message: str | None) -> bool:
+        if status_code in (401, 403):
+            return True
+        if error_status in LLMAPIAuthorizationError.google_api_errors:
+            return True
+        if error_message:
+            msg = error_message.lower()
+            return any(
+                k in msg
+                for k in (
+                    "api key not valid",
+                    "api key invalid",
+                    "api key not found",
+                    "invalid api key",
+                )
+            )
+        return False

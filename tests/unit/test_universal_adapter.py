@@ -5,6 +5,7 @@ import pytest
 import src.llm_api_adapter.universal_adapter as universal_module
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
+@pytest.mark.unit
 def test_selects_adapter_and_delegates(monkeypatch):
     @dataclass
     class FakeAdapter(universal_module.LLMAdapterBase):
@@ -35,6 +36,7 @@ def test_selects_adapter_and_delegates(monkeypatch):
     assert ua.adapter.api_key == "sk-test"
     assert ua.greet("Alice") == "hello Alice from anthropic"
 
+@pytest.mark.unit
 def test_unsupported_organization_raises(monkeypatch):
     @dataclass
     class OtherAdapter(universal_module.LLMAdapterBase):
@@ -56,6 +58,7 @@ def test_unsupported_organization_raises(monkeypatch):
             organization="UnknownCorp", model="gpt", api_key="k"
         )
 
+@pytest.mark.unit
 def test_invalid_inputs_raise_value_error():
     with pytest.raises(ValueError, match="Invalid organization"):
         UniversalLLMAPIAdapter(organization="", model="m", api_key="k")
@@ -64,6 +67,7 @@ def test_invalid_inputs_raise_value_error():
     with pytest.raises(ValueError, match="Invalid API key"):
         UniversalLLMAPIAdapter(organization="Anthropic", model="m", api_key="")
 
+@pytest.mark.unit
 def test_getattr_missing_raises_attribute_error(monkeypatch):
     @dataclass
     class FakeAdapter(universal_module.LLMAdapterBase):

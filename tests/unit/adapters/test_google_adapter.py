@@ -23,6 +23,7 @@ def adapter():
     (1.0, 256, -0.1, False),
     (1.0, 256, 1.1, False),
 ])
+@pytest.mark.unit
 def test_parameter_validation(adapter, temperature, max_tokens, top_p, valid):
     if valid:
         temp_result = adapter._validate_parameter(
@@ -39,6 +40,7 @@ def test_parameter_validation(adapter, temperature, max_tokens, top_p, valid):
             with pytest.raises(ValueError):
                 adapter._validate_parameter("top_p", top_p, 0, 1)
 
+@pytest.mark.unit
 def test_chat_handles_llmapi_error(adapter):
     messages = [Prompt("system prompt"), UserMessage("hello")]
     method = "chat_completion"
@@ -48,6 +50,7 @@ def test_chat_handles_llmapi_error(adapter):
         adapter.chat(messages)
         mock_handle_error.assert_called_once()
 
+@pytest.mark.unit
 def test_chat_handles_generic_exception(adapter):
     messages = [Prompt("system prompt"), UserMessage("hello")]
     method = "chat_completion"
@@ -57,6 +60,7 @@ def test_chat_handles_generic_exception(adapter):
         adapter.chat(messages)
         mock_handle_error.assert_called_once()
 
+@pytest.mark.unit
 def test_pricing_is_applied_when_present(adapter):
     adapter.pricing = type("P", (), {
         "in_per_token": 0.001, "out_per_token": 0.002, "currency": "USD"
@@ -87,6 +91,7 @@ def test_pricing_is_applied_when_present(adapter):
     )
     assert result is fake_chat_response
 
+@pytest.mark.unit
 def test_chat_includes_system_instruction_in_payload(adapter):
     from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
     messages = [Prompt("system prompt"), UserMessage("hello")]
@@ -99,6 +104,7 @@ def test_chat_includes_system_instruction_in_payload(adapter):
     assert "system_instruction" in kwargs
     assert isinstance(kwargs["system_instruction"], dict)
 
+@pytest.mark.unit
 def test_chat_adds_thinking_config_when_reasoning_level_set(adapter):
     from src.llm_api_adapter.models.messages.chat_message import UserMessage
     adapter.is_reasoning = True
@@ -114,22 +120,26 @@ def test_chat_adds_thinking_config_when_reasoning_level_set(adapter):
     assert isinstance(gen_cfg["thinkingConfig"], dict)
     assert gen_cfg["thinkingConfig"]["includeThoughts"] is False
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_bool_raises(adapter):
     with pytest.raises(ValueError):
         adapter._normalize_reasoning_level(True)
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_unknown_string_raises(adapter):
     adapter.is_reasoning = True
     adapter.reasoning_levels = {"low": 1}
     with pytest.raises(ValueError):
         adapter._normalize_reasoning_level("unknown_key")
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_int_clamped_and_returns(adapter):
     adapter.is_reasoning = True
     adapter.reasoning_levels = {"low": 1}
     assert adapter._normalize_reasoning_level(-1) == 0
     assert adapter._normalize_reasoning_level(3) == 3
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_warns_if_model_not_supporting(adapter):
     adapter.is_reasoning = False
     adapter.reasoning_levels = {"medium": 5}
