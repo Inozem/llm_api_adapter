@@ -76,6 +76,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
+        
+      - name: Wait for TestPyPI
+        run: sleep 30
 
       - name: Install test runner + deps
         run: |
