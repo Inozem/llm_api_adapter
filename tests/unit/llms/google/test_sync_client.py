@@ -29,6 +29,7 @@ def mock_post_success():
     ) as mock_post:
         yield mock_post, mock_response
 
+@pytest.mark.unit
 def test_chat_completion_success(client, mock_post_success):
     mock_post, _ = mock_post_success
     result = client.chat_completion(
@@ -46,6 +47,7 @@ def test_chat_completion_success(client, mock_post_success):
     (requests.exceptions.Timeout("timeout"), LLMAPITimeoutError),
     (requests.exceptions.RequestException("generic error"), LLMAPIClientError),
 ])
+@pytest.mark.unit
 @patch("src.llm_api_adapter.llms.google.sync_client.requests.post")
 def test_send_request_exceptions(
     mock_post, client, exception, expected_exception
@@ -60,6 +62,7 @@ def test_send_request_exceptions(
     (400, "PERMISSION_DENIED", LLMAPIAuthorizationError),
     (500, "INTERNAL", LLMAPIServerError),
 ])
+@pytest.mark.unit
 @patch("src.llm_api_adapter.llms.google.sync_client.requests.post")
 def test_send_request_http_errors(
     mock_post, client, status_code, error_status, expected_exception
@@ -74,6 +77,7 @@ def test_send_request_http_errors(
     with pytest.raises(expected_exception):
         client._send_request("http://example.com", {})
 
+@pytest.mark.unit
 @patch("src.llm_api_adapter.llms.google.sync_client.requests.post")
 def test_send_request_fallback_error_parsing(mock_post, client):
     mock_response = Mock()

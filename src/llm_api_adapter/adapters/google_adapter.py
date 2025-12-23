@@ -22,7 +22,8 @@ class GoogleAdapter(LLMAdapterBase):
         max_tokens: Optional[int] = None,
         temperature: float = 1.0,
         top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None
+        reasoning_level: Optional[str | int] = None,
+        timeout_s: Optional[float] = None,
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature", value=temperature, min_value=0, max_value=2
@@ -54,6 +55,7 @@ class GoogleAdapter(LLMAdapterBase):
             client = GeminiSyncClient(self.api_key)
             response_json = client.chat_completion(
                 model=self.model,
+                timeout_s=timeout_s,
                 **payload
             )
             chat_response = ChatResponse.from_google_response(response_json)
@@ -73,7 +75,7 @@ class GoogleAdapter(LLMAdapterBase):
     def _normalize_reasoning_level(self, level: str | int | None) -> str | None:
         minimum_level = 0
         normalized_level = None
-        if level and not self.is_reasoning:
+        if level is not None and not self.is_reasoning:
             warning_message = (f"Model '{self.model}' does not support reasoning "
                                "— reasoning disabled.")
             warnings.warn(warning_message, UserWarning)
@@ -89,7 +91,7 @@ class GoogleAdapter(LLMAdapterBase):
                                  f"Valid keys: {list(self.reasoning_levels.keys())}")
         if isinstance(level, int):
             normalized_level = level
-        if normalized_level:
+        if normalized_level is not None:
             if normalized_level >= minimum_level:
                 return normalized_level
             return minimum_level

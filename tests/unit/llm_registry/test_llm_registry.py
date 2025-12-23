@@ -7,6 +7,7 @@ from src.llm_api_adapter.llm_registry.llm_registry import (
     DEFAULT_REGISTRY_PATH, ModelSpec, Pricing, ProviderSpec, RegistrySpec
 )
 
+@pytest.mark.unit
 def test_pricing_setters():
     p = Pricing(in_per_token=0.0, out_per_token=0.0)
     p.set_in_per_1m(1500.0)
@@ -16,6 +17,7 @@ def test_pricing_setters():
     assert pytest.approx(p.out_per_token, rel=1e-9) == 2500.0 / 1_000_000
     assert p.currency == "EUR"
 
+@pytest.mark.unit
 def test_model_and_provider_from_dict():
     model_data = {"pricing": {"in_per_1m": 1000, "out_per_1m": 2000}}
     model = ModelSpec.from_dict("gpt-test", model_data)
@@ -28,6 +30,7 @@ def test_model_and_provider_from_dict():
     assert "gpt-test" in provider.models
     assert isinstance(provider.models["gpt-test"], ModelSpec)
 
+@pytest.mark.unit
 def test_registry_reads_json_and_module_loads_llm_registry(tmp_path):
     content = {
         "schema_version": 42,
@@ -57,6 +60,7 @@ def test_registry_reads_json_and_module_loads_llm_registry(tmp_path):
     assert pytest.approx(model.pricing.in_per_token, rel=1e-9) == 1234 / 1_000_000
     assert pytest.approx(model.pricing.out_per_token, rel=1e-9) == 5678 / 1_000_000
 
+@pytest.mark.unit
 def test_default_registry_json_exists():
     assert isinstance(DEFAULT_REGISTRY_PATH, Path)
     assert DEFAULT_REGISTRY_PATH.exists(), f"Expected JSON at {DEFAULT_REGISTRY_PATH}"

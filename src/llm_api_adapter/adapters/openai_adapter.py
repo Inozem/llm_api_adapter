@@ -22,7 +22,8 @@ class OpenAIAdapter(LLMAdapterBase):
         max_tokens: Optional[int] = None,
         temperature: float = 1.0,
         top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None
+        reasoning_level: Optional[str | int] = None,
+        timeout_s: Optional[float] = None
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature", value=temperature, min_value=0, max_value=2
@@ -41,10 +42,10 @@ class OpenAIAdapter(LLMAdapterBase):
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "top_p": top_p,
-                "reasoning_effort": normalized_reasoning_level, 
+                "reasoning_effort": normalized_reasoning_level,
             }
             params = {k: v for k, v in params.items() if v is not None}
-            response = client.chat_completion(**params)
+            response = client.chat_completion(timeout=timeout_s, **params)
             chat_response = ChatResponse.from_openai_response(response)
             if self.pricing:
                 chat_response.apply_pricing(
@@ -60,25 +61,30 @@ class OpenAIAdapter(LLMAdapterBase):
             self.handle_error(error=e, error_message=error_message)
 
     def _normalize_reasoning_level(self, level: str | int | None) -> str | None:
-        if level and not self.is_reasoning:
-            warning_message = (f"Model '{self.model}' does not support reasoning "
-                               "— reasoning disabled.")
+        if level is None:
+            return "none" if self.is_reasoning else None
+        if not self.is_reasoning and level not in ("none", 0):
+            warning_message = (
+                f"Model '{self.model}' does not support reasoning — reasoning disabled."
+            )
             warnings.warn(warning_message, UserWarning)
             logger.info(warning_message)
             return None
-        if self.is_reasoning and level is None:
-            return "none"
         if isinstance(level, bool):
             raise ValueError("Invalid type for level: bool is not accepted")
         if isinstance(level, str):
             if level in self.reasoning_levels:
                 return level
-            raise ValueError(f"Unknown reasoning level key: {level!r}. "
-                            f"Valid keys: {list(self.reasoning_levels.keys())}")
+            raise ValueError(
+                f"Unknown reasoning level key: {level!r}. "
+                f"Valid keys: {list(self.reasoning_levels.keys())}"
+            )
         if isinstance(level, int):
             for key, val in self.reasoning_levels.items():
                 if level <= val:
                     return key
             return list(self.reasoning_levels.keys())[-1]
-        raise ValueError("Invalid type for level: expected int or str, "
-                         f"got {type(level).__name__!r}")
+        raise ValueError(
+            "Invalid type for level: expected int or str, "
+            f"got {type(level).__name__!r}"
+        )

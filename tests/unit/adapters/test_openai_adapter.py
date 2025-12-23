@@ -23,6 +23,7 @@ def adapter():
     (1.0, 256, -0.1, False),
     (1.0, 256, 1.1, False),
 ])
+@pytest.mark.unit
 def test_parameter_validation(adapter, temperature, max_tokens, top_p, valid):
     if valid:
         temp_result = adapter._validate_parameter(
@@ -39,6 +40,7 @@ def test_parameter_validation(adapter, temperature, max_tokens, top_p, valid):
             with pytest.raises(ValueError):
                 adapter._validate_parameter("top_p", top_p, 0, 1)
 
+@pytest.mark.unit
 def test_chat_handles_llmapi_error(adapter):
     messages = [Prompt("system prompt"), UserMessage("hello")]
     method = "chat_completion"
@@ -48,6 +50,7 @@ def test_chat_handles_llmapi_error(adapter):
         adapter.chat(messages)
         mock_handle_error.assert_called_once()
 
+@pytest.mark.unit
 def test_chat_handles_generic_exception(adapter):
     messages = [Prompt("system prompt"), UserMessage("hello")]
     method = "chat_completion"
@@ -57,6 +60,7 @@ def test_chat_handles_generic_exception(adapter):
         adapter.chat(messages)
         mock_handle_error.assert_called_once()
 
+@pytest.mark.unit
 def test_pricing_is_applied_when_present(adapter):
     adapter.pricing = type("P", (), {
         "in_per_token": 0.001, "out_per_token": 0.002, "currency": "USD"
@@ -87,6 +91,7 @@ def test_pricing_is_applied_when_present(adapter):
     )
     assert result is fake_chat_response
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_disabled_warns_and_returns_none(adapter):
     adapter.is_reasoning = False
     with pytest.warns(UserWarning) as record:
@@ -94,21 +99,25 @@ def test_normalize_reasoning_level_disabled_warns_and_returns_none(adapter):
     assert res is None
     assert any("does not support reasoning" in str(w.message) for w in record)
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_enabled_none_returns_none_string(adapter):
     adapter.is_reasoning = True
     res = adapter._normalize_reasoning_level(None)
     assert res == "none"
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_bool_raises(adapter):
     adapter.is_reasoning = True
     with pytest.raises(ValueError, match="bool is not accepted"):
         adapter._normalize_reasoning_level(True)
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_valid_string_key_returns_key(adapter):
     adapter.is_reasoning = True
     adapter.reasoning_levels = {"low": 1, "medium": 5, "high": 10}
     assert adapter._normalize_reasoning_level("medium") == "medium"
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_invalid_string_key_raises(adapter):
     adapter.is_reasoning = True
     adapter.reasoning_levels = {"low": 1, "medium": 5}
@@ -117,6 +126,7 @@ def test_normalize_reasoning_level_invalid_string_key_raises(adapter):
     assert "Unknown reasoning level key" in str(exc.value)
     assert "low" in str(exc.value) and "medium" in str(exc.value)
 
+@pytest.mark.unit
 def test_normalize_reasoning_level_int_maps_to_correct_key(adapter):
     adapter.is_reasoning = True
     adapter.reasoning_levels = {"low": 1, "medium": 5, "high": 10}

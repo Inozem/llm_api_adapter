@@ -5,12 +5,14 @@ from src.llm_api_adapter.models.messages.chat_message import (
     Message, Prompt, UserMessage, AIMessage, Messages
 )
 
+@pytest.mark.unit
 def test_prompt_to_anthropic_and_google_and_openai():
     p = Prompt(content="system instructions")
     assert p.to_anthropic() == "system instructions"
     assert p.to_google() == "system instructions"
     assert p.to_openai() == {"role": "system", "content": "system instructions"}
 
+@pytest.mark.unit
 def test_user_and_ai_to_google_and_openai():
     u = UserMessage(content="hello user")
     a = AIMessage(content="hello ai")
@@ -19,6 +21,7 @@ def test_user_and_ai_to_google_and_openai():
     assert u.to_openai() == {"role": "user", "content": "hello user"}
     assert a.to_openai() == {"role": "assistant", "content": "hello ai"}
 
+@pytest.mark.unit
 def test_messages_to_anthropic_with_prompt_and_messages():
     items = [Prompt(content="sys"), UserMessage(content="u1"), AIMessage(content="a1")]
     msgs = Messages(items=items)
@@ -29,6 +32,7 @@ def test_messages_to_anthropic_with_prompt_and_messages():
         {"role": "assistant", "content": "a1"},
     ]
 
+@pytest.mark.unit
 def test_messages_to_google_with_prompt_and_messages():
     items = [Prompt(content="sysg"), UserMessage(content="ug"), AIMessage(content="ag")]
     msgs = Messages(items=items)
@@ -39,6 +43,7 @@ def test_messages_to_google_with_prompt_and_messages():
         {"role": "model", "parts": [{"text": "ag"}]},
     ]
 
+@pytest.mark.unit
 def test_messages_to_anthropic_and_google_multiple_prompts_raise():
     items = [Prompt(content="p1"), Prompt(content="p2")]
     msgs = Messages(items=items)
@@ -49,6 +54,7 @@ def test_messages_to_anthropic_and_google_multiple_prompts_raise():
         msgs.to_google()
     assert "Multiple system prompts are not allowed for Google." in str(excinfo_gg.value)
 
+@pytest.mark.unit
 def test_messages_to_openai_returns_list_of_dicts():
     items = [UserMessage(content="u"), AIMessage(content="a")]
     msgs = Messages(items=items)
@@ -58,16 +64,19 @@ def test_messages_to_openai_returns_list_of_dicts():
         {"role": "assistant", "content": "a"},
     ]
 
+@pytest.mark.unit
 def test_messages_post_init_dict_missing_role_raises():
     with pytest.raises(ValueError) as excinfo:
         Messages(items=[{"content": "no role"}])
     assert "Missing 'role' in message data" in str(excinfo.value)
 
+@pytest.mark.unit
 def test_messages_post_init_dict_missing_content_raises():
     with pytest.raises(ValueError) as excinfo:
         Messages(items=[{"role": "user"}])
     assert "Missing 'content' in message data" in str(excinfo.value)
 
+@pytest.mark.unit
 def test_messages_post_init_dict_unsupported_role_raises():
     with pytest.raises(ValueError) as excinfo:
         Messages(items=[{"role": "unknown", "content": "x"}])

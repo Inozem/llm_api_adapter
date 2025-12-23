@@ -26,10 +26,10 @@ class OpenAISyncClient:
             "Content-Type": "application/json"
         }
 
-    def chat_completion(self, model: str, **kwargs):
+    def chat_completion(self, model: str, timeout: float | None = None, **kwargs):
         url = f"{self.endpoint}/chat/completions"
         payload = self._prepare_chat_payload_for_model(model, kwargs)
-        response = self._send_request(url, payload)
+        response = self._send_request(url, payload, timeout)
         return response.json()
 
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
@@ -41,10 +41,10 @@ class OpenAISyncClient:
                 kwargs["reasoning_effort"] = "minimal"
         return {"model": model, **kwargs}
 
-    def _send_request(self, url, payload):
+    def _send_request(self, url: str, payload: dict, timeout: float | None = None):
         try:
             response = requests.post(
-                url, headers=self._headers(), json=payload
+                url, headers=self._headers(), json=payload, timeout=timeout
             )
             response.raise_for_status()
         except requests.exceptions.Timeout as e:
