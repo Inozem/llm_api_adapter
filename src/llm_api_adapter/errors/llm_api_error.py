@@ -80,3 +80,21 @@ class LLMAPIUsageLimitError(LLMAPIError):
     openai_api_errors = ["UsageLimitError", "QuotaExceededError"]
     google_api_errors = []
     anthropic_api_errors = []
+
+
+@dataclass
+class InvalidToolSchemaError(LLMAPIClientError):
+    """Raised when a provided tool schema is invalid."""
+    message: str = "Invalid tool schema."
+
+
+@dataclass
+class InvalidToolArgumentsError(LLMAPIClientError):
+    """Raised when tool arguments cannot be parsed or validated."""
+    message: str = "Invalid tool arguments."
+
+
+@dataclass
+class ToolChoiceError(LLMAPIClientError):
+    """Raised when tool_choice is invalid or references unknown tool."""
+    message: str = "Invalid tool_choice configuration."
