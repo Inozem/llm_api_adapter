@@ -1,8 +1,9 @@
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
+from typing import List, Optional
 import warnings
 
 from ...errors.llm_api_error import LLMAPIError
+from ...models.tools import ToolCall
 
 
 @dataclass
@@ -22,7 +23,8 @@ class ChatResponse:
     cost_input: Optional[float] = None
     cost_output: Optional[float] = None
     cost_total: Optional[float] = None
-    content: str = field(default_factory=str)
+    content: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
     finish_reason: Optional[str] = None
 
     @classmethod
