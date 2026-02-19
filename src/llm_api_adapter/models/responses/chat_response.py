@@ -105,22 +105,42 @@ class ChatResponse:
 
     @classmethod
     def from_anthropic_response(cls, api_response: dict) -> "ChatResponse":
-        u = api_response.get("usage", {})
+        u = api_response.get("usage", {}) or {}
         usage = Usage(
             input_tokens=u.get("input_tokens", 0),
             output_tokens=u.get("output_tokens", 0),
             total_tokens=u.get("input_tokens", 0) + u.get("output_tokens", 0),
         )
-        content = api_response.get("content", [])
-        first_text = next(
-            (block.get("text") for block in content if block.get("type") == "text"),
-            None
-        )
+        blocks = api_response.get("content", []) or []
+        parsed_tool_calls: Optional[List[ToolCall]] = None
+        text_content: Optional[str] = None
+        for block in blocks:
+            block_type = block.get("type")
+            if block_type == "text" and text_content is None:
+                text_content = block.get("text")
+            elif block_type == "tool_use":
+                if parsed_tool_calls is None:
+                    parsed_tool_calls = []
+                name = block.get("name")
+                arguments = block.get("input")
+                if not isinstance(arguments, dict):
+                    from ...errors.llm_api_error import InvalidToolArgumentsError
+                    raise InvalidToolArgumentsError(
+                        detail=f"Anthropic tool input must be dict for tool={name!r}"
+                    )
+                parsed_tool_calls.append(
+                    ToolCall(
+                        name=name,
+                        arguments=arguments,
+                        call_id=block.get("id"),
+                    )
+                )
         return cls(
             model=api_response.get("model"),
             response_id=api_response.get("id"),
             usage=usage,
-            content=first_text,
+            content=text_content,
+            tool_calls=parsed_tool_calls,
             finish_reason=api_response.get("stop_reason"),
         )
 
