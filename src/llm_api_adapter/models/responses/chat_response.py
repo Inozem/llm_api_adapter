@@ -1,8 +1,9 @@
 from dataclasses import dataclass
+import json
 from typing import List, Optional
 import warnings
 
-from ...errors.llm_api_error import LLMAPIError
+from ...errors.llm_api_error import InvalidToolArgumentsError, LLMAPIError
 from ...models.tools import ToolCall
 
 
@@ -29,26 +30,77 @@ class ChatResponse:
 
     @classmethod
     def from_openai_response(cls, api_response: dict) -> "ChatResponse":
-        u = api_response.get("usage", {})
+        u = api_response.get("usage", {}) or {}
         usage = Usage(
             input_tokens=u.get("prompt_tokens", 0),
             output_tokens=u.get("completion_tokens", 0),
             total_tokens=u.get("total_tokens", 0),
         )
-        text = api_response["choices"][0]["message"]["content"]
-        if not text or not text.strip():
-            warnings.warn(
-                "OpenAI returned empty content. "
-                "The model may have stopped early due to a low max_tokens value.",
-                UserWarning,
-            )
+        choice0 = (api_response.get("choices") or [None])[0] or {}
+        message = choice0.get("message") or {}
+        text = message.get("content")
+        parsed_tool_calls: Optional[List[ToolCall]] = None
+        raw_tool_calls = message.get("tool_calls")
+        if isinstance(raw_tool_calls, list) and raw_tool_calls:
+            parsed_tool_calls = []
+            for tc in raw_tool_calls:
+                tc = tc or {}
+                fn = tc.get("function") or {}
+                name = fn.get("name")
+                raw_args = fn.get("arguments", "{}")
+                try:
+                    if isinstance(raw_args, str):
+                        arguments = json.loads(raw_args) if raw_args.strip() else {}
+                    elif isinstance(raw_args, dict):
+                        arguments = raw_args
+                    else:
+                        arguments = {}
+                except Exception as e:
+                    raise InvalidToolArgumentsError(
+                        detail=f"OpenAI tool arguments JSON parse failed for tool={name!r}: {e}"
+                    )
+                parsed_tool_calls.append(
+                    ToolCall(
+                        name=name,
+                        arguments=arguments,
+                        call_id=tc.get("id"),
+                    )
+                )
+
+        # Legacy function_call (older format)
+        legacy_fc = message.get("function_call")
+        if (not parsed_tool_calls) and isinstance(legacy_fc, dict) and legacy_fc:
+            name = legacy_fc.get("name")
+            raw_args = legacy_fc.get("arguments", "{}")
+            try:
+                if isinstance(raw_args, str):
+                    arguments = json.loads(raw_args) if raw_args.strip() else {}
+                elif isinstance(raw_args, dict):
+                    arguments = raw_args
+                else:
+                    arguments = {}
+            except Exception as e:
+                raise InvalidToolArgumentsError(
+                    detail=f"OpenAI function_call arguments JSON parse failed for tool={name!r}: {e}"
+                )
+            parsed_tool_calls = [ToolCall(name=name, arguments=arguments, call_id=None)]
+
+        if not parsed_tool_calls:
+            if not text or not str(text).strip():
+                warnings.warn(
+                    "OpenAI returned empty content. "
+                    "The model may have stopped early due to a low max_tokens value.",
+                    UserWarning,
+                )
+
         return cls(
             model=api_response.get("model"),
             response_id=api_response.get("id"),
             timestamp=api_response.get("created"),
             usage=usage,
             content=text,
-            finish_reason=api_response["choices"][0].get("finish_reason"),
+            tool_calls=parsed_tool_calls,
+            finish_reason=choice0.get("finish_reason"),
         )
 
     @classmethod
