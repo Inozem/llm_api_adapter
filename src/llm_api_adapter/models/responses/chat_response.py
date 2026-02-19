@@ -124,7 +124,6 @@ class ChatResponse:
                 name = block.get("name")
                 arguments = block.get("input")
                 if not isinstance(arguments, dict):
-                    from ...errors.llm_api_error import InvalidToolArgumentsError
                     raise InvalidToolArgumentsError(
                         detail=f"Anthropic tool input must be dict for tool={name!r}"
                     )
@@ -146,26 +145,58 @@ class ChatResponse:
 
     @classmethod
     def from_google_response(cls, api_response: dict) -> "ChatResponse":
-        u = api_response.get("usageMetadata", {})
+        u = api_response.get("usageMetadata", {}) or {}
         thoughts_tokens = u.get("thoughtsTokenCount", 0)
         usage = Usage(
             input_tokens=u.get("promptTokenCount", 0),
             output_tokens=u.get("candidatesTokenCount", 0) + thoughts_tokens,
             total_tokens=u.get("totalTokenCount", 0),
         )
-        first_candidate = api_response["candidates"][0]
-        content = first_candidate.get("content", {})
-        parts = content.get("parts")
-        if not parts or not isinstance(parts, list):
+        first_candidate = (api_response.get("candidates") or [None])[0] or {}
+        finish_reason = first_candidate.get("finishReason")
+        finish_reason_str = str(finish_reason) if finish_reason is not None else None
+        content_obj = first_candidate.get("content") or {}
+        parts = content_obj.get("parts") or []
+        if not isinstance(parts, list):
             raise LLMAPIError(
                 "Google API returned malformed response",
-                detail="content.parts missing — likely max_output_tokens too small"
+                detail="content.parts is not a list"
             )
-        text = parts[0].get("text")
+        parsed_tool_calls: Optional[List[ToolCall]] = None
+        text_content: Optional[str] = None
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if text_content is None and "text" in part:
+                text_content = part.get("text")
+            fc = part.get("functionCall") or part.get("function_call")
+            if isinstance(fc, dict) and fc:
+                if parsed_tool_calls is None:
+                    parsed_tool_calls = []
+                name = fc.get("name")
+                args = (
+                    fc.get("args")
+                    if "args" in fc
+                    else fc.get("arguments", {})
+                )
+                if args is None:
+                    args = {}
+                if not isinstance(args, dict):
+                    raise InvalidToolArgumentsError(
+                        detail=f"Google functionCall args must be dict for tool={name!r}"
+                    )
+                parsed_tool_calls.append(
+                    ToolCall(
+                        name=name,
+                        arguments=args,
+                        call_id=None,
+                    )
+                )
         return cls(
             usage=usage,
-            content=text,
-            finish_reason=str(first_candidate.get("finishReason")),
+            content=text_content,
+            tool_calls=parsed_tool_calls,
+            finish_reason=finish_reason_str,
         )
 
     def apply_pricing(
