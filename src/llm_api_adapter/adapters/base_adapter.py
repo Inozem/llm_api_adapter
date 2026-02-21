@@ -132,33 +132,38 @@ class LLMAdapterBase(ABC):
         tool_choice: Any,
         tools: Optional[List[ToolSpec]],
     ) -> Any:
-        """
-        Validation + minimal normalization.
-        Returns tool_choice as-is (adapter will map to provider payload later).
-        """
         if tool_choice is None:
             return None
         if isinstance(tool_choice, str):
-            if tool_choice in ("auto", "none", "required"):
+            if tool_choice in ("auto", "none"):
                 return tool_choice
-            if tools and any(t.name == tool_choice for t in tools):
+            if tool_choice in ("required", "any"):
+                if not tools:
+                    raise ToolChoiceError(
+                        detail=f"tool_choice={tool_choice!r} requires tools to be provided"
+                    )
+                return tool_choice
+            if not tools:
+                raise ToolChoiceError(detail="tool_choice references a tool but tools=None")
+            if any(t.name == tool_choice for t in tools):
                 return tool_choice
             raise ToolChoiceError(detail=f"Unknown tool_choice string: {tool_choice!r}")
         if isinstance(tool_choice, dict):
-            name = tool_choice.get("name")
-            if isinstance(name, str):
+            tc_type = tool_choice.get("type")
+            tc_name = tool_choice.get("name")
+            if tc_type in ("required", "any") and not tools:
+                raise ToolChoiceError(
+                    detail=f"tool_choice.type={tc_type!r} requires tools to be provided"
+                )
+            if isinstance(tc_name, str):
                 if not tools:
+                    raise ToolChoiceError(detail="tool_choice references a tool but tools=None")
+                if not any(t.name == tc_name for t in tools):
                     raise ToolChoiceError(
-                        detail="tool_choice references a tool but tools=None"
-                    )
-                if not any(t.name == name for t in tools):
-                    raise ToolChoiceError(
-                        detail=f"tool_choice references unknown tool: {name!r}"
+                        detail=f"tool_choice references unknown tool: {tc_name!r}"
                     )
             return tool_choice
-        raise ToolChoiceError(
-            detail=f"Invalid tool_choice type: {type(tool_choice).__name__}"
-        )
+        raise ToolChoiceError(detail=f"Invalid tool_choice type: {type(tool_choice).__name__}")
 
     def handle_error(self, error: Exception, error_message: Optional[str] = None):
         err_msg = (

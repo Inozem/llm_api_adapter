@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 from ..tools import ToolCall
 
@@ -42,7 +42,9 @@ class UserMessage(Message):
 class AIMessage(Message):
     """
     Assistant message.
-    For OpenAI tool loop, it may carry tool_calls (assistant turn that requested tools).
+
+    - OpenAI tool loop: may include tool_calls (assistant turn that requested tools).
+    - Anthropic tool loop: may include tool_calls -> rendered as content blocks type="tool_use".
     """
     role: str = field(default="assistant", init=False)
     tool_calls: Optional[List[ToolCall]] = None
@@ -63,6 +65,27 @@ class AIMessage(Message):
             ]
         return msg
 
+    def to_anthropic(self) -> Dict[str, Any]:
+        if not self.tool_calls:
+            return {"role": "assistant", "content": self.content}
+        blocks: List[Dict[str, Any]] = []
+        if self.content:
+            blocks.append({"type": "text", "text": self.content})
+        for tc in self.tool_calls:
+            if not tc.call_id:
+                raise ValueError(
+                    "Anthropic tool_use requires a non-empty call_id (tool_use id)."
+                )
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": tc.call_id,
+                    "name": tc.name,
+                    "input": tc.arguments or {},
+                }
+            )
+        return {"role": "assistant", "content": blocks}
+
     def to_google(self) -> Dict[str, Any]:
         # Google expects role "model"
         return {"role": "model", "parts": [{"text": self.content}]}
@@ -71,14 +94,30 @@ class AIMessage(Message):
 @dataclass
 class ToolMessage(Message):
     """
-    Tool result message (OpenAI format).
-    Must reference preceding assistant tool call via tool_call_id.
+    Tool result message.
+
+    - OpenAI format: role="tool" + tool_call_id
+    - Anthropic format: rendered as a USER message with a tool_result content block referencing tool_use_id
     """
     tool_call_id: str
     role: str = field(default="tool", init=False)
 
     def to_openai(self) -> Dict[str, Any]:
         return {"role": "tool", "tool_call_id": self.tool_call_id, "content": self.content}
+
+    def to_anthropic(self) -> Dict[str, Any]:
+        if not self.tool_call_id:
+            raise ValueError("Anthropic tool_result requires tool_call_id (tool_use_id).")
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": self.tool_call_id,
+                    "content": self.content,
+                }
+            ],
+        }
 
 
 @dataclass
@@ -167,7 +206,11 @@ class Messages:
                 prompt = m.to_anthropic()
                 continue
             if isinstance(m, ToolMessage):
-                raise ValueError("ToolMessage is not supported for Anthropic in this version.")
+                messages.append(m.to_anthropic())
+                continue
+            if isinstance(m, AIMessage):
+                messages.append(m.to_anthropic())
+                continue
             messages.append(m.to_anthropic())
         return prompt, messages
 
