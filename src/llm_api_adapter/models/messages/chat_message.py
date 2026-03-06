@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 from ..tools import ToolCall
 
@@ -17,6 +17,9 @@ class Message:
 
     def to_anthropic(self) -> Dict[str, Any]:
         return {"role": self.role, "content": self.content}
+
+    def to_google(self) -> Dict[str, Any]:
+        return {"role": self.role, "parts": [{"text": self.content}]}
 
 
 @dataclass
@@ -35,7 +38,7 @@ class UserMessage(Message):
     role: str = field(default="user", init=False)
 
     def to_google(self) -> Dict[str, Any]:
-        return {"role": self.role, "parts": [{"text": self.content}]}
+        return {"role": "user", "parts": [{"text": self.content}]}
 
 
 @dataclass
@@ -44,7 +47,8 @@ class AIMessage(Message):
     Assistant message.
 
     - OpenAI tool loop: may include tool_calls (assistant turn that requested tools).
-    - Anthropic tool loop: may include tool_calls -> rendered as content blocks type="tool_use".
+    - Anthropic tool loop: tool_calls -> content blocks type="tool_use".
+    - Google tool loop: tool_calls -> parts[].functionCall.
     """
     role: str = field(default="assistant", init=False)
     tool_calls: Optional[List[ToolCall]] = None
@@ -87,8 +91,22 @@ class AIMessage(Message):
         return {"role": "assistant", "content": blocks}
 
     def to_google(self) -> Dict[str, Any]:
-        # Google expects role "model"
-        return {"role": "model", "parts": [{"text": self.content}]}
+        parts: List[Dict[str, Any]] = []
+        if self.content:
+            parts.append({"text": self.content})
+        if self.tool_calls:
+            for tc in self.tool_calls:
+                parts.append(
+                    {
+                        "functionCall": {
+                            "name": tc.name,
+                            "args": tc.arguments or {},
+                        }
+                    }
+                )
+        if not parts:
+            parts = [{"text": ""}]
+        return {"role": "model", "parts": parts}
 
 
 @dataclass
@@ -97,7 +115,9 @@ class ToolMessage(Message):
     Tool result message.
 
     - OpenAI format: role="tool" + tool_call_id
-    - Anthropic format: rendered as a USER message with a tool_result content block referencing tool_use_id
+    - Anthropic format: user turn with tool_result block referencing tool_use_id
+    - Google format: user turn with functionResponse part (name + response object)
+      NOTE: Gemini doesn't have call_id; for Google tool loop we treat tool_call_id as function name.
     """
     tool_call_id: str
     role: str = field(default="tool", init=False)
@@ -115,6 +135,28 @@ class ToolMessage(Message):
                     "type": "tool_result",
                     "tool_use_id": self.tool_call_id,
                     "content": self.content,
+                }
+            ],
+        }
+
+    def to_google(self) -> Dict[str, Any]:
+        name = self.tool_call_id
+        if not name:
+            raise ValueError("Google functionResponse requires tool_call_id to be set (use tool name).")
+        response_obj: Any
+        try:
+            raw = self.content.strip()
+            response_obj = json.loads(raw) if raw else {}
+        except Exception:
+            response_obj = {"content": self.content}
+        return {
+            "role": "user",
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": name,
+                        "response": response_obj,
+                    }
                 }
             ],
         }
@@ -224,6 +266,13 @@ class Messages:
                 prompt = m.to_google()
                 continue
             if isinstance(m, ToolMessage):
-                raise ValueError("ToolMessage is not supported for Google in this version.")
-            messages.append(m.to_google())
+                messages.append(m.to_google())
+                continue
+            if isinstance(m, AIMessage):
+                messages.append(m.to_google())
+                continue
+            if isinstance(m, UserMessage):
+                messages.append(m.to_google())
+            else:
+                messages.append({"role": "user", "parts": [{"text": m.content}]})
         return prompt, messages
