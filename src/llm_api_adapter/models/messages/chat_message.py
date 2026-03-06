@@ -203,25 +203,42 @@ class Messages:
                         for tc in tool_calls_raw:
                             if not isinstance(tc, dict):
                                 raise ValueError("assistant.tool_calls items must be dict")
-                            fn = tc.get("function") or {}
-                            name = fn.get("name")
-                            if not isinstance(name, str) or not name:
-                                raise ValueError("assistant.tool_calls.function.name must be non-empty str")
-                            raw_args = fn.get("arguments", "{}")
-                            if isinstance(raw_args, str):
-                                try:
-                                    args = json.loads(raw_args) if raw_args.strip() else {}
-                                except Exception as e:
-                                    raise ValueError(f"assistant.tool_calls.arguments JSON parse failed: {e}")
-                            elif isinstance(raw_args, dict):
-                                args = raw_args
+                            if "name" in tc:
+                                name = tc.get("name")
+                                if not isinstance(name, str) or not name:
+                                    raise ValueError("assistant.tool_calls.name must be non-empty str")
+                                args = tc.get("arguments", {})
+                                if args is None:
+                                    args = {}
+                                if not isinstance(args, dict):
+                                    raise ValueError("assistant.tool_calls.arguments must be dict")
+                                call_id = tc.get("call_id")
+                            # legacy OpenAI-shaped format
                             else:
-                                args = {}
+                                fn = tc.get("function") or {}
+                                name = fn.get("name")
+                                if not isinstance(name, str) or not name:
+                                    raise ValueError(
+                                        "assistant.tool_calls.function.name must be non-empty str"
+                                    )
+                                raw_args = fn.get("arguments", "{}")
+                                if isinstance(raw_args, str):
+                                    try:
+                                        args = json.loads(raw_args) if raw_args.strip() else {}
+                                    except Exception as e:
+                                        raise ValueError(
+                                            f"assistant.tool_calls.arguments JSON parse failed: {e}"
+                                        )
+                                elif isinstance(raw_args, dict):
+                                    args = raw_args
+                                else:
+                                    args = {}
+                                call_id = tc.get("id")
                             tool_calls.append(
                                 ToolCall(
                                     name=name,
                                     arguments=args,
-                                    call_id=tc.get("id"),
+                                    call_id=call_id,
                                 )
                             )
                     normalized.append(AIMessage(content=str(content), tool_calls=tool_calls))

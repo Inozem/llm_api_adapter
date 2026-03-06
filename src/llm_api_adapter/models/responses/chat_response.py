@@ -160,7 +160,7 @@ class ChatResponse:
         if not isinstance(parts, list):
             raise LLMAPIError(
                 "Google API returned malformed response",
-                detail="content.parts is not a list"
+                detail="content.parts is not a list",
             )
         parsed_tool_calls: Optional[List[ToolCall]] = None
         text_content: Optional[str] = None
@@ -174,11 +174,11 @@ class ChatResponse:
                 if parsed_tool_calls is None:
                     parsed_tool_calls = []
                 name = fc.get("name")
-                args = (
-                    fc.get("args")
-                    if "args" in fc
-                    else fc.get("arguments", {})
-                )
+                if not isinstance(name, str) or not name:
+                    raise InvalidToolArgumentsError(
+                        detail="Google functionCall.name must be non-empty str"
+                    )
+                args = fc.get("args") if "args" in fc else fc.get("arguments", {})
                 if args is None:
                     args = {}
                 if not isinstance(args, dict):
@@ -189,7 +189,7 @@ class ChatResponse:
                     ToolCall(
                         name=name,
                         arguments=args,
-                        call_id=None,
+                        call_id=name,
                     )
                 )
         return cls(
