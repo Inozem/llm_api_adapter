@@ -131,39 +131,77 @@ class LLMAdapterBase(ABC):
         self,
         tool_choice: Any,
         tools: Optional[List[ToolSpec]],
-    ) -> Any:
+    ) -> Optional[str]:
         if tool_choice is None:
             return None
+        tool_names = {t.name for t in tools or []}
         if isinstance(tool_choice, str):
+            if tool_choice == "required":
+                raise ToolChoiceError(
+                    detail="tool_choice='required' is not supported; use 'any'"
+                )
             if tool_choice in ("auto", "none"):
                 return tool_choice
-            if tool_choice in ("required", "any"):
+            if tool_choice == "any":
                 if not tools:
                     raise ToolChoiceError(
-                        detail=f"tool_choice={tool_choice!r} requires tools to be provided"
+                        detail="tool_choice='any' requires tools to be provided"
                     )
-                return tool_choice
+                return "any"
             if not tools:
-                raise ToolChoiceError(detail="tool_choice references a tool but tools=None")
-            if any(t.name == tool_choice for t in tools):
+                raise ToolChoiceError(
+                    detail="tool_choice references a tool but tools=None"
+                )
+            if tool_choice in tool_names:
                 return tool_choice
-            raise ToolChoiceError(detail=f"Unknown tool_choice string: {tool_choice!r}")
+            raise ToolChoiceError(
+                detail=f"Unknown tool_choice string: {tool_choice!r}"
+            )
         if isinstance(tool_choice, dict):
             tc_type = tool_choice.get("type")
             tc_name = tool_choice.get("name")
-            if tc_type in ("required", "any") and not tools:
+            if tc_type == "required":
                 raise ToolChoiceError(
-                    detail=f"tool_choice.type={tc_type!r} requires tools to be provided"
+                    detail="tool_choice.type='required' is not supported; use 'any'"
                 )
-            if isinstance(tc_name, str):
+            if tc_type in ("auto", "none"):
+                return tc_type
+            if tc_type == "any":
                 if not tools:
-                    raise ToolChoiceError(detail="tool_choice references a tool but tools=None")
-                if not any(t.name == tc_name for t in tools):
+                    raise ToolChoiceError(
+                        detail=f"tool_choice.type={tc_type!r} requires tools to be provided"
+                    )
+                return "any"
+            if tc_type == "tool":
+                if not isinstance(tc_name, str) or not tc_name:
+                    raise ToolChoiceError(
+                        detail="tool_choice.type='tool' requires non-empty name"
+                    )
+                if not tools:
+                    raise ToolChoiceError(
+                        detail="tool_choice references a tool but tools=None"
+                    )
+                if tc_name not in tool_names:
                     raise ToolChoiceError(
                         detail=f"tool_choice references unknown tool: {tc_name!r}"
                     )
-            return tool_choice
-        raise ToolChoiceError(detail=f"Invalid tool_choice type: {type(tool_choice).__name__}")
+                return tc_name
+            if isinstance(tc_name, str):
+                if not tools:
+                    raise ToolChoiceError(
+                        detail="tool_choice references a tool but tools=None"
+                    )
+                if tc_name not in tool_names:
+                    raise ToolChoiceError(
+                        detail=f"tool_choice references unknown tool: {tc_name!r}"
+                    )
+                return tc_name
+            raise ToolChoiceError(
+                detail=f"Invalid tool_choice dict: {tool_choice!r}"
+            )
+        raise ToolChoiceError(
+            detail=f"Invalid tool_choice type: {type(tool_choice).__name__}"
+        )
 
     def handle_error(self, error: Exception, error_message: Optional[str] = None):
         err_msg = (

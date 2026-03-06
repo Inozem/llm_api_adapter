@@ -65,8 +65,10 @@ class GoogleAdapter(LLMAdapterBase):
             if system_prompt:
                 payload["system_instruction"] = {"parts": [{"text": system_prompt}]}
             if validated_tools:
-                payload["tools"] = [{"functionDeclarations": [self._to_google_function_declaration(t) for t in validated_tools]}]
-            tool_config = self._to_google_tool_config(normalized_tool_choice, validated_tools)
+                payload["tools"] = [
+                    {"functionDeclarations": [self._to_google_function_declaration(t) for t in validated_tools]}
+                ]
+            tool_config = self._to_google_tool_config(normalized_tool_choice)
             if tool_config is not None:
                 payload["toolConfig"] = tool_config
             _ = parallel_tool_calls
@@ -99,45 +101,22 @@ class GoogleAdapter(LLMAdapterBase):
             decl["description"] = tool.description
         return decl
 
-    def _to_google_tool_config(
-        self,
-        tool_choice: Any,
-        tools: Optional[List[ToolSpec]],
-    ) -> Optional[Dict[str, Any]]:
+    def _to_google_tool_config(self, tool_choice: Optional[str], ) -> Optional[Dict[str, Any]]:
         if tool_choice is None:
             return None
-        if not tools:
-            if tool_choice in ("auto", "none"):
-                return None
-            return None
-        mode: Optional[str] = None
-        allowed: Optional[List[str]] = None
-        if isinstance(tool_choice, str):
-            if tool_choice == "none":
-                mode = "NONE"
-            elif tool_choice == "auto":
-                mode = "AUTO"
-            elif tool_choice in ("required", "any"):
-                mode = "ANY"
-            else:
-                mode = "ANY"
-                allowed = [tool_choice]
-        elif isinstance(tool_choice, dict):
-            tc_type = tool_choice.get("type")
-            tc_name = tool_choice.get("name")
-            if tc_type in ("none", "NONE"):
-                mode = "NONE"
-            elif tc_type in ("auto", "AUTO"):
-                mode = "AUTO"
-            elif tc_type in ("required", "any", "ANY"):
-                mode = "ANY"
-            elif isinstance(tc_name, str) and tc_name:
-                mode = "ANY"
-                allowed = [tc_name]
-            else:
-                return None
+        if tool_choice == "none":
+            mode = "NONE"
+            allowed = None
+        elif tool_choice == "auto":
+            mode = "AUTO"
+            allowed = None
+        elif tool_choice == "any":
+            mode = "ANY"
+            allowed = None
         else:
-            return None
+            mode = "ANY"
+            allowed = [tool_choice]
+
         cfg: Dict[str, Any] = {"mode": mode}
         if allowed:
             cfg["allowedFunctionNames"] = allowed

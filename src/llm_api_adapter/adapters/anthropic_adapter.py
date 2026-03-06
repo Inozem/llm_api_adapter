@@ -92,31 +92,14 @@ class AnthropicAdapter(LLMAdapterBase):
             payload["description"] = tool.description
         return payload
 
-    def _to_anthropic_tool_choice(self, tool_choice: Any) -> Dict[str, Any]:
-        """
-        Anthropic tool_choice:
-          - {"type": "auto"}
-          - {"type": "any"}
-          - {"type": "tool", "name": "<tool_name>"}
-
-        tool_choice after base normalization is expected to be:
-          - "auto" | "any" | "<tool_name>"
-          - or dict-like with {"type": ..., "name": ...}
-        """
-        if isinstance(tool_choice, str):
-            if tool_choice in ("auto", "any"):
-                return {"type": tool_choice}
-            return {"type": "tool", "name": tool_choice}
-        if isinstance(tool_choice, dict):
-            tc_type = tool_choice.get("type")
-            tc_name = tool_choice.get("name")
-            if tc_type in ("auto", "any"):
-                return {"type": tc_type}
-            if tc_type == "tool" and tc_name:
-                return {"type": "tool", "name": tc_name}
-            if tc_name:
-                return {"type": "tool", "name": tc_name}
-        raise ValueError(f"Unsupported tool_choice for Anthropic: {tool_choice!r}")
+    def _to_anthropic_tool_choice(self, tool_choice: Optional[str]) -> Optional[Dict[str, Any]]:
+        if tool_choice is None:
+            return None
+        if tool_choice == "none":
+            return None
+        if tool_choice in ("auto", "any"):
+            return {"type": tool_choice}
+        return {"type": "tool", "name": tool_choice}
 
     def _normalize_reasoning_level(self, level: str | int) -> int | None:
         minimum_level = 1024

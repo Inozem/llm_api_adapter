@@ -90,25 +90,14 @@ class OpenAIAdapter(LLMAdapterBase):
             )
         return mapped
 
-    def _map_tool_choice_to_openai(self, tool_choice: Any) -> Any:
-        """
-        OpenAI accepts:
-          - "auto" | "none" | "required"
-          - {"type":"function","function":{"name":"..."}}
-        We also support passing a tool name string -> forced tool.
-        """
+    def _map_tool_choice_to_openai(self, tool_choice: Optional[str]) -> Any:
         if tool_choice is None:
             return None
-        if isinstance(tool_choice, str):
-            if tool_choice in ("auto", "none", "required"):
-                return tool_choice
-            return {"type": "function", "function": {"name": tool_choice}}
-        if isinstance(tool_choice, dict):
-            name = tool_choice.get("name")
-            if isinstance(name, str) and name:
-                return {"type": "function", "function": {"name": name}}
+        if tool_choice in ("auto", "none"):
             return tool_choice
-        return tool_choice
+        if tool_choice == "any":
+            return "required"
+        return {"type": "function", "function": {"name": tool_choice}}
 
     def _normalize_reasoning_level(self, level: str | int | None) -> str | None:
         if level is None:
