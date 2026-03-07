@@ -167,91 +167,128 @@ class Messages:
     items: List[Any]
 
     def __post_init__(self) -> None:
-        role_to_cls: Dict[str, Type[Message]] = {cls.role: cls for cls in Message.__subclasses__()}
-        normalized: List[Message] = []
-        for item in self.items:
-            if isinstance(item, Message):
-                normalized.append(item)
-                continue
-            if isinstance(item, dict):
-                role = item.get("role")
-                if not role:
-                    raise ValueError("Missing 'role' in message data")
-                if role not in role_to_cls:
-                    raise ValueError(f"Unsupported role: {role}")
-                if role == "tool":
-                    tool_call_id = item.get("tool_call_id")
-                    if not tool_call_id:
-                        raise ValueError("Missing 'tool_call_id' for tool message")
-                    content = item.get("content")
-                    if content is None:
-                        raise ValueError("Missing 'content' in message data")
-                    normalized.append(
-                        ToolMessage(content=str(content), tool_call_id=str(tool_call_id))
-                    )
-                    continue
-                if role == "assistant":
-                    tool_calls_raw = item.get("tool_calls")
-                    content = item.get("content")
-                    if content is None:
-                        content = ""
-                    tool_calls: Optional[List[ToolCall]] = None
-                    if tool_calls_raw is not None:
-                        if not isinstance(tool_calls_raw, list):
-                            raise ValueError("assistant.tool_calls must be a list")
-                        tool_calls = []
-                        for tc in tool_calls_raw:
-                            if not isinstance(tc, dict):
-                                raise ValueError("assistant.tool_calls items must be dict")
-                            if "name" in tc:
-                                name = tc.get("name")
-                                if not isinstance(name, str) or not name:
-                                    raise ValueError("assistant.tool_calls.name must be non-empty str")
-                                args = tc.get("arguments", {})
-                                if args is None:
-                                    args = {}
-                                if not isinstance(args, dict):
-                                    raise ValueError("assistant.tool_calls.arguments must be dict")
-                                call_id = tc.get("call_id")
-                            # legacy OpenAI-shaped format
-                            else:
-                                fn = tc.get("function") or {}
-                                name = fn.get("name")
-                                if not isinstance(name, str) or not name:
-                                    raise ValueError(
-                                        "assistant.tool_calls.function.name must be non-empty str"
-                                    )
-                                raw_args = fn.get("arguments", "{}")
-                                if isinstance(raw_args, str):
-                                    try:
-                                        args = json.loads(raw_args) if raw_args.strip() else {}
-                                    except Exception as e:
-                                        raise ValueError(
-                                            f"assistant.tool_calls.arguments JSON parse failed: {e}"
-                                        )
-                                elif isinstance(raw_args, dict):
-                                    args = raw_args
-                                else:
-                                    args = {}
-                                call_id = tc.get("id")
-                            tool_calls.append(
-                                ToolCall(
-                                    name=name,
-                                    arguments=args,
-                                    call_id=call_id,
-                                )
-                            )
-                    normalized.append(AIMessage(content=str(content), tool_calls=tool_calls))
-                    continue
-                content = item.get("content")
-                if content is None or content == "":
-                    raise ValueError("Missing 'content' in message data")
-                cls = role_to_cls[role]
-                normalized.append(cls(content=str(content)))
-                continue
-            raise TypeError(f"Unsupported message type: {type(item)}")
-        self.items = normalized
+        role_to_cls = self._build_role_to_cls_map()
+        self.items = [self._normalize_item(item, role_to_cls) for item in self.items]
 
+    def _build_role_to_cls_map(self) -> Dict[str, Type[Message]]:
+        return {cls.role: cls for cls in Message.__subclasses__()}
+
+    def _normalize_item(
+        self,
+        item: Any,
+        role_to_cls: Dict[str, Type[Message]],
+    ) -> Message:
+        if isinstance(item, Message):
+            return item
+        if isinstance(item, dict):
+            return self._normalize_dict_item(item, role_to_cls)
+        raise TypeError(f"Unsupported message type: {type(item)}")
+
+    def _normalize_dict_item(
+        self,
+        item: Dict[str, Any],
+        role_to_cls: Dict[str, Type[Message]],
+    ) -> Message:
+        role = item.get("role")
+        if not role:
+            raise ValueError("Missing 'role' in message data")
+        if role not in role_to_cls:
+            raise ValueError(f"Unsupported role: {role}")
+        if role == "tool":
+            return self._normalize_tool_message(item)
+        if role == "assistant":
+            return self._normalize_assistant_message(item)
+        return self._normalize_simple_message(item, role_to_cls[role])
+
+    def _normalize_tool_message(self, item: Dict[str, Any]) -> ToolMessage:
+        tool_call_id = item.get("tool_call_id")
+        if not tool_call_id:
+            raise ValueError("Missing 'tool_call_id' for tool message")
+        content = item.get("content")
+        if content is None:
+            raise ValueError("Missing 'content' in message data")
+        return ToolMessage(content=str(content), tool_call_id=str(tool_call_id))
+
+    def _normalize_assistant_message(self, item: Dict[str, Any]) -> AIMessage:
+        content = item.get("content")
+        if content is None:
+            content = ""
+        tool_calls_raw = item.get("tool_calls")
+        tool_calls = self._parse_assistant_tool_calls(tool_calls_raw)
+        return AIMessage(content=str(content), tool_calls=tool_calls)
+
+    def _parse_assistant_tool_calls(
+        self,
+        tool_calls_raw: Any,
+    ) -> Optional[List[ToolCall]]:
+        if tool_calls_raw is None:
+            return None
+        if not isinstance(tool_calls_raw, list):
+            raise ValueError("assistant.tool_calls must be a list")
+        return [self._parse_single_tool_call(tc) for tc in tool_calls_raw]
+
+    def _parse_single_tool_call(self, tool_call_raw: Any) -> ToolCall:
+        if not isinstance(tool_call_raw, dict):
+            raise ValueError("assistant.tool_calls items must be dict")
+        if "name" in tool_call_raw:
+            return self._parse_normalized_tool_call(tool_call_raw)
+        return self._parse_legacy_openai_tool_call(tool_call_raw)
+
+    def _parse_normalized_tool_call(self, tool_call_raw: Dict[str, Any]) -> ToolCall:
+        name = tool_call_raw.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("assistant.tool_calls.name must be non-empty str")
+        arguments = tool_call_raw.get("arguments", {})
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            raise ValueError("assistant.tool_calls.arguments must be dict")
+        call_id = tool_call_raw.get("call_id")
+        return ToolCall(
+            name=name,
+            arguments=arguments,
+            call_id=call_id,
+        )
+
+    def _parse_legacy_openai_tool_call(self, tool_call_raw: Dict[str, Any]) -> ToolCall:
+        function_payload = tool_call_raw.get("function") or {}
+        name = function_payload.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(
+                "assistant.tool_calls.function.name must be non-empty str"
+            )
+        arguments = self._parse_legacy_openai_tool_arguments(
+            function_payload.get("arguments", "{}")
+        )
+        call_id = tool_call_raw.get("id")
+        return ToolCall(
+            name=name,
+            arguments=arguments,
+            call_id=call_id,
+        )
+
+    def _parse_legacy_openai_tool_arguments(self, raw_args: Any) -> Dict[str, Any]:
+        if isinstance(raw_args, str):
+            try:
+                return json.loads(raw_args) if raw_args.strip() else {}
+            except Exception as e:
+                raise ValueError(
+                    f"assistant.tool_calls.arguments JSON parse failed: {e}"
+                )
+        if isinstance(raw_args, dict):
+            return raw_args
+        return {}
+
+    def _normalize_simple_message(
+        self,
+        item: Dict[str, Any],
+        message_cls: Type[Message],
+    ) -> Message:
+        content = item.get("content")
+        if content is None or content == "":
+            raise ValueError("Missing 'content' in message data")
+        return message_cls(content=str(content))
+   
     def to_openai(self) -> List[Dict[str, Any]]:
         return [m.to_openai() for m in self.items]
 
