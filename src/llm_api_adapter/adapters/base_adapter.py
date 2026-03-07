@@ -134,73 +134,95 @@ class LLMAdapterBase(ABC):
     ) -> Optional[str]:
         if tool_choice is None:
             return None
-        tool_names = {t.name for t in tools or []}
+        tool_names = self._get_tool_names(tools)
         if isinstance(tool_choice, str):
-            if tool_choice == "required":
-                raise ToolChoiceError(
-                    detail="tool_choice='required' is not supported; use 'any'"
-                )
-            if tool_choice in ("auto", "none"):
-                return tool_choice
-            if tool_choice == "any":
-                if not tools:
-                    raise ToolChoiceError(
-                        detail="tool_choice='any' requires tools to be provided"
-                    )
-                return "any"
-            if not tools:
-                raise ToolChoiceError(
-                    detail="tool_choice references a tool but tools=None"
-                )
-            if tool_choice in tool_names:
-                return tool_choice
-            raise ToolChoiceError(
-                detail=f"Unknown tool_choice string: {tool_choice!r}"
-            )
+            return self._normalize_tool_choice_from_str(tool_choice, tools, tool_names)
         if isinstance(tool_choice, dict):
-            tc_type = tool_choice.get("type")
-            tc_name = tool_choice.get("name")
-            if tc_type == "required":
-                raise ToolChoiceError(
-                    detail="tool_choice.type='required' is not supported; use 'any'"
-                )
-            if tc_type in ("auto", "none"):
-                return tc_type
-            if tc_type == "any":
-                if not tools:
-                    raise ToolChoiceError(
-                        detail=f"tool_choice.type={tc_type!r} requires tools to be provided"
-                    )
-                return "any"
-            if tc_type == "tool":
-                if not isinstance(tc_name, str) or not tc_name:
-                    raise ToolChoiceError(
-                        detail="tool_choice.type='tool' requires non-empty name"
-                    )
-                if not tools:
-                    raise ToolChoiceError(
-                        detail="tool_choice references a tool but tools=None"
-                    )
-                if tc_name not in tool_names:
-                    raise ToolChoiceError(
-                        detail=f"tool_choice references unknown tool: {tc_name!r}"
-                    )
-                return tc_name
-            if isinstance(tc_name, str):
-                if not tools:
-                    raise ToolChoiceError(
-                        detail="tool_choice references a tool but tools=None"
-                    )
-                if tc_name not in tool_names:
-                    raise ToolChoiceError(
-                        detail=f"tool_choice references unknown tool: {tc_name!r}"
-                    )
-                return tc_name
-            raise ToolChoiceError(
-                detail=f"Invalid tool_choice dict: {tool_choice!r}"
-            )
+            return self._normalize_tool_choice_from_dict(tool_choice, tools, tool_names)
         raise ToolChoiceError(
             detail=f"Invalid tool_choice type: {type(tool_choice).__name__}"
+        )
+
+    def _get_tool_names(self, tools: Optional[List[ToolSpec]]) -> set[str]:
+        return {tool.name for tool in tools or []}
+
+    def _normalize_tool_choice_from_str(
+        self,
+        tool_choice: str,
+        tools: Optional[List[ToolSpec]],
+        tool_names: set[str],
+    ) -> str:
+        if tool_choice == "required":
+            self._raise_required_tool_choice_error()
+        if tool_choice in ("auto", "none"):
+            return tool_choice
+        if tool_choice == "any":
+            self._ensure_tools_provided(tools, detail="tool_choice='any' requires tools to be provided")
+            return "any"
+        self._ensure_tools_provided(
+            tools,
+            detail="tool_choice references a tool but tools=None",
+        )
+        if tool_choice in tool_names:
+            return tool_choice
+        raise ToolChoiceError(detail=f"Unknown tool_choice string: {tool_choice!r}")
+
+    def _normalize_tool_choice_from_dict(
+        self,
+        tool_choice: Dict[str, Any],
+        tools: Optional[List[ToolSpec]],
+        tool_names: set[str],
+    ) -> str:
+        tc_type = tool_choice.get("type")
+        tc_name = tool_choice.get("name")
+        if tc_type == "required":
+            self._raise_required_tool_choice_error()
+        if tc_type in ("auto", "none"):
+            return tc_type
+        if tc_type == "any":
+            self._ensure_tools_provided(
+                tools,
+                detail=f"tool_choice.type={tc_type!r} requires tools to be provided",
+            )
+            return "any"
+        if tc_type == "tool":
+            return self._normalize_named_tool_choice(tc_name, tools, tool_names)
+        if isinstance(tc_name, str):
+            return self._normalize_named_tool_choice(tc_name, tools, tool_names)
+        raise ToolChoiceError(detail=f"Invalid tool_choice dict: {tool_choice!r}")
+
+    def _normalize_named_tool_choice(
+        self,
+        tool_name: Any,
+        tools: Optional[List[ToolSpec]],
+        tool_names: set[str],
+    ) -> str:
+        if not isinstance(tool_name, str) or not tool_name:
+            raise ToolChoiceError(
+                detail="tool_choice.type='tool' requires non-empty name"
+            )
+        self._ensure_tools_provided(
+            tools,
+            detail="tool_choice references a tool but tools=None",
+        )
+        if tool_name not in tool_names:
+            raise ToolChoiceError(
+                detail=f"tool_choice references unknown tool: {tool_name!r}"
+            )
+        return tool_name
+
+    def _ensure_tools_provided(
+        self,
+        tools: Optional[List[ToolSpec]],
+        *,
+        detail: str,
+    ) -> None:
+        if not tools:
+            raise ToolChoiceError(detail=detail)
+
+    def _raise_required_tool_choice_error(self) -> None:
+        raise ToolChoiceError(
+            detail="tool_choice='required' is not supported; use 'any'"
         )
 
     def handle_error(self, error: Exception, error_message: Optional[str] = None):
