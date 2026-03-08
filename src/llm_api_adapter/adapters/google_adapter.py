@@ -31,6 +31,7 @@ class GoogleAdapter(LLMAdapterBase):
         tools: Optional[List[ToolSpec]] = None,
         tool_choice: Optional[str | dict] = None,
         parallel_tool_calls: Optional[bool] = None,
+        previous_response_id: Optional[str] = None,
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature", value=temperature, min_value=0, max_value=2

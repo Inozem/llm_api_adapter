@@ -14,6 +14,9 @@ class Message:
 
     def to_openai(self) -> Dict[str, Any]:
         return {"role": self.role, "content": self.content}
+    
+    def to_openai_responses_input(self) -> List[Dict[str, Any]]:
+        return [{"role": self.role, "content": self.content}]
 
     def to_anthropic(self) -> Dict[str, Any]:
         return {"role": self.role, "content": self.content}
@@ -68,6 +71,12 @@ class AIMessage(Message):
                 for tc in self.tool_calls
             ]
         return msg
+    
+    def to_openai_responses_input(self) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        if self.content:
+            items.append({"role": "assistant", "content": self.content})
+        return items
 
     def to_anthropic(self) -> Dict[str, Any]:
         if not self.tool_calls:
@@ -124,6 +133,15 @@ class ToolMessage(Message):
 
     def to_openai(self) -> Dict[str, Any]:
         return {"role": "tool", "tool_call_id": self.tool_call_id, "content": self.content}
+
+    def to_openai_responses_input(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "type": "function_call_output",
+                "call_id": self.tool_call_id,
+                "output": self.content,
+            }
+        ]
 
     def to_anthropic(self) -> Dict[str, Any]:
         if not self.tool_call_id:
@@ -291,6 +309,25 @@ class Messages:
    
     def to_openai(self) -> List[Dict[str, Any]]:
         return [m.to_openai() for m in self.items]
+    
+    def to_openai_responses_input(self) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for m in self.items:
+            if isinstance(m, Prompt):
+                continue
+            items.extend(m.to_openai_responses_input())
+        return items
+
+    def to_openai_responses_instructions(self) -> Optional[str]:
+        instructions: Optional[str] = None
+        for m in self.items:
+            if isinstance(m, Prompt):
+                if instructions is not None:
+                    raise ValueError(
+                        "Multiple system prompts are not allowed for OpenAI Responses."
+                    )
+                instructions = m.content
+        return instructions
 
     def to_anthropic(self) -> Tuple[str | None, List[Dict[str, Any]]]:
         prompt: Optional[str] = None

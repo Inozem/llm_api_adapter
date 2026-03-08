@@ -104,6 +104,74 @@ class ChatResponse:
         )
 
     @classmethod
+    def from_openai_responses_response(cls, api_response: dict) -> "ChatResponse":
+        u = api_response.get("usage", {}) or {}
+        usage = Usage(
+            input_tokens=u.get("input_tokens", 0),
+            output_tokens=u.get("output_tokens", 0),
+            total_tokens=u.get("total_tokens", 0),
+        )
+        parsed_tool_calls: Optional[List[ToolCall]] = None
+        text_parts: List[str] = []
+        output_items = api_response.get("output") or []
+        if not isinstance(output_items, list):
+            output_items = []
+        for item in output_items:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "message":
+                content_items = item.get("content") or []
+                if not isinstance(content_items, list):
+                    continue
+                for content_item in content_items:
+                    if not isinstance(content_item, dict):
+                        continue
+                    content_type = content_item.get("type")
+                    if content_type in ("output_text", "text"):
+                        text_value = content_item.get("text")
+                        if isinstance(text_value, str) and text_value.strip():
+                            text_parts.append(text_value)
+            elif item_type in ("function_call", "tool_call"):
+                if parsed_tool_calls is None:
+                    parsed_tool_calls = []
+                name = item.get("name")
+                raw_args = item.get("arguments", "{}")
+                try:
+                    if isinstance(raw_args, str):
+                        arguments = json.loads(raw_args) if raw_args.strip() else {}
+                    elif isinstance(raw_args, dict):
+                        arguments = raw_args
+                    else:
+                        arguments = {}
+                except Exception as e:
+                    raise InvalidToolArgumentsError(
+                        detail=f"OpenAI responses tool arguments JSON parse failed for tool={name!r}: {e}"
+                    )
+                parsed_tool_calls.append(
+                    ToolCall(
+                        name=name,
+                        arguments=arguments,
+                        call_id=item.get("call_id") or item.get("id"),
+                    )
+                )
+        text = "\n".join(text_parts) if text_parts else None
+        if not parsed_tool_calls and (not text or not text.strip()):
+            warnings.warn(
+                "OpenAI Responses API returned empty content and no tool calls.",
+                UserWarning,
+            )
+        return cls(
+            model=api_response.get("model"),
+            response_id=api_response.get("id"),
+            timestamp=api_response.get("created_at"),
+            usage=usage,
+            content=text,
+            tool_calls=parsed_tool_calls,
+            finish_reason=api_response.get("status"),
+        )
+
+    @classmethod
     def from_anthropic_response(cls, api_response: dict) -> "ChatResponse":
         u = api_response.get("usage", {}) or {}
         usage = Usage(
