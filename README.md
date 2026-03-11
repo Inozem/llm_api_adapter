@@ -4,11 +4,13 @@
 
 ## Overview
 
-This lightweight SDK for Python allows you to use LLM APIs from various providers and models through a unified interface. It is designed to be minimal, dependency-free, and easy to integrate into any Python project. Currently, the project supports API integration for OpenAI, Anthropic, and Google, focusing on chat functionality with consistent cost tracking and unified error handling.
+This lightweight SDK for Python allows you to use LLM APIs from multiple providers through a unified interface. It is designed to be minimal, dependency‑free, and easy to integrate into any Python project.
+
+Currently, the project supports OpenAI, Anthropic, and Google with a consistent chat API, unified error handling, token/cost accounting, reasoning control, timeout support, and unified tool/function calling. Switching between providers or models requires no code changes beyond replacing the organization and model values when creating the adapter.
 
 ### Version
 
-Current version: 0.2.5
+Current version: 0.3.0
 
 
 ## Features
@@ -16,6 +18,7 @@ Current version: 0.2.5
 - **Unified Interface**: Work seamlessly with different LLM providers using a single, consistent API.
 - **Multiple Provider Support**: Currently supports OpenAI, Anthropic, and Google APIs, allowing easy switching between them.
 - **Chat Functionality**: Provides an easy way to interact with chat-based LLMs.
+- **Tool / Function Calling**: Provider-agnostic tool definitions and normalized tool calls.
 - **Extensible Design**: Built to easily extend support for additional providers and new functionalities in the future.
 - **Error Handling**: Standardized error messages across all supported LLMs, simplifying integration and debugging.
 - **Flexible Configuration**: Manage request parameters like temperature, max tokens, and other settings for fine-tuned control.
@@ -140,9 +143,9 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, and Google.
 
-- **OpenAI**: You can use models like `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
-- **Anthropic**: Available models include `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`, `claude-opus-4-1`, `claude-opus-4-0`, `claude-sonnet-4-0`, `claude-3-7-sonnet-latest`, `claude-3-5-haiku-latest`, `claude-3-haiku-20240307`.
-- **Google**: Models such as `gemini-3-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`, `gemini-2.0-flash-lite` can be used.
+- **OpenAI**: You can use models like `gpt-5.4`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
+- **Anthropic**: Available models include `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`, `claude-opus-4-1`, `claude-opus-4-0`, `claude-sonnet-4-0`, `claude-3-haiku-20240307`.
+- **Google**: Models such as `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` can be used.
 
 Example:
 
@@ -358,6 +361,109 @@ response = adapter.chat(
 - same numeric mapping
 
 This allows switching between OpenAI, Anthropic, and Google without changing reasoning configuration in your code.
+
+## Tool / Function Calling
+
+The SDK provides a unified provider‑agnostic tool calling interface.
+
+Tools are defined using `ToolSpec`, and tool calls are returned in normalized form through `ChatResponse.tool_calls`.
+
+The adapter **does not execute tools**. Tool execution must be implemented by the caller.
+
+### ToolSpec
+
+```python
+from llm_api_adapter.models.tools import ToolSpec
+
+tool = ToolSpec(
+    name="get_weather",
+    description="Get current weather for a city",
+    json_schema={
+        "type": "object",
+        "properties": {
+            "city": {"type": "string"}
+        },
+        "required": ["city"],
+        "additionalProperties": False
+    }
+)
+```
+
+### Tool parameters
+
+`chat()` supports:
+
+- `tools`
+- `tool_choice`
+
+### Tool round‑trip example
+
+```python
+import json
+from typing import Any, Dict
+
+from llm_api_adapter.models.messages.chat_message import (
+    Prompt,
+    UserMessage,
+    AIMessage,
+    ToolMessage,
+)
+from llm_api_adapter.models.tools import ToolSpec
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+
+tools = [
+    ToolSpec(
+        name="get_weather",
+        description="Get current weather for a city",
+        json_schema={
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+            "additionalProperties": False,
+        },
+    )
+]
+
+
+def run_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    if name == "get_weather":
+        return {"city": args["city"], "temperature": 22, "unit": "C"}
+    raise ValueError(f"Unknown tool: {name}")
+
+
+adapter = UniversalLLMAPIAdapter(
+    organization="openai",
+    model="gpt-5.2",
+    api_key=openai_api_key,
+)
+
+messages = [
+    Prompt("If the user asks about weather, call get_weather."),
+    UserMessage("What's the weather in Tel Aviv today?")
+]
+
+first = adapter.chat(
+    messages=messages,
+    tools=tools,
+    tool_choice="auto",
+)
+
+if first.tool_calls:
+    messages.append(AIMessage(content="", tool_calls=first.tool_calls))
+
+    for tc in first.tool_calls:
+        result = run_tool(tc.name, tc.arguments)
+        messages.append(
+            ToolMessage(
+                tool_call_id=tc.call_id,
+                content=json.dumps(result)
+            )
+        )
+
+    final = adapter.chat(messages=messages)
+    print(final.content)
+```
 
 ## Token Usage and Pricing
 

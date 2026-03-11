@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import logging
-
 import requests
+import warnings
 
 from ...errors.llm_api_error import (
     LLMAPIAuthorizationError,
@@ -23,8 +23,13 @@ class OpenAISyncClient:
     def _headers(self):
         return {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
+
+    def complete(self, model: str, timeout: float | None = None, **kwargs):
+        if self._should_use_responses_api(model):
+            return self.responses(model=model, timeout=timeout, **kwargs)
+        return self.chat_completion(model=model, timeout=timeout, **kwargs)
 
     def chat_completion(self, model: str, timeout: float | None = None, **kwargs):
         url = f"{self.endpoint}/chat/completions"
@@ -32,14 +37,41 @@ class OpenAISyncClient:
         response = self._send_request(url, payload, timeout)
         return response.json()
 
+    def responses(self, model: str, timeout: float | None = None, **kwargs):
+        url = f"{self.endpoint}/responses"
+        payload = self._prepare_responses_payload_for_model(model, kwargs)
+        response = self._send_request(url, payload, timeout)
+        return response.json()
+
+    def _should_use_responses_api(self, model: str) -> bool:
+        return model.startswith("gpt-5")
+
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
-        if model.startswith(("gpt-4.1", "gpt-5", "o1")):
+        kwargs = dict(kwargs)
+        if model.startswith(("gpt-4.1", "o1")):
             if "max_tokens" in kwargs:
                 kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
-        if "reasoning_effort" in kwargs and model in ("gpt-5-nano, gpt-5-mini"):
-            if kwargs["reasoning_effort"] == "none":
-                kwargs["reasoning_effort"] = "minimal"
         return {"model": model, **kwargs}
+
+    def _prepare_responses_payload_for_model(self, model: str, kwargs: dict) -> dict:
+        payload = {"model": model, **dict(kwargs)}
+        if "messages" in payload:
+            payload["input"] = payload.pop("messages")
+        if "max_tokens" in payload:
+            payload["max_output_tokens"] = payload.pop("max_tokens")
+        reasoning_effort = payload.pop("reasoning_effort", None)
+        if reasoning_effort is not None:
+            if model in ("gpt-5", "gpt-5-nano", "gpt-5-mini") and reasoning_effort == "none":
+                reasoning_effort = "minimal"
+            payload["reasoning"] = {"effort": reasoning_effort}
+        if model.startswith("gpt-5") and "top_p" in payload:
+            warning_message = (
+                f"Parameter 'top_p' is not supported for model '{model}' and will be ignored."
+            )
+            warnings.warn(warning_message, stacklevel=2)
+            logger.warning(warning_message)
+            payload.pop("top_p")
+        return payload
 
     def _send_request(self, url: str, payload: dict, timeout: float | None = None):
         try:
