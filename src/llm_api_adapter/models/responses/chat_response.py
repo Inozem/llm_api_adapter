@@ -253,11 +253,18 @@ class ChatResponse:
                     raise InvalidToolArgumentsError(
                         detail=f"Google functionCall args must be dict for tool={name!r}"
                     )
+                thought_signature = part.get("thoughtSignature")
+                provider_data = None
+                if thought_signature is not None:
+                    provider_data = {
+                        "thoughtSignature": thought_signature,
+                    }
                 parsed_tool_calls.append(
                     ToolCall(
                         name=name,
                         arguments=args,
                         call_id=name,
+                        provider_data=provider_data,
                     )
                 )
         return cls(

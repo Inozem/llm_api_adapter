@@ -30,7 +30,7 @@ class OpenAIAdapter(LLMAdapterBase):
         tools: Optional[List[ToolSpec]] = None,
         tool_choice: Any = None,
         parallel_tool_calls: Optional[bool] = None,
-        previous_response_id: Optional[str] = None,
+        previous_response: Optional[ChatResponse] = None,
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature",
@@ -51,7 +51,13 @@ class OpenAIAdapter(LLMAdapterBase):
             client = OpenAISyncClient(api_key=self.api_key)
             normalized_messages = self._normalize_messages(messages)
             use_responses_api = client._should_use_responses_api(self.model)
-            normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
+            normalized_reasoning_level = self._normalize_reasoning_level(
+                reasoning_level
+            )
+
+            previous_response_id: Optional[str] = None
+            if previous_response is not None:
+                previous_response_id = previous_response.response_id
 
             if use_responses_api:
                 transformed_messages = normalized_messages.to_openai_responses_input()
@@ -111,21 +117,24 @@ class OpenAIAdapter(LLMAdapterBase):
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
 
-    def _map_tools_to_openai(self, tools: Optional[List[ToolSpec]]) -> Optional[List[Dict[str, Any]]]:
+    def _map_tools_to_openai(
+        self,
+        tools: Optional[List[ToolSpec]],
+    ) -> Optional[List[Dict[str, Any]]]:
         if not tools:
             return None
         mapped: List[Dict[str, Any]] = []
-        for t in tools:
-            fn: Dict[str, Any] = {
-                "name": t.name,
-                "parameters": t.json_schema,
+        for tool in tools:
+            function_payload: Dict[str, Any] = {
+                "name": tool.name,
+                "parameters": tool.json_schema,
             }
-            if t.description:
-                fn["description"] = t.description
+            if tool.description:
+                function_payload["description"] = tool.description
             mapped.append(
                 {
                     "type": "function",
-                    "function": fn,
+                    "function": function_payload,
                 }
             )
         return mapped
@@ -167,7 +176,7 @@ class OpenAIAdapter(LLMAdapterBase):
             "Invalid type for level: expected int or str, "
             f"got {type(level).__name__!r}"
         )
-    
+
     def _map_tools_to_openai_responses(
         self,
         tools: Optional[List[ToolSpec]],
@@ -186,7 +195,7 @@ class OpenAIAdapter(LLMAdapterBase):
                 }
             )
         return result
-    
+
     def _map_tool_choice_to_openai_responses(self, tool_choice: Any) -> Any:
         if tool_choice is None:
             return None

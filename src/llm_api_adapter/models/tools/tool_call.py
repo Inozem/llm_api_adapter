@@ -14,3 +14,4 @@ class ToolCall:
     name: str
     arguments: Dict[str, Any]
     call_id: Optional[str] = None
+    provider_data: Optional[dict] = None
