@@ -10,7 +10,7 @@ Currently, the project supports OpenAI, Anthropic, and Google with a consistent 
 
 ### Version
 
-Current version: 0.3.0
+Current version: 0.3.1
 
 
 ## Features
@@ -447,6 +447,7 @@ first = adapter.chat(
     messages=messages,
     tools=tools,
     tool_choice="auto",
+    max_tokens=1000,
 )
 
 if first.tool_calls:
@@ -461,7 +462,11 @@ if first.tool_calls:
             )
         )
 
-    final = adapter.chat(messages=messages)
+    final = adapter.chat(
+        messages=messages,
+        previous_response=first,
+        max_tokens=1000
+    )
     print(final.content)
 ```
 
