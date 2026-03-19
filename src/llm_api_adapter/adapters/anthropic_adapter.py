@@ -32,19 +32,29 @@ class AnthropicAdapter(LLMAdapterBase):
         tools: Optional[List[ToolSpec]] = None,
         tool_choice: Optional[str | dict] = None,
         parallel_tool_calls: Optional[bool] = None,
-        previous_response_id: Optional[str] = None,
+        previous_response: Optional[ChatResponse] = None,
     ) -> ChatResponse:
         temperature = self._validate_parameter(
-            name="temperature", value=temperature, min_value=0, max_value=2
+            name="temperature",
+            value=temperature,
+            min_value=0,
+            max_value=2,
         )
-        top_p = self._validate_parameter(name="top_p", value=top_p, min_value=0, max_value=1)
+        top_p = self._validate_parameter(
+            name="top_p",
+            value=top_p,
+            min_value=0,
+            max_value=1,
+        )
         try:
             self._validate_tools(tools)
             validated_tools = tools
-            normalized_tool_choice = self._normalize_tool_choice(tool_choice, validated_tools)
+            normalized_tool_choice = self._normalize_tool_choice(
+                tool_choice,
+                validated_tools,
+            )
             normalized_messages = self._normalize_messages(messages)
             system_prompt, transformed_messages = normalized_messages.to_anthropic()
-            client = ClaudeSyncClient(api_key=self.api_key)
             params: Dict[str, Any] = {
                 "model": self.model,
                 "messages": transformed_messages,
@@ -55,23 +65,35 @@ class AnthropicAdapter(LLMAdapterBase):
                 "timeout_s": timeout_s,
             }
             if validated_tools:
-                params["tools"] = [self._to_anthropic_tool(t) for t in validated_tools]
+                params["tools"] = [
+                    self._to_anthropic_tool(tool)
+                    for tool in validated_tools
+                ]
             if normalized_tool_choice is not None:
-                params["tool_choice"] = self._to_anthropic_tool_choice(normalized_tool_choice)
+                params["tool_choice"] = self._to_anthropic_tool_choice(
+                    normalized_tool_choice
+                )
             if parallel_tool_calls is False:
                 params["disable_parallel_tool_use"] = True
             elif parallel_tool_calls is True:
                 params["disable_parallel_tool_use"] = False
             if reasoning_level:
-                normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
+                normalized_reasoning_level = self._normalize_reasoning_level(
+                    reasoning_level
+                )
                 if normalized_reasoning_level:
                     self.validate_reasoning_and_tokens(
                         max_tokens=max_tokens,
                         reasoning_level=reasoning_level,
                         normalized_reasoning_level=normalized_reasoning_level,
                     )
-                    params["thinking"] = {"type": "enabled", "budget_tokens": normalized_reasoning_level}
+                    params["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": normalized_reasoning_level,
+                    }
             params = {k: v for k, v in params.items() if v is not None}
+            _ = previous_response
+            client = ClaudeSyncClient(api_key=self.api_key)
             response = client.chat_completion(**params)
             chat_response = ChatResponse.from_anthropic_response(response)
             if self.pricing:
@@ -88,12 +110,18 @@ class AnthropicAdapter(LLMAdapterBase):
             self.handle_error(error=e, error_message=error_message)
 
     def _to_anthropic_tool(self, tool: ToolSpec) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"name": tool.name, "input_schema": tool.json_schema}
+        payload: Dict[str, Any] = {
+            "name": tool.name,
+            "input_schema": tool.json_schema,
+        }
         if tool.description:
             payload["description"] = tool.description
         return payload
 
-    def _to_anthropic_tool_choice(self, tool_choice: Optional[str]) -> Optional[Dict[str, Any]]:
+    def _to_anthropic_tool_choice(
+        self,
+        tool_choice: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
         if tool_choice is None:
             return None
         if tool_choice == "none":
@@ -128,8 +156,8 @@ class AnthropicAdapter(LLMAdapterBase):
             if normalized_level >= minimum_level:
                 return normalized_level
             warning_message = (
-                f"Reasoning level '{level}' is below the minimum supported value {minimum_level}; "
-                f"using {minimum_level} instead."
+                f"Reasoning level '{level}' is below the minimum supported value "
+                f"{minimum_level}; using {minimum_level} instead."
             )
             warnings.warn(warning_message, UserWarning)
             logger.info(warning_message)

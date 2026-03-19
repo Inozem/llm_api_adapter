@@ -105,14 +105,17 @@ class AIMessage(Message):
             parts.append({"text": self.content})
         if self.tool_calls:
             for tc in self.tool_calls:
-                parts.append(
-                    {
-                        "functionCall": {
-                            "name": tc.name,
-                            "args": tc.arguments or {},
-                        }
+                part: Dict[str, Any] = {
+                    "functionCall": {
+                        "name": tc.name,
+                        "args": tc.arguments or {},
                     }
-                )
+                }
+                if tc.provider_data:
+                    thought_signature = tc.provider_data.get("thoughtSignature")
+                    if thought_signature is not None:
+                        part["thoughtSignature"] = thought_signature
+                parts.append(part)
         if not parts:
             parts = [{"text": ""}]
         return {"role": "model", "parts": parts}
@@ -262,10 +265,14 @@ class Messages:
         if not isinstance(arguments, dict):
             raise ValueError("assistant.tool_calls.arguments must be dict")
         call_id = tool_call_raw.get("call_id")
+        provider_data = tool_call_raw.get("provider_data")
+        if provider_data is not None and not isinstance(provider_data, dict):
+            raise ValueError("assistant.tool_calls.provider_data must be dict")
         return ToolCall(
             name=name,
             arguments=arguments,
             call_id=call_id,
+            provider_data=provider_data,
         )
 
     def _parse_legacy_openai_tool_call(self, tool_call_raw: Dict[str, Any]) -> ToolCall:

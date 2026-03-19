@@ -152,7 +152,8 @@ def test_pricing_is_applied_when_present_for_legacy_api(legacy_adapter):
 @pytest.mark.unit
 def test_chat_responses_api_builds_expected_params(adapter):
     fake_response = {"id": "resp_123"}
-    fake_chat_response = ChatResponse()
+    fake_chat_response = ChatResponse(response_id="prev_123")
+    expected_previous_response = ChatResponse(response_id="prev_123")
 
     with (
         patch.object(OpenAISyncClient, "complete", return_value=fake_response) as mock_complete,
@@ -167,7 +168,7 @@ def test_chat_responses_api_builds_expected_params(adapter):
             max_tokens=42,
             temperature=0.7,
             top_p=0.9,
-            previous_response_id="prev_123",
+            previous_response=expected_previous_response,
         )
 
     assert result is fake_chat_response

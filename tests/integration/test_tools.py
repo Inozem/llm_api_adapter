@@ -224,7 +224,7 @@ def test_openai_gpt5_tool_call_parsing_and_request_mapping(openai_tools_mock):
 
 
 @pytest.mark.integration
-def test_openai_gpt5_tool_loop_with_previous_response_id(openai_tools_mock):
+def test_openai_gpt5_tool_loop_with_previous_response(openai_tools_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="openai",
         model="gpt-5.2-pro",
@@ -243,6 +243,8 @@ def test_openai_gpt5_tool_loop_with_previous_response_id(openai_tools_mock):
     )
 
     assert first.tool_calls is not None
+    assert first.response_id == "resp_1"
+
     messages.append(AIMessage(content="", tool_calls=first.tool_calls))
     messages.append(
         ToolMessage(
@@ -257,7 +259,7 @@ def test_openai_gpt5_tool_loop_with_previous_response_id(openai_tools_mock):
     final = adapter.chat(
         messages=messages,
         max_tokens=256,
-        previous_response_id=first.response_id,
+        previous_response=first,
     )
 
     assert final.content == "The weather in Tel Aviv is 22 C."
