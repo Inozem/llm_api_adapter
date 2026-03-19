@@ -31,7 +31,7 @@ def run_tool(name, args):
 
 
 @pytest.mark.e2e
-def test_basic_auto_tool_loop_with_previous_response(providers):
+def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
     tools = [
         ToolSpec(
             name="get_secret_word_score",
@@ -49,64 +49,65 @@ def test_basic_auto_tool_loop_with_previous_response(providers):
 
     for p in providers:
         for model in p["models"]:
-            adapter = UniversalLLMAPIAdapter(
-                organization=p["name"],
-                model=model,
-                api_key=p["api_key"],
-            )
-
-            messages = [
-                UserMessage(
-                    'What is the secret score for token "strawberry_v2"? '
-                    "Use the available tool if needed."
+            with subtests.test(provider=p["name"], model=model):
+                adapter = UniversalLLMAPIAdapter(
+                    organization=p["name"],
+                    model=model,
+                    api_key=p["api_key"],
                 )
-            ]
 
-            first = adapter.chat(
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                max_tokens=512,
-                timeout_s=60,
-            )
+                messages = [
+                    UserMessage(
+                        'What is the secret score for token "strawberry_v2"? '
+                        "Use the available tool if needed."
+                    )
+                ]
 
-            assert first.tool_calls, (
-                f"{p['name']} / {model}: expected at least one tool_call. "
-                f"Content was: {first.content!r}"
-            )
+                first = adapter.chat(
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    max_tokens=512,
+                    timeout_s=60,
+                )
 
-            messages.append(
-                AIMessage(content=first.content or "", tool_calls=first.tool_calls)
-            )
-
-            for tc in first.tool_calls:
-                assert tc.name == "get_secret_word_score"
-                assert isinstance(tc.arguments, dict)
-                assert tc.arguments["token"] == "strawberry_v2"
-
-                result = run_tool(tc.name, tc.arguments)
+                assert first.tool_calls, (
+                    f"{p['name']} / {model}: expected at least one tool_call. "
+                    f"Content was: {first.content!r}"
+                )
 
                 messages.append(
-                    ToolMessage(
-                        tool_call_id=tc.call_id,
-                        content=json.dumps(result),
-                    )
+                    AIMessage(content=first.content or "", tool_calls=first.tool_calls)
                 )
 
-            final = adapter.chat(
-                messages=messages,
-                previous_response=first,
-                max_tokens=512,
-                timeout_s=60,
-            )
+                for tc in first.tool_calls:
+                    assert tc.name == "get_secret_word_score"
+                    assert isinstance(tc.arguments, dict)
+                    assert tc.arguments["token"] == "strawberry_v2"
 
-            assert isinstance(final.content, str)
-            assert final.content.strip() != ""
-            assert not final.tool_calls, (
-                f"{p['name']} / {model}: expected final natural-language answer, "
-                f"got tool_calls: {final.tool_calls!r}"
-            )
-            assert "73" in final.content, (
-                f"{p['name']} / {model}: expected final answer to mention 73, "
-                f"got: {final.content!r}"
-            )
+                    result = run_tool(tc.name, tc.arguments)
+
+                    messages.append(
+                        ToolMessage(
+                            tool_call_id=tc.call_id,
+                            content=json.dumps(result),
+                        )
+                    )
+
+                final = adapter.chat(
+                    messages=messages,
+                    previous_response=first,
+                    max_tokens=512,
+                    timeout_s=60,
+                )
+
+                assert isinstance(final.content, str)
+                assert final.content.strip() != ""
+                assert not final.tool_calls, (
+                    f"{p['name']} / {model}: expected final natural-language answer, "
+                    f"got tool_calls: {final.tool_calls!r}"
+                )
+                assert "73" in final.content, (
+                    f"{p['name']} / {model}: expected final answer to mention 73, "
+                    f"got: {final.content!r}"
+                )
