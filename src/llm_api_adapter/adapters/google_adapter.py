@@ -31,29 +31,39 @@ class GoogleAdapter(LLMAdapterBase):
         tools: Optional[List[ToolSpec]] = None,
         tool_choice: Optional[str | dict] = None,
         parallel_tool_calls: Optional[bool] = None,
-        previous_response_id: Optional[str] = None,
+        previous_response: Optional[ChatResponse] = None,
     ) -> ChatResponse:
         temperature = self._validate_parameter(
-            name="temperature", value=temperature, min_value=0, max_value=2
+            name="temperature",
+            value=temperature,
+            min_value=0,
+            max_value=2,
         )
         top_p = self._validate_parameter(
-            name="top_p", value=top_p, min_value=0, max_value=1
+            name="top_p",
+            value=top_p,
+            min_value=0,
+            max_value=1,
         )
         try:
             self._validate_tools(tools)
             validated_tools = tools
             normalized_tool_choice = self._normalize_tool_choice(
-                tool_choice, validated_tools
+                tool_choice,
+                validated_tools,
             )
             normalized_messages = self._normalize_messages(messages)
+            _ = previous_response
             system_prompt, transformed_messages = normalized_messages.to_google()
-            generation_config = {
+            generation_config: Dict[str, Any] = {
                 "maxOutputTokens": max_tokens,
                 "temperature": temperature,
                 "topP": top_p,
             }
             if reasoning_level:
-                normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
+                normalized_reasoning_level = self._normalize_reasoning_level(
+                    reasoning_level
+                )
                 if normalized_reasoning_level is not None:
                     generation_config["thinkingConfig"] = {
                         "thinkingBudget": normalized_reasoning_level,
@@ -64,10 +74,17 @@ class GoogleAdapter(LLMAdapterBase):
                 "generationConfig": generation_config,
             }
             if system_prompt:
-                payload["system_instruction"] = {"parts": [{"text": system_prompt}]}
+                payload["system_instruction"] = {
+                    "parts": [{"text": system_prompt}]
+                }
             if validated_tools:
                 payload["tools"] = [
-                    {"functionDeclarations": [self._to_google_function_declaration(t) for t in validated_tools]}
+                    {
+                        "functionDeclarations": [
+                            self._to_google_function_declaration(tool)
+                            for tool in validated_tools
+                        ]
+                    }
                 ]
             tool_config = self._to_google_tool_config(normalized_tool_choice)
             if tool_config is not None:
@@ -94,34 +111,36 @@ class GoogleAdapter(LLMAdapterBase):
             self.handle_error(error=e, error_message=error_message)
 
     def _to_google_function_declaration(self, tool: ToolSpec) -> Dict[str, Any]:
-        decl: Dict[str, Any] = {
+        declaration: Dict[str, Any] = {
             "name": tool.name,
             "parametersJsonSchema": tool.json_schema,
         }
         if tool.description:
-            decl["description"] = tool.description
-        return decl
+            declaration["description"] = tool.description
+        return declaration
 
-    def _to_google_tool_config(self, tool_choice: Optional[str], ) -> Optional[Dict[str, Any]]:
+    def _to_google_tool_config(
+        self,
+        tool_choice: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
         if tool_choice is None:
             return None
         if tool_choice == "none":
             mode = "NONE"
-            allowed = None
+            allowed_function_names = None
         elif tool_choice == "auto":
             mode = "AUTO"
-            allowed = None
+            allowed_function_names = None
         elif tool_choice == "any":
             mode = "ANY"
-            allowed = None
+            allowed_function_names = None
         else:
             mode = "ANY"
-            allowed = [tool_choice]
-
-        cfg: Dict[str, Any] = {"mode": mode}
-        if allowed:
-            cfg["allowedFunctionNames"] = allowed
-        return {"functionCallingConfig": cfg}
+            allowed_function_names = [tool_choice]
+        function_calling_config: Dict[str, Any] = {"mode": mode}
+        if allowed_function_names:
+            function_calling_config["allowedFunctionNames"] = allowed_function_names
+        return {"functionCallingConfig": function_calling_config}
 
     def _normalize_reasoning_level(self, level: str | int | None) -> int | None:
         minimum_level = 0

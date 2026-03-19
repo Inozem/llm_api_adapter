@@ -1,12 +1,20 @@
 {
-  "schema_version": 5,
-  "effective_date": "2026-03-08",
+  "schema_version": 6,
+  "effective_date": "2026-03-19",
   "providers": {
     "openai": {
       "currency": "USD",
       "models": {
         "gpt-5.4": {
           "pricing": {"in_per_1m": 2.5, "out_per_1m": 15.0},
+          "is_reasoning": true
+        },
+        "gpt-5.4-mini": {
+          "pricing": {"in_per_1m": 0.75, "out_per_1m": 4.5},
+          "is_reasoning": true
+        },
+        "gpt-5.4-nano": {
+          "pricing": {"in_per_1m": 0.2, "out_per_1m": 1.25},
           "is_reasoning": true
         },
         "gpt-5.2": {
