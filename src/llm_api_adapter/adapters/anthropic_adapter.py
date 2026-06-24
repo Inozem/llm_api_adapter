@@ -34,18 +34,8 @@ class AnthropicAdapter(LLMAdapterBase):
         parallel_tool_calls: Optional[bool] = None,
         previous_response: Optional[ChatResponse] = None,
     ) -> ChatResponse:
-        temperature = self._validate_parameter(
-            name="temperature",
-            value=temperature,
-            min_value=0,
-            max_value=2,
-        )
-        top_p = self._validate_parameter(
-            name="top_p",
-            value=top_p,
-            min_value=0,
-            max_value=1,
-        )
+        temperature = self._validate_parameter("temperature", temperature, 0, 2)
+        top_p = self._validate_parameter("top_p", top_p, 0, 1)
         try:
             self._validate_tools(tools)
             validated_tools = tools
@@ -87,10 +77,11 @@ class AnthropicAdapter(LLMAdapterBase):
                         reasoning_level=reasoning_level,
                         normalized_reasoning_level=normalized_reasoning_level,
                     )
-                    params["thinking"] = {
-                        "type": "enabled",
-                        "budget_tokens": normalized_reasoning_level,
-                    }
+                    params["budget_tokens"] = normalized_reasoning_level
+                if self.is_reasoning:
+                    effort = self._reasoning_level_to_effort(reasoning_level)
+                    if effort:
+                        params["effort"] = effort
             params = {k: v for k, v in params.items() if v is not None}
             _ = previous_response
             client = ClaudeSyncClient(api_key=self.api_key)
@@ -130,42 +121,60 @@ class AnthropicAdapter(LLMAdapterBase):
             return {"type": tool_choice}
         return {"type": "tool", "name": tool_choice}
 
+    def _validate_not_bool(self, level) -> None:
+        if isinstance(level, bool):
+            raise ValueError("Invalid type for level: bool is not accepted")
+
+    def _validate_reasoning_str(self, level: str) -> None:
+        if level not in self.reasoning_levels:
+            raise ValueError(
+                f"Unknown reasoning level key: {level!r}. "
+                f"Valid keys: {list(self.reasoning_levels.keys())}"
+            )
+
+    def _resolve_reasoning_int(self, level: int) -> int:
+        if isinstance(level, int):
+            return level
+        raise ValueError(
+            "Invalid type for level: expected int or str, "
+            f"got {type(level).__name__!r}"
+        )
+
+    def _reasoning_level_to_effort(self, level: str | int) -> str | None:
+        self._validate_not_bool(level)
+        if isinstance(level, str):
+            self._validate_reasoning_str(level)
+            return None if level == "none" else level
+        numeric = self._resolve_reasoning_int(level)
+        for key, threshold in self.reasoning_levels.items():
+            if threshold > 0 and numeric <= threshold:
+                return key
+        return list(self.reasoning_levels)[-1]
+
     def _normalize_reasoning_level(self, level: str | int) -> int | None:
         minimum_level = 1024
-        normalized_level: int | None = None
-        if level is not None and not self.is_reasoning:
+        if not self.is_reasoning:
             warning_message = (
                 f"Model '{self.model}' does not support reasoning — reasoning disabled."
             )
             warnings.warn(warning_message, UserWarning)
             logger.info(warning_message)
             return None
-        if isinstance(level, bool):
-            raise ValueError("Invalid type for level: bool is not accepted")
+        self._validate_not_bool(level)
         if isinstance(level, str):
-            if level in self.reasoning_levels:
-                normalized_level = self.reasoning_levels[level]
-            else:
-                raise ValueError(
-                    f"Unknown reasoning level key: {level!r}. "
-                    f"Valid keys: {list(self.reasoning_levels.keys())}"
-                )
-        if isinstance(level, int):
-            normalized_level = level
-        if normalized_level is not None:
-            if normalized_level >= minimum_level:
-                return normalized_level
-            warning_message = (
-                f"Reasoning level '{level}' is below the minimum supported value "
-                f"{minimum_level}; using {minimum_level} instead."
-            )
-            warnings.warn(warning_message, UserWarning)
-            logger.info(warning_message)
-            return minimum_level
-        raise ValueError(
-            "Invalid type for level: expected int or str, "
-            f"got {type(level).__name__!r}"
+            self._validate_reasoning_str(level)
+            numeric = self.reasoning_levels[level]
+        else:
+            numeric = self._resolve_reasoning_int(level)
+        if numeric >= minimum_level:
+            return numeric
+        warning_message = (
+            f"Reasoning level '{level}' is below the minimum supported value "
+            f"{minimum_level}; using {minimum_level} instead."
         )
+        warnings.warn(warning_message, UserWarning)
+        logger.info(warning_message)
+        return minimum_level
 
     def validate_reasoning_and_tokens(
         self,
