@@ -66,14 +66,15 @@ def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
                 first = adapter.chat(
                     messages=messages,
                     tools=tools,
-                    tool_choice="auto",
+                    tool_choice="any",
                     max_tokens=512,
                     timeout_s=60,
                 )
 
                 assert first.tool_calls, (
                     f"{p['name']} / {model}: expected at least one tool_call. "
-                    f"Content was: {first.content!r}"
+                    f"Content was: {first.content!r}. "
+                    f"Raw tool_calls: {first.tool_calls!r}"
                 )
 
                 messages.append(

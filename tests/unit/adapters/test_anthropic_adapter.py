@@ -109,9 +109,8 @@ def test_chat_sets_thinking_when_reasoning_level_provided(adapter):
         adapter.chat([UserMessage("hi")], max_tokens=10000, reasoning_level="high")
         mock_chat.assert_called_once()
         kwargs = mock_chat.call_args.kwargs
-        assert "thinking" in kwargs
-        assert kwargs["thinking"]["type"] == "enabled"
-        assert kwargs["thinking"]["budget_tokens"] == 4096
+        assert "budget_tokens" in kwargs
+        assert kwargs["budget_tokens"] == 4096
 
 @pytest.mark.unit
 def test_validate_reasoning_and_tokens_raises_llmconfigerror(adapter):
