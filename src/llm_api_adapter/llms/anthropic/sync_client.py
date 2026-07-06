@@ -42,7 +42,8 @@ class ClaudeSyncClient:
             kwargs.pop("top_p", None)
             if effort:
                 kwargs["thinking"] = {"type": "adaptive"}
-                kwargs["output_config"] = {"effort": effort}
+                existing = kwargs.get("output_config", {})
+                kwargs["output_config"] = {**existing, "effort": effort}
         else:
             if model.startswith(
                 ("claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5", "claude-opus-4-5")

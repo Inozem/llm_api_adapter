@@ -27,6 +27,7 @@ class ChatResponse:
     content: Optional[str] = None
     tool_calls: Optional[List[ToolCall]] = None
     finish_reason: Optional[str] = None
+    parsed_json: Optional[dict] = None
 
     @classmethod
     def from_openai_response(cls, api_response: dict) -> "ChatResponse":
