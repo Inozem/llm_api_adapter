@@ -166,3 +166,8 @@ cython_debug/
 #.idea/
 
 .devtree/
+
+# Local project docs and Claude configuration
+docs/
+CLAUDE.md
+graphify-out/
