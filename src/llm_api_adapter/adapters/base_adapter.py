@@ -3,12 +3,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass, field
+import json
 import logging
 import re
 from typing import Any, Dict, List, Optional
 import warnings
 
-from ..errors.llm_api_error import InvalidToolSchemaError, ToolChoiceError
+from ..errors.llm_api_error import InvalidToolSchemaError, JSONSchemaError, ToolChoiceError
 from ..llm_registry.llm_registry import Pricing, LLM_REGISTRY
 from ..models.messages.chat_message import Messages
 from ..models.responses.chat_response import ChatResponse
@@ -224,6 +225,44 @@ class LLMAdapterBase(ABC):
         raise ToolChoiceError(
             detail="tool_choice='required' is not supported; use 'any'"
         )
+
+    def _enforce_strict_schema(self, schema: dict) -> dict:
+        """Recursively add additionalProperties: false to all object types — required by OpenAI and Anthropic strict mode."""
+        schema = dict(schema)
+        if schema.get("type") == "object":
+            schema["additionalProperties"] = False
+            if "properties" in schema:
+                schema["properties"] = {
+                    k: self._enforce_strict_schema(v) if isinstance(v, dict) else v
+                    for k, v in schema["properties"].items()
+                }
+        if "items" in schema and isinstance(schema["items"], dict):
+            schema["items"] = self._enforce_strict_schema(schema["items"])
+        return schema
+
+    def _validate_json_schema(
+        self,
+        json_schema: Optional[dict],
+        tools: Optional[List[ToolSpec]] = None,
+    ) -> None:
+        if json_schema is None:
+            return
+        if not isinstance(json_schema, dict):
+            raise JSONSchemaError(detail="json_schema must be a dict")
+        if tools is not None:
+            raise JSONSchemaError(detail="json_schema and tools cannot be used together")
+
+    def _parse_json_response(
+        self,
+        content: Optional[str],
+        json_schema: Optional[dict],
+    ) -> Optional[dict]:
+        if json_schema is None or content is None:
+            return None
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            raise JSONSchemaError(detail=f"Model response is not valid JSON: {e}")
 
     def handle_error(self, error: Exception, error_message: Optional[str] = None):
         err_msg = (

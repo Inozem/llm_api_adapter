@@ -31,6 +31,7 @@ class OpenAIAdapter(LLMAdapterBase):
         tool_choice: Any = None,
         parallel_tool_calls: Optional[bool] = None,
         previous_response: Optional[ChatResponse] = None,
+        json_schema: Optional[dict] = None,
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature",
@@ -45,6 +46,7 @@ class OpenAIAdapter(LLMAdapterBase):
             max_value=1,
         )
         self._validate_tools(tools)
+        self._validate_json_schema(json_schema, tools)
         normalized_tool_choice = self._normalize_tool_choice(tool_choice, tools)
 
         try:
@@ -90,9 +92,27 @@ class OpenAIAdapter(LLMAdapterBase):
                     params["instructions"] = instructions
                 if previous_response_id is not None:
                     params["previous_response_id"] = previous_response_id
+                if json_schema is not None:
+                    params["text"] = {
+                        "format": {
+                            "type": "json_schema",
+                            "name": "response",
+                            "strict": True,
+                            "schema": self._enforce_strict_schema(json_schema),
+                        }
+                    }
             else:
                 params["messages"] = transformed_messages
                 params["parallel_tool_calls"] = parallel_tool_calls
+                if json_schema is not None:
+                    params["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "response",
+                            "strict": True,
+                            "schema": self._enforce_strict_schema(json_schema),
+                        },
+                    }
 
             params = {k: v for k, v in params.items() if v is not None}
             response = client.complete(timeout=timeout_s, **params)
@@ -101,6 +121,8 @@ class OpenAIAdapter(LLMAdapterBase):
                 chat_response = ChatResponse.from_openai_responses_response(response)
             else:
                 chat_response = ChatResponse.from_openai_response(response)
+
+            chat_response.parsed_json = self._parse_json_response(chat_response.content, json_schema)
 
             if self.pricing:
                 chat_response.apply_pricing(

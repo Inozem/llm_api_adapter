@@ -98,3 +98,9 @@ class InvalidToolArgumentsError(LLMAPIClientError):
 class ToolChoiceError(LLMAPIClientError):
     """Raised when tool_choice is invalid or references unknown tool."""
     message: str = "Invalid tool_choice configuration."
+
+
+@dataclass
+class JSONSchemaError(LLMAPIClientError):
+    """Raised when json_schema usage is invalid or the model response fails schema validation."""
+    message: str = "JSON schema error."

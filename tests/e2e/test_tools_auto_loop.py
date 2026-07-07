@@ -12,19 +12,19 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 def run_tool(name, args):
-    if name == "get_secret_word_score":
-        token = args["token"]
+    if name == "get_word_score":
+        word = args["word"]
         scores = {
-            "strawberry_v2": 73,
-            "banana_v1": 41,
-            "orange_v3": 58,
+            "strawberry": 73,
+            "banana": 41,
+            "orange": 58,
         }
-        if token not in scores:
-            raise ValueError(f"Unknown token {token}")
+        if word not in scores:
+            raise ValueError(f"Unknown word {word}")
 
         return {
-            "token": token,
-            "score": scores[token],
+            "word": word,
+            "score": scores[word],
         }
 
     raise ValueError(f"Unknown tool {name}")
@@ -34,14 +34,14 @@ def run_tool(name, args):
 def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
     tools = [
         ToolSpec(
-            name="get_secret_word_score",
-            description="Return the hidden score for a token. Use this tool when the user asks for a token score.",
+            name="get_word_score",
+            description="Return the score for a word. Use this tool when the user asks for a word score.",
             json_schema={
                 "type": "object",
                 "properties": {
-                    "token": {"type": "string"},
+                    "word": {"type": "string"},
                 },
-                "required": ["token"],
+                "required": ["word"],
                 "additionalProperties": False,
             },
         )
@@ -58,7 +58,7 @@ def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
 
                 messages = [
                     UserMessage(
-                        'What is the secret score for token "strawberry_v2"? '
+                        'What is the score for the word "strawberry"? '
                         "Use the available tool if needed."
                     )
                 ]
@@ -82,9 +82,9 @@ def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
                 )
 
                 for tc in first.tool_calls:
-                    assert tc.name == "get_secret_word_score"
+                    assert tc.name == "get_word_score"
                     assert isinstance(tc.arguments, dict)
-                    assert tc.arguments["token"] == "strawberry_v2"
+                    assert tc.arguments["word"] == "strawberry"
 
                     result = run_tool(tc.name, tc.arguments)
 

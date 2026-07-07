@@ -565,3 +565,57 @@ def test_map_tool_choice_to_openai_responses(adapter):
 def test_map_tool_choice_to_openai_responses_passthrough_non_string(adapter):
     tool_choice = {"type": "function", "name": "get_weather"}
     assert adapter._map_tool_choice_to_openai_responses(tool_choice) is tool_choice
+
+
+# ---------------------------
+# json_schema
+# ---------------------------
+
+@pytest.mark.unit
+def test_chat_responses_api_passes_json_schema_in_text_param(adapter):
+    schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+    fake_response = {"id": "resp_123"}
+    fake_chat_response = ChatResponse(content='{"name": "test"}')
+
+    with (
+        patch.object(OpenAISyncClient, "complete", return_value=fake_response) as mock_complete,
+        patch.object(
+            ChatResponse,
+            "from_openai_responses_response",
+            return_value=fake_chat_response,
+        ),
+    ):
+        result = adapter.chat([UserMessage("hi")], json_schema=schema)
+
+    _, kwargs = mock_complete.call_args
+    assert "text" in kwargs
+    fmt = kwargs["text"]["format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["strict"] is True
+    assert "schema" in fmt
+    assert result.parsed_json == {"name": "test"}
+
+
+@pytest.mark.unit
+def test_chat_legacy_api_passes_json_schema_in_response_format(legacy_adapter):
+    schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+    fake_response = {"id": "chatcmpl_123"}
+    fake_chat_response = ChatResponse(content='{"name": "test"}')
+
+    with (
+        patch.object(OpenAISyncClient, "complete", return_value=fake_response) as mock_complete,
+        patch.object(
+            ChatResponse,
+            "from_openai_response",
+            return_value=fake_chat_response,
+        ),
+    ):
+        result = legacy_adapter.chat([UserMessage("hi")], json_schema=schema)
+
+    _, kwargs = mock_complete.call_args
+    assert "response_format" in kwargs
+    rf = kwargs["response_format"]
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["strict"] is True
+    assert "schema" in rf["json_schema"]
+    assert result.parsed_json == {"name": "test"}
