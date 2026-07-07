@@ -14,7 +14,7 @@ from ...errors.llm_api_error import (
 
 logger = logging.getLogger(__name__)
 
-_ADAPTIVE_THINKING_MODELS = ("claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-7", "claude-opus-4-8")
+_ADAPTIVE_THINKING_MODELS = ("claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-fable-5", "claude-sonnet-5")
 
 @dataclass
 class ClaudeSyncClient:
