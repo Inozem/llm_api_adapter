@@ -11,7 +11,7 @@ Currently, the project supports OpenAI, Anthropic, and Google with a consistent 
 
 ### Version
 
-Current version: 0.3.2
+Current version: 0.4.0
 
 
 ## Features
@@ -27,6 +27,7 @@ Current version: 0.3.2
 - **Pricing Registry**: Model prices are stored in a unified JSON registry with per-model input/output pricing and currency support.
 - **Unified Reasoning Support**: A single `reasoning_level` parameter that works identically across all providers.
 - **Request Timeouts:** Per-request timeout control with a unified `timeout_s` parameter.
+- **Strict JSON Mode**: Pass a JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` — provider normalization is handled automatically.
 
 ## Installation
 
@@ -131,6 +132,14 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 - **LLMAPITimeoutError**: Raised when a request times out.
 
 - **LLMAPIUsageLimitError**: Raised when usage limits are exceeded.
+
+- **InvalidToolSchemaError**: Raised when a provided tool schema is invalid.
+
+- **InvalidToolArgumentsError**: Raised when tool arguments cannot be parsed or validated.
+
+- **ToolChoiceError**: Raised when `tool_choice` is invalid or references an unknown tool.
+
+- **JSONSchemaError**: Raised when `json_schema` is not a `dict`, is passed together with `tools`, or the model response is not valid JSON.
 
 ### Config Errors
 
@@ -244,6 +253,7 @@ The `ChatResponse` object returned by `chat` includes:
 8. **cost\_total**: Total combined cost.
 9. **content**: The generated text response.
 10. **finish\_reason**: Reason why generation stopped (e.g., `"stop"`, `"length"`).
+11. **parsed\_json**: Parsed JSON object when `json_schema` was provided, otherwise `None`.
 
 ## Timeout Support
 
@@ -469,6 +479,78 @@ if first.tool_calls:
         max_tokens=1000
     )
     print(final.content)
+```
+
+## Strict JSON Mode
+
+The SDK supports structured JSON output via a `json_schema` parameter in `chat()`. Pass any JSON Schema object — the adapter normalizes it for each provider automatically and returns the parsed result in `ChatResponse.parsed_json`.
+
+```python
+from llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+schema = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "age": {"type": "integer"},
+    },
+    "required": ["name", "age"],
+}
+
+adapter = UniversalLLMAPIAdapter(
+    organization="openai",
+    model="gpt-5",
+    api_key=openai_api_key,
+)
+
+response = adapter.chat(
+    messages=[
+        Prompt("Extract structured data from the user's message."),
+        UserMessage("My name is Alice and I'm 30 years old."),
+    ],
+    json_schema=schema,
+    max_tokens=200,
+)
+
+print(response.content)      # '{"name": "Alice", "age": 30}'
+print(response.parsed_json)  # {"name": "Alice", "age": 30}
+```
+
+### `json_schema` parameter
+
+- Accepts a `dict` containing a JSON Schema object.
+- Cannot be combined with `tools` — passing both raises `JSONSchemaError`.
+- If the model returns a response that is not valid JSON, `JSONSchemaError` is raised.
+
+### `parsed_json` field
+
+`ChatResponse.parsed_json` contains the parsed `dict` when `json_schema` was provided, or `None` otherwise.
+
+### Provider behavior
+
+| Provider | Implementation |
+|----------|----------------|
+| **OpenAI** (standard) | Native `response_format.type=json_schema` with `strict=true` |
+| **OpenAI** (Responses API / o-series) | Native `text.format.type=json_schema` with `strict=true` |
+| **Anthropic** | Native `output_config.format.type=json_schema` |
+| **Google** | `generationConfig.responseMimeType="application/json"` + `responseSchema` |
+
+The adapter automatically handles provider-specific schema constraints, so the same schema works across all providers without changes.
+
+### Error handling
+
+```python
+from llm_api_adapter.errors.llm_api_error import JSONSchemaError
+
+try:
+    response = adapter.chat(
+        messages=[UserMessage("Give me the data.")],
+        json_schema=schema,
+        max_tokens=200,
+    )
+except JSONSchemaError as e:
+    print(f"JSON schema error: {e}")
 ```
 
 ## Token Usage and Pricing

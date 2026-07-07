@@ -32,6 +32,7 @@ class GoogleAdapter(LLMAdapterBase):
         tool_choice: Optional[str | dict] = None,
         parallel_tool_calls: Optional[bool] = None,
         previous_response: Optional[ChatResponse] = None,
+        json_schema: Optional[dict] = None,
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature",
@@ -47,6 +48,7 @@ class GoogleAdapter(LLMAdapterBase):
         )
         try:
             self._validate_tools(tools)
+            self._validate_json_schema(json_schema, tools)
             validated_tools = tools
             normalized_tool_choice = self._normalize_tool_choice(
                 tool_choice,
@@ -60,6 +62,9 @@ class GoogleAdapter(LLMAdapterBase):
                 "temperature": temperature,
                 "topP": top_p,
             }
+            if json_schema is not None:
+                generation_config["responseMimeType"] = "application/json"
+                generation_config["responseSchema"] = self._to_google_schema(json_schema)
             if reasoning_level:
                 normalized_reasoning_level = self._normalize_reasoning_level(
                     reasoning_level
@@ -97,6 +102,7 @@ class GoogleAdapter(LLMAdapterBase):
                 **payload,
             )
             chat_response = ChatResponse.from_google_response(response_json)
+            chat_response.parsed_json = self._parse_json_response(chat_response.content, json_schema)
             if self.pricing:
                 chat_response.apply_pricing(
                     price_input_per_token=self.pricing.in_per_token,
@@ -109,6 +115,23 @@ class GoogleAdapter(LLMAdapterBase):
         except Exception as e:
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
+
+    # Fields not supported by Google's responseSchema subset of JSON Schema.
+    _GOOGLE_SCHEMA_UNSUPPORTED = frozenset({"additionalProperties", "$schema", "$id", "$ref"})
+
+    def _to_google_schema(self, schema: dict) -> dict:
+        """Convert standard JSON Schema to Google's format (type uppercase, unsupported fields stripped)."""
+        schema = {k: v for k, v in schema.items() if k not in self._GOOGLE_SCHEMA_UNSUPPORTED}
+        if "type" in schema and isinstance(schema["type"], str):
+            schema["type"] = schema["type"].upper()
+        if "properties" in schema:
+            schema["properties"] = {
+                k: self._to_google_schema(v) if isinstance(v, dict) else v
+                for k, v in schema["properties"].items()
+            }
+        if "items" in schema and isinstance(schema["items"], dict):
+            schema["items"] = self._to_google_schema(schema["items"])
+        return schema
 
     def _to_google_function_declaration(self, tool: ToolSpec) -> Dict[str, Any]:
         declaration: Dict[str, Any] = {

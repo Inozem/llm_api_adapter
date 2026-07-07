@@ -33,11 +33,13 @@ class AnthropicAdapter(LLMAdapterBase):
         tool_choice: Optional[str | dict] = None,
         parallel_tool_calls: Optional[bool] = None,
         previous_response: Optional[ChatResponse] = None,
+        json_schema: Optional[dict] = None,
     ) -> ChatResponse:
         temperature = self._validate_parameter("temperature", temperature, 0, 2)
         top_p = self._validate_parameter("top_p", top_p, 0, 1)
         try:
             self._validate_tools(tools)
+            self._validate_json_schema(json_schema, tools)
             validated_tools = tools
             normalized_tool_choice = self._normalize_tool_choice(
                 tool_choice,
@@ -67,6 +69,13 @@ class AnthropicAdapter(LLMAdapterBase):
                 params["disable_parallel_tool_use"] = True
             elif parallel_tool_calls is True:
                 params["disable_parallel_tool_use"] = False
+            if json_schema is not None:
+                params["output_config"] = {
+                    "format": {
+                        "type": "json_schema",
+                        "schema": self._enforce_strict_schema(json_schema),
+                    }
+                }
             if reasoning_level:
                 normalized_reasoning_level = self._normalize_reasoning_level(
                     reasoning_level
@@ -87,6 +96,7 @@ class AnthropicAdapter(LLMAdapterBase):
             client = ClaudeSyncClient(api_key=self.api_key)
             response = client.chat_completion(**params)
             chat_response = ChatResponse.from_anthropic_response(response)
+            chat_response.parsed_json = self._parse_json_response(chat_response.content, json_schema)
             if self.pricing:
                 chat_response.apply_pricing(
                     price_input_per_token=self.pricing.in_per_token,
