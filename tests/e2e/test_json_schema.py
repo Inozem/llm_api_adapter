@@ -13,7 +13,6 @@ SIMPLE_SCHEMA = {
         "age": {"type": "integer"},
     },
     "required": ["name", "age"],
-    "additionalProperties": False,
 }
 
 
