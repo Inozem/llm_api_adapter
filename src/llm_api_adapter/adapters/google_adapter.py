@@ -116,9 +116,12 @@ class GoogleAdapter(LLMAdapterBase):
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
 
+    # Fields not supported by Google's responseSchema subset of JSON Schema.
+    _GOOGLE_SCHEMA_UNSUPPORTED = frozenset({"additionalProperties", "$schema", "$id", "$ref"})
+
     def _to_google_schema(self, schema: dict) -> dict:
-        """Convert standard JSON Schema to Google's format (type values must be uppercase)."""
-        schema = dict(schema)
+        """Convert standard JSON Schema to Google's format (type uppercase, unsupported fields stripped)."""
+        schema = {k: v for k, v in schema.items() if k not in self._GOOGLE_SCHEMA_UNSUPPORTED}
         if "type" in schema and isinstance(schema["type"], str):
             schema["type"] = schema["type"].upper()
         if "properties" in schema:
