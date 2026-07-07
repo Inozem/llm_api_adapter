@@ -146,3 +146,58 @@ def test_normalize_reasoning_level_warns_if_model_not_supporting(adapter):
     with pytest.warns(UserWarning):
         result = adapter._normalize_reasoning_level("medium")
     assert result is None
+
+
+# ---------------------------
+# json_schema
+# ---------------------------
+
+@pytest.mark.unit
+def test_chat_passes_json_schema_in_generation_config(adapter):
+    schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+    fake_response = {"some": "google response"}
+    fake_chat_response = ChatResponse(content='{"name": "test"}')
+
+    with (
+        patch.object(GeminiSyncClient, "chat_completion", return_value=fake_response) as mock_client,
+        patch.object(ChatResponse, "from_google_response", return_value=fake_chat_response),
+    ):
+        result = adapter.chat([UserMessage("hi")], json_schema=schema)
+
+    kwargs = mock_client.call_args[1]
+    gen_cfg = kwargs["generationConfig"]
+    assert gen_cfg["responseMimeType"] == "application/json"
+    assert "responseSchema" in gen_cfg
+    assert result.parsed_json == {"name": "test"}
+
+
+@pytest.mark.unit
+def test_to_google_schema_strips_unsupported_fields(adapter):
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "additionalProperties": False,
+        "$schema": "http://json-schema.org/draft-07/schema#",
+    }
+    result = adapter._to_google_schema(schema)
+    assert "additionalProperties" not in result
+    assert "$schema" not in result
+    assert result["type"] == "OBJECT"
+    assert result["properties"]["name"]["type"] == "STRING"
+
+
+@pytest.mark.unit
+def test_chat_omits_json_schema_fields_when_not_provided(adapter):
+    fake_response = {"some": "google response"}
+    fake_chat_response = ChatResponse(content="plain text")
+
+    with (
+        patch.object(GeminiSyncClient, "chat_completion", return_value=fake_response) as mock_client,
+        patch.object(ChatResponse, "from_google_response", return_value=fake_chat_response),
+    ):
+        adapter.chat([UserMessage("hi")])
+
+    kwargs = mock_client.call_args[1]
+    gen_cfg = kwargs["generationConfig"]
+    assert "responseMimeType" not in gen_cfg
+    assert "responseSchema" not in gen_cfg

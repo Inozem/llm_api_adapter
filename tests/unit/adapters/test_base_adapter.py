@@ -7,6 +7,7 @@ from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
 from src.llm_api_adapter.adapters import base_adapter as base_module
 from src.llm_api_adapter.errors.llm_api_error import (
     InvalidToolSchemaError,
+    JSONSchemaError,
     LLMAPIError,
     ToolChoiceError,
 )
@@ -461,3 +462,61 @@ def test_ensure_tools_provided_accepts_non_empty_tools(adapter):
 def test_raise_required_tool_choice_error(adapter):
     with pytest.raises(ToolChoiceError, match="tool_choice='required' is not supported; use 'any'"):
         adapter._raise_required_tool_choice_error()
+
+
+# ---------------------------
+# _validate_json_schema
+# ---------------------------
+
+@pytest.mark.unit
+def test_validate_json_schema_accepts_none(adapter):
+    adapter._validate_json_schema(None)
+
+
+@pytest.mark.unit
+def test_validate_json_schema_accepts_valid_dict(adapter):
+    adapter._validate_json_schema({"type": "object", "properties": {"name": {"type": "string"}}})
+
+
+@pytest.mark.unit
+def test_validate_json_schema_rejects_non_dict(adapter):
+    with pytest.raises(JSONSchemaError, match="json_schema must be a dict"):
+        adapter._validate_json_schema("string")
+
+
+@pytest.mark.unit
+def test_validate_json_schema_rejects_dict_combined_with_tools(adapter):
+    tools = [make_tool("weather")]
+    with pytest.raises(JSONSchemaError, match="json_schema and tools cannot be used together"):
+        adapter._validate_json_schema({"type": "object"}, tools)
+
+
+@pytest.mark.unit
+def test_validate_json_schema_accepts_dict_when_tools_none(adapter):
+    adapter._validate_json_schema({"type": "object"}, None)
+
+
+# ---------------------------
+# _parse_json_response
+# ---------------------------
+
+@pytest.mark.unit
+def test_parse_json_response_returns_none_when_schema_none(adapter):
+    assert adapter._parse_json_response('{"name": "test"}', None) is None
+
+
+@pytest.mark.unit
+def test_parse_json_response_returns_none_when_content_none(adapter):
+    assert adapter._parse_json_response(None, {"type": "object"}) is None
+
+
+@pytest.mark.unit
+def test_parse_json_response_returns_parsed_dict(adapter):
+    result = adapter._parse_json_response('{"name": "test"}', {"type": "object"})
+    assert result == {"name": "test"}
+
+
+@pytest.mark.unit
+def test_parse_json_response_raises_on_invalid_json(adapter):
+    with pytest.raises(JSONSchemaError, match="Model response is not valid JSON"):
+        adapter._parse_json_response("not json", {"type": "object"})

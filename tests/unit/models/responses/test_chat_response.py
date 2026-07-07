@@ -754,6 +754,26 @@ def test_apply_pricing_sets_costs():
 
 
 @pytest.mark.unit
+def test_parsed_json_defaults_to_none():
+    response = ChatResponse()
+    assert response.parsed_json is None
+
+
+@pytest.mark.unit
+def test_parsed_json_can_be_set_on_construction():
+    data = {"name": "test", "age": 30}
+    response = ChatResponse(parsed_json=data)
+    assert response.parsed_json == data
+
+
+@pytest.mark.unit
+def test_parsed_json_can_be_assigned_after_construction():
+    response = ChatResponse()
+    response.parsed_json = {"key": "value"}
+    assert response.parsed_json == {"key": "value"}
+
+
+@pytest.mark.unit
 def test_apply_pricing_without_usage_does_nothing():
     response = ChatResponse()
     response.apply_pricing(

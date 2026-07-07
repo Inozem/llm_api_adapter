@@ -121,3 +121,41 @@ def test_validate_reasoning_and_tokens_raises_llmconfigerror(adapter):
             reasoning_level="high",
             normalized_reasoning_level=2048
         )
+
+
+# ---------------------------
+# json_schema
+# ---------------------------
+
+@pytest.mark.unit
+def test_chat_passes_output_config_when_json_schema_provided(adapter):
+    schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+    fake_response = {"some": "anthropic response"}
+    fake_chat_response = ChatResponse(content='{"name": "test"}')
+
+    with (
+        patch.object(ClaudeSyncClient, "chat_completion", return_value=fake_response) as mock_chat,
+        patch.object(ChatResponse, "from_anthropic_response", return_value=fake_chat_response),
+    ):
+        result = adapter.chat([UserMessage("hi")], max_tokens=100, json_schema=schema)
+
+    kwargs = mock_chat.call_args.kwargs
+    assert "output_config" in kwargs
+    assert kwargs["output_config"]["format"]["type"] == "json_schema"
+    assert "schema" in kwargs["output_config"]["format"]
+    assert result.parsed_json == {"name": "test"}
+
+
+@pytest.mark.unit
+def test_chat_omits_output_config_when_json_schema_is_none(adapter):
+    fake_response = {"some": "anthropic response"}
+    fake_chat_response = ChatResponse(content="plain text")
+
+    with (
+        patch.object(ClaudeSyncClient, "chat_completion", return_value=fake_response) as mock_chat,
+        patch.object(ChatResponse, "from_anthropic_response", return_value=fake_chat_response),
+    ):
+        adapter.chat([UserMessage("hi")], max_tokens=100)
+
+    kwargs = mock_chat.call_args.kwargs
+    assert "output_config" not in kwargs
