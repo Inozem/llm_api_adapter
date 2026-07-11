@@ -1,5 +1,6 @@
 import pytest
 import requests_mock as requests_mock_module
+from pydantic import BaseModel
 
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -15,6 +16,11 @@ SCHEMA = {
     },
     "required": ["name", "age"],
 }
+
+
+class Person(BaseModel):
+    name: str
+    age: int
 
 
 @pytest.fixture
@@ -119,6 +125,25 @@ def test_openai_responses_api_sends_json_schema_in_text_param(openai_responses_j
     assert resp.parsed_json == {"name": "Alice", "age": 30}
 
 
+@pytest.mark.integration
+def test_openai_responses_api_sends_schema_and_returns_parsed_model(openai_responses_json_mock):
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai", model="gpt-5", api_key="dummy_key"
+    )
+
+    resp = adapter.chat(messages=[UserMessage("hi")], response_model=Person)
+
+    payload = openai_responses_json_mock.request_history[0].json()
+    fmt = payload["text"]["format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["schema"] == {**Person.model_json_schema(), "additionalProperties": False}
+
+    assert resp.parsed_json == {"name": "Alice", "age": 30}
+    assert isinstance(resp.parsed_model, Person)
+    assert resp.parsed_model.name == "Alice"
+    assert resp.parsed_model.age == 30
+
+
 # ---------------------------
 # OpenAI Legacy API (gpt-4o)
 # ---------------------------
@@ -142,6 +167,24 @@ def test_openai_legacy_api_sends_json_schema_in_response_format(openai_legacy_js
 
     assert resp.content == JSON_CONTENT
     assert resp.parsed_json == {"name": "Alice", "age": 30}
+
+
+@pytest.mark.integration
+def test_openai_legacy_api_sends_schema_and_returns_parsed_model(openai_legacy_json_mock):
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai", model="gpt-4o", api_key="dummy_key"
+    )
+
+    resp = adapter.chat(messages=[UserMessage("hi")], response_model=Person)
+
+    payload = openai_legacy_json_mock.request_history[0].json()
+    js = payload["response_format"]["json_schema"]
+    assert js["schema"] == {**Person.model_json_schema(), "additionalProperties": False}
+
+    assert resp.parsed_json == {"name": "Alice", "age": 30}
+    assert isinstance(resp.parsed_model, Person)
+    assert resp.parsed_model.name == "Alice"
+    assert resp.parsed_model.age == 30
 
 
 # ---------------------------
@@ -169,6 +212,25 @@ def test_anthropic_sends_output_config_for_json_schema(anthropic_json_mock):
     assert resp.parsed_json == {"name": "Alice", "age": 30}
 
 
+@pytest.mark.integration
+def test_anthropic_sends_schema_and_returns_parsed_model(anthropic_json_mock):
+    adapter = UniversalLLMAPIAdapter(
+        organization="anthropic", model="claude-sonnet-4-5", api_key="dummy_key"
+    )
+
+    resp = adapter.chat(messages=[UserMessage("hi")], max_tokens=256, response_model=Person)
+
+    payload = anthropic_json_mock.request_history[0].json()
+    fmt = payload["output_config"]["format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["schema"] == {**Person.model_json_schema(), "additionalProperties": False}
+
+    assert resp.parsed_json == {"name": "Alice", "age": 30}
+    assert isinstance(resp.parsed_model, Person)
+    assert resp.parsed_model.name == "Alice"
+    assert resp.parsed_model.age == 30
+
+
 # ---------------------------
 # Google
 # ---------------------------
@@ -192,3 +254,23 @@ def test_google_sends_response_mime_type_and_schema(google_json_mock):
 
     assert resp.content == JSON_CONTENT
     assert resp.parsed_json == {"name": "Alice", "age": 30}
+
+
+@pytest.mark.integration
+def test_google_sends_schema_and_returns_parsed_model_for_response_model(google_json_mock):
+    adapter = UniversalLLMAPIAdapter(
+        organization="google", model="gemini-2.5-pro", api_key="dummy_key"
+    )
+
+    resp = adapter.chat(messages=[UserMessage("hi")], response_model=Person)
+
+    payload = google_json_mock.request_history[0].json()
+    gen_cfg = payload["generationConfig"]
+    assert gen_cfg["responseMimeType"] == "application/json"
+    assert "name" in gen_cfg["responseSchema"]["properties"]
+    assert "age" in gen_cfg["responseSchema"]["properties"]
+
+    assert resp.parsed_json == {"name": "Alice", "age": 30}
+    assert isinstance(resp.parsed_model, Person)
+    assert resp.parsed_model.name == "Alice"
+    assert resp.parsed_model.age == 30
