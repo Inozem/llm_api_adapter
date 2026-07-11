@@ -33,6 +33,7 @@ class GoogleAdapter(LLMAdapterBase):
         parallel_tool_calls: Optional[bool] = None,
         previous_response: Optional[ChatResponse] = None,
         json_schema: Optional[dict] = None,
+        response_model: Optional[Any] = None,
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature",
@@ -48,7 +49,7 @@ class GoogleAdapter(LLMAdapterBase):
         )
         try:
             self._validate_tools(tools)
-            self._validate_json_schema(json_schema, tools)
+            effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
             validated_tools = tools
             normalized_tool_choice = self._normalize_tool_choice(
                 tool_choice,
@@ -62,9 +63,9 @@ class GoogleAdapter(LLMAdapterBase):
                 "temperature": temperature,
                 "topP": top_p,
             }
-            if json_schema is not None:
+            if effective_schema is not None:
                 generation_config["responseMimeType"] = "application/json"
-                generation_config["responseSchema"] = self._to_google_schema(json_schema)
+                generation_config["responseSchema"] = self._to_google_schema(effective_schema)
             if reasoning_level:
                 normalized_reasoning_level = self._normalize_reasoning_level(
                     reasoning_level
@@ -102,7 +103,8 @@ class GoogleAdapter(LLMAdapterBase):
                 **payload,
             )
             chat_response = ChatResponse.from_google_response(response_json)
-            chat_response.parsed_json = self._parse_json_response(chat_response.content, json_schema)
+            chat_response.parsed_json = self._parse_json_response(chat_response.content, effective_schema)
+            chat_response.parsed_model = self._parse_response_model(chat_response.parsed_json, response_model)
             if self.pricing:
                 chat_response.apply_pricing(
                     price_input_per_token=self.pricing.in_per_token,

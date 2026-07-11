@@ -240,17 +240,43 @@ class LLMAdapterBase(ABC):
             schema["items"] = self._enforce_strict_schema(schema["items"])
         return schema
 
-    def _validate_json_schema(
+
+    def _resolve_json_schema(
         self,
         json_schema: Optional[dict],
-        tools: Optional[List[ToolSpec]] = None,
-    ) -> None:
-        if json_schema is None:
-            return
-        if not isinstance(json_schema, dict):
-            raise JSONSchemaError(detail="json_schema must be a dict")
-        if tools is not None:
+        response_model: Optional[Any],
+        tools: Optional[List[ToolSpec]],
+    ) -> Optional[dict]:
+        if json_schema is not None and response_model is not None:
+            raise JSONSchemaError(detail="json_schema and response_model cannot be used together")
+        if response_model is not None and tools is not None:
+            raise JSONSchemaError(detail="response_model and tools cannot be used together")
+        if json_schema is not None and tools is not None:
             raise JSONSchemaError(detail="json_schema and tools cannot be used together")
+        if response_model is not None:
+            try:
+                return response_model.model_json_schema()
+            except AttributeError:
+                try:
+                    import pydantic  # noqa
+                except ImportError:
+                    raise JSONSchemaError(
+                        detail="pydantic is required for response_model; install it with: pip install pydantic"
+                    )
+                raise JSONSchemaError(detail="response_model must be a Pydantic BaseModel subclass")
+        if json_schema is not None and not isinstance(json_schema, dict):
+            raise JSONSchemaError(detail="json_schema must be a dict")
+        return json_schema
+
+    def _strip_json_fences(self, content: str) -> str:
+        text = content.strip()
+        fence_match = re.match(r'^```(?:json)?\s*([\s\S]*?)\s*```$', text, re.IGNORECASE)
+        if fence_match:
+            return fence_match.group(1).strip()
+        block_match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', text)
+        if block_match:
+            return block_match.group(1)
+        return text
 
     def _parse_json_response(
         self,
@@ -261,8 +287,26 @@ class LLMAdapterBase(ABC):
             return None
         try:
             return json.loads(content)
-        except json.JSONDecodeError as e:
-            raise JSONSchemaError(detail=f"Model response is not valid JSON: {e}")
+        except json.JSONDecodeError:
+            try:
+                return json.loads(self._strip_json_fences(content))
+            except json.JSONDecodeError as e:
+                raise JSONSchemaError(detail=f"Model response is not valid JSON: {e}")
+
+    def _parse_response_model(
+        self,
+        parsed_json: Optional[dict],
+        response_model: Optional[Any],
+    ) -> Optional[Any]:
+        if response_model is None or parsed_json is None:
+            return None
+        try:
+            return response_model.model_validate(parsed_json)
+        except Exception:
+            try:
+                return response_model.model_validate(parsed_json, strict=False)
+            except Exception as e:
+                raise JSONSchemaError(detail=f"Response failed Pydantic validation: {e}")
 
     def handle_error(self, error: Exception, error_message: Optional[str] = None):
         err_msg = (

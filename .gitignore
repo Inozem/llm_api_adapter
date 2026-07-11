@@ -171,3 +171,5 @@ cython_debug/
 docs/
 CLAUDE.md
 graphify-out/
+.claude/settings.json
+.mcp.json
