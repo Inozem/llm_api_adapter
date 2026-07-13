@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import json
-from typing import List, Optional
+from typing import Any, List, Optional
 import warnings
 
 from ...errors.llm_api_error import InvalidToolArgumentsError, LLMAPIError
@@ -28,6 +28,7 @@ class ChatResponse:
     tool_calls: Optional[List[ToolCall]] = None
     finish_reason: Optional[str] = None
     parsed_json: Optional[dict] = None
+    parsed_model: Optional[Any] = None
 
     @classmethod
     def from_openai_response(cls, api_response: dict) -> "ChatResponse":

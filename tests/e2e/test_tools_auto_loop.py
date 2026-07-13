@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 
@@ -11,20 +12,30 @@ from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
+def chat_with_retry(adapter, *, retries=2, retry_delay=3, **kwargs):
+    for attempt in range(retries + 1):
+        resp = adapter.chat(**kwargs)
+        if resp.finish_reason != "refusal":
+            return resp
+        if attempt < retries:
+            time.sleep(retry_delay)
+    return resp
+
+
 def run_tool(name, args):
-    if name == "get_word_score":
-        word = args["word"]
-        scores = {
+    if name == "get_fruit_popularity":
+        fruit = args["fruit"]
+        popularity = {
             "strawberry": 73,
             "banana": 41,
             "orange": 58,
         }
-        if word not in scores:
-            raise ValueError(f"Unknown word {word}")
+        if fruit not in popularity:
+            raise ValueError(f"Unknown fruit {fruit}")
 
         return {
-            "word": word,
-            "score": scores[word],
+            "fruit": fruit,
+            "popularity": popularity[fruit],
         }
 
     raise ValueError(f"Unknown tool {name}")
@@ -34,14 +45,14 @@ def run_tool(name, args):
 def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
     tools = [
         ToolSpec(
-            name="get_word_score",
-            description="Return the score for a word. Use this tool when the user asks for a word score.",
+            name="get_fruit_popularity",
+            description="Return the popularity rating for a fruit.",
             json_schema={
                 "type": "object",
                 "properties": {
-                    "word": {"type": "string"},
+                    "fruit": {"type": "string"},
                 },
-                "required": ["word"],
+                "required": ["fruit"],
                 "additionalProperties": False,
             },
         )
@@ -58,17 +69,22 @@ def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
 
                 messages = [
                     UserMessage(
-                        'What is the score for the word "strawberry"? '
+                        'What is the popularity of the fruit "strawberry"? '
                         "Use the available tool if needed."
                     )
                 ]
 
-                first = adapter.chat(
+                first = chat_with_retry(
+                    adapter,
                     messages=messages,
                     tools=tools,
                     tool_choice="any",
                     max_tokens=512,
                     timeout_s=60,
+                )
+
+                assert first.finish_reason != "refusal", (
+                    f"{p['name']} / {model}: model refused the request (safety classifier)"
                 )
 
                 assert first.tool_calls, (
@@ -82,9 +98,9 @@ def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
                 )
 
                 for tc in first.tool_calls:
-                    assert tc.name == "get_word_score"
+                    assert tc.name == "get_fruit_popularity"
                     assert isinstance(tc.arguments, dict)
-                    assert tc.arguments["word"] == "strawberry"
+                    assert tc.arguments["fruit"] == "strawberry"
 
                     result = run_tool(tc.name, tc.arguments)
 
@@ -95,7 +111,8 @@ def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
                         )
                     )
 
-                final = adapter.chat(
+                final = chat_with_retry(
+                    adapter,
                     messages=messages,
                     previous_response=first,
                     max_tokens=512,

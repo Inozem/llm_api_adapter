@@ -32,6 +32,7 @@ class OpenAIAdapter(LLMAdapterBase):
         parallel_tool_calls: Optional[bool] = None,
         previous_response: Optional[ChatResponse] = None,
         json_schema: Optional[dict] = None,
+        response_model: Optional[Any] = None,
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature",
@@ -46,7 +47,7 @@ class OpenAIAdapter(LLMAdapterBase):
             max_value=1,
         )
         self._validate_tools(tools)
-        self._validate_json_schema(json_schema, tools)
+        effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
         normalized_tool_choice = self._normalize_tool_choice(tool_choice, tools)
 
         try:
@@ -92,25 +93,25 @@ class OpenAIAdapter(LLMAdapterBase):
                     params["instructions"] = instructions
                 if previous_response_id is not None:
                     params["previous_response_id"] = previous_response_id
-                if json_schema is not None:
+                if effective_schema is not None:
                     params["text"] = {
                         "format": {
                             "type": "json_schema",
                             "name": "response",
                             "strict": True,
-                            "schema": self._enforce_strict_schema(json_schema),
+                            "schema": self._enforce_strict_schema(effective_schema),
                         }
                     }
             else:
                 params["messages"] = transformed_messages
                 params["parallel_tool_calls"] = parallel_tool_calls
-                if json_schema is not None:
+                if effective_schema is not None:
                     params["response_format"] = {
                         "type": "json_schema",
                         "json_schema": {
                             "name": "response",
                             "strict": True,
-                            "schema": self._enforce_strict_schema(json_schema),
+                            "schema": self._enforce_strict_schema(effective_schema),
                         },
                     }
 
@@ -122,7 +123,8 @@ class OpenAIAdapter(LLMAdapterBase):
             else:
                 chat_response = ChatResponse.from_openai_response(response)
 
-            chat_response.parsed_json = self._parse_json_response(chat_response.content, json_schema)
+            chat_response.parsed_json = self._parse_json_response(chat_response.content, effective_schema)
+            chat_response.parsed_model = self._parse_response_model(chat_response.parsed_json, response_model)
 
             if self.pricing:
                 chat_response.apply_pricing(

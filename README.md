@@ -11,7 +11,7 @@ Currently, the project supports OpenAI, Anthropic, and Google with a consistent 
 
 ### Version
 
-Current version: 0.4.0
+Current version: 0.4.1
 
 
 ## Features
@@ -28,6 +28,7 @@ Current version: 0.4.0
 - **Unified Reasoning Support**: A single `reasoning_level` parameter that works identically across all providers.
 - **Request Timeouts:** Per-request timeout control with a unified `timeout_s` parameter.
 - **Strict JSON Mode**: Pass a JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` — provider normalization is handled automatically.
+- **Pydantic Integration**: Pass a Pydantic model as `response_model` and get a typed instance back in `ChatResponse.parsed_model` — no manual schema writing required.
 
 ## Installation
 
@@ -139,7 +140,7 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 - **ToolChoiceError**: Raised when `tool_choice` is invalid or references an unknown tool.
 
-- **JSONSchemaError**: Raised when `json_schema` is not a `dict`, is passed together with `tools`, or the model response is not valid JSON.
+- **JSONSchemaError**: Raised when `json_schema` or `response_model` is used incorrectly (combined with each other or with `tools`), when `response_model` is not a Pydantic `BaseModel` subclass, when Pydantic is not installed, or when the model response is not valid JSON.
 
 ### Config Errors
 
@@ -153,7 +154,7 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, and Google.
 
-- **OpenAI**: You can use models like `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
+- **OpenAI**: You can use models like `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
 - **Anthropic**: Available models include `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`, `claude-opus-4-1`.
 - **Google**: Models such as `gemini-3.5-flash`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash` can be used.
 
@@ -253,7 +254,8 @@ The `ChatResponse` object returned by `chat` includes:
 8. **cost\_total**: Total combined cost.
 9. **content**: The generated text response.
 10. **finish\_reason**: Reason why generation stopped (e.g., `"stop"`, `"length"`).
-11. **parsed\_json**: Parsed JSON object when `json_schema` was provided, otherwise `None`.
+11. **parsed\_json**: Parsed JSON object when `json_schema` or `response_model` was provided, otherwise `None`.
+12. **parsed\_model**: Typed Pydantic instance when `response_model` was provided, otherwise `None`.
 
 ## Timeout Support
 
@@ -481,9 +483,49 @@ if first.tool_calls:
     print(final.content)
 ```
 
-## Strict JSON Mode
+## Structured Output
 
-The SDK supports structured JSON output via a `json_schema` parameter in `chat()`. Pass any JSON Schema object — the adapter normalizes it for each provider automatically and returns the parsed result in `ChatResponse.parsed_json`.
+The SDK supports two ways to get structured output from `chat()`: a raw `json_schema` dict, or a Pydantic model via `response_model`. Both work across all providers without any changes to your code.
+
+### Pydantic Integration (`response_model`)
+
+Pass a Pydantic `BaseModel` subclass as `response_model` — the adapter extracts the JSON Schema automatically and returns a typed instance in `ChatResponse.parsed_model`.
+
+```python
+from pydantic import BaseModel
+from llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+class Person(BaseModel):
+    name: str
+    age: int
+
+adapter = UniversalLLMAPIAdapter(
+    organization="openai",
+    model="gpt-5",
+    api_key=openai_api_key,
+)
+
+response = adapter.chat(
+    messages=[
+        Prompt("Extract structured data from the user's message."),
+        UserMessage("My name is Alice and I'm 30 years old."),
+    ],
+    response_model=Person,
+    max_tokens=200,
+)
+
+print(response.parsed_model)  # Person(name='Alice', age=30)
+print(response.parsed_json)   # {"name": "Alice", "age": 30}
+```
+
+> **Note:** Pydantic is not a required dependency of this package. Install it separately: `pip install pydantic`.
+
+`response_model` cannot be combined with `json_schema` or `tools` — passing both raises `JSONSchemaError`.
+
+### Raw JSON Schema (`json_schema`)
+
+The SDK also supports structured JSON output via a `json_schema` parameter in `chat()`. Pass any JSON Schema object — the adapter normalizes it for each provider automatically and returns the parsed result in `ChatResponse.parsed_json`.
 
 ```python
 from llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
@@ -520,12 +562,12 @@ print(response.parsed_json)  # {"name": "Alice", "age": 30}
 ### `json_schema` parameter
 
 - Accepts a `dict` containing a JSON Schema object.
-- Cannot be combined with `tools` — passing both raises `JSONSchemaError`.
+- Cannot be combined with `tools` or `response_model` — passing both raises `JSONSchemaError`.
 - If the model returns a response that is not valid JSON, `JSONSchemaError` is raised.
 
 ### `parsed_json` field
 
-`ChatResponse.parsed_json` contains the parsed `dict` when `json_schema` was provided, or `None` otherwise.
+`ChatResponse.parsed_json` contains the parsed `dict` when `json_schema` or `response_model` was provided, or `None` otherwise.
 
 ### Provider behavior
 
