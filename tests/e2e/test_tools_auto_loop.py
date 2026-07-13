@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 
@@ -9,6 +10,16 @@ from llm_api_adapter.models.messages.chat_message import (
 )
 from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+
+def chat_with_retry(adapter, *, retries=2, retry_delay=3, **kwargs):
+    for attempt in range(retries + 1):
+        resp = adapter.chat(**kwargs)
+        if resp.finish_reason != "refusal":
+            return resp
+        if attempt < retries:
+            time.sleep(retry_delay)
+    return resp
 
 
 def run_tool(name, args):
@@ -63,7 +74,8 @@ def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
                     )
                 ]
 
-                first = adapter.chat(
+                first = chat_with_retry(
+                    adapter,
                     messages=messages,
                     tools=tools,
                     tool_choice="any",
@@ -99,7 +111,8 @@ def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
                         )
                     )
 
-                final = adapter.chat(
+                final = chat_with_retry(
+                    adapter,
                     messages=messages,
                     previous_response=first,
                     max_tokens=512,
