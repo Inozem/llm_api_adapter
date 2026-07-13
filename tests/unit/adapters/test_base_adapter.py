@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from pydantic import BaseModel
 
 from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
 from src.llm_api_adapter.adapters import base_adapter as base_module
@@ -465,35 +466,92 @@ def test_raise_required_tool_choice_error(adapter):
 
 
 # ---------------------------
-# _validate_json_schema
+# _resolve_json_schema
+# ---------------------------
+
+class _Person(BaseModel):
+    name: str
+    age: int
+
+
+class _NotPydantic:
+    pass
+
+
+@pytest.mark.unit
+def test_resolve_json_schema_all_none_returns_none(adapter):
+    assert adapter._resolve_json_schema(None, None, None) is None
+
+
+@pytest.mark.unit
+def test_resolve_json_schema_dict_returns_dict(adapter):
+    schema = {"type": "object"}
+    assert adapter._resolve_json_schema(schema, None, None) == schema
+
+
+@pytest.mark.unit
+def test_resolve_json_schema_response_model_returns_schema(adapter):
+    result = adapter._resolve_json_schema(None, _Person, None)
+    assert result == _Person.model_json_schema()
+
+
+@pytest.mark.unit
+def test_resolve_json_schema_rejects_non_dict_json_schema(adapter):
+    with pytest.raises(JSONSchemaError, match="json_schema must be a dict"):
+        adapter._resolve_json_schema("not-a-dict", None, None)
+
+
+@pytest.mark.unit
+def test_resolve_json_schema_rejects_both_json_schema_and_response_model(adapter):
+    with pytest.raises(JSONSchemaError, match="json_schema and response_model cannot be used together"):
+        adapter._resolve_json_schema({"type": "object"}, _Person, None)
+
+
+@pytest.mark.unit
+def test_resolve_json_schema_rejects_response_model_with_tools(adapter):
+    with pytest.raises(JSONSchemaError, match="response_model and tools cannot be used together"):
+        adapter._resolve_json_schema(None, _Person, [make_tool("weather")])
+
+
+@pytest.mark.unit
+def test_resolve_json_schema_rejects_json_schema_with_tools(adapter):
+    with pytest.raises(JSONSchemaError, match="json_schema and tools cannot be used together"):
+        adapter._resolve_json_schema({"type": "object"}, None, [make_tool("weather")])
+
+
+@pytest.mark.unit
+def test_resolve_json_schema_rejects_non_pydantic_class(adapter):
+    with pytest.raises(JSONSchemaError, match="Pydantic BaseModel"):
+        adapter._resolve_json_schema(None, _NotPydantic, None)
+
+
+# ---------------------------
+# _strip_json_fences
 # ---------------------------
 
 @pytest.mark.unit
-def test_validate_json_schema_accepts_none(adapter):
-    adapter._validate_json_schema(None)
+def test_strip_json_fences_plain_json_unchanged(adapter):
+    assert adapter._strip_json_fences('{"a": 1}') == '{"a": 1}'
 
 
 @pytest.mark.unit
-def test_validate_json_schema_accepts_valid_dict(adapter):
-    adapter._validate_json_schema({"type": "object", "properties": {"name": {"type": "string"}}})
+def test_strip_json_fences_removes_json_fence(adapter):
+    assert adapter._strip_json_fences('```json\n{"a": 1}\n```') == '{"a": 1}'
 
 
 @pytest.mark.unit
-def test_validate_json_schema_rejects_non_dict(adapter):
-    with pytest.raises(JSONSchemaError, match="json_schema must be a dict"):
-        adapter._validate_json_schema("string")
+def test_strip_json_fences_removes_plain_fence(adapter):
+    assert adapter._strip_json_fences('```\n{"a": 1}\n```') == '{"a": 1}'
 
 
 @pytest.mark.unit
-def test_validate_json_schema_rejects_dict_combined_with_tools(adapter):
-    tools = [make_tool("weather")]
-    with pytest.raises(JSONSchemaError, match="json_schema and tools cannot be used together"):
-        adapter._validate_json_schema({"type": "object"}, tools)
+def test_strip_json_fences_extracts_object_from_preamble(adapter):
+    assert adapter._strip_json_fences('Here you go:\n{"a": 1}\nDone.') == '{"a": 1}'
 
 
 @pytest.mark.unit
-def test_validate_json_schema_accepts_dict_when_tools_none(adapter):
-    adapter._validate_json_schema({"type": "object"}, None)
+def test_strip_json_fences_extracts_array(adapter):
+    assert adapter._strip_json_fences('Result: [1, 2, 3]') == '[1, 2, 3]'
 
 
 # ---------------------------
@@ -517,6 +575,46 @@ def test_parse_json_response_returns_parsed_dict(adapter):
 
 
 @pytest.mark.unit
+def test_parse_json_response_strips_json_fence(adapter):
+    result = adapter._parse_json_response('```json\n{"name": "test"}\n```', {"type": "object"})
+    assert result == {"name": "test"}
+
+
+@pytest.mark.unit
+def test_parse_json_response_strips_preamble(adapter):
+    result = adapter._parse_json_response('Sure! {"name": "test"} done.', {"type": "object"})
+    assert result == {"name": "test"}
+
+
+@pytest.mark.unit
 def test_parse_json_response_raises_on_invalid_json(adapter):
     with pytest.raises(JSONSchemaError, match="Model response is not valid JSON"):
-        adapter._parse_json_response("not json", {"type": "object"})
+        adapter._parse_json_response("not json at all !!!", {"type": "object"})
+
+
+# ---------------------------
+# _parse_response_model
+# ---------------------------
+
+@pytest.mark.unit
+def test_parse_response_model_returns_none_when_model_none(adapter):
+    assert adapter._parse_response_model({"name": "Alice", "age": 30}, None) is None
+
+
+@pytest.mark.unit
+def test_parse_response_model_returns_none_when_json_none(adapter):
+    assert adapter._parse_response_model(None, _Person) is None
+
+
+@pytest.mark.unit
+def test_parse_response_model_returns_validated_instance(adapter):
+    result = adapter._parse_response_model({"name": "Alice", "age": 30}, _Person)
+    assert isinstance(result, _Person)
+    assert result.name == "Alice"
+    assert result.age == 30
+
+
+@pytest.mark.unit
+def test_parse_response_model_raises_on_invalid_data(adapter):
+    with pytest.raises(JSONSchemaError, match="Pydantic validation"):
+        adapter._parse_response_model({"name": 123, "age": "not-an-int"}, _Person)

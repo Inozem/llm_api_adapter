@@ -774,6 +774,33 @@ def test_parsed_json_can_be_assigned_after_construction():
 
 
 @pytest.mark.unit
+def test_parsed_model_defaults_to_none():
+    response = ChatResponse()
+    assert response.parsed_model is None
+
+
+@pytest.mark.unit
+def test_parsed_model_can_be_set_on_construction():
+    response = ChatResponse(parsed_model={"any": "object"})
+    assert response.parsed_model == {"any": "object"}
+
+
+@pytest.mark.unit
+def test_parsed_model_can_be_assigned_after_construction():
+    response = ChatResponse()
+    response.parsed_model = "some-value"
+    assert response.parsed_model == "some-value"
+
+
+@pytest.mark.unit
+def test_parsed_json_and_parsed_model_coexist():
+    data = {"name": "Alice", "age": 30}
+    response = ChatResponse(parsed_json=data, parsed_model="model-instance")
+    assert response.parsed_json == data
+    assert response.parsed_model == "model-instance"
+
+
+@pytest.mark.unit
 def test_apply_pricing_without_usage_does_nothing():
     response = ChatResponse()
     response.apply_pricing(

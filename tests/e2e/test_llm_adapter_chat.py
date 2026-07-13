@@ -56,7 +56,7 @@ def test_chat_with_reasoning_level_returns_valid_contract(providers, subtests):
                 )
                 resp = adapter.chat(
                     messages=[{"role": "user", "content": "Say 'OK'."}],
-                    max_tokens=1026,
+                    max_tokens=2000,
                     reasoning_level=1024,
                     timeout_s=60
                 )
