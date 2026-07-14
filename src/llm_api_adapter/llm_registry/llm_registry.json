@@ -1,6 +1,6 @@
 {
-  "schema_version": 6,
-  "effective_date": "2026-07-13",
+  "schema_version": 7,
+  "effective_date": "2026-07-14",
   "providers": {
     "openai": {
       "currency": "USD",
@@ -65,27 +65,33 @@
       "models": {
         "claude-fable-5": {
           "pricing": {"in_per_1m": 10.0, "out_per_1m": 50.0},
-          "is_reasoning": true
+          "is_reasoning": true,
+          "is_adaptive": true
         },
         "claude-sonnet-5": {
           "pricing": {"in_per_1m": 3.0, "out_per_1m": 15.0},
-          "is_reasoning": true
+          "is_reasoning": true,
+          "is_adaptive": true
         },
         "claude-opus-4-8": {
           "pricing": {"in_per_1m": 5.0, "out_per_1m": 25.0},
-          "is_reasoning": true
+          "is_reasoning": true,
+          "is_adaptive": true
         },
         "claude-opus-4-7": {
           "pricing": {"in_per_1m": 5.0, "out_per_1m": 25.0},
-          "is_reasoning": true
+          "is_reasoning": true,
+          "is_adaptive": true
         },
         "claude-opus-4-6": {
           "pricing": {"in_per_1m": 5.0, "out_per_1m": 25.0},
-          "is_reasoning": true
+          "is_reasoning": true,
+          "is_adaptive": true
         },
         "claude-sonnet-4-6": {
           "pricing": {"in_per_1m": 3.0, "out_per_1m": 15.0},
-          "is_reasoning": true
+          "is_reasoning": true,
+          "is_adaptive": true
         },
         "claude-opus-4-5": {
           "pricing": {"in_per_1m": 5.0, "out_per_1m": 25.0},
