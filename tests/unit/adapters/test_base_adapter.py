@@ -155,7 +155,7 @@ def test_pricing_copied_from_registry(monkeypatch):
 @pytest.mark.unit
 def test_post_init_sets_reasoning_flag_from_registry(monkeypatch):
     provider = SimpleNamespace(
-        models={"m-reason": SimpleNamespace(pricing=None, is_reasoning=True)}
+        models={"m-reason": SimpleNamespace(pricing=None, is_reasoning=True, is_adaptive_thinking=False)}
     )
     monkeypatch.setattr(
         base_module,
@@ -165,6 +165,21 @@ def test_post_init_sets_reasoning_flag_from_registry(monkeypatch):
     )
     adapter_instance = _TestAdapter(company="acme", api_key="k", model="m-reason")
     assert adapter_instance.is_reasoning is True
+
+
+@pytest.mark.unit
+def test_post_init_sets_adaptive_thinking_flag_from_registry(monkeypatch):
+    provider = SimpleNamespace(
+        models={"m-adaptive": SimpleNamespace(pricing=None, is_reasoning=True, is_adaptive_thinking=True)}
+    )
+    monkeypatch.setattr(
+        base_module,
+        "LLM_REGISTRY",
+        SimpleNamespace(providers={"acme": provider}),
+        raising=False,
+    )
+    adapter_instance = _TestAdapter(company="acme", api_key="k", model="m-adaptive")
+    assert adapter_instance.is_adaptive_thinking is True
 
 
 @pytest.mark.unit

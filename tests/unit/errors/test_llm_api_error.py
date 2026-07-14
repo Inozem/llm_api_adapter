@@ -12,6 +12,14 @@ from src.llm_api_adapter.errors.llm_api_error import (
 )
 
 @pytest.mark.unit
+def test_llm_reasoning_level_error_accepts_detail_kwarg():
+    from src.llm_api_adapter.errors.config_errors import LLMConfigError, LLMReasoningLevelError
+    err = LLMReasoningLevelError(detail="budget_tokens=2000 must be < max_tokens=1000")
+    assert "budget_tokens=2000" in str(err)
+    assert isinstance(err, LLMConfigError)
+
+
+@pytest.mark.unit
 def test_llmapierror_message_and_detail():
     err = LLMAPIError(message="Error occurred", detail="Detailed info")
     assert str(err) == "Error occurred Detail: Detailed info"
