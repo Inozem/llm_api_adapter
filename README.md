@@ -148,6 +148,24 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 - **LLMReasoningLevelError**: Raised only for Anthropic models when max_tokens is less than reasoning_level.
 
+### Provider Error Mapping
+
+| Exception | OpenAI | Anthropic | Google |
+|---|---|---|---|
+| `LLMAPIAuthorizationError` | HTTP 401; `InvalidAuthenticationError`, `AuthenticationError` | HTTP 401; `AuthenticationError`, `PermissionError` | HTTP 401/403; `PERMISSION_DENIED` |
+| `LLMAPIRateLimitError` | HTTP 429; `RateLimitError` | HTTP 429; `RateLimitError` | HTTP 429; `RESOURCE_EXHAUSTED` |
+| `LLMAPITokenLimitError` | `MaxTokensExceededError`, `TokenLimitError` | — | — |
+| `LLMAPIClientError` | HTTP 4xx; `InvalidRequestError`, `BadRequestError` | HTTP 4xx; `InvalidRequestError`, `RequestTooLargeError`, `NotFoundError` | HTTP 4xx; `INVALID_ARGUMENT`, `FAILED_PRECONDITION`, `NOT_FOUND` |
+| `LLMAPIServerError` | HTTP 5xx; `InternalServerError`, `ServiceUnavailableError` | HTTP 5xx; `APIError`, `OverloadedError` | HTTP 5xx; `INTERNAL`, `UNAVAILABLE` |
+| `LLMAPITimeoutError` | `requests.Timeout`; `TimeoutError` | `requests.Timeout` | `requests.Timeout`; `DEADLINE_EXCEEDED` |
+| `LLMAPIUsageLimitError` | `UsageLimitError`, `QuotaExceededError` | — | — |
+
+> - `LLMAPITokenLimitError` and `LLMAPIUsageLimitError` are OpenAI-only; equivalent cases for Anthropic and Google fall into `LLMAPIClientError` (HTTP 4xx).
+> - `LLMAPIClientError` is the default fallback for all unhandled HTTP 4xx responses.
+> - `LLMAPIServerError` is the default fallback for all HTTP 5xx responses.
+> - `InvalidToolSchemaError`, `InvalidToolArgumentsError`, `ToolChoiceError`, `JSONSchemaError` — client-side errors (validated before the request is sent); inherit from `LLMAPIClientError`.
+> - `LLMConfigError`, `LLMReasoningLevelError` — configuration errors (parameter validation before the request); `LLMReasoningLevelError` is only raised for Anthropic models with `budget_tokens`.
+
 ## Configuration and Management
 
 ### Using Different Providers and Models
