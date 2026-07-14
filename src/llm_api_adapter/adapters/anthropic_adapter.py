@@ -7,7 +7,7 @@ import warnings
 
 from ..adapters.base_adapter import LLMAdapterBase
 from ..errors.llm_api_error import LLMAPIError
-from ..errors.config_errors import LLMConfigError
+from ..errors.config_errors import LLMReasoningLevelError
 from ..llms.anthropic.sync_client import ClaudeSyncClient
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse
@@ -56,6 +56,7 @@ class AnthropicAdapter(LLMAdapterBase):
                 "top_p": top_p,
                 "system": system_prompt,
                 "timeout_s": timeout_s,
+                "is_adaptive_thinking": self.is_adaptive_thinking,
             }
             if validated_tools:
                 params["tools"] = [
@@ -82,11 +83,12 @@ class AnthropicAdapter(LLMAdapterBase):
                     reasoning_level
                 )
                 if normalized_reasoning_level:
-                    self.validate_reasoning_and_tokens(
-                        max_tokens=max_tokens,
-                        reasoning_level=reasoning_level,
-                        normalized_reasoning_level=normalized_reasoning_level,
-                    )
+                    if not self.is_adaptive_thinking:
+                        self.validate_reasoning_and_tokens(
+                            max_tokens=max_tokens,
+                            reasoning_level=reasoning_level,
+                            normalized_reasoning_level=normalized_reasoning_level,
+                        )
                     params["budget_tokens"] = normalized_reasoning_level
                 if self.is_reasoning:
                     effort = self._reasoning_level_to_effort(reasoning_level)
@@ -195,7 +197,7 @@ class AnthropicAdapter(LLMAdapterBase):
         normalized_reasoning_level: int,
     ) -> None:
         if max_tokens <= normalized_reasoning_level:
-            raise LLMConfigError(
+            raise LLMReasoningLevelError(
                 detail=(
                     f"Provided max_tokens={max_tokens}, "
                     f"reasoning_level={normalized_reasoning_level} "

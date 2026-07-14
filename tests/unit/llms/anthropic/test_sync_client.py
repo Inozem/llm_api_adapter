@@ -86,3 +86,42 @@ def test_send_request_fallback_error_parsing(mock_post, client):
     mock_post.side_effect = http_err
     with pytest.raises(LLMAPIClientError):
         client._send_request("http://example.com", {})
+
+
+# ---------------------------
+# _prepare_chat_payload_for_model
+# ---------------------------
+
+@pytest.mark.unit
+def test_prepare_payload_adaptive_thinking_strips_top_p_and_sets_thinking(client):
+    kwargs = {"messages": [], "top_p": 1.0, "is_adaptive_thinking": True, "effort": "high"}
+    payload = client._prepare_chat_payload_for_model("claude-opus-4-8", kwargs)
+    assert "top_p" not in payload
+    assert "is_adaptive_thinking" not in payload
+    assert payload["thinking"] == {"type": "adaptive"}
+    assert payload["output_config"]["effort"] == "high"
+
+
+@pytest.mark.unit
+def test_prepare_payload_adaptive_thinking_no_effort_strips_top_p_only(client):
+    kwargs = {"messages": [], "top_p": 1.0, "is_adaptive_thinking": True}
+    payload = client._prepare_chat_payload_for_model("claude-opus-4-8", kwargs)
+    assert "top_p" not in payload
+    assert "thinking" not in payload
+    assert "is_adaptive_thinking" not in payload
+
+
+@pytest.mark.unit
+def test_prepare_payload_legacy_sets_budget_tokens_thinking(client):
+    kwargs = {"messages": [], "budget_tokens": 4096, "is_adaptive_thinking": False}
+    payload = client._prepare_chat_payload_for_model("claude-opus-4-5", kwargs)
+    assert payload["thinking"] == {"type": "enabled", "budget_tokens": 4096}
+    assert "is_adaptive_thinking" not in payload
+
+
+@pytest.mark.unit
+def test_prepare_payload_is_adaptive_thinking_never_in_result(client):
+    for flag in (True, False):
+        kwargs = {"messages": [], "is_adaptive_thinking": flag}
+        payload = client._prepare_chat_payload_for_model("claude-opus-4-8", kwargs)
+        assert "is_adaptive_thinking" not in payload

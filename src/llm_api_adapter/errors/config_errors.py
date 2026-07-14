@@ -15,6 +15,7 @@ class LLMConfigError(Exception):
         super().__init__(full_message)
 
 
+@dataclass
 class LLMReasoningLevelError(LLMConfigError):
     """Raised when reasoning_level is greater max_tokens."""
     message: str = "Reasoning level is too high: 'max_tokens' must be > 'reasoning_level'."

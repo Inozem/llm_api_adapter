@@ -113,14 +113,27 @@ def test_chat_sets_thinking_when_reasoning_level_provided(adapter):
         assert kwargs["budget_tokens"] == 4096
 
 @pytest.mark.unit
-def test_validate_reasoning_and_tokens_raises_llmconfigerror(adapter):
-    from src.llm_api_adapter.errors.config_errors import LLMConfigError
-    with pytest.raises(LLMConfigError):
+def test_validate_reasoning_and_tokens_raises_llm_reasoning_level_error(adapter):
+    from src.llm_api_adapter.errors.config_errors import LLMReasoningLevelError
+    with pytest.raises(LLMReasoningLevelError):
         adapter.validate_reasoning_and_tokens(
             max_tokens=1024,
             reasoning_level="high",
             normalized_reasoning_level=2048
         )
+
+
+@pytest.mark.unit
+def test_chat_skips_validation_for_adaptive_thinking_model(adapter):
+    adapter.is_reasoning = True
+    adapter.is_adaptive_thinking = True
+    adapter.reasoning_levels = {"high": 4096}
+    fake_response = {"some": "anthropic response"}
+    fake_chat_response = ChatResponse(content="fake")
+    with patch.object(ClaudeSyncClient, "chat_completion", return_value=fake_response), \
+         patch.object(ChatResponse, "from_anthropic_response", return_value=fake_chat_response):
+        # max_tokens < budget_tokens — would raise LLMReasoningLevelError for a legacy model
+        adapter.chat([UserMessage("hi")], max_tokens=100, reasoning_level="high")
 
 
 # ---------------------------

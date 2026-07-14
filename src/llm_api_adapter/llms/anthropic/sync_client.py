@@ -14,8 +14,6 @@ from ...errors.llm_api_error import (
 
 logger = logging.getLogger(__name__)
 
-_ADAPTIVE_THINKING_MODELS = ("claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-fable-5", "claude-sonnet-5")
-
 @dataclass
 class ClaudeSyncClient:
     api_key: str
@@ -38,7 +36,8 @@ class ClaudeSyncClient:
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
         budget_tokens = kwargs.pop("budget_tokens", None)
         effort = kwargs.pop("effort", None)
-        if model.startswith(_ADAPTIVE_THINKING_MODELS):
+        is_adaptive_thinking = kwargs.pop("is_adaptive_thinking", False)
+        if is_adaptive_thinking:
             kwargs.pop("top_p", None)
             if effort:
                 kwargs["thinking"] = {"type": "adaptive"}
