@@ -34,6 +34,7 @@ class LLMAdapterBase(ABC):
     company: str
     pricing: Optional[Pricing] = None
     is_reasoning: bool = False
+    is_adaptive_thinking: bool = False
     reasoning_levels: Dict[str, int] = field(
         default_factory=lambda: REASONING_LEVELS_DEFAULT.copy()
     )
@@ -59,6 +60,7 @@ class LLMAdapterBase(ABC):
             base_pricing = getattr(model_spec, "pricing", None)
             self.pricing = deepcopy(base_pricing) if base_pricing else None
             self.is_reasoning = getattr(model_spec, "is_reasoning", False)
+            self.is_adaptive_thinking = getattr(model_spec, "is_adaptive_thinking", False)
 
     @abstractmethod
     def chat(self, **kwargs) -> ChatResponse:

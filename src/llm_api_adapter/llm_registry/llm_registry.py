@@ -27,7 +27,7 @@ class ModelSpec:
     name: str
     pricing: Optional[Pricing] = None
     is_reasoning: bool = False
-    is_adaptive: bool = False
+    is_adaptive_thinking: bool = False
 
     @classmethod
     def from_dict(cls, name: str, d: Dict[str, Any]) -> "ModelSpec":
@@ -39,8 +39,8 @@ class ModelSpec:
         else:
             pricing = None
         is_reasoning = bool(d.get("is_reasoning", False))
-        is_adaptive = bool(d.get("is_adaptive", False))
-        return cls(name=name, pricing=pricing, is_reasoning=is_reasoning, is_adaptive=is_adaptive)
+        is_adaptive_thinking = bool(d.get("is_adaptive_thinking", False))
+        return cls(name=name, pricing=pricing, is_reasoning=is_reasoning, is_adaptive_thinking=is_adaptive_thinking)
 
 
 @dataclass(frozen=True)
