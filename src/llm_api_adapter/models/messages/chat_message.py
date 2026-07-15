@@ -5,6 +5,7 @@ import json
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 from ..tools import ToolCall
+from .file_parts import FilePart, ImagePart
 
 
 @dataclass
@@ -38,10 +39,87 @@ class Prompt(Message):
 
 @dataclass
 class UserMessage(Message):
+    files: Optional[List[FilePart]] = None
     role: str = field(default="user", init=False)
 
+    def to_openai(self) -> Dict[str, Any]:
+        if self.files is None:
+            return {"role": "user", "content": self.content}
+        return {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": self.content},
+                *[self._part_to_openai_chat(p) for p in self.files],
+            ],
+        }
+
+    def to_openai_responses_input(self) -> List[Dict[str, Any]]:
+        if self.files is None:
+            return [{"role": "user", "content": self.content}]
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": self.content},
+                    *[self._part_to_openai_responses(p) for p in self.files],
+                ],
+            }
+        ]
+
+    def to_anthropic(self) -> Dict[str, Any]:
+        if self.files is None:
+            return {"role": "user", "content": self.content}
+        return {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": self.content},
+                *[self._part_to_anthropic(p) for p in self.files],
+            ],
+        }
+
     def to_google(self) -> Dict[str, Any]:
-        return {"role": "user", "parts": [{"text": self.content}]}
+        if self.files is None:
+            return {"role": "user", "parts": [{"text": self.content}]}
+        return {
+            "role": "user",
+            "parts": [
+                {"text": self.content},
+                *[self._part_to_google(p) for p in self.files],
+            ],
+        }
+
+    def _part_to_openai_chat(self, part: FilePart) -> Dict[str, Any]:
+        if isinstance(part, ImagePart):
+            url = part.url if part._is_url() else part._to_data_uri()
+            return {"type": "image_url", "image_url": {"url": url}}
+        raise ValueError(f"{type(part).__name__} not supported in 0.5.0")
+
+    def _part_to_openai_responses(self, part: FilePart) -> Dict[str, Any]:
+        if isinstance(part, ImagePart):
+            url = part.url if part._is_url() else part._to_data_uri()
+            return {"type": "input_image", "image_url": url}
+        raise ValueError(f"{type(part).__name__} not supported in 0.5.0")
+
+    def _part_to_anthropic(self, part: FilePart) -> Dict[str, Any]:
+        if isinstance(part, ImagePart):
+            if part._is_url():
+                return {"type": "image", "source": {"type": "url", "url": part.url}}
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": part._get_media_type(),
+                    "data": part._get_b64_data(),
+                },
+            }
+        raise ValueError(f"{type(part).__name__} not supported in 0.5.0")
+
+    def _part_to_google(self, part: FilePart) -> Dict[str, Any]:
+        if isinstance(part, ImagePart):
+            if part._is_url():
+                return {"fileData": {"mimeType": part._get_media_type(), "fileUri": part.url}}
+            return {"inlineData": {"mimeType": part._get_media_type(), "data": part._get_b64_data()}}
+        raise ValueError(f"{type(part).__name__} not supported in 0.5.0")
 
 
 @dataclass
