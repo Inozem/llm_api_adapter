@@ -5,30 +5,51 @@
 
 ## Overview
 
-This lightweight SDK for Python allows you to use LLM APIs from multiple providers through a unified interface. It is designed to be minimal, dependency‑free, and easy to integrate into any Python project.
+Calling an LLM from Python currently means one of three paths: lock yourself to one provider's SDK, absorb LangChain's framework complexity, or pull in LiteLLM and its 100+ transitive dependencies.
 
-Currently, the project supports OpenAI, Anthropic, and Google with a consistent chat API, unified error handling, token/cost accounting, reasoning control, timeout support, and unified tool/function calling. Switching between providers or models requires no code changes beyond replacing the organization and model values when creating the adapter.
+**llm-api-adapter** is the fourth option: a minimal adapter for OpenAI, Anthropic, and Google. One class, one `chat()` method, one error hierarchy — regardless of which provider is behind it. Switching providers is changing two arguments.
 
-### Version
+## Why this library?
 
-Current version: 0.4.2
+|                           | llm-api-adapter | LiteLLM       | LangChain     | Provider SDK |
+|---------------------------|-----------------|---------------|---------------|--------------|
+| Single runtime dependency | ✓ (`requests`)  | ✗ (100+)      | ✗ (100+)      | ✓            |
+| Unified reasoning control | ✓               | partial¹      | partial¹      | ✗            |
+| Built-in cost accounting  | ✓               | ✓             | via callbacks | ✗            |
+| Unified error hierarchy   | ✓               | partial       | ✗             | ✗            |
+| Async / streaming         | ✗               | ✓             | ✓             | ✓            |
+| Number of providers       | 3               | 100+          | 50+           | 1            |
 
+¹ LiteLLM and LangChain expose reasoning via provider-specific parameters — there is no single unified parameter that works identically across providers.
+
+**Small footprint.** The only runtime dependency is `requests`. LiteLLM and LangChain each pull in 100+ transitive packages; this doesn't.
+
+**Unified reasoning.** One `reasoning_level` parameter works across OpenAI o-series, Anthropic extended thinking, and Google thinking models — same parameter name, same string levels, no provider-specific kwargs.
+
+**Cost accounting, built-in.** Every response carries `cost_input`, `cost_output`, and `cost_total` in your chosen currency. No external tooling required.
+
+**Predictable errors.** One exception hierarchy across all three providers. `LLMAPIRateLimitError` means the same thing whether you called OpenAI or Anthropic.
+
+### Use this when
+
+- You call LLMs directly — no chains, no agents, no orchestration
+- You want to stay provider-agnostic without adopting a framework
+- You need unified reasoning control or per-request cost tracking
+
+### Use something else when
+
+- **LiteLLM** — you need 100+ providers, async support, streaming, or a proxy/gateway layer
+- **LangChain** — you need chains, memory, RAG, or agents
+- **Provider SDK directly** — you'll never switch and don't need cost tracking
 
 ## Features
 
-- **Unified Interface**: Work seamlessly with different LLM providers using a single, consistent API.
-- **Multiple Provider Support**: Currently supports OpenAI, Anthropic, and Google APIs, allowing easy switching between them.
-- **Chat Functionality**: Provides an easy way to interact with chat-based LLMs.
-- **Tool / Function Calling**: Provider-agnostic tool definitions and normalized tool calls.
-- **Extensible Design**: Built to easily extend support for additional providers and new functionalities in the future.
-- **Error Handling**: Standardized error messages across all supported LLMs, simplifying integration and debugging.
-- **Flexible Configuration**: Manage request parameters like temperature, max tokens, and other settings for fine-tuned control.
-- **Token and Cost Accounting**: Automatic calculation of token usage and cost per request.
-- **Pricing Registry**: Model prices are stored in a unified JSON registry with per-model input/output pricing and currency support.
-- **Unified Reasoning Support**: A single `reasoning_level` parameter that works identically across all providers.
-- **Request Timeouts:** Per-request timeout control with a unified `timeout_s` parameter.
+- **Tool / Function Calling**: Provider-agnostic tool definitions and normalized tool calls in `ChatResponse.tool_calls`.
 - **Strict JSON Mode**: Pass a JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` — provider normalization is handled automatically.
 - **Pydantic Integration**: Pass a Pydantic model as `response_model` and get a typed instance back in `ChatResponse.parsed_model` — no manual schema writing required.
+- **Request Timeouts**: Per-request timeout control via `timeout_s`; raises `LLMAPITimeoutError` on expiry.
+- **Flexible Configuration**: `temperature`, `max_tokens`, `top_p`, and other parameters passed through to the provider.
+- **Pricing Registry**: Model prices stored in a bundled JSON registry with per-model input/output rates; overridable per instance.
 
 ## Installation
 
@@ -501,6 +522,16 @@ if first.tool_calls:
     print(final.content)
 ```
 
+### `previous_response` parameter
+
+`previous_response` accepts the `ChatResponse` returned by an earlier `chat()` call.
+
+For OpenAI models that use the Responses API (o-series and newer GPT models), the adapter extracts `response_id` from the previous response and passes it to the API as `previous_response_id`. This enables stateful multi-turn conversations where the model retains context server-side, which reduces the tokens you need to send in subsequent turns.
+
+For Anthropic and Google, the parameter is accepted but ignored — context is carried entirely through the `messages` list regardless.
+
+If you omit `previous_response`, the call works normally; you just won't get the stateful-session benefit on OpenAI Responses API models.
+
 ## Structured Output
 
 The SDK supports two ways to get structured output from `chat()`: a raw `json_schema` dict, or a Pydantic model via `response_model`. Both work across all providers without any changes to your code.
@@ -631,6 +662,8 @@ print(response.usage.output_tokens, "tokens", f"({response.cost_output} {respons
 print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
 ```
 
+Prices are updated with each release to reflect provider changes. Bundled prices reflect each provider's standard API rates — batch pricing, cached-token discounts, and volume agreements are not accounted for. Use `set_in_per_1m` / `set_out_per_1m` to apply your actual rates if needed:
+
 ### Overriding Pricing or Currency
 
 ```python
@@ -653,7 +686,7 @@ print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.
 
 ## Logging
 
-The library uses Python’s standard `logging` module and does not configure handlers.
+The library uses Python's standard `logging` module and does not configure handlers.
 Loggers are module-based under `llm_api_adapter.*` (e.g., `llm_api_adapter.universal_adapter`).
 
 * **Default behavior:** No handlers installed, effective level = `WARNING`.
