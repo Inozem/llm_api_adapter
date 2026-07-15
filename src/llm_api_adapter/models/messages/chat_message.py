@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 import json
 from typing import Any, Dict, List, Optional, Tuple, Type
@@ -388,9 +389,46 @@ class Messages:
         message_cls: Type[Message],
     ) -> Message:
         content = item.get("content")
+        if message_cls is UserMessage:
+            if isinstance(content, list):
+                text = " ".join(p["text"] for p in content if p.get("type") == "text")
+                files = [
+                    self._normalize_dict_file_part(p) for p in content
+                    if p.get("type") in ("image_url", "input_image", "image")
+                ]
+                return UserMessage(content=text, files=files or None)
+            if not content:
+                raise ValueError("Missing 'content' in message data")
+            files_raw = item.get("files")
+            files = [self._normalize_dict_file_part(p) for p in files_raw] if files_raw else None
+            return UserMessage(content=str(content), files=files)
         if content is None or content == "":
             raise ValueError("Missing 'content' in message data")
         return message_cls(content=str(content))
+
+    def _normalize_dict_file_part(self, part: Any) -> FilePart:
+        if isinstance(part, FilePart):
+            return part
+        if not isinstance(part, dict):
+            raise ValueError(f"Unsupported file part type: {type(part)}")
+        part_type = part.get("type")
+        if part_type == "image_url":
+            image_url = part.get("image_url")
+            if isinstance(image_url, dict):
+                return ImagePart(url=image_url["url"])
+            return ImagePart(url=image_url)
+        if part_type == "input_image":
+            return ImagePart(url=part["image_url"])
+        if part_type == "image":
+            source = part.get("source", {})
+            if source.get("type") == "url":
+                return ImagePart(url=source["url"])
+            if source.get("type") == "base64":
+                return ImagePart(
+                    data=base64.b64decode(source["data"]),
+                    media_type=source["media_type"],
+                )
+        raise ValueError(f"Unsupported file part format: {part_type!r}")
    
     def to_openai(self) -> List[Dict[str, Any]]:
         return [m.to_openai() for m in self.items]
