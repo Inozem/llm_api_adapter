@@ -1,9 +1,12 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 import pytest
 
 from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY
+
+_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
 load_dotenv()
 
@@ -12,6 +15,11 @@ API_KEY_ENV = {
     "anthropic": os.getenv("ANTHROPIC_API_KEY"),
     "google": os.getenv("GOOGLE_API_KEY"),
 }
+
+@pytest.fixture(scope="session")
+def vision_image_bytes() -> bytes:
+    return (_FIXTURES_DIR / "test_image.png").read_bytes()
+
 
 @pytest.fixture(scope="session")
 def providers():
