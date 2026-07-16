@@ -44,6 +44,7 @@ Calling an LLM from Python currently means one of three paths: lock yourself to 
 
 ## Features
 
+- **Vision Input**: Send images alongside text via `ImagePart` — URL or raw bytes, all providers handled automatically.
 - **Tool / Function Calling**: Provider-agnostic tool definitions and normalized tool calls in `ChatResponse.tool_calls`.
 - **Strict JSON Mode**: Pass a JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` — provider normalization is handled automatically.
 - **Pydantic Integration**: Pass a Pydantic model as `response_model` and get a typed instance back in `ChatResponse.parsed_model` — no manual schema writing required.
@@ -332,7 +333,7 @@ response = gpt.chat(**chat_params)
 Timeouts raise a dedicated exception that can be handled explicitly:
 
 ```python
-from llm_api_adapter.errors.llm_api_error import LLMAPITimeoutError
+from llm_api_adapter.errors import LLMAPITimeoutError
 
 try:
     response = gpt.chat(**chat_params)
@@ -632,7 +633,7 @@ The adapter automatically handles provider-specific schema constraints, so the s
 ### Error handling
 
 ```python
-from llm_api_adapter.errors.llm_api_error import JSONSchemaError
+from llm_api_adapter.errors import JSONSchemaError
 
 try:
     response = adapter.chat(
@@ -643,6 +644,81 @@ try:
 except JSONSchemaError as e:
     print(f"JSON schema error: {e}")
 ```
+
+## Vision Input
+
+The SDK supports sending images alongside text using `ImagePart` and the `files` parameter on `UserMessage`. Works identically across OpenAI, Anthropic, and Google — wire-format differences are handled automatically.
+
+### Import
+
+```python
+from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.models.messages.file_parts import ImagePart
+```
+
+### Image from URL
+
+```python
+msg = UserMessage(
+    "What is in this image?",
+    files=[ImagePart(url="https://example.com/photo.jpg")]
+)
+response = adapter.chat(messages=[msg], max_tokens=200)
+print(response.content)
+```
+
+### Image from bytes
+
+```python
+with open("photo.png", "rb") as f:
+    image_bytes = f.read()
+
+msg = UserMessage(
+    "Describe this image.",
+    files=[ImagePart(data=image_bytes, media_type="image/png")]
+)
+response = adapter.chat(messages=[msg], max_tokens=200)
+print(response.content)
+```
+
+### Multiple images
+
+```python
+msg = UserMessage(
+    "Compare these two images.",
+    files=[
+        ImagePart(url="https://example.com/before.jpg"),
+        ImagePart(url="https://example.com/after.jpg"),
+    ]
+)
+```
+
+### Supported formats
+
+`ImagePart` accepts any image MIME type starting with `image/` — `image/jpeg`, `image/png`, `image/gif`, `image/webp`, `image/heic`, `image/heif`.
+
+When passing a URL, `media_type` is auto-detected from the file extension. For URLs without an extension, pass `media_type` explicitly:
+
+```python
+ImagePart(url="https://api.example.com/image?id=42", media_type="image/jpeg")
+```
+
+### OpenAI-style dict compatibility
+
+The adapter also normalizes OpenAI-style content lists, so existing code that uses dicts works without changes:
+
+```python
+messages = [{
+    "role": "user",
+    "content": [
+        {"type": "text", "text": "What is this?"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}},
+    ]
+}]
+response = adapter.chat(messages=messages, max_tokens=200)
+```
+
+> **Note:** Only `ImagePart` is supported in v0.5.0. `DocumentPart` and `AudioPart` are planned for v0.5.1.
 
 ## Token Usage and Pricing
 
@@ -690,7 +766,7 @@ The library uses Python's standard `logging` module and does not configure handl
 Loggers are module-based under `llm_api_adapter.*` (e.g., `llm_api_adapter.universal_adapter`).
 
 * **Default behavior:** No handlers installed, effective level = `WARNING`.
-* **No secrets are logged** — API keys and request bodies are excluded. Only event metadata and errors are logged.
+* **No secrets are logged** — API keys and request bodies are excluded. Only event metadata and errors are logged. Adapter and client objects mask the key in `__repr__` (e.g. `api_key='sk-12345...cdef'`), so they are safe to log or print.
 
 ### Enable logs (console)
 

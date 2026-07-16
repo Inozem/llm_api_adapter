@@ -1,7 +1,9 @@
+import base64
 import json
 
 import pytest
 
+from src.llm_api_adapter.models.messages.file_parts import ImagePart
 from src.llm_api_adapter.models.messages.chat_message import (
     AIMessage,
     Message,
@@ -726,3 +728,203 @@ def test_messages_to_google_with_tool_message_and_non_user_message_fallback():
         },
         {"role": "user", "parts": [{"text": "fallback text"}]},
     ]
+
+
+# ---------------------------------------------------------------------------
+# UserMessage.files — to_openai (Chat Completions)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_user_message_to_openai_without_files_unchanged():
+    u = UserMessage("hello")
+    assert u.to_openai() == {"role": "user", "content": "hello"}
+
+
+@pytest.mark.unit
+def test_user_message_to_openai_with_url_image():
+    u = UserMessage("look", files=[ImagePart(url="https://example.com/img.jpg")])
+    result = u.to_openai()
+    assert result["content"][0] == {"type": "text", "text": "look"}
+    assert result["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "https://example.com/img.jpg"},
+    }
+
+
+@pytest.mark.unit
+def test_user_message_to_openai_with_bytes_image_produces_data_uri():
+    raw = b"abc"
+    u = UserMessage("look", files=[ImagePart(data=raw, media_type="image/jpeg")])
+    result = u.to_openai()
+    expected_uri = f"data:image/jpeg;base64,{base64.b64encode(raw).decode()}"
+    assert result["content"][1]["image_url"]["url"] == expected_uri
+
+
+@pytest.mark.unit
+def test_user_message_to_openai_text_is_first_files_after():
+    u = UserMessage("look", files=[
+        ImagePart(url="https://example.com/a.jpg"),
+        ImagePart(url="https://example.com/b.png"),
+    ])
+    content = u.to_openai()["content"]
+    assert content[0]["type"] == "text"
+    assert content[1]["type"] == "image_url"
+    assert content[2]["type"] == "image_url"
+
+
+# ---------------------------------------------------------------------------
+# UserMessage.files — to_openai_responses_input (Responses API)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_user_message_to_openai_responses_with_url_image_flat_string():
+    u = UserMessage("look", files=[ImagePart(url="https://example.com/img.jpg")])
+    result = u.to_openai_responses_input()
+    assert result[0]["content"][0] == {"type": "input_text", "text": "look"}
+    assert result[0]["content"][1] == {
+        "type": "input_image",
+        "image_url": "https://example.com/img.jpg",
+    }
+
+
+@pytest.mark.unit
+def test_user_message_to_openai_responses_with_bytes_image():
+    raw = b"abc"
+    u = UserMessage("look", files=[ImagePart(data=raw, media_type="image/png")])
+    result = u.to_openai_responses_input()
+    expected_uri = f"data:image/png;base64,{base64.b64encode(raw).decode()}"
+    assert result[0]["content"][1] == {"type": "input_image", "image_url": expected_uri}
+
+
+# ---------------------------------------------------------------------------
+# UserMessage.files — to_anthropic
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_user_message_to_anthropic_with_url_image():
+    u = UserMessage("look", files=[ImagePart(url="https://example.com/img.jpg")])
+    result = u.to_anthropic()
+    assert result["content"][0] == {"type": "text", "text": "look"}
+    assert result["content"][1] == {
+        "type": "image",
+        "source": {"type": "url", "url": "https://example.com/img.jpg"},
+    }
+
+
+@pytest.mark.unit
+def test_user_message_to_anthropic_with_bytes_image():
+    raw = b"abc"
+    u = UserMessage("look", files=[ImagePart(data=raw, media_type="image/jpeg")])
+    result = u.to_anthropic()
+    assert result["content"][1] == {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/jpeg",
+            "data": base64.b64encode(raw).decode(),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# UserMessage.files — to_google
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_user_message_to_google_with_url_image_camel_case():
+    u = UserMessage("look", files=[ImagePart(url="https://example.com/img.jpg")])
+    result = u.to_google()
+    assert result["parts"][0] == {"text": "look"}
+    assert result["parts"][1] == {
+        "fileData": {"mimeType": "image/jpeg", "fileUri": "https://example.com/img.jpg"},
+    }
+
+
+@pytest.mark.unit
+def test_user_message_to_google_with_bytes_image_camel_case():
+    raw = b"abc"
+    u = UserMessage("look", files=[ImagePart(data=raw, media_type="image/png")])
+    result = u.to_google()
+    assert result["parts"][1] == {
+        "inlineData": {"mimeType": "image/png", "data": base64.b64encode(raw).decode()},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Messages normalization — dict with files
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_messages_normalize_openai_style_content_list():
+    msgs = Messages([{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "describe this"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}},
+        ],
+    }])
+    u = msgs.items[0]
+    assert isinstance(u, UserMessage)
+    assert u.content == "describe this"
+    assert isinstance(u.files[0], ImagePart)
+    assert u.files[0].url == "https://example.com/img.jpg"
+
+
+@pytest.mark.unit
+def test_messages_normalize_native_dict_with_files():
+    msgs = Messages([{
+        "role": "user",
+        "content": "describe",
+        "files": [{"type": "input_image", "image_url": "https://example.com/img.png"}],
+    }])
+    u = msgs.items[0]
+    assert u.content == "describe"
+    assert u.files[0].url == "https://example.com/img.png"
+
+
+@pytest.mark.unit
+def test_messages_normalize_dict_file_part_all_formats():
+    msgs = Messages(items=[])
+
+    # Chat Completions nested
+    p = msgs._normalize_dict_file_part(
+        {"type": "image_url", "image_url": {"url": "https://example.com/a.jpg"}}
+    )
+    assert isinstance(p, ImagePart) and p.url == "https://example.com/a.jpg"
+
+    # Chat Completions flat string
+    p = msgs._normalize_dict_file_part(
+        {"type": "image_url", "image_url": "https://example.com/b.jpg"}
+    )
+    assert p.url == "https://example.com/b.jpg"
+
+    # Responses API
+    p = msgs._normalize_dict_file_part(
+        {"type": "input_image", "image_url": "https://example.com/c.png"}
+    )
+    assert p.url == "https://example.com/c.png"
+
+    # Anthropic URL
+    p = msgs._normalize_dict_file_part(
+        {"type": "image", "source": {"type": "url", "url": "https://example.com/d.png"}}
+    )
+    assert p.url == "https://example.com/d.png"
+
+    # Anthropic base64
+    raw = b"xyz"
+    p = msgs._normalize_dict_file_part({
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": base64.b64encode(raw).decode(),
+        },
+    })
+    assert p.data == raw and p.media_type == "image/png"
+
+
+@pytest.mark.unit
+def test_messages_normalize_dict_file_part_passthrough():
+    img = ImagePart(url="https://example.com/a.gif")
+    msgs = Messages(items=[])
+    assert msgs._normalize_dict_file_part(img) is img

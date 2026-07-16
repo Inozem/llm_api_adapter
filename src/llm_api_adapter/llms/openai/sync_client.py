@@ -20,6 +20,10 @@ class OpenAISyncClient:
     api_key: str
     endpoint: str = "https://api.openai.com/v1"
 
+    def __repr__(self) -> str:
+        masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
+        return f"OpenAISyncClient(api_key='{masked}', endpoint='{self.endpoint}')"
+
     def _headers(self):
         return {
             "Authorization": f"Bearer {self.api_key}",

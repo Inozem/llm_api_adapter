@@ -20,6 +20,10 @@ class ClaudeSyncClient:
     endpoint: str = "https://api.anthropic.com/v1"
     api_version: str = "2023-06-01"
 
+    def __repr__(self) -> str:
+        masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
+        return f"ClaudeSyncClient(api_key='{masked}', endpoint='{self.endpoint}', api_version='{self.api_version}')"
+
     def _headers(self):
         return {
             "x-api-key": self.api_key,

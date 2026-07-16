@@ -18,6 +18,10 @@ class GeminiSyncClient:
     api_key: str
     endpoint: str = "https://generativelanguage.googleapis.com/v1beta"
 
+    def __repr__(self) -> str:
+        masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
+        return f"GeminiSyncClient(api_key='{masked}', endpoint='{self.endpoint}')"
+
     def _headers(self):
         return {
             "x-goog-api-key": self.api_key,
