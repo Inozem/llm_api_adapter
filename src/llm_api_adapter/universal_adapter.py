@@ -16,6 +16,10 @@ class UniversalLLMAPIAdapter:
     model: str
     api_key: str
 
+    def __repr__(self) -> str:
+        masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
+        return f"UniversalLLMAPIAdapter(organization='{self.organization}', model='{self.model}', api_key='{masked}')"
+
     def __post_init__(self) -> None:
         if not self.organization or not isinstance(self.organization, str):
             raise ValueError("Invalid organization")

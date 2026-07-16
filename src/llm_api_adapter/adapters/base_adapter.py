@@ -39,6 +39,10 @@ class LLMAdapterBase(ABC):
         default_factory=lambda: REASONING_LEVELS_DEFAULT.copy()
     )
 
+    def __repr__(self) -> str:
+        masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
+        return f"{self.__class__.__name__}(company='{self.company}', model='{self.model}', api_key='{masked}')"
+
     def __post_init__(self):
         if not self.api_key:
             error_message = "api_key must be a non-empty string"

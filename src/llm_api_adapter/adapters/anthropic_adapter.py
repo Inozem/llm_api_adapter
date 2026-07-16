@@ -16,7 +16,7 @@ from ..models.tools.tool_spec import ToolSpec
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(repr=False)
 class AnthropicAdapter(LLMAdapterBase):
     company: str = "anthropic"
 
