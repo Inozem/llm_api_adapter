@@ -1,4 +1,5 @@
 import time
+from itertools import zip_longest
 
 import pytest
 
@@ -11,10 +12,14 @@ _PROMPT = "What do you see in this image? One sentence."
 
 @pytest.mark.e2e
 def test_vision_bytes_returns_non_empty_response(providers, vision_image_bytes, subtests):
-    for p in providers:
-        for model in p["models"]:
+    groups = list(zip_longest(*[p["models"] for p in providers]))
+    for i, group in enumerate(groups):
+        if i > 0:
+            time.sleep(1)
+        for p, model in zip(providers, group):
+            if model is None:
+                continue
             with subtests.test(provider=p["name"], model=model):
-                time.sleep(3)
                 adapter = UniversalLLMAPIAdapter(
                     organization=p["name"], model=model, api_key=p["api_key"]
                 )
