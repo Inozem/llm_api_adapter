@@ -333,7 +333,7 @@ response = gpt.chat(**chat_params)
 Timeouts raise a dedicated exception that can be handled explicitly:
 
 ```python
-from llm_api_adapter.errors.llm_api_error import LLMAPITimeoutError
+from llm_api_adapter.errors import LLMAPITimeoutError
 
 try:
     response = gpt.chat(**chat_params)
@@ -633,7 +633,7 @@ The adapter automatically handles provider-specific schema constraints, so the s
 ### Error handling
 
 ```python
-from llm_api_adapter.errors.llm_api_error import JSONSchemaError
+from llm_api_adapter.errors import JSONSchemaError
 
 try:
     response = adapter.chat(

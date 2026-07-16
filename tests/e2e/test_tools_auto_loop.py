@@ -1,5 +1,4 @@
 import json
-import time
 
 import pytest
 
@@ -10,16 +9,6 @@ from llm_api_adapter.models.messages.chat_message import (
 )
 from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
-
-
-def chat_with_retry(adapter, *, retries=2, retry_delay=3, **kwargs):
-    for attempt in range(retries + 1):
-        resp = adapter.chat(**kwargs)
-        if resp.finish_reason != "refusal":
-            return resp
-        if attempt < retries:
-            time.sleep(retry_delay)
-    return resp
 
 
 def run_tool(name, args):
@@ -42,7 +31,7 @@ def run_tool(name, args):
 
 
 @pytest.mark.e2e
-def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
+def test_basic_auto_tool_loop_with_previous_response(subtests, iter_provider_models, chat_with_retry):
     tools = [
         ToolSpec(
             name="get_fruit_popularity",
@@ -58,74 +47,73 @@ def test_basic_auto_tool_loop_with_previous_response(providers, subtests):
         )
     ]
 
-    for p in providers:
-        for model in p["models"]:
-            with subtests.test(provider=p["name"], model=model):
-                adapter = UniversalLLMAPIAdapter(
-                    organization=p["name"],
-                    model=model,
-                    api_key=p["api_key"],
-                )
+    for p, model in iter_provider_models():
+        with subtests.test(provider=p["name"], model=model):
+            adapter = UniversalLLMAPIAdapter(
+                organization=p["name"],
+                model=model,
+                api_key=p["api_key"],
+            )
 
-                messages = [
-                    UserMessage(
-                        'What is the popularity of the fruit "strawberry"? '
-                        "Use the available tool if needed."
-                    )
-                ]
-
-                first = chat_with_retry(
-                    adapter,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="any",
-                    max_tokens=512,
-                    timeout_s=60,
+            messages = [
+                UserMessage(
+                    'What is the popularity of the fruit "strawberry"? '
+                    "Use the available tool if needed."
                 )
+            ]
 
-                assert first.finish_reason != "refusal", (
-                    f"{p['name']} / {model}: model refused the request (safety classifier)"
-                )
+            first = chat_with_retry(
+                adapter,
+                messages=messages,
+                tools=tools,
+                tool_choice="any",
+                max_tokens=512,
+                timeout_s=60,
+            )
 
-                assert first.tool_calls, (
-                    f"{p['name']} / {model}: expected at least one tool_call. "
-                    f"Content was: {first.content!r}. "
-                    f"Raw tool_calls: {first.tool_calls!r}"
-                )
+            assert first.finish_reason != "refusal", (
+                f"{p['name']} / {model}: model refused the request (safety classifier)"
+            )
+
+            assert first.tool_calls, (
+                f"{p['name']} / {model}: expected at least one tool_call. "
+                f"Content was: {first.content!r}. "
+                f"Raw tool_calls: {first.tool_calls!r}"
+            )
+
+            messages.append(
+                AIMessage(content=first.content or "", tool_calls=first.tool_calls)
+            )
+
+            for tc in first.tool_calls:
+                assert tc.name == "get_fruit_popularity"
+                assert isinstance(tc.arguments, dict)
+                assert tc.arguments["fruit"] == "strawberry"
+
+                result = run_tool(tc.name, tc.arguments)
 
                 messages.append(
-                    AIMessage(content=first.content or "", tool_calls=first.tool_calls)
-                )
-
-                for tc in first.tool_calls:
-                    assert tc.name == "get_fruit_popularity"
-                    assert isinstance(tc.arguments, dict)
-                    assert tc.arguments["fruit"] == "strawberry"
-
-                    result = run_tool(tc.name, tc.arguments)
-
-                    messages.append(
-                        ToolMessage(
-                            tool_call_id=tc.call_id,
-                            content=json.dumps(result),
-                        )
+                    ToolMessage(
+                        tool_call_id=tc.call_id,
+                        content=json.dumps(result),
                     )
-
-                final = chat_with_retry(
-                    adapter,
-                    messages=messages,
-                    previous_response=first,
-                    max_tokens=512,
-                    timeout_s=60,
                 )
 
-                assert isinstance(final.content, str)
-                assert final.content.strip() != ""
-                assert not final.tool_calls, (
-                    f"{p['name']} / {model}: expected final natural-language answer, "
-                    f"got tool_calls: {final.tool_calls!r}"
-                )
-                assert "73" in final.content, (
-                    f"{p['name']} / {model}: expected final answer to mention 73, "
-                    f"got: {final.content!r}"
-                )
+            final = chat_with_retry(
+                adapter,
+                messages=messages,
+                previous_response=first,
+                max_tokens=512,
+                timeout_s=60,
+            )
+
+            assert isinstance(final.content, str)
+            assert final.content.strip() != ""
+            assert not final.tool_calls, (
+                f"{p['name']} / {model}: expected final natural-language answer, "
+                f"got tool_calls: {final.tool_calls!r}"
+            )
+            assert "73" in final.content, (
+                f"{p['name']} / {model}: expected final answer to mention 73, "
+                f"got: {final.content!r}"
+            )
