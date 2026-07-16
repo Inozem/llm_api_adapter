@@ -15,7 +15,7 @@ from ..models.tools import ToolSpec
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(repr=False)
 class GoogleAdapter(LLMAdapterBase):
     company: str = "google"
 

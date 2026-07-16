@@ -766,7 +766,7 @@ The library uses Python's standard `logging` module and does not configure handl
 Loggers are module-based under `llm_api_adapter.*` (e.g., `llm_api_adapter.universal_adapter`).
 
 * **Default behavior:** No handlers installed, effective level = `WARNING`.
-* **No secrets are logged** — API keys and request bodies are excluded. Only event metadata and errors are logged.
+* **No secrets are logged** — API keys and request bodies are excluded. Only event metadata and errors are logged. Adapter and client objects mask the key in `__repr__` (e.g. `api_key='sk-12345...cdef'`), so they are safe to log or print.
 
 ### Enable logs (console)
 
