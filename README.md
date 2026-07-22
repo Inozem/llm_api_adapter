@@ -832,6 +832,20 @@ logging.getLogger("urllib3").setLevel(logging.DEBUG)
 
 Use this only in development.
 
+## Related project
+
+For production applications that need retries, multi-provider failover,
+circuit breakers, and tool-session recovery, see
+[`llm-api-resilience`](https://github.com/Inozem/llm_api_resilience).
+
+Install it with:
+
+```bash
+python -m pip install llm-api-resilience
+```
+
+`llm-api-resilience` is built on top of this adapter and keeps its
+provider-neutral interface unchanged.
 
 ## Development & Testing
 
