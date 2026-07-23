@@ -6,7 +6,7 @@ import json
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 from ..tools import ToolCall
-from .file_parts import FilePart, ImagePart
+from .file_parts import DocumentPart, FilePart, ImagePart
 
 
 @dataclass
@@ -113,7 +113,21 @@ class UserMessage(Message):
                     "data": part._get_b64_data(),
                 },
             }
-        raise ValueError(f"{type(part).__name__} not supported in 0.5.0")
+        if isinstance(part, DocumentPart):
+            if part._is_url():
+                return {
+                    "type": "document",
+                    "source": {"type": "url", "url": part.url},
+                }
+            return {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": part._get_media_type(),
+                    "data": part._get_b64_data(),
+                },
+            }
+        raise ValueError(f"{type(part).__name__} is not supported as Anthropic file part")
 
     def _part_to_google(self, part: FilePart) -> Dict[str, Any]:
         if isinstance(part, ImagePart):
@@ -425,6 +439,15 @@ class Messages:
                 return ImagePart(url=source["url"])
             if source.get("type") == "base64":
                 return ImagePart(
+                    data=base64.b64decode(source["data"]),
+                    media_type=source["media_type"],
+                )
+        if part_type == "document":
+            source = part.get("source", {})
+            if source.get("type") == "url":
+                return DocumentPart(url=source["url"])
+            if source.get("type") == "base64":
+                return DocumentPart(
                     data=base64.b64decode(source["data"]),
                     media_type=source["media_type"],
                 )
