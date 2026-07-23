@@ -93,13 +93,38 @@ class UserMessage(Message):
         if isinstance(part, ImagePart):
             url = part.url if part._is_url() else part._to_data_uri()
             return {"type": "image_url", "image_url": {"url": url}}
-        raise ValueError(f"{type(part).__name__} not supported in 0.5.0")
+        if isinstance(part, DocumentPart):
+            if part._is_url():
+                raise ValueError(
+                    "OpenAI Chat Completions does not support DocumentPart URL. "
+                    "Use bytes/data, or switch to Responses API (gpt-5 models)."
+                )
+            return {
+                "type": "file",
+                "file": {
+                    "filename": "document.pdf",
+                    "file_data": part._to_data_uri(),
+                },
+            }
+        raise ValueError(
+            f"{type(part).__name__} is not supported as OpenAI Chat Completions file part"
+        )
 
     def _part_to_openai_responses(self, part: FilePart) -> Dict[str, Any]:
         if isinstance(part, ImagePart):
             url = part.url if part._is_url() else part._to_data_uri()
             return {"type": "input_image", "image_url": url}
-        raise ValueError(f"{type(part).__name__} not supported in 0.5.0")
+        if isinstance(part, DocumentPart):
+            if part._is_url():
+                return {"type": "input_file", "file_url": part.url}
+            return {
+                "type": "input_file",
+                "filename": "document.pdf",
+                "file_data": part._to_data_uri(),
+            }
+        raise ValueError(
+            f"{type(part).__name__} is not supported as OpenAI Responses API file part"
+        )
 
     def _part_to_anthropic(self, part: FilePart) -> Dict[str, Any]:
         if isinstance(part, ImagePart):
@@ -431,31 +456,65 @@ class Messages:
             raise ValueError(f"Unsupported file part type: {type(part)}")
         part_type = part.get("type")
         if part_type == "image_url":
-            image_url = part.get("image_url")
-            if isinstance(image_url, dict):
-                return ImagePart(url=image_url["url"])
-            return ImagePart(url=image_url)
+            return self._normalize_image_url_part(part)
         if part_type == "input_image":
-            return ImagePart(url=part["image_url"])
+            return self._normalize_openai_input_image_part(part)
         if part_type == "image":
-            source = part.get("source", {})
-            if source.get("type") == "url":
-                return ImagePart(url=source["url"])
-            if source.get("type") == "base64":
-                return ImagePart(
-                    data=base64.b64decode(source["data"]),
-                    media_type=source["media_type"],
-                )
+            return self._normalize_anthropic_image_part(part)
         if part_type == "document":
-            source = part.get("source", {})
-            if source.get("type") == "url":
-                return DocumentPart(url=source["url"])
-            if source.get("type") == "base64":
-                return DocumentPart(
-                    data=base64.b64decode(source["data"]),
-                    media_type=source["media_type"],
-                )
+            return self._normalize_anthropic_document_part(part)
+        if part_type == "input_file":
+            return self._normalize_openai_input_file_part(part)
+        if part_type == "file":
+            return self._normalize_openai_chat_file_part(part)
         raise ValueError(f"Unsupported file part format: {part_type!r}")
+
+    def _normalize_image_url_part(self, part: Dict[str, Any]) -> ImagePart:
+        image_url = part.get("image_url")
+        if isinstance(image_url, dict):
+            return ImagePart(url=image_url["url"])
+        return ImagePart(url=image_url)
+
+    def _normalize_openai_input_image_part(self, part: Dict[str, Any]) -> ImagePart:
+        return ImagePart(url=part["image_url"])
+
+    def _normalize_anthropic_image_part(self, part: Dict[str, Any]) -> ImagePart:
+        source = part.get("source", {})
+        if source.get("type") == "url":
+            return ImagePart(url=source["url"])
+        if source.get("type") == "base64":
+            return ImagePart(
+                data=base64.b64decode(source["data"]),
+                media_type=source["media_type"],
+            )
+        raise ValueError(f"Unsupported file part format: {part.get('type')!r}")
+
+    def _normalize_anthropic_document_part(self, part: Dict[str, Any]) -> DocumentPart:
+        source = part.get("source", {})
+        if source.get("type") == "url":
+            return DocumentPart(url=source["url"])
+        if source.get("type") == "base64":
+            return DocumentPart(
+                data=base64.b64decode(source["data"]),
+                media_type=source["media_type"],
+            )
+        raise ValueError(f"Unsupported file part format: {part.get('type')!r}")
+
+    def _normalize_openai_input_file_part(self, part: Dict[str, Any]) -> DocumentPart:
+        file_url = part.get("file_url")
+        if file_url:
+            return DocumentPart(url=file_url)
+        file_data = part.get("file_data")
+        if file_data:
+            return DocumentPart(url=file_data)
+        raise ValueError(f"Unsupported file part format: {part.get('type')!r}")
+
+    def _normalize_openai_chat_file_part(self, part: Dict[str, Any]) -> DocumentPart:
+        file_obj = part.get("file", {})
+        file_data = file_obj.get("file_data")
+        if file_data:
+            return DocumentPart(url=file_data)
+        raise ValueError(f"Unsupported file part format: {part.get('type')!r}")
    
     def to_openai(self) -> List[Dict[str, Any]]:
         return [m.to_openai() for m in self.items]
