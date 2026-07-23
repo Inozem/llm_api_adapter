@@ -718,7 +718,56 @@ messages = [{
 response = adapter.chat(messages=messages, max_tokens=200)
 ```
 
-> **Note:** Only `ImagePart` is supported in v0.5.0. `DocumentPart` and `AudioPart` are planned for v0.5.1.
+> **Note:** `ImagePart` is supported in v0.5.0; `DocumentPart` is introduced in v0.5.1. Google already supports audio input, but `AudioPart` is postponed because Anthropic does not support audio and OpenAI uses a separate audio API (`gpt-audio-1.5` with `modalities`), so there is no common provider-neutral contract yet.
+
+## Document Input
+
+The SDK supports PDF documents alongside text using `DocumentPart` and the `files` parameter on `UserMessage`. Provider-specific wire formats are handled automatically.
+
+### Import
+
+```python
+from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.models.messages.file_parts import DocumentPart
+```
+
+### PDF from URL
+
+```python
+msg = UserMessage(
+    "Summarize this document in one sentence.",
+    files=[DocumentPart(url="https://example.com/report.pdf")]
+)
+response = adapter.chat(messages=[msg], max_tokens=200)
+print(response.content)
+```
+
+The PDF MIME type is detected from the `.pdf` extension. Anthropic, Google, and the OpenAI Responses API accept a document URL. OpenAI Chat Completions models below `gpt-5` do not accept a document URL; use bytes instead.
+
+### PDF from bytes
+
+```python
+with open("report.pdf", "rb") as f:
+    pdf_bytes = f.read()
+
+msg = UserMessage(
+    "Summarize this document in one sentence.",
+    files=[DocumentPart(data=pdf_bytes, media_type="application/pdf")]
+)
+response = adapter.chat(messages=[msg], max_tokens=200)
+print(response.content)
+```
+
+For bytes, the adapter sends the PDF as base64 data in the provider-specific request format. The same `DocumentPart` works with Anthropic, Google, OpenAI Chat Completions, and the OpenAI Responses API.
+
+### File type support
+
+| File type | Anthropic | OpenAI (< gpt-5) | OpenAI (gpt-5+) | Google |
+|-----------|-----------|------------------|-----------------|--------|
+| ImagePart (URL) | ✅ | ✅ | ✅ | ✅ |
+| ImagePart (bytes) | ✅ | ✅ | ✅ | ✅ |
+| DocumentPart (URL) | ✅ | ❌ | ✅ | ✅ |
+| DocumentPart (bytes) | ✅ | ✅ | ✅ | ✅ |
 
 ## Token Usage and Pricing
 
@@ -832,6 +881,20 @@ logging.getLogger("urllib3").setLevel(logging.DEBUG)
 
 Use this only in development.
 
+## Related project
+
+For production applications that need retries, multi-provider failover,
+circuit breakers, and tool-session recovery, see
+[`llm-api-resilience`](https://github.com/Inozem/llm_api_resilience).
+
+Install it with:
+
+```bash
+python -m pip install llm-api-resilience
+```
+
+`llm-api-resilience` is built on top of this adapter and keeps its
+provider-neutral interface unchanged.
 
 ## Development & Testing
 

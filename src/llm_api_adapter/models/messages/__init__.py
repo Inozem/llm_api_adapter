@@ -1,3 +1,3 @@
-from .file_parts import FilePart, FileParts, ImagePart
+from .file_parts import DocumentPart, FilePart, FileParts, ImagePart
 
-__all__ = ["FilePart", "ImagePart", "FileParts"]
+__all__ = ["FilePart", "ImagePart", "DocumentPart", "FileParts"]
