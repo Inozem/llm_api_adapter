@@ -134,7 +134,11 @@ class UserMessage(Message):
             if part._is_url():
                 return {"fileData": {"mimeType": part._get_media_type(), "fileUri": part.url}}
             return {"inlineData": {"mimeType": part._get_media_type(), "data": part._get_b64_data()}}
-        raise ValueError(f"{type(part).__name__} not supported in 0.5.0")
+        if isinstance(part, DocumentPart):
+            if part._is_url():
+                return {"fileData": {"mimeType": part._get_media_type(), "fileUri": part.url}}
+            return {"inlineData": {"mimeType": part._get_media_type(), "data": part._get_b64_data()}}
+        raise ValueError(f"{type(part).__name__} is not supported as Google file part")
 
 
 @dataclass
