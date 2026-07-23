@@ -83,5 +83,19 @@ class ImagePart(FilePart):
             )
 
 
-# In 0.5.1 this will expand to Union[ImagePart, DocumentPart]. AudioPart remains deferred.
-FileParts = Union[ImagePart]
+@dataclass
+class DocumentPart(FilePart):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        mt = self._get_media_type()
+        if mt is None:
+            raise ValueError(
+                "Cannot detect document media_type from URL — pass media_type explicitly"
+            )
+        if mt != "application/pdf":
+            raise ValueError(
+                f"DocumentPart requires application/pdf media_type, got {mt!r}"
+            )
+
+
+FileParts = Union[ImagePart, DocumentPart]
