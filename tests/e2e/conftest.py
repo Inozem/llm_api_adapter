@@ -62,6 +62,11 @@ def vision_image_bytes() -> bytes:
 
 
 @pytest.fixture(scope="session")
+def pdf_bytes() -> bytes:
+    return (_FIXTURES_DIR / "test_document.pdf").read_bytes()
+
+
+@pytest.fixture(scope="session")
 def providers():
     providers_with_models = []
     for provider_name, provider_spec in LLM_REGISTRY.providers.items():
