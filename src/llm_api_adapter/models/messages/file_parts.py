@@ -83,5 +83,5 @@ class ImagePart(FilePart):
             )
 
 
-# In 0.5.1 this will expand to Union[ImagePart, DocumentPart, AudioPart]
+# In 0.5.1 this will expand to Union[ImagePart, DocumentPart]. AudioPart remains deferred.
 FileParts = Union[ImagePart]

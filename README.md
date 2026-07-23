@@ -718,7 +718,7 @@ messages = [{
 response = adapter.chat(messages=messages, max_tokens=200)
 ```
 
-> **Note:** Only `ImagePart` is supported in v0.5.0. `DocumentPart` and `AudioPart` are planned for v0.5.1.
+> **Note:** Only `ImagePart` is supported in v0.5.0. `DocumentPart` is planned for v0.5.1. Google already supports audio input, but `AudioPart` is postponed because Anthropic does not support audio and OpenAI uses a separate audio API (`gpt-audio-1.5` with `modalities`), so there is no common provider-neutral contract yet.
 
 ## Token Usage and Pricing
 
