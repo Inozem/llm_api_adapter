@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from src.llm_api_adapter.models.messages.file_parts import ImagePart
+from src.llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from src.llm_api_adapter.models.messages.chat_message import (
     AIMessage,
     Message,
@@ -928,3 +928,140 @@ def test_messages_normalize_dict_file_part_passthrough():
     img = ImagePart(url="https://example.com/a.gif")
     msgs = Messages(items=[])
     assert msgs._normalize_dict_file_part(img) is img
+
+
+# ---------------------------------------------------------------------------
+# UserMessage.files — DocumentPart provider serialization
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_user_message_to_anthropic_with_url_document():
+    u = UserMessage("summarize", files=[DocumentPart(url="https://example.com/report.pdf")])
+    result = u.to_anthropic()
+    assert result["content"][1] == {
+        "type": "document",
+        "source": {"type": "url", "url": "https://example.com/report.pdf"},
+    }
+
+
+@pytest.mark.unit
+def test_user_message_to_anthropic_with_bytes_document():
+    raw = b"%PDF"
+    u = UserMessage("summarize", files=[DocumentPart(data=raw, media_type="application/pdf")])
+    assert u.to_anthropic()["content"][1] == {
+        "type": "document",
+        "source": {
+            "type": "base64",
+            "media_type": "application/pdf",
+            "data": base64.b64encode(raw).decode(),
+        },
+    }
+
+
+@pytest.mark.unit
+def test_user_message_to_google_with_url_document():
+    u = UserMessage("summarize", files=[DocumentPart(url="https://example.com/report.pdf")])
+    assert u.to_google()["parts"][1] == {
+        "fileData": {
+            "mimeType": "application/pdf",
+            "fileUri": "https://example.com/report.pdf",
+        },
+    }
+
+
+@pytest.mark.unit
+def test_user_message_to_google_with_bytes_document():
+    raw = b"%PDF"
+    u = UserMessage("summarize", files=[DocumentPart(data=raw, media_type="application/pdf")])
+    assert u.to_google()["parts"][1] == {
+        "inlineData": {
+            "mimeType": "application/pdf",
+            "data": base64.b64encode(raw).decode(),
+        },
+    }
+
+
+@pytest.mark.unit
+def test_user_message_to_openai_responses_with_url_document():
+    u = UserMessage("summarize", files=[DocumentPart(url="https://example.com/report.pdf")])
+    assert u.to_openai_responses_input()[0]["content"][1] == {
+        "type": "input_file",
+        "file_url": "https://example.com/report.pdf",
+    }
+
+
+@pytest.mark.unit
+def test_user_message_to_openai_responses_with_bytes_document():
+    raw = b"%PDF"
+    u = UserMessage("summarize", files=[DocumentPart(data=raw, media_type="application/pdf")])
+    assert u.to_openai_responses_input()[0]["content"][1] == {
+        "type": "input_file",
+        "filename": "document.pdf",
+        "file_data": f"data:application/pdf;base64,{base64.b64encode(raw).decode()}",
+    }
+
+
+@pytest.mark.unit
+def test_user_message_to_openai_chat_with_url_document_raises():
+    u = UserMessage("summarize", files=[DocumentPart(url="https://example.com/report.pdf")])
+    with pytest.raises(ValueError, match="does not support DocumentPart URL"):
+        u.to_openai()
+
+
+@pytest.mark.unit
+def test_user_message_to_openai_chat_with_bytes_document():
+    raw = b"%PDF"
+    u = UserMessage("summarize", files=[DocumentPart(data=raw, media_type="application/pdf")])
+    assert u.to_openai()["content"][1] == {
+        "type": "file",
+        "file": {
+            "filename": "document.pdf",
+            "file_data": f"data:application/pdf;base64,{base64.b64encode(raw).decode()}",
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Messages normalization — DocumentPart wire formats
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_messages_normalize_document_file_part_formats():
+    msgs = Messages(items=[])
+    raw = b"%PDF"
+    data_uri = f"data:application/pdf;base64,{base64.b64encode(raw).decode()}"
+
+    parts = [
+        msgs._normalize_dict_file_part({
+            "type": "document",
+            "source": {"type": "url", "url": "https://example.com/report.pdf"},
+        }),
+        msgs._normalize_dict_file_part({
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": base64.b64encode(raw).decode(),
+            },
+        }),
+        msgs._normalize_dict_file_part({
+            "type": "input_file",
+            "file_url": "https://example.com/report.pdf",
+        }),
+        msgs._normalize_dict_file_part({"type": "input_file", "file_data": data_uri}),
+        msgs._normalize_dict_file_part({
+            "type": "file",
+            "file": {"file_data": data_uri},
+        }),
+    ]
+
+    assert isinstance(parts[0], DocumentPart)
+    assert parts[0].url == "https://example.com/report.pdf"
+    assert isinstance(parts[1], DocumentPart)
+    assert parts[1].data == raw
+    assert isinstance(parts[2], DocumentPart)
+    assert parts[2].url == "https://example.com/report.pdf"
+    assert isinstance(parts[3], DocumentPart)
+    assert parts[3]._get_media_type() == "application/pdf"
+    assert isinstance(parts[4], DocumentPart)
+    assert parts[4]._get_media_type() == "application/pdf"

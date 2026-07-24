@@ -2,7 +2,11 @@ import base64
 
 import pytest
 
-from src.llm_api_adapter.models.messages.file_parts import FilePart, ImagePart
+from src.llm_api_adapter.models.messages.file_parts import (
+    DocumentPart,
+    FilePart,
+    ImagePart,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -139,3 +143,43 @@ def test_image_part_data_with_non_image_media_type_raises():
 def test_image_part_data_uri_in_url_resolves_media_type():
     img = ImagePart(url="data:image/webp;base64,abc")
     assert img._get_media_type() == "image/webp"
+
+
+# ---------------------------------------------------------------------------
+# DocumentPart — validation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_document_part_url_auto_detects_pdf_media_type():
+    doc = DocumentPart(url="https://example.com/report.pdf")
+    assert doc.media_type == "application/pdf"
+
+
+@pytest.mark.unit
+def test_document_part_data_with_pdf_media_type_ok():
+    doc = DocumentPart(data=b"%PDF", media_type="application/pdf")
+    assert doc.media_type == "application/pdf"
+
+
+@pytest.mark.unit
+def test_document_part_url_without_extension_raises():
+    with pytest.raises(ValueError, match="Cannot detect document"):
+        DocumentPart(url="https://api.example.com/report")
+
+
+@pytest.mark.unit
+def test_document_part_url_with_non_pdf_extension_raises():
+    with pytest.raises(ValueError, match="application/pdf"):
+        DocumentPart(url="https://example.com/photo.jpg")
+
+
+@pytest.mark.unit
+def test_document_part_data_with_non_pdf_media_type_raises():
+    with pytest.raises(ValueError, match="application/pdf"):
+        DocumentPart(data=b"image", media_type="image/jpeg")
+
+
+@pytest.mark.unit
+def test_document_part_data_uri_resolves_pdf_media_type():
+    doc = DocumentPart(url="data:application/pdf;base64,JVBERg==")
+    assert doc._get_media_type() == "application/pdf"
