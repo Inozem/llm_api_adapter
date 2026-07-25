@@ -17,7 +17,8 @@ Calling an LLM from Python currently means one of three paths: lock yourself to 
 | Unified reasoning control | ✓               | partial¹      | partial¹      | ✗            |
 | Built-in cost accounting  | ✓               | ✓             | via callbacks | ✗            |
 | Unified error hierarchy   | ✓               | partial       | ✗             | ✗            |
-| Async / streaming         | ✗               | ✓             | ✓             | ✓            |
+| Sync streaming            | ✓               | ✓             | ✓            | ✓            |
+| Async API                 | ✗               | ✓             | ✓            | ✓            |
 | Number of providers       | 3               | 100+          | 50+           | 1            |
 
 ¹ LiteLLM and LangChain expose reasoning via provider-specific parameters — there is no single unified parameter that works identically across providers.
@@ -44,6 +45,7 @@ Calling an LLM from Python currently means one of three paths: lock yourself to 
 
 ## Features
 
+- **Synchronous Streaming**: Iterate normalized text deltas with `stream_chat()` across OpenAI, Anthropic, and Google; receive completed tool calls and the final normalized `ChatResponse` through optional callbacks.
 - **Vision Input**: Send images alongside text via `ImagePart` — URL or raw bytes, all providers handled automatically.
 - **Tool / Function Calling**: Provider-agnostic tool definitions and normalized tool calls in `ChatResponse.tool_calls`.
 - **Strict JSON Mode**: Pass a JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` — provider normalization is handled automatically.
@@ -131,6 +133,37 @@ print(response.content)
 ```
 > **Note**  
 > The adapter automatically normalizes message input — you can mix custom message classes and OpenAI-style dicts in one list.
+
+## Streaming
+
+`stream_chat()` is the synchronous streaming counterpart to `chat()`. It yields normalized visible text deltas as `str`, independently of the provider's native streaming event format.
+
+```python
+from llm_api_adapter import UniversalLLMAPIAdapter
+
+adapter = UniversalLLMAPIAdapter(
+    organization="openai",
+    model="gpt-5.6-sol",
+    api_key="...",
+)
+
+chunks = []
+for delta in adapter.stream_chat(
+    messages=[{"role": "user", "content": "Explain SSE in one sentence."}],
+    on_delta=chunks.append,
+    on_tool_call=lambda call: print(call.name, call.arguments),
+    on_done=lambda response: print(response.usage),
+):
+    print(delta, end="", flush=True)
+```
+
+- `on_delta(delta)` is called for every yielded visible text delta.
+- `on_tool_call(tool_call)` receives only completed, normalized `ToolCall` objects after the provider stream finishes.
+- `on_done(response)` receives the finalized `ChatResponse`, including usage, pricing, parsed structured output, and any tool calls.
+
+Streaming in v0.6.0 is synchronous and text-first. Async streaming, buffer/backpressure controls, a universal provider-event type, partial tool arguments, and tool-call sequencing are deferred to later releases.
+
+Provider event references: [OpenAI Responses streaming](https://platform.openai.com/docs/api-reference/responses-streaming), [Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), and [Google `streamGenerateContent`](https://ai.google.dev/api/generate-content).
 
 ## Handling Errors
 
