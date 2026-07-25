@@ -167,6 +167,30 @@ def test_stream_uses_responses_api_and_preserves_named_events(mock_post, client)
 
 
 @pytest.mark.unit
+def test_prepare_responses_payload_warns_when_ignoring_temperature_for_gpt5_nano(client):
+    with pytest.warns(
+        UserWarning,
+        match="Parameter 'temperature' is not supported for model 'gpt-5-nano'",
+    ):
+        payload = client._prepare_responses_payload_for_model(
+            "gpt-5-nano",
+            {"temperature": 0},
+        )
+
+    assert "temperature" not in payload
+
+
+@pytest.mark.unit
+def test_prepare_responses_payload_preserves_temperature_for_other_gpt5_models(client):
+    payload = client._prepare_responses_payload_for_model(
+        "gpt-5",
+        {"temperature": 0},
+    )
+
+    assert payload["temperature"] == 0
+
+
+@pytest.mark.unit
 @patch("src.llm_api_adapter.llms.streaming.requests.post")
 def test_stream_closes_response_when_consumer_stops_early(mock_post, client):
     response = StreamingResponse([

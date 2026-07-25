@@ -95,6 +95,15 @@ class OpenAISyncClient:
             if model in ("gpt-5", "gpt-5-nano", "gpt-5-mini") and reasoning_effort == "none":
                 reasoning_effort = "minimal"
             payload["reasoning"] = {"effort": reasoning_effort}
+        if model.startswith("gpt-5-nano"):
+            temperature = payload.pop("temperature", None)
+            if temperature not in (None, 1.0):
+                warning_message = (
+                    f"Parameter 'temperature' is not supported for model '{model}' "
+                    "and will be ignored."
+                )
+                warnings.warn(warning_message, stacklevel=2)
+                logger.warning(warning_message)
         if model.startswith("gpt-5") and "top_p" in payload:
             warning_message = (
                 f"Parameter 'top_p' is not supported for model '{model}' and will be ignored."
