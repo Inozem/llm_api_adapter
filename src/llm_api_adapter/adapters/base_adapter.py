@@ -6,14 +6,14 @@ from dataclasses import dataclass, field
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 import warnings
 
 from ..errors.llm_api_error import InvalidToolSchemaError, JSONSchemaError, ToolChoiceError
 from ..llm_registry.llm_registry import Pricing, LLM_REGISTRY
 from ..models.messages.chat_message import Messages
 from ..models.responses.chat_response import ChatResponse
-from ..models.tools import ToolSpec
+from ..models.tools import ToolCall, ToolSpec
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,10 @@ REASONING_LEVELS_DEFAULT = {
 }
 
 TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+OnDelta = Callable[[str], None]
+OnToolCall = Callable[[ToolCall], None]
+OnDone = Callable[[ChatResponse], None]
 
 
 @dataclass
@@ -70,6 +74,33 @@ class LLMAdapterBase(ABC):
     def chat(self, **kwargs) -> ChatResponse:
         """
         Generates a response based on the provided conversation.
+        """
+        raise NotImplementedError
+
+    def stream_chat(
+        self,
+        messages: Any,
+        max_tokens: Optional[int] = None,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        reasoning_level: Optional[str | int] = None,
+        timeout_s: Optional[float] = None,
+        tools: Optional[List[ToolSpec]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: Optional[bool] = None,
+        previous_response: Optional[ChatResponse] = None,
+        json_schema: Optional[dict] = None,
+        response_model: Optional[Any] = None,
+        on_delta: Optional[OnDelta] = None,
+        on_tool_call: Optional[OnToolCall] = None,
+        on_done: Optional[OnDone] = None,
+    ) -> Iterator[str]:
+        """Stream text deltas synchronously.
+
+        Provider adapters implement the transport and normalization in a
+        later layer.  Keeping the typed contract here preserves the existing
+        facade delegation while allowing the first streaming transport commit
+        to remain backward compatible with current adapters.
         """
         raise NotImplementedError
 

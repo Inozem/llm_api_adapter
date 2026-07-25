@@ -221,6 +221,16 @@ def test_base_abstract_chat_method_raises_not_implemented(adapter):
 
 
 @pytest.mark.unit
+def test_base_stream_chat_contract_raises_not_implemented(adapter):
+    with pytest.raises(NotImplementedError):
+        LLMAdapterBase.stream_chat(
+            adapter,
+            messages=[UserMessage("hello")],
+            on_delta=lambda delta: None,
+        )
+
+
+@pytest.mark.unit
 def test_base_abstract_normalize_reasoning_level_raises_not_implemented(adapter):
     with pytest.raises(NotImplementedError):
         LLMAdapterBase._normalize_reasoning_level(adapter, "low")
