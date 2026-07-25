@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import logging
+from typing import Iterator, Mapping
 import requests
 import warnings
 
@@ -10,7 +11,9 @@ from ...errors.llm_api_error import (
     LLMAPIClientError,
     LLMAPIServerError,
     LLMAPITimeoutError,
+    LLMAPIUsageLimitError,
 )
+from ..streaming import SSEEvent, stream_request
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,12 @@ class OpenAISyncClient:
             return self.responses(model=model, timeout=timeout, **kwargs)
         return self.chat_completion(model=model, timeout=timeout, **kwargs)
 
+    def stream(self, model: str, timeout: float | None = None, **kwargs) -> Iterator[SSEEvent]:
+        """Stream raw OpenAI events from the API appropriate for ``model``."""
+        if self._should_use_responses_api(model):
+            return self.stream_responses(model=model, timeout=timeout, **kwargs)
+        return self.stream_chat_completion(model=model, timeout=timeout, **kwargs)
+
     def chat_completion(self, model: str, timeout: float | None = None, **kwargs):
         url = f"{self.endpoint}/chat/completions"
         payload = self._prepare_chat_payload_for_model(model, kwargs)
@@ -46,6 +55,24 @@ class OpenAISyncClient:
         payload = self._prepare_responses_payload_for_model(model, kwargs)
         response = self._send_request(url, payload, timeout)
         return response.json()
+
+    def stream_chat_completion(
+        self, model: str, timeout: float | None = None, **kwargs
+    ) -> Iterator[SSEEvent]:
+        """Stream raw Chat Completions SSE events without interpreting them."""
+        url = f"{self.endpoint}/chat/completions"
+        payload = self._prepare_chat_payload_for_model(model, kwargs)
+        payload["stream"] = True
+        return self._stream_request(url, payload, timeout)
+
+    def stream_responses(
+        self, model: str, timeout: float | None = None, **kwargs
+    ) -> Iterator[SSEEvent]:
+        """Stream raw Responses API SSE events without interpreting them."""
+        url = f"{self.endpoint}/responses"
+        payload = self._prepare_responses_payload_for_model(model, kwargs)
+        payload["stream"] = True
+        return self._stream_request(url, payload, timeout)
 
     def _should_use_responses_api(self, model: str) -> bool:
         return model.startswith("gpt-5")
@@ -94,6 +121,47 @@ class OpenAISyncClient:
             raise LLMAPIClientError(detail=str(e))
         return response
 
+    def _stream_request(
+        self, url: str, payload: dict, timeout: float | None = None
+    ) -> Iterator[SSEEvent]:
+        events = stream_request(
+            url,
+            headers=self._headers(),
+            payload=payload,
+            timeout=timeout,
+            http_error_handler=self._handle_http_error,
+            stream_error_handler=self._handle_stream_error,
+        )
+        try:
+            for event in events:
+                if self._is_failed_stream_event(event):
+                    self._handle_stream_error(event)
+                yield event
+        finally:
+            events.close()
+
+    @staticmethod
+    def _is_failed_stream_event(event: SSEEvent) -> bool:
+        if event.event == "response.failed":
+            return True
+        return isinstance(event.data, Mapping) and event.data.get("type") == "response.failed"
+
+    def _handle_stream_error(self, event: SSEEvent) -> None:
+        payload = event.data if isinstance(event.data, Mapping) else {}
+        response = payload.get("response")
+        response_error = response.get("error") if isinstance(response, Mapping) else None
+        error = response_error if isinstance(response_error, Mapping) else payload.get("error")
+        error = error if isinstance(error, Mapping) else payload
+
+        error_type = error.get("type") or error.get("code")
+        error_message = error.get("message")
+        detail = str(error_message or error_type or payload)
+        self._raise_mapped_error(
+            status_code=None,
+            error_type=str(error_type) if error_type else None,
+            detail=detail,
+        )
+
     def _handle_http_error(self, http_err):
         status_code = http_err.response.status_code
         try:
@@ -106,21 +174,44 @@ class OpenAISyncClient:
             error_type = None
             error_message = None
         detail = error_message or str(http_err)
+        self._raise_mapped_error(status_code, error_type, detail)
+
+    @staticmethod
+    def _raise_mapped_error(
+        status_code: int | None, error_type: str | None, detail: str
+    ) -> None:
         error_map = {
             401: LLMAPIAuthorizationError,
             429: LLMAPIRateLimitError,
         }
         if status_code in error_map:
             raise error_map[status_code](detail=detail)
-        elif error_type in LLMAPIAuthorizationError.openai_api_errors:
+        if error_type in (
+            *LLMAPIAuthorizationError.openai_api_errors,
+            "invalid_api_key",
+            "authentication_error",
+        ):
             raise LLMAPIAuthorizationError(detail=detail)
-        elif error_type in LLMAPIRateLimitError.openai_api_errors:
+        if error_type in (
+            *LLMAPIRateLimitError.openai_api_errors,
+            "rate_limit_exceeded",
+        ):
             raise LLMAPIRateLimitError(detail=detail)
-        elif error_type in LLMAPITokenLimitError.openai_api_errors:
+        if error_type in LLMAPITokenLimitError.openai_api_errors:
             raise LLMAPITokenLimitError(detail=detail)
-        elif 400 <= status_code < 500:
-            raise LLMAPIClientError(detail=detail)
-        elif 500 <= status_code < 600:
+        if error_type in LLMAPIUsageLimitError.openai_api_errors:
+            raise LLMAPIUsageLimitError(detail=detail)
+        if error_type in (
+            *LLMAPIServerError.openai_api_errors,
+            "server_error",
+            "internal_error",
+            "overloaded_error",
+        ):
             raise LLMAPIServerError(detail=detail)
-        else:
+        if error_type in (*LLMAPITimeoutError.openai_api_errors, "timeout"):
+            raise LLMAPITimeoutError(detail=detail)
+        if status_code is not None and 400 <= status_code < 500:
             raise LLMAPIClientError(detail=detail)
+        if status_code is not None and 500 <= status_code < 600:
+            raise LLMAPIServerError(detail=detail)
+        raise LLMAPIClientError(detail=detail)
