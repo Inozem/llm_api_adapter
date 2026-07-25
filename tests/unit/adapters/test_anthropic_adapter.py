@@ -7,6 +7,8 @@ from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
 from src.llm_api_adapter.adapters.anthropic_adapter import ClaudeSyncClient
 from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
+from src.llm_api_adapter.models.tools import ToolSpec
+from src.llm_api_adapter.llms.streaming import SSEEvent
 
 @pytest.fixture
 def adapter():
@@ -172,3 +174,70 @@ def test_chat_omits_output_config_when_json_schema_is_none(adapter):
 
     kwargs = mock_chat.call_args.kwargs
     assert "output_config" not in kwargs
+
+
+@pytest.mark.unit
+def test_stream_chat_normalizes_text_and_completed_tool_use(adapter):
+    events = iter([
+        SSEEvent(
+            event="message_start",
+            data={"type": "message_start", "message": {
+                "id": "msg_123", "model": "claude-sonnet-4-5", "content": [],
+                "usage": {"input_tokens": 5, "output_tokens": 0},
+            }},
+        ),
+        SSEEvent(
+            event="content_block_start",
+            data={"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}},
+        ),
+        SSEEvent(
+            event="content_block_start",
+            data={"type": "content_block_start", "index": 1, "content_block": {
+                "type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {},
+            }},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={"type": "content_block_delta", "index": 1, "delta": {
+                "type": "input_json_delta", "partial_json": "{\"city\": \"Tel",
+            }},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={"type": "content_block_delta", "index": 1, "delta": {
+                "type": "input_json_delta", "partial_json": " Aviv\"}",
+            }},
+        ),
+        SSEEvent(event="content_block_stop", data={"type": "content_block_stop", "index": 1}),
+        SSEEvent(
+            event="message_delta",
+            data={"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 8}},
+        ),
+        SSEEvent(event="message_stop", data={"type": "message_stop"}),
+    ])
+    done = []
+    tool_calls = []
+    callbacks = []
+    tool = ToolSpec(name="get_weather", json_schema={"type": "object"})
+
+    with patch.object(ClaudeSyncClient, "stream", return_value=events) as mock_stream:
+        assert list(adapter.stream_chat(
+            [UserMessage("hi")],
+            max_tokens=64,
+            tools=[tool],
+            on_delta=lambda delta: callbacks.append(("delta", delta)),
+            on_tool_call=lambda call: (callbacks.append(("tool", call)), tool_calls.append(call)),
+            on_done=lambda response: (callbacks.append(("done", response)), done.append(response)),
+        )) == ["Hello"]
+
+    assert [kind for kind, _ in callbacks] == ["delta", "tool", "done"]
+    assert mock_stream.call_args.kwargs["messages"] == [{"role": "user", "content": "hi"}]
+    assert done[0].content == "Hello"
+    assert done[0].usage.total_tokens == 13
+    assert done[0].finish_reason == "tool_use"
+    assert tool_calls[0].name == "get_weather"
+    assert tool_calls[0].arguments == {"city": "Tel Aviv"}

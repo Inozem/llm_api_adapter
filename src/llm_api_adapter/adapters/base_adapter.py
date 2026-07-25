@@ -9,7 +9,12 @@ import re
 from typing import Any, Callable, Dict, Iterator, List, Optional
 import warnings
 
-from ..errors.llm_api_error import InvalidToolSchemaError, JSONSchemaError, ToolChoiceError
+from ..errors.llm_api_error import (
+    InvalidToolSchemaError,
+    JSONSchemaError,
+    LLMAPIError,
+    ToolChoiceError,
+)
 from ..llm_registry.llm_registry import Pricing, LLM_REGISTRY
 from ..models.messages.chat_message import Messages
 from ..models.responses.chat_response import ChatResponse
@@ -77,6 +82,7 @@ class LLMAdapterBase(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
     def stream_chat(
         self,
         messages: Any,
@@ -95,13 +101,7 @@ class LLMAdapterBase(ABC):
         on_tool_call: Optional[OnToolCall] = None,
         on_done: Optional[OnDone] = None,
     ) -> Iterator[str]:
-        """Stream text deltas synchronously.
-
-        Provider adapters implement the transport and normalization in a
-        later layer.  Keeping the typed contract here preserves the existing
-        facade delegation while allowing the first streaming transport commit
-        to remain backward compatible with current adapters.
-        """
+        """Stream normalized text deltas synchronously."""
         raise NotImplementedError
 
     @abstractmethod
@@ -344,6 +344,57 @@ class LLMAdapterBase(ABC):
                 return response_model.model_validate(parsed_json, strict=False)
             except Exception as e:
                 raise JSONSchemaError(detail=f"Response failed Pydantic validation: {e}")
+
+    def _iter_provider_stream_events(self, events: Iterator[Any]) -> Iterator[Any]:
+        """Yield provider events while preserving the adapter error contract.
+
+        Callback invocation deliberately happens in the provider adapter,
+        outside this generator, so user callback exceptions are not reported
+        as provider failures.
+        """
+        try:
+            yield from events
+        except LLMAPIError as error:
+            self.handle_error(error)
+        except Exception as error:
+            error_message = getattr(error, "text", None) or str(error)
+            self.handle_error(error=error, error_message=error_message)
+
+    def _finalize_stream_response(
+        self,
+        chat_response: ChatResponse,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+        on_tool_call: Optional[OnToolCall],
+        on_done: Optional[OnDone],
+    ) -> None:
+        """Apply normal response post-processing, then invoke stream callbacks."""
+        try:
+            chat_response.parsed_json = self._parse_json_response(
+                chat_response.content,
+                effective_schema,
+            )
+            chat_response.parsed_model = self._parse_response_model(
+                chat_response.parsed_json,
+                response_model,
+            )
+            if self.pricing:
+                chat_response.apply_pricing(
+                    price_input_per_token=self.pricing.in_per_token,
+                    price_output_per_token=self.pricing.out_per_token,
+                    currency=self.pricing.currency,
+                )
+        except LLMAPIError as error:
+            self.handle_error(error)
+        except Exception as error:
+            error_message = getattr(error, "text", None) or str(error)
+            self.handle_error(error=error, error_message=error_message)
+
+        for tool_call in chat_response.tool_calls or []:
+            if on_tool_call is not None:
+                on_tool_call(tool_call)
+        if on_done is not None:
+            on_done(chat_response)
 
     def handle_error(self, error: Exception, error_message: Optional[str] = None):
         err_msg = (

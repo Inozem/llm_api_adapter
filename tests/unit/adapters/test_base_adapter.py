@@ -43,6 +43,9 @@ class _TestAdapter(LLMAdapterBase):
         except Exception as e:
             return self.handle_error(e)
 
+    def stream_chat(self, *args, **kwargs):
+        raise NotImplementedError
+
     def _normalize_reasoning_level(self, reasoning_level):
         return reasoning_level
 
