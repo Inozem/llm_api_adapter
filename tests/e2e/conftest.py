@@ -57,6 +57,25 @@ def chat_with_retry():
 
 
 @pytest.fixture(scope="session")
+def stream_with_retry():
+    """Returns a helper that retries a complete stream on transient provider errors."""
+    _delays = [2, 4, 8]
+    _max_attempts = len(_delays)
+
+    def _call(adapter, **kwargs):
+        for attempt in range(_max_attempts):
+            try:
+                return list(adapter.stream_chat(**kwargs))
+            except (LLMAPIServerError, LLMAPIRateLimitError):
+                if attempt == _max_attempts - 1:
+                    raise
+                time.sleep(_delays[attempt])
+        return []
+
+    return _call
+
+
+@pytest.fixture(scope="session")
 def vision_image_bytes() -> bytes:
     return (_FIXTURES_DIR / "test_image.png").read_bytes()
 

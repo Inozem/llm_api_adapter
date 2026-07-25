@@ -43,6 +43,9 @@ class _TestAdapter(LLMAdapterBase):
         except Exception as e:
             return self.handle_error(e)
 
+    def stream_chat(self, *args, **kwargs):
+        raise NotImplementedError
+
     def _normalize_reasoning_level(self, reasoning_level):
         return reasoning_level
 
@@ -218,6 +221,16 @@ def test_handle_error_reraises_and_logs(adapter, caplog):
 def test_base_abstract_chat_method_raises_not_implemented(adapter):
     with pytest.raises(NotImplementedError):
         LLMAdapterBase.chat(adapter)
+
+
+@pytest.mark.unit
+def test_base_stream_chat_contract_raises_not_implemented(adapter):
+    with pytest.raises(NotImplementedError):
+        LLMAdapterBase.stream_chat(
+            adapter,
+            messages=[UserMessage("hello")],
+            on_delta=lambda delta: None,
+        )
 
 
 @pytest.mark.unit

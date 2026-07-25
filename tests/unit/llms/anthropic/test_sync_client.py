@@ -11,6 +11,25 @@ from src.llm_api_adapter.errors.llm_api_error import (
     LLMAPITimeoutError,
 )
 from src.llm_api_adapter.llms.anthropic.sync_client import ClaudeSyncClient
+from src.llm_api_adapter.llms.streaming import SSEEvent
+
+
+class StreamingResponse:
+    def __init__(self, lines, status_code=200, error_payload=None):
+        self.lines = lines
+        self.status_code = status_code
+        self.error_payload = error_payload or {}
+        self.close = Mock()
+
+    def iter_lines(self, decode_unicode=True):
+        return iter(self.lines)
+
+    def json(self):
+        return self.error_payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(response=self)
 
 @pytest.fixture
 def client():
@@ -125,3 +144,172 @@ def test_prepare_payload_is_adaptive_thinking_never_in_result(client):
         kwargs = {"messages": [], "is_adaptive_thinking": flag}
         payload = client._prepare_chat_payload_for_model("claude-opus-4-8", kwargs)
         assert "is_adaptive_thinking" not in payload
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_yields_raw_messages_events_and_ignores_ping(mock_post, client):
+    response = StreamingResponse([
+        "event: message_start",
+        'data: {"type":"message_start","message":{"id":"msg_123","content":[]}}',
+        "",
+        "event: ping",
+        'data: {"type":"ping"}',
+        "",
+        "event: content_block_delta",
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}',
+        "",
+        "event: message_stop",
+        'data: {"type":"message_stop"}',
+        "",
+    ])
+    mock_post.return_value = response
+
+    events = list(client.stream(
+        "claude-opus-4-8",
+        messages=[{"role": "user", "content": "Hi"}],
+        max_tokens=64,
+    ))
+
+    assert events == [
+        SSEEvent(
+            event="message_start",
+            data={"type": "message_start", "message": {"id": "msg_123", "content": []}},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "Hello"},
+            },
+        ),
+        SSEEvent(event="message_stop", data={"type": "message_stop"}),
+    ]
+    assert mock_post.call_args.args[0] == "https://api.anthropic.com/v1/messages"
+    assert mock_post.call_args.kwargs["json"] == {
+        "model": "claude-opus-4-8",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 64,
+        "stream": True,
+    }
+    assert mock_post.call_args.kwargs["stream"] is True
+    response.close.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_reuses_adaptive_thinking_payload_preparation(mock_post, client):
+    response = StreamingResponse([])
+    mock_post.return_value = response
+
+    assert list(client.stream(
+        "claude-opus-4-8",
+        messages=[],
+        top_p=1.0,
+        is_adaptive_thinking=True,
+        effort="high",
+    )) == []
+
+    assert mock_post.call_args.kwargs["json"] == {
+        "model": "claude-opus-4-8",
+        "messages": [],
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "high"},
+        "stream": True,
+    }
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_preserves_input_json_deltas_for_later_tool_assembly(mock_post, client):
+    response = StreamingResponse([
+        "event: content_block_delta",
+        'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\\"city\\\": \\\"Tel"}}',
+        "",
+        "event: content_block_delta",
+        'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":" Aviv\\\"}"}}',
+        "",
+        "event: content_block_stop",
+        'data: {"type":"content_block_stop","index":1}',
+        "",
+    ])
+    mock_post.return_value = response
+
+    events = list(client.stream("claude-opus-4-8", messages=[]))
+
+    assert [event.data["delta"]["partial_json"] for event in events[:2]] == [
+        '{"city": "Tel',
+        ' Aviv"}',
+    ]
+    assert events[-1] == SSEEvent(
+        event="content_block_stop",
+        data={"type": "content_block_stop", "index": 1},
+    )
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_closes_response_when_consumer_stops_early(mock_post, client):
+    response = StreamingResponse([
+        "event: content_block_delta",
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}',
+        "",
+        "event: content_block_delta",
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}',
+        "",
+    ])
+    mock_post.return_value = response
+
+    events = client.stream("claude-opus-4-8", messages=[])
+    next(events)
+    events.close()
+
+    response.close.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_maps_http_errors_through_anthropic_error_handler(mock_post, client):
+    response = StreamingResponse(
+        [],
+        status_code=429,
+        error_payload={"error": {"type": "rate_limit_error", "message": "Slow down"}},
+    )
+    mock_post.return_value = response
+
+    with pytest.raises(LLMAPIRateLimitError, match="Slow down"):
+        list(client.stream("claude-opus-4-8", messages=[]))
+
+    response.close.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_maps_in_stream_error_through_anthropic_error_handler(mock_post, client):
+    response = StreamingResponse([
+        "event: error",
+        'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+        "",
+    ])
+    mock_post.return_value = response
+
+    with pytest.raises(LLMAPIServerError, match="Overloaded"):
+        list(client.stream("claude-opus-4-8", messages=[]))
+
+    response.close.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_passes_unknown_event_types_through(mock_post, client):
+    response = StreamingResponse([
+        "event: future_event",
+        'data: {"type":"future_event","value":"kept"}',
+        "",
+    ])
+    mock_post.return_value = response
+
+    assert list(client.stream("claude-opus-4-8", messages=[])) == [
+        SSEEvent(event="future_event", data={"type": "future_event", "value": "kept"})
+    ]

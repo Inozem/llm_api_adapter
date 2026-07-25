@@ -8,6 +8,7 @@ from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 from src.llm_api_adapter.models.tools import ToolSpec
+from src.llm_api_adapter.llms.streaming import SSEEvent
 
 
 @pytest.fixture
@@ -619,3 +620,150 @@ def test_chat_legacy_api_passes_json_schema_in_response_format(legacy_adapter):
     assert rf["json_schema"]["strict"] is True
     assert "schema" in rf["json_schema"]
     assert result.parsed_json == {"name": "test"}
+
+
+@pytest.mark.unit
+def test_stream_chat_legacy_normalizes_deltas_tool_calls_and_callbacks(legacy_adapter):
+    events = iter([
+        SSEEvent(data={
+            "id": "chatcmpl_123",
+            "model": "gpt-4o",
+            "created": 42,
+            "choices": [{"index": 0, "delta": {"content": "Hello"}}],
+        }, event=None),
+        SSEEvent(data={
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "!", "tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{\"city\":"},
+                }]},
+            }],
+        }, event=None),
+        SSEEvent(data={
+            "choices": [{
+                "index": 0,
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "function": {"arguments": "\"Tel Aviv\"}"},
+                }]},
+                "finish_reason": "tool_calls",
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7},
+        }, event=None),
+    ])
+    callbacks = []
+    done = []
+    tool = ToolSpec(name="get_weather", json_schema={"type": "object"})
+
+    with patch.object(OpenAISyncClient, "stream", return_value=events) as mock_stream:
+        deltas = list(legacy_adapter.stream_chat(
+            [UserMessage("hi")],
+            tools=[tool],
+            on_delta=lambda delta: callbacks.append(("delta", delta)),
+            on_tool_call=lambda call: callbacks.append(("tool", call)),
+            on_done=lambda response: (callbacks.append(("done", response)), done.append(response)),
+        ))
+
+    assert deltas == ["Hello", "!"]
+    assert [kind for kind, _ in callbacks] == ["delta", "delta", "tool", "done"]
+    response = done[0]
+    assert response.content == "Hello!"
+    assert response.finish_reason == "tool_calls"
+    assert response.usage.total_tokens == 7
+    assert response.tool_calls[0].name == "get_weather"
+    assert response.tool_calls[0].arguments == {"city": "Tel Aviv"}
+    assert mock_stream.call_args.kwargs["messages"] == [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.unit
+def test_stream_chat_responses_uses_completed_response(adapter):
+    events = iter([
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"type": "response.output_text.delta", "delta": "Hello"},
+        ),
+        SSEEvent(
+            event="response.completed",
+            data={
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_123",
+                    "model": "gpt-5",
+                    "status": "completed",
+                    "usage": {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+                    "output": [{
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "Hello"}],
+                    }, {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                        "arguments": "{\"city\": \"Tel Aviv\"}",
+                    }],
+                },
+            },
+        ),
+    ])
+    done = []
+    tool_calls = []
+
+    with patch.object(OpenAISyncClient, "stream", return_value=events) as mock_stream:
+        assert list(adapter.stream_chat(
+            [UserMessage("hi")],
+            on_done=done.append,
+            on_tool_call=tool_calls.append,
+        )) == ["Hello"]
+
+    assert mock_stream.call_args.kwargs["input"] == [{"role": "user", "content": "hi"}]
+    assert done[0].response_id == "resp_123"
+    assert done[0].usage.total_tokens == 3
+    assert tool_calls[0].arguments == {"city": "Tel Aviv"}
+
+
+@pytest.mark.unit
+def test_stream_chat_does_not_treat_callback_errors_as_provider_errors(legacy_adapter):
+    events = iter([
+        SSEEvent(data={"choices": [{"index": 0, "delta": {"content": "Hello"}}]}, event=None),
+    ])
+
+    with (
+        patch.object(OpenAISyncClient, "stream", return_value=events),
+        patch.object(legacy_adapter, "handle_error") as handle_error,
+        pytest.raises(RuntimeError, match="callback failed"),
+    ):
+        list(legacy_adapter.stream_chat(
+            [UserMessage("hi")],
+            on_delta=lambda _: (_ for _ in ()).throw(RuntimeError("callback failed")),
+        ))
+
+    handle_error.assert_not_called()
+
+
+@pytest.mark.unit
+def test_stream_chat_skips_on_done_when_closed_early(legacy_adapter):
+    closed = []
+
+    def events():
+        try:
+            yield SSEEvent(
+                data={"choices": [{"index": 0, "delta": {"content": "Hello"}}]},
+                event=None,
+            )
+            yield SSEEvent(
+                data={"choices": [{"index": 0, "delta": {"content": " world"}}]},
+                event=None,
+            )
+        finally:
+            closed.append(True)
+
+    done = []
+    with patch.object(OpenAISyncClient, "stream", return_value=events()):
+        stream = legacy_adapter.stream_chat([UserMessage("hi")], on_done=done.append)
+        assert next(stream) == "Hello"
+        stream.close()
+
+    assert closed == [True]
+    assert done == []

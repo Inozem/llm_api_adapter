@@ -539,6 +539,7 @@ def test_from_anthropic_response_invalid_tool_input_raises():
 @pytest.mark.unit
 def test_from_google_response():
     api_response = {
+        "modelVersion": "gemini-2.5-flash",
         "candidates": [
             {
                 "content": {"parts": [{"text": "Hello from Google!"}]},
@@ -548,6 +549,7 @@ def test_from_google_response():
         "usageMetadata": {"totalTokenCount": 42},
     }
     response = ChatResponse.from_google_response(api_response)
+    assert response.model == "gemini-2.5-flash"
     assert response.usage.total_tokens == 42
     assert response.content == "Hello from Google!"
     assert response.finish_reason == "length"

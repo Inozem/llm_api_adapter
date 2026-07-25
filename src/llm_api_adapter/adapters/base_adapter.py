@@ -6,14 +6,19 @@ from dataclasses import dataclass, field
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 import warnings
 
-from ..errors.llm_api_error import InvalidToolSchemaError, JSONSchemaError, ToolChoiceError
+from ..errors.llm_api_error import (
+    InvalidToolSchemaError,
+    JSONSchemaError,
+    LLMAPIError,
+    ToolChoiceError,
+)
 from ..llm_registry.llm_registry import Pricing, LLM_REGISTRY
 from ..models.messages.chat_message import Messages
 from ..models.responses.chat_response import ChatResponse
-from ..models.tools import ToolSpec
+from ..models.tools import ToolCall, ToolSpec
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +30,10 @@ REASONING_LEVELS_DEFAULT = {
 }
 
 TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+OnDelta = Callable[[str], None]
+OnToolCall = Callable[[ToolCall], None]
+OnDone = Callable[[ChatResponse], None]
 
 
 @dataclass
@@ -71,6 +80,28 @@ class LLMAdapterBase(ABC):
         """
         Generates a response based on the provided conversation.
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def stream_chat(
+        self,
+        messages: Any,
+        max_tokens: Optional[int] = None,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        reasoning_level: Optional[str | int] = None,
+        timeout_s: Optional[float] = None,
+        tools: Optional[List[ToolSpec]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: Optional[bool] = None,
+        previous_response: Optional[ChatResponse] = None,
+        json_schema: Optional[dict] = None,
+        response_model: Optional[Any] = None,
+        on_delta: Optional[OnDelta] = None,
+        on_tool_call: Optional[OnToolCall] = None,
+        on_done: Optional[OnDone] = None,
+    ) -> Iterator[str]:
+        """Stream normalized text deltas synchronously."""
         raise NotImplementedError
 
     @abstractmethod
@@ -313,6 +344,57 @@ class LLMAdapterBase(ABC):
                 return response_model.model_validate(parsed_json, strict=False)
             except Exception as e:
                 raise JSONSchemaError(detail=f"Response failed Pydantic validation: {e}")
+
+    def _iter_provider_stream_events(self, events: Iterator[Any]) -> Iterator[Any]:
+        """Yield provider events while preserving the adapter error contract.
+
+        Callback invocation deliberately happens in the provider adapter,
+        outside this generator, so user callback exceptions are not reported
+        as provider failures.
+        """
+        try:
+            yield from events
+        except LLMAPIError as error:
+            self.handle_error(error)
+        except Exception as error:
+            error_message = getattr(error, "text", None) or str(error)
+            self.handle_error(error=error, error_message=error_message)
+
+    def _finalize_stream_response(
+        self,
+        chat_response: ChatResponse,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+        on_tool_call: Optional[OnToolCall],
+        on_done: Optional[OnDone],
+    ) -> None:
+        """Apply normal response post-processing, then invoke stream callbacks."""
+        try:
+            chat_response.parsed_json = self._parse_json_response(
+                chat_response.content,
+                effective_schema,
+            )
+            chat_response.parsed_model = self._parse_response_model(
+                chat_response.parsed_json,
+                response_model,
+            )
+            if self.pricing:
+                chat_response.apply_pricing(
+                    price_input_per_token=self.pricing.in_per_token,
+                    price_output_per_token=self.pricing.out_per_token,
+                    currency=self.pricing.currency,
+                )
+        except LLMAPIError as error:
+            self.handle_error(error)
+        except Exception as error:
+            error_message = getattr(error, "text", None) or str(error)
+            self.handle_error(error=error, error_message=error_message)
+
+        for tool_call in chat_response.tool_calls or []:
+            if on_tool_call is not None:
+                on_tool_call(tool_call)
+        if on_done is not None:
+            on_done(chat_response)
 
     def handle_error(self, error: Exception, error_message: Optional[str] = None):
         err_msg = (

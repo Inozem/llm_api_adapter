@@ -16,6 +16,9 @@ def test_selects_adapter_and_delegates(monkeypatch):
         def chat(self, *args, **kwargs):
             return {"response": "ok"}
 
+        def stream_chat(self, *args, **kwargs):
+            yield "streamed"
+
         def greet(self, name: str) -> str:
             return f"hello {name} from {self.company}"
 
@@ -35,6 +38,7 @@ def test_selects_adapter_and_delegates(monkeypatch):
     assert ua.adapter.model == "claude-sonnet-4-5"
     assert ua.adapter.api_key == "sk-test"
     assert ua.greet("Alice") == "hello Alice from anthropic"
+    assert list(ua.stream_chat()) == ["streamed"]
 
 @pytest.mark.unit
 def test_unsupported_organization_raises(monkeypatch):
@@ -46,6 +50,12 @@ def test_unsupported_organization_raises(monkeypatch):
 
         def chat(self, *args, **kwargs):
             return {"response": "openai"}
+
+        def stream_chat(self, *args, **kwargs):
+            yield "streamed"
+
+        def _normalize_reasoning_level(self, reasoning_level):
+            return reasoning_level
 
     monkeypatch.setattr(
         universal_module.LLMAdapterBase,
@@ -77,6 +87,9 @@ def test_getattr_missing_raises_attribute_error(monkeypatch):
 
         def chat(self, *args, **kwargs):
             return {"response": "ok"}
+
+        def stream_chat(self, *args, **kwargs):
+            yield "streamed"
         
         def _normalize_reasoning_level(self, reasoning_level):
             return reasoning_level
