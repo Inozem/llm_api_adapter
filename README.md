@@ -5,50 +5,61 @@
 
 ## Overview
 
-Calling an LLM from Python currently means one of three paths: lock yourself to one provider's SDK, absorb LangChain's framework complexity, or pull in LiteLLM and its 100+ transitive dependencies.
+Calling an LLM from Python usually means choosing between a provider-specific SDK, a larger application framework, or an API gateway.
 
-**llm-api-adapter** is the fourth option: a minimal adapter for OpenAI, Anthropic, and Google. One class, one `chat()` method, one error hierarchy — regardless of which provider is behind it. Switching providers is changing two arguments.
+**llm-api-adapter** is a minimal, typed multi-provider adapter for OpenAI, Anthropic, and Google. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching providers means changing two arguments.
 
 ## Why this library?
 
-|                           | llm-api-adapter | LiteLLM       | LangChain     | Provider SDK |
-|---------------------------|-----------------|---------------|---------------|--------------|
-| Single runtime dependency | ✓ (`requests`)  | ✗ (100+)      | ✗ (100+)      | ✓            |
-| Unified reasoning control | ✓               | partial¹      | partial¹      | ✗            |
-| Built-in cost accounting  | ✓               | ✓             | via callbacks | ✗            |
-| Unified error hierarchy   | ✓               | partial       | ✗             | ✗            |
-| Sync streaming            | ✓               | ✓             | ✓            | ✓            |
-| Async API                 | ✗               | ✓             | ✓            | ✓            |
-| Number of providers       | 3               | 100+          | 50+           | 1            |
+|                           | llm-api-adapter | LiteLLM | LangChain | Provider SDK |
+|---------------------------|-----------------|---------|-----------|--------------|
+| Runtime dependencies      | 1 (`requests`) | broader gateway/SDK | broader framework | provider-specific |
+| Provider-neutral messages and response | ✓ | ✓ | ✓ | ✗ |
+| Unified tool calls        | ✓ | ✓ | ✓ | provider-specific |
+| Unified structured output | ✓ | ✓ | ✓ | provider-specific |
+| Unified image/PDF input   | ✓ | partial | ✓ | provider-specific |
+| Unified reasoning control | ✓* | ✓ | partial | ✗ |
+| Built-in per-response cost| ✓ | ✓ | via callbacks | ✗ |
+| Unified error hierarchy   | ✓ | OpenAI-compatible | framework-specific | ✗ |
+| Sync streaming            | ✓ text-first | ✓ | ✓ | ✓ |
+| Async API                 | ✗ | ✓ | ✓ | ✓ |
+| Number of providers       | 3 | 100+ | 50+ | 1 |
 
-¹ LiteLLM and LangChain expose reasoning via provider-specific parameters — there is no single unified parameter that works identically across providers.
+* `reasoning_level` is one application-level parameter, but the available levels, native mapping, and emitted reasoning content remain model/provider-dependent.
 
-**Small footprint.** The only runtime dependency is `requests`. LiteLLM and LangChain each pull in 100+ transitive packages; this doesn't.
+This table is a positioning snapshot. Provider capabilities change independently, so the adapter promises a stable application-level contract rather than identical provider internals.
 
-**Unified reasoning.** One `reasoning_level` parameter works across OpenAI o-series, Anthropic extended thinking, and Google thinking models — same parameter name, same string levels, no provider-specific kwargs.
+**Small footprint.** The core has one runtime dependency: `requests`. It does not require OpenAI, Anthropic, or Google SDKs, an agent framework, a gateway, or a proxy. Pydantic is optional and is only needed for `response_model` validation.
 
-**Cost accounting, built-in.** Every response carries `cost_input`, `cost_output`, and `cost_total` in your chosen currency. No external tooling required.
+**One provider-neutral contract.** The same typed messages, `ToolSpec`, `ChatResponse`, `ImagePart`, and `DocumentPart` are converted to and from each provider's native wire format. Application code does not need provider-specific message, tool, or response parsing.
 
-**Predictable errors.** One exception hierarchy across all three providers. `LLMAPIRateLimitError` means the same thing whether you called OpenAI or Anthropic.
+**Unified reasoning control.** One `reasoning_level` parameter is accepted across supported providers without provider-specific kwargs. The adapter translates it to native effort or budget settings; exact availability and token semantics remain model-dependent.
+
+**Cost accounting, built-in.** Every response carries `cost_input`, `cost_output`, and `cost_total` in your chosen currency using the bundled model registry. No callback or external observability service is required.
+
+**Predictable errors.** One explicit exception hierarchy and provider-error mapping across all three providers. `LLMAPIRateLimitError` means the same application-level condition whether you called OpenAI, Anthropic, or Google.
 
 ### Use this when
 
 - You call LLMs directly — no chains, no agents, no orchestration
-- You want to stay provider-agnostic without adopting a framework
-- You need unified reasoning control or per-request cost tracking
+- You want a provider-neutral contract without adopting a framework or gateway
+- You need the same messages, tools, structured output, multimodal input, errors, and response fields across providers
+- You need unified reasoning control or per-request cost tracking with minimal dependencies
 
 ### Use something else when
 
-- **LiteLLM** — you need 100+ providers, async support, streaming, or a proxy/gateway layer
-- **LangChain** — you need chains, memory, RAG, or agents
-- **Provider SDK directly** — you'll never switch and don't need cost tracking
+- **LiteLLM** — you need providers beyond OpenAI, Anthropic/Claude, and Google (for example AWS Bedrock-hosted models), async API support, or a gateway/router layer with retries, fallbacks, and observability
+- **LangChain** — you need chains, memory, RAG, agents, async workflows, or a larger orchestration framework
+- **Provider SDK directly** — you'll never switch, need provider-specific async features, and don't need cost tracking
 
 ## Features
 
 - **Synchronous Streaming**: Iterate normalized text deltas with `stream_chat()` across OpenAI, Anthropic, and Google; receive completed tool calls and the final normalized `ChatResponse` through optional callbacks.
+- **Provider-Neutral Messages and Responses**: Use the same typed messages, `ChatResponse`, usage, pricing, parsed output, and tool-call fields regardless of the provider.
 - **Vision Input**: Send images alongside text via `ImagePart` — URL or raw bytes, all providers handled automatically.
+- **PDF Documents**: Send PDF URLs or bytes via `DocumentPart`; provider-specific file/document payloads are generated automatically.
 - **Tool / Function Calling**: Provider-agnostic tool definitions and normalized tool calls in `ChatResponse.tool_calls`.
-- **Strict JSON Mode**: Pass a JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` — provider normalization is handled automatically.
+- **Strict JSON Mode**: Pass one JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` — provider-specific schema formats and restrictions are handled automatically.
 - **Pydantic Integration**: Pass a Pydantic model as `response_model` and get a typed instance back in `ChatResponse.parsed_model` — no manual schema writing required.
 - **Request Timeouts**: Per-request timeout control via `timeout_s`; raises `LLMAPITimeoutError` on expiry.
 - **Flexible Configuration**: `temperature`, `max_tokens`, `top_p`, and other parameters passed through to the provider.
@@ -377,7 +388,7 @@ except LLMAPITimeoutError:
 
 ## Reasoning Support
 
-This section describes the unified `reasoning_level` parameter that works the same way for all supported providers and their models.
+This section describes the provider-neutral `reasoning_level` parameter. It gives application code one input surface; it does not claim that every model exposes the same levels or consumes the same number of reasoning tokens.
 
 ```python
 response = adapter.chat(
@@ -393,29 +404,18 @@ If `reasoning_level` is not passed, reasoning is:
 - fully disabled where the provider allows it, or
 - reduced to the minimal supported level if it cannot be turned off.
 
-This keeps behavior consistent when switching providers or models.
+This keeps the application-level behavior predictable when switching providers or models. The exact fallback is model/provider-dependent.
 
 ### `reasoning_level` parameter
 
-`reasoning_level` is optional and provider‑agnostic.
+`reasoning_level` is optional and provider-agnostic. The adapters translate it to the provider's native effort or thinking-budget format.
 
 Supported forms:
 
 - **int** — explicit numeric level
 - **str** — one of: `"none"`, `"low"`, `"medium"`, `"high"`
 
-Internal mapping:
-
-```json
-{
-  "none": 0,
-  "low": 100,
-  "medium": 1000,
-  "high": 10000
-}
-```
-
-String values are automatically converted to numbers, and numeric values can be normalized back to named levels.
+Named values are canonical intent labels. Their native meaning and numeric budget are model-dependent; do not treat `"medium"` or a numeric value as an identical token budget across providers. Unsupported levels may be mapped, clamped, or rejected according to the model capabilities.
 
 ### Usage examples
 
@@ -440,13 +440,15 @@ response = adapter.chat(
 
 ### Provider independence
 
-`reasoning_level` has the same semantics for all providers:
+`reasoning_level` provides the same application-level entry point for all supported providers:
 
 - same parameter name
-- same string levels
-- same numeric mapping
+- no provider-specific reasoning kwargs in application code
+- provider-specific translation is handled inside the adapter
 
-This allows switching between OpenAI, Anthropic, and Google without changing reasoning configuration in your code.
+The available levels, native mapping, token budget, and whether reasoning can be disabled remain model/provider-dependent. This allows switching between OpenAI, Anthropic, and Google without rewriting the request shape, while keeping provider limitations explicit.
+
+Provider references: [OpenAI reasoning](https://developers.openai.com/api/docs/guides/reasoning), [Anthropic extended thinking](https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking), and [Google thinking](https://ai.google.dev/api/generate-content).
 
 ## Tool / Function Calling
 
@@ -568,7 +570,7 @@ If you omit `previous_response`, the call works normally; you just won't get the
 
 ## Structured Output
 
-The SDK supports two ways to get structured output from `chat()`: a raw `json_schema` dict, or a Pydantic model via `response_model`. Both work across all providers without any changes to your code.
+The SDK supports two ways to get structured output from `chat()`: a raw `json_schema` dict, or a Pydantic model via `response_model`. Both use the same application-level contract across supported providers; provider-specific availability and schema restrictions are handled by the adapter.
 
 ### Pydantic Integration (`response_model`)
 
@@ -661,7 +663,7 @@ print(response.parsed_json)  # {"name": "Alice", "age": 30}
 | **Anthropic** | Native `output_config.format.type=json_schema` |
 | **Google** | `generationConfig.responseMimeType="application/json"` + `responseSchema` |
 
-The adapter automatically handles provider-specific schema constraints, so the same schema works across all providers without changes.
+The adapter automatically handles provider-specific schema constraints, so the same schema can be reused across supported providers without provider-specific request code.
 
 ### Error handling
 
@@ -680,7 +682,7 @@ except JSONSchemaError as e:
 
 ## Vision Input
 
-The SDK supports sending images alongside text using `ImagePart` and the `files` parameter on `UserMessage`. Works identically across OpenAI, Anthropic, and Google — wire-format differences are handled automatically.
+The SDK supports sending images alongside text using `ImagePart` and the `files` parameter on `UserMessage`. The input contract is shared across OpenAI, Anthropic, and Google; wire-format differences and provider-specific limitations are handled by the adapter.
 
 ### Import
 
