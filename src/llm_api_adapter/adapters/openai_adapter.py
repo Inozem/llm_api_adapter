@@ -6,8 +6,9 @@ import logging
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 import warnings
 
-from ..adapters.base_adapter import LLMAdapterBase, OnDelta, OnDone, OnToolCall
+from ..adapters.base_adapter import LLMAdapterBase, OnChunk, OnDelta, OnDone, OnToolCall
 from ..errors.llm_api_error import LLMAPIError
+from ..llms.streaming import StreamChunkBuffer
 from ..llms.openai.sync_client import OpenAISyncClient
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse
@@ -159,6 +160,8 @@ class OpenAIAdapter(LLMAdapterBase):
         on_delta: Optional[OnDelta] = None,
         on_tool_call: Optional[OnToolCall] = None,
         on_done: Optional[OnDone] = None,
+        buffer_chars: Optional[int] = None,
+        on_chunk: Optional[OnChunk] = None,
     ) -> Iterator[str]:
         temperature = self._validate_parameter("temperature", temperature, 0, 2)
         top_p = self._validate_parameter("top_p", top_p, 0, 1)
@@ -190,6 +193,8 @@ class OpenAIAdapter(LLMAdapterBase):
                 on_delta,
                 on_tool_call,
                 on_done,
+                buffer_chars,
+                on_chunk,
             )
             return
         yield from self._consume_chat_completions_stream(
@@ -199,6 +204,8 @@ class OpenAIAdapter(LLMAdapterBase):
             on_delta,
             on_tool_call,
             on_done,
+            buffer_chars,
+            on_chunk,
         )
 
     def _build_stream_params(
@@ -269,11 +276,14 @@ class OpenAIAdapter(LLMAdapterBase):
         on_delta: Optional[OnDelta],
         on_tool_call: Optional[OnToolCall],
         on_done: Optional[OnDone],
+        buffer_chars: Optional[int],
+        on_chunk: Optional[OnChunk],
     ) -> Iterator[str]:
         final_response: Optional[dict] = None
         response_metadata: Dict[str, Any] = {}
         text_parts: List[str] = []
         function_calls: Dict[str, Dict[str, Any]] = {}
+        chunk_buffer = StreamChunkBuffer(buffer_chars)
         for event in self._iter_provider_stream_events(events):
             payload = event.data if isinstance(event.data, Mapping) else {}
             event_type = event.event or payload.get("type")
@@ -284,9 +294,11 @@ class OpenAIAdapter(LLMAdapterBase):
                 delta = payload.get("delta")
                 if isinstance(delta, str) and delta:
                     text_parts.append(delta)
-                    if on_delta is not None:
-                        on_delta(delta)
-                    yield delta
+                    yield from self._emit_stream_chunks(
+                        chunk_buffer.add(delta),
+                        on_chunk,
+                        on_delta,
+                    )
             elif event_type in (
                 "response.function_call_arguments.delta",
                 "response.function_call_arguments.done",
@@ -324,10 +336,19 @@ class OpenAIAdapter(LLMAdapterBase):
                 "output": output,
                 "status": response_metadata.get("status", "completed"),
             }
-        self._finalize_stream_response(
-            ChatResponse.from_openai_responses_response(final_response),
+        chat_response = ChatResponse.from_openai_responses_response(final_response)
+        self._prepare_stream_response(
+            chat_response,
             effective_schema,
             response_model,
+        )
+        yield from self._emit_stream_chunks(
+            chunk_buffer.flush(),
+            on_chunk,
+            on_delta,
+        )
+        self._invoke_stream_completion_callbacks(
+            chat_response,
             on_tool_call,
             on_done,
         )
@@ -340,66 +361,128 @@ class OpenAIAdapter(LLMAdapterBase):
         on_delta: Optional[OnDelta],
         on_tool_call: Optional[OnToolCall],
         on_done: Optional[OnDone],
+        buffer_chars: Optional[int],
+        on_chunk: Optional[OnChunk],
     ) -> Iterator[str]:
         text_parts: List[str] = []
         tool_calls: Dict[int, Dict[str, Any]] = {}
         legacy_response: Dict[str, Any] = {"model": self.model, "choices": []}
         finish_reason: Optional[str] = None
+        chunk_buffer = StreamChunkBuffer(buffer_chars)
         for event in self._iter_provider_stream_events(events):
             payload = event.data if isinstance(event.data, Mapping) else {}
-            for field in ("id", "model", "created", "usage"):
-                if field in payload:
-                    legacy_response[field] = payload[field]
+            self._update_legacy_stream_metadata(payload, legacy_response)
             choices = payload.get("choices")
             if not isinstance(choices, list):
                 continue
             for choice in choices:
-                if not isinstance(choice, Mapping) or choice.get("index", 0) != 0:
-                    continue
-                delta = choice.get("delta") or {}
-                if not isinstance(delta, Mapping):
-                    delta = {}
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    text_parts.append(content)
-                    if on_delta is not None:
-                        on_delta(content)
-                    yield content
-                raw_tool_calls = delta.get("tool_calls")
-                if isinstance(raw_tool_calls, list):
-                    for raw_tool_call in raw_tool_calls:
-                        if not isinstance(raw_tool_call, Mapping):
-                            continue
-                        index = raw_tool_call.get("index")
-                        if not isinstance(index, int):
-                            index = len(tool_calls)
-                        tool_call = tool_calls.setdefault(index, {"function": {"arguments": ""}})
-                        for field in ("id", "type"):
-                            if raw_tool_call.get(field) is not None:
-                                tool_call[field] = raw_tool_call[field]
-                        function = raw_tool_call.get("function") or {}
-                        if isinstance(function, Mapping):
-                            target = tool_call["function"]
-                            if function.get("name") is not None:
-                                target["name"] = function["name"]
-                            arguments = function.get("arguments")
-                            if isinstance(arguments, str):
-                                target["arguments"] = f"{target.get('arguments', '')}{arguments}"
-                            elif isinstance(arguments, dict):
-                                target["arguments"] = arguments
-                if choice.get("finish_reason") is not None:
-                    finish_reason = choice["finish_reason"]
+                text, choice_finish_reason = self._consume_legacy_stream_choice(
+                    choice,
+                    text_parts,
+                    tool_calls,
+                )
+                if text is not None:
+                    yield from self._emit_stream_chunks(
+                        chunk_buffer.add(text),
+                        on_chunk,
+                        on_delta,
+                    )
+                if choice_finish_reason is not None:
+                    finish_reason = choice_finish_reason
+        chat_response = self._build_legacy_stream_response(
+            legacy_response,
+            text_parts,
+            tool_calls,
+            finish_reason,
+        )
+        self._prepare_stream_response(
+            chat_response,
+            effective_schema,
+            response_model,
+        )
+        yield from self._emit_stream_chunks(
+            chunk_buffer.flush(),
+            on_chunk,
+            on_delta,
+        )
+        self._invoke_stream_completion_callbacks(
+            chat_response,
+            on_tool_call,
+            on_done,
+        )
+
+    @staticmethod
+    def _update_legacy_stream_metadata(
+        payload: Mapping[str, Any],
+        legacy_response: Dict[str, Any],
+    ) -> None:
+        for field in ("id", "model", "created", "usage"):
+            if field in payload:
+                legacy_response[field] = payload[field]
+
+    def _consume_legacy_stream_choice(
+        self,
+        choice: Any,
+        text_parts: List[str],
+        tool_calls: Dict[int, Dict[str, Any]],
+    ) -> tuple[Optional[str], Optional[str]]:
+        if not isinstance(choice, Mapping) or choice.get("index", 0) != 0:
+            return None, None
+
+        delta = choice.get("delta") or {}
+        if not isinstance(delta, Mapping):
+            delta = {}
+        content = delta.get("content")
+        text = content if isinstance(content, str) and content else None
+        if text is not None:
+            text_parts.append(text)
+
+        raw_tool_calls = delta.get("tool_calls")
+        if isinstance(raw_tool_calls, list):
+            self._accumulate_legacy_tool_calls(raw_tool_calls, tool_calls)
+
+        finish_reason = choice.get("finish_reason")
+        return text, finish_reason
+
+    @staticmethod
+    def _accumulate_legacy_tool_calls(
+        raw_tool_calls: List[Any],
+        tool_calls: Dict[int, Dict[str, Any]],
+    ) -> None:
+        for raw_tool_call in raw_tool_calls:
+            if not isinstance(raw_tool_call, Mapping):
+                continue
+            index = raw_tool_call.get("index")
+            if not isinstance(index, int):
+                index = len(tool_calls)
+            tool_call = tool_calls.setdefault(index, {"function": {"arguments": ""}})
+            for field in ("id", "type"):
+                if raw_tool_call.get(field) is not None:
+                    tool_call[field] = raw_tool_call[field]
+            function = raw_tool_call.get("function") or {}
+            if not isinstance(function, Mapping):
+                continue
+            target = tool_call["function"]
+            if function.get("name") is not None:
+                target["name"] = function["name"]
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                target["arguments"] = f"{target.get('arguments', '')}{arguments}"
+            elif isinstance(arguments, dict):
+                target["arguments"] = arguments
+
+    @staticmethod
+    def _build_legacy_stream_response(
+        legacy_response: Dict[str, Any],
+        text_parts: List[str],
+        tool_calls: Dict[int, Dict[str, Any]],
+        finish_reason: Optional[str],
+    ) -> ChatResponse:
         message: Dict[str, Any] = {"content": "".join(text_parts) or None}
         if tool_calls:
             message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
         legacy_response["choices"] = [{"message": message, "finish_reason": finish_reason}]
-        self._finalize_stream_response(
-            ChatResponse.from_openai_response(legacy_response),
-            effective_schema,
-            response_model,
-            on_tool_call,
-            on_done,
-        )
+        return ChatResponse.from_openai_response(legacy_response)
 
     def _map_tools_to_openai(
         self,

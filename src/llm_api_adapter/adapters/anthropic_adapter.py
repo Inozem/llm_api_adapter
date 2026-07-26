@@ -6,10 +6,11 @@ import logging
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 import warnings
 
-from ..adapters.base_adapter import LLMAdapterBase, OnDelta, OnDone, OnToolCall
+from ..adapters.base_adapter import LLMAdapterBase, OnChunk, OnDelta, OnDone, OnToolCall
 from ..errors.llm_api_error import InvalidToolArgumentsError, LLMAPIError
 from ..errors.config_errors import LLMReasoningLevelError
 from ..llms.anthropic.sync_client import ClaudeSyncClient
+from ..llms.streaming import StreamChunkBuffer
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse
 from ..models.tools.tool_spec import ToolSpec
@@ -133,6 +134,8 @@ class AnthropicAdapter(LLMAdapterBase):
         on_delta: Optional[OnDelta] = None,
         on_tool_call: Optional[OnToolCall] = None,
         on_done: Optional[OnDone] = None,
+        buffer_chars: Optional[int] = None,
+        on_chunk: Optional[OnChunk] = None,
     ) -> Iterator[str]:
         temperature = self._validate_parameter("temperature", temperature, 0, 2)
         top_p = self._validate_parameter("top_p", top_p, 0, 1)
@@ -162,6 +165,8 @@ class AnthropicAdapter(LLMAdapterBase):
             on_delta,
             on_tool_call,
             on_done,
+            buffer_chars,
+            on_chunk,
         )
 
     def _build_stream_params(
@@ -230,12 +235,15 @@ class AnthropicAdapter(LLMAdapterBase):
         on_delta: Optional[OnDelta],
         on_tool_call: Optional[OnToolCall],
         on_done: Optional[OnDone],
+        buffer_chars: Optional[int],
+        on_chunk: Optional[OnChunk],
     ) -> Iterator[str]:
         message_data: Dict[str, Any] = {"model": self.model, "content": []}
         content_blocks: Dict[int, Dict[str, Any]] = {}
         input_json_fragments: Dict[int, List[str]] = {}
         usage: Dict[str, Any] = {}
         message_delta: Dict[str, Any] = {}
+        chunk_buffer = StreamChunkBuffer(buffer_chars)
 
         for event in self._iter_provider_stream_events(events):
             payload = event.data if isinstance(event.data, Mapping) else {}
@@ -249,6 +257,8 @@ class AnthropicAdapter(LLMAdapterBase):
                     payload,
                     content_blocks,
                     input_json_fragments,
+                    chunk_buffer,
+                    on_chunk,
                     on_delta,
                 )
             elif event_type == "content_block_stop":
@@ -263,10 +273,18 @@ class AnthropicAdapter(LLMAdapterBase):
         chat_response = ChatResponse.from_anthropic_response(
             self._build_stream_response(message_data, content_blocks, message_delta, usage)
         )
-        self._finalize_stream_response(
+        self._prepare_stream_response(
             chat_response,
             effective_schema,
             response_model,
+        )
+        yield from self._emit_stream_chunks(
+            chunk_buffer.flush(),
+            on_chunk,
+            on_delta,
+        )
+        self._invoke_stream_completion_callbacks(
+            chat_response,
             on_tool_call,
             on_done,
         )
@@ -308,6 +326,8 @@ class AnthropicAdapter(LLMAdapterBase):
         payload: Mapping[str, Any],
         content_blocks: Dict[int, Dict[str, Any]],
         input_json_fragments: Dict[int, List[str]],
+        chunk_buffer: StreamChunkBuffer,
+        on_chunk: Optional[OnChunk],
         on_delta: Optional[OnDelta],
     ) -> Iterator[str]:
         index = payload.get("index")
@@ -321,9 +341,11 @@ class AnthropicAdapter(LLMAdapterBase):
             text = delta.get("text")
             if isinstance(text, str) and text:
                 block["text"] = f"{block.get('text', '')}{text}"
-                if on_delta is not None:
-                    on_delta(text)
-                yield text
+                yield from self._emit_stream_chunks(
+                    chunk_buffer.add(text),
+                    on_chunk,
+                    on_delta,
+                )
         elif delta.get("type") == "input_json_delta":
             partial_json = delta.get("partial_json")
             if isinstance(partial_json, str):

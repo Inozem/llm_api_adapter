@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
-from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
+from src.llm_api_adapter.errors.llm_api_error import JSONSchemaError, LLMAPIError
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
@@ -724,6 +724,46 @@ def test_stream_chat_responses_uses_completed_response(adapter):
 
 
 @pytest.mark.unit
+def test_stream_chat_buffers_text_and_orders_chunk_callbacks(legacy_adapter):
+    events = iter([
+        SSEEvent(data={"choices": [{"index": 0, "delta": {"content": "He"}}]}, event=None),
+        SSEEvent(data={"choices": [{"index": 0, "delta": {"content": "llo"}}]}, event=None),
+        SSEEvent(data={
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "!"},
+                "finish_reason": "stop",
+            }],
+        }, event=None),
+    ])
+    order = []
+    yielded = []
+
+    with patch.object(OpenAISyncClient, "stream", return_value=events):
+        for text in legacy_adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=4,
+            on_chunk=lambda chunk: order.append(("chunk", chunk.text)),
+            on_delta=lambda text: order.append(("delta", text)),
+            on_done=lambda response: order.append(("done", response.content)),
+        ):
+            yielded.append(text)
+            order.append(("yield", text))
+
+    assert yielded == ["Hell", "o!"]
+    assert "".join(yielded) == "Hello!"
+    assert order == [
+        ("chunk", "Hell"),
+        ("delta", "Hell"),
+        ("yield", "Hell"),
+        ("chunk", "o!"),
+        ("delta", "o!"),
+        ("yield", "o!"),
+        ("done", "Hello!"),
+    ]
+
+
+@pytest.mark.unit
 def test_stream_chat_does_not_treat_callback_errors_as_provider_errors(legacy_adapter):
     events = iter([
         SSEEvent(data={"choices": [{"index": 0, "delta": {"content": "Hello"}}]}, event=None),
@@ -766,4 +806,70 @@ def test_stream_chat_skips_on_done_when_closed_early(legacy_adapter):
         stream.close()
 
     assert closed == [True]
+    assert done == []
+
+
+@pytest.mark.unit
+def test_stream_chat_does_not_flush_buffer_when_closed_early(legacy_adapter):
+    closed = []
+
+    def events():
+        try:
+            yield SSEEvent(
+                data={"choices": [{"index": 0, "delta": {"content": "Hell"}}]},
+                event=None,
+            )
+            yield SSEEvent(
+                data={"choices": [{"index": 0, "delta": {"content": "o"}}]},
+                event=None,
+            )
+            yield SSEEvent(
+                data={"choices": [{"index": 0, "delta": {"content": "world"}}]},
+                event=None,
+            )
+        finally:
+            closed.append(True)
+
+    done = []
+    with patch.object(OpenAISyncClient, "stream", return_value=events()):
+        stream = legacy_adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=4,
+            on_done=done.append,
+        )
+        assert next(stream) == "Hell"
+        assert next(stream) == "owor"
+        stream.close()
+
+    assert closed == [True]
+    assert done == []
+
+
+@pytest.mark.unit
+def test_stream_chat_does_not_flush_buffer_when_finalization_fails(legacy_adapter):
+    events = iter([
+        SSEEvent(
+            data={"choices": [{"index": 0, "delta": {"content": "not JSON"}}]},
+            event=None,
+        ),
+    ])
+    chunks = []
+    deltas = []
+    done = []
+
+    with (
+        patch.object(OpenAISyncClient, "stream", return_value=events),
+        pytest.raises(JSONSchemaError),
+    ):
+        list(legacy_adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=16,
+            json_schema={"type": "object"},
+            on_chunk=chunks.append,
+            on_delta=deltas.append,
+            on_done=done.append,
+        ))
+
+    assert chunks == []
+    assert deltas == []
     assert done == []

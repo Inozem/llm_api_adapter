@@ -5,9 +5,10 @@ import logging
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 import warnings
 
-from ..adapters.base_adapter import LLMAdapterBase, OnDelta, OnDone, OnToolCall
+from ..adapters.base_adapter import LLMAdapterBase, OnChunk, OnDelta, OnDone, OnToolCall
 from ..errors.llm_api_error import LLMAPIError
 from ..llms.google.sync_client import GeminiSyncClient
+from ..llms.streaming import StreamChunkBuffer
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse
 from ..models.tools import ToolSpec
@@ -136,6 +137,8 @@ class GoogleAdapter(LLMAdapterBase):
         on_delta: Optional[OnDelta] = None,
         on_tool_call: Optional[OnToolCall] = None,
         on_done: Optional[OnDone] = None,
+        buffer_chars: Optional[int] = None,
+        on_chunk: Optional[OnChunk] = None,
     ) -> Iterator[str]:
         temperature = self._validate_parameter("temperature", temperature, 0, 2)
         top_p = self._validate_parameter("top_p", top_p, 0, 1)
@@ -164,6 +167,8 @@ class GoogleAdapter(LLMAdapterBase):
             on_delta,
             on_tool_call,
             on_done,
+            buffer_chars,
+            on_chunk,
         )
 
     def _build_stream_payload(
@@ -219,12 +224,15 @@ class GoogleAdapter(LLMAdapterBase):
         on_delta: Optional[OnDelta],
         on_tool_call: Optional[OnToolCall],
         on_done: Optional[OnDone],
+        buffer_chars: Optional[int],
+        on_chunk: Optional[OnChunk],
     ) -> Iterator[str]:
         text_parts: List[str] = []
         function_parts: List[Dict[str, Any]] = []
         finish_reason: Optional[str] = None
         usage_metadata: Dict[str, Any] = {}
         response_metadata: Dict[str, Any] = {}
+        chunk_buffer = StreamChunkBuffer(buffer_chars)
 
         for event in self._iter_provider_stream_events(events):
             chunk = event.data if isinstance(event.data, Mapping) else {}
@@ -256,9 +264,11 @@ class GoogleAdapter(LLMAdapterBase):
                     and not part.get("thought", False)
                 ):
                     text_parts.append(text)
-                    if on_delta is not None:
-                        on_delta(text)
-                    yield text
+                    yield from self._emit_stream_chunks(
+                        chunk_buffer.add(text),
+                        on_chunk,
+                        on_delta,
+                    )
                 if isinstance(part.get("functionCall"), Mapping):
                     function_parts.append(dict(part))
 
@@ -276,10 +286,18 @@ class GoogleAdapter(LLMAdapterBase):
         if usage_metadata:
             final_response["usageMetadata"] = usage_metadata
         chat_response = ChatResponse.from_google_response(final_response)
-        self._finalize_stream_response(
+        self._prepare_stream_response(
             chat_response,
             effective_schema,
             response_model,
+        )
+        yield from self._emit_stream_chunks(
+            chunk_buffer.flush(),
+            on_chunk,
+            on_delta,
+        )
+        self._invoke_stream_completion_callbacks(
+            chat_response,
             on_tool_call,
             on_done,
         )

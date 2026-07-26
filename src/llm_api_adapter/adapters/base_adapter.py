@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import json
 import logging
 import re
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
 import warnings
 
 from ..errors.llm_api_error import (
@@ -102,8 +102,15 @@ class LLMAdapterBase(ABC):
         on_delta: Optional[OnDelta] = None,
         on_tool_call: Optional[OnToolCall] = None,
         on_done: Optional[OnDone] = None,
+        buffer_chars: Optional[int] = None,
+        on_chunk: Optional[OnChunk] = None,
     ) -> Iterator[str]:
-        """Stream normalized text deltas synchronously."""
+        """Stream normalized text deltas synchronously.
+
+        ``buffer_chars`` optionally coalesces visible text into bounded
+        chunks.  ``on_chunk`` receives each emitted :class:`StreamChunk`
+        before the corresponding ``on_delta`` callback and yielded text.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -362,15 +369,13 @@ class LLMAdapterBase(ABC):
             error_message = getattr(error, "text", None) or str(error)
             self.handle_error(error=error, error_message=error_message)
 
-    def _finalize_stream_response(
+    def _prepare_stream_response(
         self,
         chat_response: ChatResponse,
         effective_schema: Optional[dict],
         response_model: Optional[Any],
-        on_tool_call: Optional[OnToolCall],
-        on_done: Optional[OnDone],
     ) -> None:
-        """Apply normal response post-processing, then invoke stream callbacks."""
+        """Apply final response processing before delivering stream callbacks."""
         try:
             chat_response.parsed_json = self._parse_json_response(
                 chat_response.content,
@@ -392,11 +397,52 @@ class LLMAdapterBase(ABC):
             error_message = getattr(error, "text", None) or str(error)
             self.handle_error(error=error, error_message=error_message)
 
+    def _invoke_stream_completion_callbacks(
+        self,
+        chat_response: ChatResponse,
+        on_tool_call: Optional[OnToolCall],
+        on_done: Optional[OnDone],
+    ) -> None:
+        """Deliver finalized tool calls and the completed response."""
         for tool_call in chat_response.tool_calls or []:
             if on_tool_call is not None:
                 on_tool_call(tool_call)
         if on_done is not None:
             on_done(chat_response)
+
+    def _emit_stream_chunks(
+        self,
+        chunks: Iterable[StreamChunk],
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+    ) -> Iterator[str]:
+        """Invoke streaming callbacks in contract order and yield visible text."""
+        for chunk in chunks:
+            if on_chunk is not None:
+                on_chunk(chunk)
+            if on_delta is not None:
+                on_delta(chunk.text)
+            yield chunk.text
+
+    def _finalize_stream_response(
+        self,
+        chat_response: ChatResponse,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+        on_tool_call: Optional[OnToolCall],
+        on_done: Optional[OnDone],
+    ) -> None:
+        """Apply normal response post-processing, then invoke stream callbacks."""
+        self._prepare_stream_response(
+            chat_response,
+            effective_schema,
+            response_model,
+        )
+        self._invoke_stream_completion_callbacks(
+            chat_response,
+            on_tool_call,
+            on_done,
+        )
 
     def handle_error(self, error: Exception, error_message: Optional[str] = None):
         err_msg = (

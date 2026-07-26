@@ -250,3 +250,46 @@ def test_stream_chat_normalizes_chunks_excludes_thoughts_and_finalizes(adapter):
     assert done[0].usage.total_tokens == 5
     assert tool_calls[0].name == "get_weather"
     assert tool_calls[0].arguments == {"city": "Tel Aviv"}
+
+
+@pytest.mark.unit
+def test_stream_chat_buffers_text_and_orders_chunk_callbacks(adapter):
+    events = iter([
+        SSEEvent(data={
+            "candidates": [{"content": {"parts": [{"text": "He"}]}}],
+        }, event=None),
+        SSEEvent(data={
+            "candidates": [{"content": {"parts": [{"text": "llo"}]}}],
+        }, event=None),
+        SSEEvent(data={
+            "candidates": [{
+                "content": {"parts": [{"text": "!"}]},
+                "finishReason": "STOP",
+            }],
+        }, event=None),
+    ])
+    order = []
+    yielded = []
+
+    with patch.object(GeminiSyncClient, "stream", return_value=events):
+        for text in adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=4,
+            on_chunk=lambda chunk: order.append(("chunk", chunk.text)),
+            on_delta=lambda text: order.append(("delta", text)),
+            on_done=lambda response: order.append(("done", response.content)),
+        ):
+            yielded.append(text)
+            order.append(("yield", text))
+
+    assert yielded == ["Hell", "o!"]
+    assert "".join(yielded) == "Hello!"
+    assert order == [
+        ("chunk", "Hell"),
+        ("delta", "Hell"),
+        ("yield", "Hell"),
+        ("chunk", "o!"),
+        ("delta", "o!"),
+        ("yield", "o!"),
+        ("done", "Hello!"),
+    ]
