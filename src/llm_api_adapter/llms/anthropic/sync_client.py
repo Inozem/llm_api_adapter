@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import logging
+from typing import Iterator, Mapping
 
 import requests
 
@@ -11,6 +12,7 @@ from ...errors.llm_api_error import (
     LLMAPIServerError,
     LLMAPITimeoutError,
 )
+from ..streaming import SSEEvent, stream_request
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,15 @@ class ClaudeSyncClient:
         payload = self._prepare_chat_payload_for_model(model, kwargs)
         response = self._send_request(url, payload, timeout_s)
         return response.json()
+
+    def stream(
+        self, model: str, timeout_s: float | None = None, **kwargs
+    ) -> Iterator[SSEEvent]:
+        """Stream raw Messages API SSE events without interpreting content blocks."""
+        url = f"{self.endpoint}/messages"
+        payload = self._prepare_chat_payload_for_model(model, kwargs)
+        payload["stream"] = True
+        return self._stream_request(url, payload, timeout_s)
 
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
         budget_tokens = kwargs.pop("budget_tokens", None)
@@ -73,6 +84,36 @@ class ClaudeSyncClient:
             raise LLMAPIClientError(detail=str(e))
         return response
 
+    def _stream_request(
+        self, url: str, payload: dict, timeout_s: float | None = None
+    ) -> Iterator[SSEEvent]:
+        events = stream_request(
+            url,
+            headers=self._headers(),
+            payload=payload,
+            timeout=timeout_s,
+            http_error_handler=self._handle_http_error,
+            stream_error_handler=self._handle_stream_error,
+        )
+        try:
+            yield from events
+        finally:
+            events.close()
+
+    def _handle_stream_error(self, event: SSEEvent) -> None:
+        payload = event.data if isinstance(event.data, Mapping) else {}
+        error = payload.get("error")
+        error = error if isinstance(error, Mapping) else payload
+
+        error_type = error.get("type") or error.get("code")
+        error_message = error.get("message")
+        detail = str(error_message or error_type or payload)
+        self._raise_mapped_error(
+            status_code=None,
+            error_type=str(error_type) if error_type else None,
+            detail=detail,
+        )
+
     def _handle_http_error(self, http_err):
         status_code = http_err.response.status_code
         try:
@@ -83,21 +124,39 @@ class ClaudeSyncClient:
             error_type = None
             error_message = None
         detail = error_message or str(http_err)
+        self._raise_mapped_error(status_code, error_type, detail)
+
+    @staticmethod
+    def _raise_mapped_error(
+        status_code: int | None, error_type: str | None, detail: str
+    ) -> None:
         error_map = {
             401: LLMAPIAuthorizationError,
             429: LLMAPIRateLimitError,
         }
         if status_code in error_map:
             raise error_map[status_code](detail=detail)
-        elif error_type in LLMAPIAuthorizationError.anthropic_api_errors:
+        if error_type in (
+            *LLMAPIAuthorizationError.anthropic_api_errors,
+            "authentication_error",
+            "permission_error",
+        ):
             raise LLMAPIAuthorizationError(detail=detail)
-        elif error_type in LLMAPIRateLimitError.anthropic_api_errors:
+        if error_type in (
+            *LLMAPIRateLimitError.anthropic_api_errors,
+            "rate_limit_error",
+        ):
             raise LLMAPIRateLimitError(detail=detail)
-        elif error_type in LLMAPITokenLimitError.anthropic_api_errors:
+        if error_type in LLMAPITokenLimitError.anthropic_api_errors:
             raise LLMAPITokenLimitError(detail=detail)
-        elif 400 <= status_code < 500:
-            raise LLMAPIClientError(detail=detail)
-        elif 500 <= status_code < 600:
+        if error_type in (
+            *LLMAPIServerError.anthropic_api_errors,
+            "api_error",
+            "overloaded_error",
+        ):
             raise LLMAPIServerError(detail=detail)
-        else:
+        if status_code is not None and 400 <= status_code < 500:
             raise LLMAPIClientError(detail=detail)
+        if status_code is not None and 500 <= status_code < 600:
+            raise LLMAPIServerError(detail=detail)
+        raise LLMAPIClientError(detail=detail)

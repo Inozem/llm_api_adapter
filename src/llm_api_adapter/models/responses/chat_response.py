@@ -270,6 +270,7 @@ class ChatResponse:
                     )
                 )
         return cls(
+            model=api_response.get("modelVersion"),
             usage=usage,
             content=text_content,
             tool_calls=parsed_tool_calls,

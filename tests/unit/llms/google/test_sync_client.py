@@ -11,6 +11,25 @@ from src.llm_api_adapter.errors.llm_api_error import (
     LLMAPITimeoutError,
 )
 from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
+from src.llm_api_adapter.llms.streaming import SSEEvent
+
+
+class StreamingResponse:
+    def __init__(self, lines, status_code=200, error_payload=None):
+        self.lines = lines
+        self.status_code = status_code
+        self.error_payload = error_payload or {}
+        self.close = Mock()
+
+    def iter_lines(self, decode_unicode=True):
+        return iter(self.lines)
+
+    def json(self):
+        return self.error_payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(response=self)
 
 @pytest.fixture
 def client():
@@ -40,6 +59,9 @@ def test_chat_completion_success(client, mock_post_success):
     candidate_content = result["candidates"][0]["content"]
     assert candidate_content == "Hello"
     mock_post.assert_called_once()
+    assert mock_post.call_args.args[0] == (
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1:generateContent"
+    )
     headers = mock_post.call_args[1]["headers"]
     assert headers["x-goog-api-key"] == "test_api_key"
 
@@ -87,3 +109,119 @@ def test_send_request_fallback_error_parsing(mock_post, client):
     mock_post.side_effect = http_err
     with pytest.raises(LLMAPIClientError):
         client._send_request("http://example.com", {})
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_uses_stream_generate_content_and_yields_raw_chunks(mock_post, client):
+    response = StreamingResponse([
+        'data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}',
+        "",
+        'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"get_weather","args":{"city":"Tel Aviv"}}}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":12}}',
+        "",
+    ])
+    mock_post.return_value = response
+
+    events = list(client.stream(
+        "gemini-2.5-flash",
+        contents=[{"role": "user", "parts": [{"text": "Hi"}]}],
+        generationConfig={"maxOutputTokens": 64},
+    ))
+
+    assert events == [
+        SSEEvent(
+            event=None,
+            data={"candidates": [{"content": {"parts": [{"text": "Hello"}]}}]},
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                "candidates": [{
+                    "content": {"parts": [{"functionCall": {
+                        "name": "get_weather", "args": {"city": "Tel Aviv"},
+                    }}]},
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {"totalTokenCount": 12},
+            },
+        ),
+    ]
+    assert mock_post.call_args.args[0] == (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        "models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+    )
+    assert mock_post.call_args.kwargs["json"] == {
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "Hi"}]}],
+        "generationConfig": {},
+    }
+    assert mock_post.call_args.kwargs["stream"] is True
+    response.close.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_reuses_model_specific_thinking_payload_preparation(mock_post, client):
+    response = StreamingResponse([])
+    mock_post.return_value = response
+
+    assert list(client.stream(
+        "gemini-2.5-flash-lite",
+        contents=[],
+        generationConfig={"thinkingConfig": {"thinkingBudget": 1}},
+    )) == []
+
+    assert mock_post.call_args.kwargs["json"] == {
+        "model": "gemini-2.5-flash-lite",
+        "contents": [],
+        "generationConfig": {"thinkingConfig": {"thinkingBudget": 512}},
+    }
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_closes_response_when_consumer_stops_early(mock_post, client):
+    response = StreamingResponse([
+        'data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}',
+        "",
+        'data: {"candidates":[{"content":{"parts":[{"text":" world"}]}}]}',
+        "",
+    ])
+    mock_post.return_value = response
+
+    events = client.stream("gemini-2.5-flash", contents=[])
+    next(events)
+    events.close()
+
+    response.close.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_maps_http_errors_through_google_error_handler(mock_post, client):
+    response = StreamingResponse(
+        [],
+        status_code=429,
+        error_payload={"error": {"status": "RESOURCE_EXHAUSTED", "message": "Slow down"}},
+    )
+    mock_post.return_value = response
+
+    with pytest.raises(LLMAPIRateLimitError, match="Slow down"):
+        list(client.stream("gemini-2.5-flash", contents=[]))
+
+    response.close.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("src.llm_api_adapter.llms.streaming.requests.post")
+def test_stream_maps_error_chunks_through_google_error_handler(mock_post, client):
+    response = StreamingResponse([
+        'data: {"error":{"status":"UNAVAILABLE","message":"Temporarily unavailable"}}',
+        "",
+    ])
+    mock_post.return_value = response
+
+    with pytest.raises(LLMAPIServerError, match="Temporarily unavailable"):
+        list(client.stream("gemini-2.5-flash", contents=[]))
+
+    response.close.assert_called_once()

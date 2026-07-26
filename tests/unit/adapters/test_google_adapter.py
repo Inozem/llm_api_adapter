@@ -7,6 +7,8 @@ from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
 from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
 from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
+from src.llm_api_adapter.models.tools import ToolSpec
+from src.llm_api_adapter.llms.streaming import SSEEvent
 
 @pytest.fixture
 def adapter():
@@ -201,3 +203,50 @@ def test_chat_omits_json_schema_fields_when_not_provided(adapter):
     gen_cfg = kwargs["generationConfig"]
     assert "responseMimeType" not in gen_cfg
     assert "responseSchema" not in gen_cfg
+
+
+@pytest.mark.unit
+def test_stream_chat_normalizes_chunks_excludes_thoughts_and_finalizes(adapter):
+    events = iter([
+        SSEEvent(data={
+            "candidates": [{"content": {"parts": [{"text": "Hello"}]}}],
+        }, event=None),
+        SSEEvent(data={
+            "candidates": [{"content": {"parts": [{"text": "secret", "thought": True}]}}],
+        }, event=None),
+        SSEEvent(data={
+            "candidates": [{
+                "content": {"parts": [
+                    {"text": "!"},
+                    {"functionCall": {"name": "get_weather", "args": {"city": "Tel Aviv"}}},
+                ]},
+                "finishReason": "STOP",
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 3,
+                "candidatesTokenCount": 2,
+                "totalTokenCount": 5,
+            },
+        }, event=None),
+    ])
+    done = []
+    tool_calls = []
+    callbacks = []
+    tool = ToolSpec(name="get_weather", json_schema={"type": "object"})
+
+    with patch.object(GeminiSyncClient, "stream", return_value=events) as mock_stream:
+        assert list(adapter.stream_chat(
+            [UserMessage("hi")],
+            tools=[tool],
+            on_delta=lambda delta: callbacks.append(("delta", delta)),
+            on_tool_call=lambda call: (callbacks.append(("tool", call)), tool_calls.append(call)),
+            on_done=lambda response: (callbacks.append(("done", response)), done.append(response)),
+        )) == ["Hello", "!"]
+
+    assert [kind for kind, _ in callbacks] == ["delta", "delta", "tool", "done"]
+    assert mock_stream.call_args.kwargs["contents"] == [{"role": "user", "parts": [{"text": "hi"}]}]
+    assert done[0].content == "Hello!"
+    assert done[0].finish_reason == "STOP"
+    assert done[0].usage.total_tokens == 5
+    assert tool_calls[0].name == "get_weather"
+    assert tool_calls[0].arguments == {"city": "Tel Aviv"}
