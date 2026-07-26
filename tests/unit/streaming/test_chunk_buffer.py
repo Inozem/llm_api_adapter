@@ -70,11 +70,11 @@ def test_buffer_rejects_invalid_buffer_chars(buffer_chars):
 
 
 @pytest.mark.unit
-def test_buffer_records_usage_without_text_until_a_chunk_is_emitted():
+def test_buffer_updates_metadata_without_text_until_a_chunk_is_emitted():
     usage = Usage(input_tokens=2, output_tokens=1, total_tokens=3)
     buffer = StreamChunkBuffer(clock=FakeClock(0.0, 0.4))
 
-    assert list(buffer.add("", usage=usage, output_tokens_delta=1)) == []
+    buffer.update_metadata(usage=usage, output_tokens_delta=1)
     chunk = next(buffer.add("text"))
 
     assert chunk.usage == usage

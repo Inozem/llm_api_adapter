@@ -110,6 +110,15 @@ class StreamChunkBuffer:
             self._pending_text = self._pending_text[self._buffer_chars :]
             yield self._build_chunk(chunk_text, emitted_at)
 
+    def update_metadata(
+        self,
+        *,
+        usage: Optional[Usage] = None,
+        output_tokens_delta: Optional[int] = None,
+    ) -> None:
+        """Store metadata for the next emitted chunk without adding text."""
+        self._update_metadata(usage, output_tokens_delta)
+
     def flush(self) -> Iterator[StreamChunk]:
         """Emit pending text, if any, at normal stream completion."""
         if not self._pending_text:
