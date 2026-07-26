@@ -63,7 +63,7 @@ def test_basic_auto_tool_loop_with_previous_response(subtests, iter_provider_mod
 
             messages = [
                 UserMessage(
-                    "What is the popularity of a fruit? "
+                    "What is the popularity of the fruit banana? "
                     "Use the available tool to look it up."
                 )
             ]
@@ -72,7 +72,7 @@ def test_basic_auto_tool_loop_with_previous_response(subtests, iter_provider_mod
                 adapter,
                 messages=messages,
                 tools=tools,
-                tool_choice="any",
+                tool_choice="get_fruit_popularity",
                 max_tokens=512,
                 timeout_s=60,
             )
