@@ -18,6 +18,7 @@ from ..errors.llm_api_error import (
 from ..llm_registry.llm_registry import Pricing, LLM_REGISTRY
 from ..models.messages.chat_message import Messages
 from ..models.responses.chat_response import ChatResponse
+from ..models.responses.stream_chunk import StreamChunk
 from ..models.tools import ToolCall, ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ REASONING_LEVELS_DEFAULT = {
 TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 OnDelta = Callable[[str], None]
+OnChunk = Callable[[StreamChunk], None]
 OnToolCall = Callable[[ToolCall], None]
 OnDone = Callable[[ChatResponse], None]
 

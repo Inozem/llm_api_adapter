@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import time
 from typing import Any, Callable, Iterator, Mapping, Optional
 
 import requests
@@ -21,6 +22,8 @@ from ..errors.llm_api_error import (
     LLMAPIServerError,
     LLMAPITimeoutError,
 )
+from ..models.responses.chat_response import Usage
+from ..models.responses.stream_chunk import StreamChunk
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,108 @@ class SSEEvent:
 
 HTTPErrorHandler = Callable[[requests.exceptions.HTTPError], Any]
 StreamErrorHandler = Callable[[SSEEvent], Any]
+Clock = Callable[[], float]
+
+
+class StreamChunkBuffer:
+    """Buffer visible text and emit :class:`StreamChunk` values.
+
+    With ``buffer_chars=None`` each non-empty input is emitted immediately.
+    A positive ``buffer_chars`` coalesces text until full chunks can be
+    emitted; :meth:`flush` emits the remaining text.  The class deliberately
+    has no provider-specific parsing or background work.
+    """
+
+    def __init__(
+        self,
+        buffer_chars: Optional[int] = None,
+        *,
+        clock: Clock = time.perf_counter,
+    ) -> None:
+        if (
+            buffer_chars is not None
+            and (
+                isinstance(buffer_chars, bool)
+                or not isinstance(buffer_chars, int)
+                or buffer_chars <= 0
+            )
+        ):
+            raise ValueError("buffer_chars must be None or a positive integer")
+
+        self._buffer_chars = buffer_chars
+        self._clock = clock
+        self._started_at = clock()
+        self._last_emitted_at = self._started_at
+        self._next_index = 0
+        self._pending_text = ""
+        self._usage: Optional[Usage] = None
+        self._output_tokens_delta: Optional[int] = None
+
+    def add(
+        self,
+        text: str,
+        *,
+        usage: Optional[Usage] = None,
+        output_tokens_delta: Optional[int] = None,
+    ) -> Iterator[StreamChunk]:
+        """Accept provider-normalized text and yield every completed chunk."""
+        if not isinstance(text, str):
+            raise TypeError("text must be a string")
+
+        self._update_metadata(usage, output_tokens_delta)
+        if not text:
+            return
+
+        if self._buffer_chars is None:
+            yield self._build_chunk(text, self._clock())
+            return
+
+        self._pending_text += text
+        if len(self._pending_text) < self._buffer_chars:
+            return
+
+        emitted_at = self._clock()
+        while len(self._pending_text) >= self._buffer_chars:
+            chunk_text = self._pending_text[: self._buffer_chars]
+            self._pending_text = self._pending_text[self._buffer_chars :]
+            yield self._build_chunk(chunk_text, emitted_at)
+
+    def flush(self) -> Iterator[StreamChunk]:
+        """Emit pending text, if any, at normal stream completion."""
+        if not self._pending_text:
+            return
+
+        pending_text = self._pending_text
+        self._pending_text = ""
+        yield self._build_chunk(pending_text, self._clock())
+
+    def _update_metadata(
+        self,
+        usage: Optional[Usage],
+        output_tokens_delta: Optional[int],
+    ) -> None:
+        if usage is not None:
+            self._usage = Usage(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+            )
+        if output_tokens_delta is not None:
+            self._output_tokens_delta = output_tokens_delta
+
+    def _build_chunk(self, text: str, emitted_at: float) -> StreamChunk:
+        chunk = StreamChunk(
+            text=text,
+            index=self._next_index,
+            elapsed_s=emitted_at - self._started_at,
+            delta_s=emitted_at - self._last_emitted_at,
+            usage=self._usage,
+            output_tokens_delta=self._output_tokens_delta,
+        )
+        self._next_index += 1
+        self._last_emitted_at = emitted_at
+        self._output_tokens_delta = None
+        return chunk
 
 
 def _decode_line(line: bytes | str) -> str:
