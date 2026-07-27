@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 from typing import Any, Dict, Iterator, List, Mapping, Optional
@@ -26,6 +26,18 @@ from ..models.responses.chat_response import ChatResponse, Usage
 from ..models.tools import ToolSpec
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _ResponsesStreamState:
+    chunk_buffer: StreamChunkBuffer
+    usage_tracker: StreamUsageTracker
+    final_response: Optional[dict] = None
+    response_metadata: Dict[str, Any] = field(default_factory=dict)
+    text_parts: List[str] = field(default_factory=list)
+    function_calls: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    reasoning_collector: Optional[StreamReasoningCollector] = None
+    reasoning_response: Optional[ChatResponse] = None
 
 
 @dataclass(repr=False)
@@ -399,115 +411,31 @@ class OpenAIAdapter(LLMAdapterBase):
         capture_reasoning: bool,
         on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
-        final_response: Optional[dict] = None
-        response_metadata: Dict[str, Any] = {}
-        text_parts: List[str] = []
-        function_calls: Dict[str, Dict[str, Any]] = {}
-        chunk_buffer = StreamChunkBuffer(buffer_chars)
-        usage_tracker = StreamUsageTracker()
-        reasoning_collector = (
-            StreamReasoningCollector() if capture_reasoning else None
+        state = _ResponsesStreamState(
+            chunk_buffer=StreamChunkBuffer(buffer_chars),
+            usage_tracker=StreamUsageTracker(),
+            reasoning_collector=(
+                StreamReasoningCollector() if capture_reasoning else None
+            ),
+            reasoning_response=ChatResponse() if capture_reasoning else None,
         )
-        reasoning_response = ChatResponse() if capture_reasoning else None
         for event in self._iter_provider_stream_events(events):
-            payload = event.data if isinstance(event.data, Mapping) else {}
-            event_type = event.event or payload.get("type")
-            response_data = payload.get("response")
-            if isinstance(response_data, Mapping):
-                response_metadata.update(response_data)
-            usage_tracker.record(
-                chunk_buffer,
-                self._normalize_stream_usage(
-                    self._response_event_usage(payload, response_data),
-                    input_field="input_tokens",
-                    output_field="output_tokens",
-                ),
+            yield from self._consume_responses_stream_event(
+                event,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
             )
-            if event_type in (
-                "response.reasoning_summary_text.delta",
-                "response.reasoning_text.delta",
-            ):
-                delta = payload.get("delta")
-                if (
-                    reasoning_collector is not None
-                    and reasoning_response is not None
-                    and isinstance(delta, str)
-                    and delta
-                ):
-                    self._record_reasoning_event(
-                        reasoning_response,
-                        reasoning_collector,
-                        delta,
-                        capture_reasoning=True,
-                        kind=(
-                            "summary"
-                            if event_type == "response.reasoning_summary_text.delta"
-                            else "content"
-                        ),
-                        on_reasoning=on_reasoning,
-                    )
-            elif event_type == "response.output_text.delta":
-                delta = payload.get("delta")
-                if isinstance(delta, str) and delta:
-                    text_parts.append(delta)
-                    yield from self._emit_stream_chunks(
-                        chunk_buffer.add(delta),
-                        on_chunk,
-                        on_delta,
-                    )
-            elif event_type in (
-                "response.function_call_arguments.delta",
-                "response.function_call_arguments.done",
-            ):
-                call_key = str(
-                    payload.get("call_id")
-                    or payload.get("item_id")
-                    or payload.get("output_index")
-                    or len(function_calls)
-                )
-                call = function_calls.setdefault(
-                    call_key,
-                    {"type": "function_call", "arguments": ""},
-                )
-                call["call_id"] = payload.get("call_id") or call.get("call_id")
-                call["id"] = payload.get("item_id") or call.get("id")
-                call["name"] = payload.get("name") or call.get("name")
-                if event_type.endswith(".delta") and isinstance(payload.get("delta"), str):
-                    call["arguments"] = f"{call.get('arguments', '')}{payload['delta']}"
-                elif "arguments" in payload:
-                    call["arguments"] = payload["arguments"]
-            elif event_type == "response.completed" and isinstance(response_data, Mapping):
-                final_response = dict(response_data)
-        if final_response is None:
-            output: List[Dict[str, Any]] = []
-            if text_parts:
-                output.append({
-                    "type": "message",
-                    "content": [{"type": "output_text", "text": "".join(text_parts)}],
-                })
-            output.extend(function_calls.values())
-            final_response = {
-                **response_metadata,
-                "model": response_metadata.get("model", self.model),
-                "output": output,
-                "status": response_metadata.get("status", "completed"),
-            }
-        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
-        chat_response = ChatResponse.from_openai_responses_response(
-            final_response,
-            **parser_kwargs,
-        )
-        if reasoning_collector is not None:
-            streamed_reasoning_events = reasoning_collector.snapshot()
-            if streamed_reasoning_events:
-                chat_response.reasoning_events = streamed_reasoning_events
-        self._prepare_stream_response(
-            chat_response,
-            effective_schema,
-            response_model,
+
+        chat_response = self._finalize_responses_stream(
+            state,
+            capture_reasoning=capture_reasoning,
+            effective_schema=effective_schema,
+            response_model=response_model,
         )
         yield from self._emit_stream_chunks(
-            chunk_buffer.flush(),
+            state.chunk_buffer.flush(),
             on_chunk,
             on_delta,
         )
@@ -516,6 +444,177 @@ class OpenAIAdapter(LLMAdapterBase):
             on_tool_call,
             on_done,
         )
+
+    def _consume_responses_stream_event(
+        self,
+        event: Any,
+        state: _ResponsesStreamState,
+        *,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+        on_reasoning: Optional[OnReasoning],
+    ) -> Iterator[str]:
+        payload = event.data if isinstance(event.data, Mapping) else {}
+        event_type = event.event or payload.get("type")
+        response_data = payload.get("response")
+        if isinstance(response_data, Mapping):
+            state.response_metadata.update(response_data)
+        state.usage_tracker.record(
+            state.chunk_buffer,
+            self._normalize_stream_usage(
+                self._response_event_usage(payload, response_data),
+                input_field="input_tokens",
+                output_field="output_tokens",
+            ),
+        )
+
+        if event_type in (
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_text.delta",
+        ):
+            self._handle_responses_reasoning_delta(
+                payload,
+                event_type,
+                state,
+                on_reasoning,
+            )
+        elif event_type == "response.output_text.delta":
+            yield from self._handle_responses_output_text_delta(
+                payload,
+                state,
+                on_chunk,
+                on_delta,
+            )
+        elif event_type in (
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
+        ):
+            self._handle_responses_function_call_event(
+                payload,
+                event_type,
+                state,
+            )
+        elif event_type == "response.completed" and isinstance(response_data, Mapping):
+            state.final_response = dict(response_data)
+
+    def _handle_responses_reasoning_delta(
+        self,
+        payload: Mapping[str, Any],
+        event_type: str,
+        state: _ResponsesStreamState,
+        on_reasoning: Optional[OnReasoning],
+    ) -> None:
+        delta = payload.get("delta")
+        if (
+            state.reasoning_collector is None
+            or state.reasoning_response is None
+            or not isinstance(delta, str)
+            or not delta
+        ):
+            return
+        self._record_reasoning_event(
+            state.reasoning_response,
+            state.reasoning_collector,
+            delta,
+            capture_reasoning=True,
+            kind=(
+                "summary"
+                if event_type == "response.reasoning_summary_text.delta"
+                else "content"
+            ),
+            on_reasoning=on_reasoning,
+        )
+
+    def _handle_responses_output_text_delta(
+        self,
+        payload: Mapping[str, Any],
+        state: _ResponsesStreamState,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+    ) -> Iterator[str]:
+        delta = payload.get("delta")
+        if not isinstance(delta, str) or not delta:
+            return
+        state.text_parts.append(delta)
+        yield from self._emit_stream_chunks(
+            state.chunk_buffer.add(delta),
+            on_chunk,
+            on_delta,
+        )
+
+    @staticmethod
+    def _handle_responses_function_call_event(
+        payload: Mapping[str, Any],
+        event_type: str,
+        state: _ResponsesStreamState,
+    ) -> None:
+        call_key = str(
+            payload.get("call_id")
+            or payload.get("item_id")
+            or payload.get("output_index")
+            or len(state.function_calls)
+        )
+        call = state.function_calls.setdefault(
+            call_key,
+            {"type": "function_call", "arguments": ""},
+        )
+        call["call_id"] = payload.get("call_id") or call.get("call_id")
+        call["id"] = payload.get("item_id") or call.get("id")
+        call["name"] = payload.get("name") or call.get("name")
+        if event_type.endswith(".delta") and isinstance(payload.get("delta"), str):
+            call["arguments"] = f"{call.get('arguments', '')}{payload['delta']}"
+        elif "arguments" in payload:
+            call["arguments"] = payload["arguments"]
+
+    def _finalize_responses_stream(
+        self,
+        state: _ResponsesStreamState,
+        *,
+        capture_reasoning: bool,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        if state.final_response is None:
+            final_response = self._build_responses_stream_response(state)
+        else:
+            final_response = state.final_response
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        chat_response = ChatResponse.from_openai_responses_response(
+            final_response,
+            **parser_kwargs,
+        )
+        if state.reasoning_collector is not None:
+            streamed_reasoning_events = state.reasoning_collector.snapshot()
+            if streamed_reasoning_events:
+                chat_response.reasoning_events = streamed_reasoning_events
+        self._prepare_stream_response(
+            chat_response,
+            effective_schema,
+            response_model,
+        )
+        return chat_response
+
+    def _build_responses_stream_response(
+        self,
+        state: _ResponsesStreamState,
+    ) -> Dict[str, Any]:
+        output: List[Dict[str, Any]] = []
+        if state.text_parts:
+            output.append(
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "".join(state.text_parts)}
+                    ],
+                }
+            )
+        output.extend(state.function_calls.values())
+        return {
+            **state.response_metadata,
+            "model": state.response_metadata.get("model", self.model),
+            "output": output,
+            "status": state.response_metadata.get("status", "completed"),
+        }
 
     def _consume_chat_completions_stream(
         self,
