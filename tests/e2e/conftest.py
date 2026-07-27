@@ -8,6 +8,10 @@ import pytest
 
 from llm_api_adapter.errors import LLMAPIRateLimitError, LLMAPIServerError
 from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY
+from src.llm_api_adapter.errors import (
+    LLMAPIRateLimitError as SourceLLMAPIRateLimitError,
+    LLMAPIServerError as SourceLLMAPIServerError,
+)
 
 _FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
@@ -38,7 +42,7 @@ def chat_with_retry():
     Delays follow exponential backoff: 2s, 4s, 8s.
     """
     _delays = [2, 4, 8]
-    _max_attempts = len(_delays)
+    _max_attempts = len(_delays) + 1
 
     def _call(adapter, **kwargs):
         for attempt in range(_max_attempts):
@@ -58,17 +62,29 @@ def chat_with_retry():
 
 @pytest.fixture(scope="session")
 def stream_with_retry():
-    """Returns a helper that retries a complete stream on transient provider errors."""
+    """Returns a helper that retries a complete stream on transient provider errors.
+
+    ``on_retry`` may reset callback observers after a partial failed attempt.
+    """
     _delays = [2, 4, 8]
-    _max_attempts = len(_delays)
+    _max_attempts = len(_delays) + 1
+    _transient_errors = (
+        LLMAPIServerError,
+        LLMAPIRateLimitError,
+        SourceLLMAPIServerError,
+        SourceLLMAPIRateLimitError,
+    )
 
     def _call(adapter, **kwargs):
+        on_retry = kwargs.pop("on_retry", None)
         for attempt in range(_max_attempts):
             try:
                 return list(adapter.stream_chat(**kwargs))
-            except (LLMAPIServerError, LLMAPIRateLimitError):
+            except _transient_errors:
                 if attempt == _max_attempts - 1:
                     raise
+                if on_retry is not None:
+                    on_retry()
                 time.sleep(_delays[attempt])
         return []
 
