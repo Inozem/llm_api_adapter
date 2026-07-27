@@ -1,6 +1,6 @@
 {
   "schema_version": 7,
-  "effective_date": "2026-07-14",
+  "effective_date": "2026-07-27",
   "providers": {
     "openai": {
       "currency": "USD",
@@ -68,8 +68,13 @@
           "is_reasoning": true,
           "is_adaptive_thinking": true
         },
+        "claude-opus-5": {
+          "pricing": {"in_per_1m": 5.0, "out_per_1m": 25.0},
+          "is_reasoning": true,
+          "is_adaptive_thinking": true
+        },
         "claude-sonnet-5": {
-          "pricing": {"in_per_1m": 3.0, "out_per_1m": 15.0},
+          "pricing": {"in_per_1m": 2.0, "out_per_1m": 10.0},
           "is_reasoning": true,
           "is_adaptive_thinking": true
         },
