@@ -5,6 +5,7 @@ from src.llm_api_adapter.errors.llm_api_error import (
     LLMAPIError,
 )
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
+from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from src.llm_api_adapter.models.tools import ToolCall
 
 
@@ -321,6 +322,37 @@ def test_from_openai_responses_response_parses_text_and_tool_calls():
         ToolCall(name="weather", arguments={"city": "Tel Aviv"}, call_id="call_1")
     ]
     assert response.finish_reason == "completed"
+
+
+@pytest.mark.unit
+def test_from_openai_responses_response_parses_reasoning_only_when_opted_in():
+    api_response = {
+        "model": "gpt-5",
+        "output": [
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "Plan"}],
+                "content": [{"type": "reasoning_text", "text": "Details"}],
+            },
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Answer"}],
+            },
+        ],
+    }
+
+    without_capture = ChatResponse.from_openai_responses_response(api_response)
+    with_capture = ChatResponse.from_openai_responses_response(
+        api_response,
+        capture_reasoning=True,
+    )
+
+    assert without_capture.reasoning_events == []
+    assert with_capture.reasoning_events == [
+        ReasoningEvent("Plan", "summary", 0, 0.0, 0.0),
+        ReasoningEvent("Details", "content", 1, 0.0, 0.0),
+    ]
+    assert with_capture.content == "Answer"
 
 
 @pytest.mark.unit

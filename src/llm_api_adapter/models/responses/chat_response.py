@@ -108,7 +108,12 @@ class ChatResponse:
         )
 
     @classmethod
-    def from_openai_responses_response(cls, api_response: dict) -> "ChatResponse":
+    def from_openai_responses_response(
+        cls,
+        api_response: dict,
+        *,
+        capture_reasoning: bool = False,
+    ) -> "ChatResponse":
         u = api_response.get("usage", {}) or {}
         usage = Usage(
             input_tokens=u.get("input_tokens", 0),
@@ -116,6 +121,7 @@ class ChatResponse:
             total_tokens=u.get("total_tokens", 0),
         )
         parsed_tool_calls: Optional[List[ToolCall]] = None
+        reasoning_events: List[ReasoningEvent] = []
         text_parts: List[str] = []
         output_items = api_response.get("output") or []
         if not isinstance(output_items, list):
@@ -136,6 +142,44 @@ class ChatResponse:
                         text_value = content_item.get("text")
                         if isinstance(text_value, str) and text_value.strip():
                             text_parts.append(text_value)
+            elif item_type == "reasoning" and capture_reasoning:
+                summary_items = item.get("summary") or []
+                if isinstance(summary_items, list):
+                    for summary_item in summary_items:
+                        if not isinstance(summary_item, dict):
+                            continue
+                        if summary_item.get("type") != "summary_text":
+                            continue
+                        text_value = summary_item.get("text")
+                        if isinstance(text_value, str) and text_value:
+                            reasoning_events.append(
+                                ReasoningEvent(
+                                    text=text_value,
+                                    kind="summary",
+                                    index=len(reasoning_events),
+                                    elapsed_s=0.0,
+                                    delta_s=0.0,
+                                )
+                            )
+
+                content_items = item.get("content") or []
+                if isinstance(content_items, list):
+                    for content_item in content_items:
+                        if not isinstance(content_item, dict):
+                            continue
+                        if content_item.get("type") != "reasoning_text":
+                            continue
+                        text_value = content_item.get("text")
+                        if isinstance(text_value, str) and text_value:
+                            reasoning_events.append(
+                                ReasoningEvent(
+                                    text=text_value,
+                                    kind="content",
+                                    index=len(reasoning_events),
+                                    elapsed_s=0.0,
+                                    delta_s=0.0,
+                                )
+                            )
             elif item_type in ("function_call", "tool_call"):
                 if parsed_tool_calls is None:
                     parsed_tool_calls = []
@@ -160,7 +204,11 @@ class ChatResponse:
                     )
                 )
         text = "\n".join(text_parts) if text_parts else None
-        if not parsed_tool_calls and (not text or not text.strip()):
+        if (
+            not parsed_tool_calls
+            and not reasoning_events
+            and (not text or not text.strip())
+        ):
             warnings.warn(
                 "OpenAI Responses API returned empty content and no tool calls.",
                 UserWarning,
@@ -173,6 +221,7 @@ class ChatResponse:
             content=text,
             tool_calls=parsed_tool_calls,
             finish_reason=api_response.get("status"),
+            reasoning_events=reasoning_events,
         )
 
     @classmethod

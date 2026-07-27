@@ -15,7 +15,11 @@ from ..adapters.base_adapter import (
     OnToolCall,
 )
 from ..errors.llm_api_error import LLMAPIError
-from ..llms.streaming import StreamChunkBuffer, StreamUsageTracker
+from ..llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+    StreamUsageTracker,
+)
 from ..llms.openai.sync_client import OpenAISyncClient
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse, Usage
@@ -100,6 +104,8 @@ class OpenAIAdapter(LLMAdapterBase):
 
             if use_responses_api:
                 params["input"] = transformed_messages
+                if capture_reasoning:
+                    params["capture_reasoning"] = True
                 if instructions is not None:
                     params["instructions"] = instructions
                 if previous_response_id is not None:
@@ -130,7 +136,13 @@ class OpenAIAdapter(LLMAdapterBase):
             response = client.complete(timeout=timeout_s, **params)
 
             if use_responses_api:
-                chat_response = ChatResponse.from_openai_responses_response(response)
+                parser_kwargs = (
+                    {"capture_reasoning": True} if capture_reasoning else {}
+                )
+                chat_response = ChatResponse.from_openai_responses_response(
+                    response,
+                    **parser_kwargs,
+                )
             else:
                 chat_response = ChatResponse.from_openai_response(response)
 
@@ -195,6 +207,7 @@ class OpenAIAdapter(LLMAdapterBase):
             parallel_tool_calls=parallel_tool_calls,
             previous_response=previous_response,
             effective_schema=effective_schema,
+            capture_reasoning=capture_reasoning,
         )
         events = client.stream(timeout=timeout_s, **params)
         if use_responses_api:
@@ -207,6 +220,8 @@ class OpenAIAdapter(LLMAdapterBase):
                 on_done,
                 buffer_chars,
                 on_chunk,
+                capture_reasoning,
+                on_reasoning,
             )
             return
         yield from self._consume_chat_completions_stream(
@@ -234,6 +249,7 @@ class OpenAIAdapter(LLMAdapterBase):
         parallel_tool_calls: Optional[bool],
         previous_response: Optional[ChatResponse],
         effective_schema: Optional[dict],
+        capture_reasoning: bool,
     ) -> Dict[str, Any]:
         params: Dict[str, Any] = {
             "model": self.model,
@@ -262,6 +278,8 @@ class OpenAIAdapter(LLMAdapterBase):
                         "schema": self._enforce_strict_schema(effective_schema),
                     }
                 }
+            if capture_reasoning:
+                params["capture_reasoning"] = True
         else:
             params["messages"] = normalized_messages.to_openai()
             params["tools"] = self._map_tools_to_openai(tools)
@@ -290,6 +308,8 @@ class OpenAIAdapter(LLMAdapterBase):
         on_done: Optional[OnDone],
         buffer_chars: Optional[int],
         on_chunk: Optional[OnChunk],
+        capture_reasoning: bool,
+        on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
         final_response: Optional[dict] = None
         response_metadata: Dict[str, Any] = {}
@@ -297,6 +317,10 @@ class OpenAIAdapter(LLMAdapterBase):
         function_calls: Dict[str, Dict[str, Any]] = {}
         chunk_buffer = StreamChunkBuffer(buffer_chars)
         usage_tracker = StreamUsageTracker()
+        reasoning_collector = (
+            StreamReasoningCollector() if capture_reasoning else None
+        )
+        reasoning_response = ChatResponse() if capture_reasoning else None
         for event in self._iter_provider_stream_events(events):
             payload = event.data if isinstance(event.data, Mapping) else {}
             event_type = event.event or payload.get("type")
@@ -311,7 +335,30 @@ class OpenAIAdapter(LLMAdapterBase):
                     output_field="output_tokens",
                 ),
             )
-            if event_type == "response.output_text.delta":
+            if event_type in (
+                "response.reasoning_summary_text.delta",
+                "response.reasoning_text.delta",
+            ):
+                delta = payload.get("delta")
+                if (
+                    reasoning_collector is not None
+                    and reasoning_response is not None
+                    and isinstance(delta, str)
+                    and delta
+                ):
+                    self._record_reasoning_event(
+                        reasoning_response,
+                        reasoning_collector,
+                        delta,
+                        capture_reasoning=True,
+                        kind=(
+                            "summary"
+                            if event_type == "response.reasoning_summary_text.delta"
+                            else "content"
+                        ),
+                        on_reasoning=on_reasoning,
+                    )
+            elif event_type == "response.output_text.delta":
                 delta = payload.get("delta")
                 if isinstance(delta, str) and delta:
                     text_parts.append(delta)
@@ -357,7 +404,15 @@ class OpenAIAdapter(LLMAdapterBase):
                 "output": output,
                 "status": response_metadata.get("status", "completed"),
             }
-        chat_response = ChatResponse.from_openai_responses_response(final_response)
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        chat_response = ChatResponse.from_openai_responses_response(
+            final_response,
+            **parser_kwargs,
+        )
+        if reasoning_collector is not None:
+            streamed_reasoning_events = reasoning_collector.snapshot()
+            if streamed_reasoning_events:
+                chat_response.reasoning_events = streamed_reasoning_events
         self._prepare_stream_response(
             chat_response,
             effective_schema,
