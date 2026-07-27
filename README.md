@@ -54,7 +54,7 @@ This table is a positioning snapshot. Provider capabilities change independently
 
 ## Features
 
-- **Synchronous Streaming**: Iterate normalized text deltas with `stream_chat()` across OpenAI, Anthropic, and Google; receive completed tool calls and the final normalized `ChatResponse` through optional callbacks.
+- **Synchronous Streaming**: Iterate normalized text with `stream_chat()` across OpenAI, Anthropic, and Google. Optionally coalesce it into bounded chunks and observe per-chunk metadata without changing the yielded `str` contract.
 - **Provider-Neutral Messages and Responses**: Use the same typed messages, `ChatResponse`, usage, pricing, parsed output, and tool-call fields regardless of the provider.
 - **Vision Input**: Send images alongside text via `ImagePart` — URL or raw bytes, all providers handled automatically.
 - **PDF Documents**: Send PDF URLs or bytes via `DocumentPart`; provider-specific file/document payloads are generated automatically.
@@ -147,7 +147,9 @@ print(response.content)
 
 ## Streaming
 
-`stream_chat()` is the synchronous streaming counterpart to `chat()`. It yields normalized visible text deltas as `str`, independently of the provider's native streaming event format.
+`stream_chat()` is the synchronous streaming counterpart to `chat()`. It always yields normalized visible text as `str`, independently of the provider's native streaming event format.
+
+By default, `buffer_chars=None` preserves provider text-delta behavior. Set a positive `buffer_chars` value when a consumer prefers bounded, coalesced text; `on_chunk` then receives a `StreamChunk` with the same text and observability metadata.
 
 ```python
 from llm_api_adapter import UniversalLLMAPIAdapter
@@ -158,21 +160,30 @@ adapter = UniversalLLMAPIAdapter(
     api_key="...",
 )
 
-chunks = []
-for delta in adapter.stream_chat(
+chunk_metadata = []
+for text in adapter.stream_chat(
     messages=[{"role": "user", "content": "Explain SSE in one sentence."}],
-    on_delta=chunks.append,
+    buffer_chars=80,
+    on_chunk=chunk_metadata.append,
     on_tool_call=lambda call: print(call.name, call.arguments),
     on_done=lambda response: print(response.usage),
 ):
-    print(delta, end="", flush=True)
+    print(text, end="", flush=True)  # `text` is still a str.
+
+for chunk in chunk_metadata:
+    print(chunk.index, chunk.elapsed_s, chunk.usage, chunk.output_tokens_delta)
 ```
 
-- `on_delta(delta)` is called for every yielded visible text delta.
+- `buffer_chars` accepts `None` (the default) or a positive integer. Buffered chunks never exceed the configured size; any remaining text is emitted during normal completion.
+- `on_chunk(chunk)` receives a `StreamChunk` with `text`, monotonic `index`, local `elapsed_s` / `delta_s`, and optional `usage` / `output_tokens_delta` fields.
+- `on_delta(text)` is called for every yielded visible text chunk. The order is always `on_chunk` → `on_delta` → `yield`.
 - `on_tool_call(tool_call)` receives only completed, normalized `ToolCall` objects after the provider stream finishes.
-- `on_done(response)` receives the finalized `ChatResponse`, including usage, pricing, parsed structured output, and any tool calls.
+- `on_done(response)` receives the finalized `ChatResponse`, including usage, pricing, parsed structured output, and any tool calls, after the final buffer flush.
+- Token metadata is optional and comes only from provider usage payloads. When a provider reports cumulative output usage, `output_tokens_delta` is the local increment; no token estimation is performed.
 
-Streaming in v0.6.0 is synchronous and text-first. Async streaming, buffer/backpressure controls, a universal provider-event type, partial tool arguments, and tool-call sequencing are deferred to later releases.
+Buffering is pull-based and has no background worker or time-based flush. If the stream fails or a caller closes the iterator early, pending text is not emitted as a successful final chunk and `on_done` is not called.
+
+Streaming in v0.6.1 is synchronous and text-first. Async streaming, a universal provider-event type, partial tool arguments, and tool-call sequencing are deferred to later releases.
 
 Provider event references: [OpenAI Responses streaming](https://platform.openai.com/docs/api-reference/responses-streaming), [Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), and [Google `streamGenerateContent`](https://ai.google.dev/api/generate-content).
 

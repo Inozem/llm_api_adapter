@@ -6,7 +6,7 @@ from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
 from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
 from src.llm_api_adapter.adapters.anthropic_adapter import ClaudeSyncClient
 from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
-from src.llm_api_adapter.models.responses.chat_response import ChatResponse
+from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from src.llm_api_adapter.models.tools import ToolSpec
 from src.llm_api_adapter.llms.streaming import SSEEvent
 
@@ -241,3 +241,99 @@ def test_stream_chat_normalizes_text_and_completed_tool_use(adapter):
     assert done[0].finish_reason == "tool_use"
     assert tool_calls[0].name == "get_weather"
     assert tool_calls[0].arguments == {"city": "Tel Aviv"}
+
+
+@pytest.mark.unit
+def test_stream_chat_attaches_late_usage_to_final_buffered_chunk(adapter):
+    events = iter([
+        SSEEvent(
+            event="message_start",
+            data={"type": "message_start", "message": {
+                "model": "claude-sonnet-4-5",
+                "content": [],
+                "usage": {"input_tokens": 3, "output_tokens": 0},
+            }},
+        ),
+        SSEEvent(
+            event="content_block_start",
+            data={"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}},
+        ),
+        SSEEvent(
+            event="message_delta",
+            data={"type": "message_delta", "usage": {"output_tokens": 4}},
+        ),
+        SSEEvent(event="message_stop", data={"type": "message_stop"}),
+    ])
+    chunks = []
+    done = []
+
+    with patch.object(ClaudeSyncClient, "stream", return_value=events):
+        output = list(adapter.stream_chat(
+            [UserMessage("hi")],
+            max_tokens=64,
+            buffer_chars=10,
+            on_chunk=chunks.append,
+            on_done=done.append,
+        ))
+
+    assert output == ["Hello"]
+    assert chunks[0].usage == Usage(input_tokens=3, output_tokens=4, total_tokens=7)
+    assert chunks[0].output_tokens_delta == 4
+    assert done[0].usage == Usage(input_tokens=3, output_tokens=4, total_tokens=7)
+
+
+@pytest.mark.unit
+def test_stream_chat_buffers_text_and_orders_chunk_callbacks(adapter):
+    events = iter([
+        SSEEvent(
+            event="message_start",
+            data={"type": "message_start", "message": {"content": []}},
+        ),
+        SSEEvent(
+            event="content_block_start",
+            data={"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "He"}},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "llo"}},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "!"}},
+        ),
+        SSEEvent(event="message_stop", data={"type": "message_stop"}),
+    ])
+    order = []
+    yielded = []
+
+    with patch.object(ClaudeSyncClient, "stream", return_value=events):
+        for text in adapter.stream_chat(
+            [UserMessage("hi")],
+            max_tokens=64,
+            buffer_chars=4,
+            on_chunk=lambda chunk: order.append(("chunk", chunk.text)),
+            on_delta=lambda text: order.append(("delta", text)),
+            on_done=lambda response: order.append(("done", response.content)),
+        ):
+            yielded.append(text)
+            order.append(("yield", text))
+
+    assert yielded == ["Hell", "o!"]
+    assert "".join(yielded) == "Hello!"
+    assert order == [
+        ("chunk", "Hell"),
+        ("delta", "Hell"),
+        ("yield", "Hell"),
+        ("chunk", "o!"),
+        ("delta", "o!"),
+        ("yield", "o!"),
+        ("done", "Hello!"),
+    ]

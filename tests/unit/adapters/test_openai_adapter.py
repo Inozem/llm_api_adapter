@@ -3,10 +3,10 @@ from unittest.mock import patch
 import pytest
 
 from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
-from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
+from src.llm_api_adapter.errors.llm_api_error import JSONSchemaError, LLMAPIError
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
-from src.llm_api_adapter.models.responses.chat_response import ChatResponse
+from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from src.llm_api_adapter.models.tools import ToolSpec
 from src.llm_api_adapter.llms.streaming import SSEEvent
 
@@ -724,6 +724,172 @@ def test_stream_chat_responses_uses_completed_response(adapter):
 
 
 @pytest.mark.unit
+def test_stream_chat_responses_attaches_late_usage_to_final_buffered_chunk(adapter):
+    events = iter([
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"type": "response.output_text.delta", "delta": "Hello"},
+        ),
+        SSEEvent(
+            event="response.completed",
+            data={
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_123",
+                    "model": "gpt-5",
+                    "status": "completed",
+                    "usage": {"input_tokens": 2, "output_tokens": 4, "total_tokens": 6},
+                    "output": [{
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "Hello"}],
+                    }],
+                },
+            },
+        ),
+    ])
+    chunks = []
+    done = []
+
+    with patch.object(OpenAISyncClient, "stream", return_value=events):
+        output = list(adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=10,
+            on_chunk=chunks.append,
+            on_done=done.append,
+        ))
+
+    assert output == ["Hello"]
+    assert chunks[0].usage == Usage(input_tokens=2, output_tokens=4, total_tokens=6)
+    assert chunks[0].output_tokens_delta == 4
+    assert done[0].content == "Hello"
+    assert done[0].usage == Usage(input_tokens=2, output_tokens=4, total_tokens=6)
+
+
+@pytest.mark.unit
+def test_stream_chat_legacy_keeps_chunk_usage_optional_when_absent(legacy_adapter):
+    events = iter([
+        SSEEvent(
+            data={"choices": [{"index": 0, "delta": {"content": "Hello"}}]},
+            event=None,
+        ),
+    ])
+    chunks = []
+    done = []
+
+    with patch.object(OpenAISyncClient, "stream", return_value=events):
+        output = list(legacy_adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=10,
+            on_chunk=chunks.append,
+            on_done=done.append,
+        ))
+
+    assert output == ["Hello"]
+    assert chunks[0].usage is None
+    assert chunks[0].output_tokens_delta is None
+    assert done[0].content == "Hello"
+
+
+@pytest.mark.unit
+def test_stream_chat_legacy_calculates_cumulative_usage_deltas(legacy_adapter):
+    events = iter([
+        SSEEvent(
+            data={"choices": [{"index": 0, "delta": {"content": "He"}}]},
+            event=None,
+        ),
+        SSEEvent(
+            data={
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                "choices": [],
+            },
+            event=None,
+        ),
+        SSEEvent(
+            data={"choices": [{"index": 0, "delta": {"content": "llo"}}]},
+            event=None,
+        ),
+        SSEEvent(
+            data={
+                "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
+                "choices": [],
+            },
+            event=None,
+        ),
+        SSEEvent(
+            data={"choices": [{"index": 0, "delta": {"content": "world"}}]},
+            event=None,
+        ),
+        SSEEvent(
+            data={
+                "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
+                "choices": [],
+            },
+            event=None,
+        ),
+    ])
+    chunks = []
+    done = []
+
+    with patch.object(OpenAISyncClient, "stream", return_value=events):
+        output = list(legacy_adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=4,
+            on_chunk=chunks.append,
+            on_done=done.append,
+        ))
+
+    assert output == ["Hell", "owor", "ld"]
+    assert [chunk.usage for chunk in chunks] == [
+        Usage(input_tokens=3, output_tokens=2, total_tokens=5),
+        Usage(input_tokens=3, output_tokens=5, total_tokens=8),
+        Usage(input_tokens=3, output_tokens=5, total_tokens=8),
+    ]
+    assert [chunk.output_tokens_delta for chunk in chunks] == [2, 3, 0]
+    assert done[0].content == "Helloworld"
+    assert done[0].usage == Usage(input_tokens=3, output_tokens=5, total_tokens=8)
+
+
+@pytest.mark.unit
+def test_stream_chat_buffers_text_and_orders_chunk_callbacks(legacy_adapter):
+    events = iter([
+        SSEEvent(data={"choices": [{"index": 0, "delta": {"content": "He"}}]}, event=None),
+        SSEEvent(data={"choices": [{"index": 0, "delta": {"content": "llo"}}]}, event=None),
+        SSEEvent(data={
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "!"},
+                "finish_reason": "stop",
+            }],
+        }, event=None),
+    ])
+    order = []
+    yielded = []
+
+    with patch.object(OpenAISyncClient, "stream", return_value=events):
+        for text in legacy_adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=4,
+            on_chunk=lambda chunk: order.append(("chunk", chunk.text)),
+            on_delta=lambda text: order.append(("delta", text)),
+            on_done=lambda response: order.append(("done", response.content)),
+        ):
+            yielded.append(text)
+            order.append(("yield", text))
+
+    assert yielded == ["Hell", "o!"]
+    assert "".join(yielded) == "Hello!"
+    assert order == [
+        ("chunk", "Hell"),
+        ("delta", "Hell"),
+        ("yield", "Hell"),
+        ("chunk", "o!"),
+        ("delta", "o!"),
+        ("yield", "o!"),
+        ("done", "Hello!"),
+    ]
+
+
+@pytest.mark.unit
 def test_stream_chat_does_not_treat_callback_errors_as_provider_errors(legacy_adapter):
     events = iter([
         SSEEvent(data={"choices": [{"index": 0, "delta": {"content": "Hello"}}]}, event=None),
@@ -766,4 +932,70 @@ def test_stream_chat_skips_on_done_when_closed_early(legacy_adapter):
         stream.close()
 
     assert closed == [True]
+    assert done == []
+
+
+@pytest.mark.unit
+def test_stream_chat_does_not_flush_buffer_when_closed_early(legacy_adapter):
+    closed = []
+
+    def events():
+        try:
+            yield SSEEvent(
+                data={"choices": [{"index": 0, "delta": {"content": "Hell"}}]},
+                event=None,
+            )
+            yield SSEEvent(
+                data={"choices": [{"index": 0, "delta": {"content": "o"}}]},
+                event=None,
+            )
+            yield SSEEvent(
+                data={"choices": [{"index": 0, "delta": {"content": "world"}}]},
+                event=None,
+            )
+        finally:
+            closed.append(True)
+
+    done = []
+    with patch.object(OpenAISyncClient, "stream", return_value=events()):
+        stream = legacy_adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=4,
+            on_done=done.append,
+        )
+        assert next(stream) == "Hell"
+        assert next(stream) == "owor"
+        stream.close()
+
+    assert closed == [True]
+    assert done == []
+
+
+@pytest.mark.unit
+def test_stream_chat_does_not_flush_buffer_when_finalization_fails(legacy_adapter):
+    events = iter([
+        SSEEvent(
+            data={"choices": [{"index": 0, "delta": {"content": "not JSON"}}]},
+            event=None,
+        ),
+    ])
+    chunks = []
+    deltas = []
+    done = []
+
+    with (
+        patch.object(OpenAISyncClient, "stream", return_value=events),
+        pytest.raises(JSONSchemaError),
+    ):
+        list(legacy_adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=16,
+            json_schema={"type": "object"},
+            on_chunk=chunks.append,
+            on_delta=deltas.append,
+            on_done=done.append,
+        ))
+
+    assert chunks == []
+    assert deltas == []
     assert done == []

@@ -6,7 +6,7 @@ from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
 from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
 from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
 from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
-from src.llm_api_adapter.models.responses.chat_response import ChatResponse
+from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from src.llm_api_adapter.models.tools import ToolSpec
 from src.llm_api_adapter.llms.streaming import SSEEvent
 
@@ -250,3 +250,79 @@ def test_stream_chat_normalizes_chunks_excludes_thoughts_and_finalizes(adapter):
     assert done[0].usage.total_tokens == 5
     assert tool_calls[0].name == "get_weather"
     assert tool_calls[0].arguments == {"city": "Tel Aviv"}
+
+
+@pytest.mark.unit
+def test_stream_chat_attaches_usage_with_thought_tokens_to_buffered_chunk(adapter):
+    events = iter([
+        SSEEvent(data={
+            "candidates": [{"content": {"parts": [{"text": "Hello"}]}}],
+        }, event=None),
+        SSEEvent(data={
+            "candidates": [{"content": {"parts": []}, "finishReason": "STOP"}],
+            "usageMetadata": {
+                "promptTokenCount": 2,
+                "candidatesTokenCount": 3,
+                "thoughtsTokenCount": 4,
+                "totalTokenCount": 9,
+            },
+        }, event=None),
+    ])
+    chunks = []
+    done = []
+
+    with patch.object(GeminiSyncClient, "stream", return_value=events):
+        output = list(adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=10,
+            on_chunk=chunks.append,
+            on_done=done.append,
+        ))
+
+    assert output == ["Hello"]
+    assert chunks[0].usage == Usage(input_tokens=2, output_tokens=7, total_tokens=9)
+    assert chunks[0].output_tokens_delta == 7
+    assert done[0].usage == Usage(input_tokens=2, output_tokens=7, total_tokens=9)
+
+
+@pytest.mark.unit
+def test_stream_chat_buffers_text_and_orders_chunk_callbacks(adapter):
+    events = iter([
+        SSEEvent(data={
+            "candidates": [{"content": {"parts": [{"text": "He"}]}}],
+        }, event=None),
+        SSEEvent(data={
+            "candidates": [{"content": {"parts": [{"text": "llo"}]}}],
+        }, event=None),
+        SSEEvent(data={
+            "candidates": [{
+                "content": {"parts": [{"text": "!"}]},
+                "finishReason": "STOP",
+            }],
+        }, event=None),
+    ])
+    order = []
+    yielded = []
+
+    with patch.object(GeminiSyncClient, "stream", return_value=events):
+        for text in adapter.stream_chat(
+            [UserMessage("hi")],
+            buffer_chars=4,
+            on_chunk=lambda chunk: order.append(("chunk", chunk.text)),
+            on_delta=lambda text: order.append(("delta", text)),
+            on_done=lambda response: order.append(("done", response.content)),
+        ):
+            yielded.append(text)
+            order.append(("yield", text))
+
+    assert yielded == ["Hell", "o!"]
+    assert "".join(yielded) == "Hello!"
+    assert order == [
+        ("chunk", "Hell"),
+        ("delta", "Hell"),
+        ("yield", "Hell"),
+        ("chunk", "o!"),
+        ("delta", "o!"),
+        ("yield", "o!"),
+        ("done", "Hello!"),
+    ]
