@@ -1,10 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from typing import Any, List, Optional
 import warnings
 
 from ...errors.llm_api_error import InvalidToolArgumentsError, LLMAPIError
 from ...models.tools import ToolCall
+from .reasoning_event import ReasoningEvent
 
 
 @dataclass
@@ -29,6 +30,7 @@ class ChatResponse:
     finish_reason: Optional[str] = None
     parsed_json: Optional[dict] = None
     parsed_model: Optional[Any] = None
+    reasoning_events: List[ReasoningEvent] = field(default_factory=list)
 
     @classmethod
     def from_openai_response(cls, api_response: dict) -> "ChatResponse":
