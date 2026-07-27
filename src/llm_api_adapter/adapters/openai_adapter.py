@@ -69,100 +69,188 @@ class OpenAIAdapter(LLMAdapterBase):
             client = OpenAISyncClient(api_key=self.api_key)
             normalized_messages = self._normalize_messages(messages)
             use_responses_api = client._should_use_responses_api(self.model)
-            normalized_reasoning_level = self._normalize_reasoning_level(
-                reasoning_level
+            params = self._build_chat_params(
+                normalized_messages=normalized_messages,
+                use_responses_api=use_responses_api,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                tools=tools,
+                normalized_tool_choice=normalized_tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
+                previous_response=previous_response,
+                effective_schema=effective_schema,
+                capture_reasoning=capture_reasoning,
             )
-
-            previous_response_id: Optional[str] = None
-            if previous_response is not None:
-                previous_response_id = previous_response.response_id
-
-            if use_responses_api:
-                transformed_messages = normalized_messages.to_openai_responses_input()
-                instructions = normalized_messages.to_openai_responses_instructions()
-                openai_tools = self._map_tools_to_openai_responses(tools)
-                openai_tool_choice = self._map_tool_choice_to_openai_responses(
-                    normalized_tool_choice
-                )
-            else:
-                transformed_messages = normalized_messages.to_openai()
-                instructions = None
-                openai_tools = self._map_tools_to_openai(tools)
-                openai_tool_choice = self._map_tool_choice_to_openai(
-                    normalized_tool_choice
-                )
-
-            params: Dict[str, Any] = {
-                "model": self.model,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "reasoning_effort": normalized_reasoning_level,
-                "tools": openai_tools,
-                "tool_choice": openai_tool_choice,
-            }
-
-            if use_responses_api:
-                params["input"] = transformed_messages
-                if capture_reasoning:
-                    params["capture_reasoning"] = True
-                if instructions is not None:
-                    params["instructions"] = instructions
-                if previous_response_id is not None:
-                    params["previous_response_id"] = previous_response_id
-                if effective_schema is not None:
-                    params["text"] = {
-                        "format": {
-                            "type": "json_schema",
-                            "name": "response",
-                            "strict": True,
-                            "schema": self._enforce_strict_schema(effective_schema),
-                        }
-                    }
-            else:
-                params["messages"] = transformed_messages
-                params["parallel_tool_calls"] = parallel_tool_calls
-                if effective_schema is not None:
-                    params["response_format"] = {
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "response",
-                            "strict": True,
-                            "schema": self._enforce_strict_schema(effective_schema),
-                        },
-                    }
-
-            params = {k: v for k, v in params.items() if v is not None}
             response = client.complete(timeout=timeout_s, **params)
-
-            if use_responses_api:
-                parser_kwargs = (
-                    {"capture_reasoning": True} if capture_reasoning else {}
-                )
-                chat_response = ChatResponse.from_openai_responses_response(
-                    response,
-                    **parser_kwargs,
-                )
-            else:
-                chat_response = ChatResponse.from_openai_response(response)
-
-            chat_response.parsed_json = self._parse_json_response(chat_response.content, effective_schema)
-            chat_response.parsed_model = self._parse_response_model(chat_response.parsed_json, response_model)
-
-            if self.pricing:
-                chat_response.apply_pricing(
-                    price_input_per_token=self.pricing.in_per_token,
-                    price_output_per_token=self.pricing.out_per_token,
-                    currency=self.pricing.currency,
-                )
-
-            return chat_response
+            chat_response = self._parse_chat_response(
+                response,
+                use_responses_api=use_responses_api,
+                capture_reasoning=capture_reasoning,
+            )
+            return self._finalize_chat_response(
+                chat_response,
+                effective_schema=effective_schema,
+                response_model=response_model,
+            )
 
         except LLMAPIError as e:
             self.handle_error(e)
         except Exception as e:
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
+
+    def _build_chat_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        use_responses_api: bool,
+        max_tokens: Optional[int],
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        parallel_tool_calls: Optional[bool],
+        previous_response: Optional[ChatResponse],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> Dict[str, Any]:
+        normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
+        params: Dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "reasoning_effort": normalized_reasoning_level,
+        }
+
+        if use_responses_api:
+            params.update(
+                self._build_responses_chat_params(
+                    normalized_messages=normalized_messages,
+                    tools=tools,
+                    normalized_tool_choice=normalized_tool_choice,
+                    previous_response=previous_response,
+                    effective_schema=effective_schema,
+                    capture_reasoning=capture_reasoning,
+                )
+            )
+        else:
+            params.update(
+                self._build_chat_completions_params(
+                    normalized_messages=normalized_messages,
+                    tools=tools,
+                    normalized_tool_choice=normalized_tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
+                    effective_schema=effective_schema,
+                )
+            )
+
+        return {key: value for key, value in params.items() if value is not None}
+
+    def _build_responses_chat_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        previous_response: Optional[ChatResponse],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "input": normalized_messages.to_openai_responses_input(),
+            "tools": self._map_tools_to_openai_responses(tools),
+            "tool_choice": self._map_tool_choice_to_openai_responses(
+                normalized_tool_choice
+            ),
+        }
+        if capture_reasoning:
+            params["capture_reasoning"] = True
+        instructions = normalized_messages.to_openai_responses_instructions()
+        if instructions is not None:
+            params["instructions"] = instructions
+        if previous_response is not None and previous_response.response_id is not None:
+            params["previous_response_id"] = previous_response.response_id
+        if effective_schema is not None:
+            params["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "response",
+                    "strict": True,
+                    "schema": self._enforce_strict_schema(effective_schema),
+                }
+            }
+        return params
+
+    def _build_chat_completions_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        parallel_tool_calls: Optional[bool],
+        effective_schema: Optional[dict],
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "messages": normalized_messages.to_openai(),
+            "tools": self._map_tools_to_openai(tools),
+            "tool_choice": self._map_tool_choice_to_openai(
+                normalized_tool_choice
+            ),
+            "parallel_tool_calls": parallel_tool_calls,
+        }
+        if effective_schema is not None:
+            params["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "strict": True,
+                    "schema": self._enforce_strict_schema(effective_schema),
+                },
+            }
+        return params
+
+    @staticmethod
+    def _parse_chat_response(
+        response: dict,
+        *,
+        use_responses_api: bool,
+        capture_reasoning: bool,
+    ) -> ChatResponse:
+        if use_responses_api:
+            parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+            return ChatResponse.from_openai_responses_response(
+                response,
+                **parser_kwargs,
+            )
+        return ChatResponse.from_openai_response(response)
+
+    def _finalize_chat_response(
+        self,
+        chat_response: ChatResponse,
+        *,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        chat_response.parsed_json = self._parse_json_response(
+            chat_response.content,
+            effective_schema,
+        )
+        chat_response.parsed_model = self._parse_response_model(
+            chat_response.parsed_json,
+            response_model,
+        )
+
+        if self.pricing:
+            chat_response.apply_pricing(
+                price_input_per_token=self.pricing.in_per_token,
+                price_output_per_token=self.pricing.out_per_token,
+                currency=self.pricing.currency,
+            )
+        return chat_response
 
     def stream_chat(
         self,
