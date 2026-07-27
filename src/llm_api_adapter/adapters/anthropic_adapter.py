@@ -10,9 +10,9 @@ from ..adapters.base_adapter import LLMAdapterBase, OnChunk, OnDelta, OnDone, On
 from ..errors.llm_api_error import InvalidToolArgumentsError, LLMAPIError
 from ..errors.config_errors import LLMReasoningLevelError
 from ..llms.anthropic.sync_client import ClaudeSyncClient
-from ..llms.streaming import StreamChunkBuffer
+from ..llms.streaming import StreamChunkBuffer, StreamUsageTracker
 from ..models.messages.chat_message import Message, Messages
-from ..models.responses.chat_response import ChatResponse
+from ..models.responses.chat_response import ChatResponse, Usage
 from ..models.tools.tool_spec import ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -244,12 +244,17 @@ class AnthropicAdapter(LLMAdapterBase):
         usage: Dict[str, Any] = {}
         message_delta: Dict[str, Any] = {}
         chunk_buffer = StreamChunkBuffer(buffer_chars)
+        usage_tracker = StreamUsageTracker()
 
         for event in self._iter_provider_stream_events(events):
             payload = event.data if isinstance(event.data, Mapping) else {}
             event_type = event.event or payload.get("type")
             if event_type == "message_start":
                 message_data = self._handle_message_start(payload, usage, message_data)
+                usage_tracker.record(
+                    chunk_buffer,
+                    self._normalize_stream_usage(usage),
+                )
             elif event_type == "content_block_start":
                 self._start_content_block(payload, content_blocks)
             elif event_type == "content_block_delta":
@@ -269,6 +274,10 @@ class AnthropicAdapter(LLMAdapterBase):
                 )
             elif event_type == "message_delta":
                 self._handle_message_delta(payload, message_delta, usage)
+                usage_tracker.record(
+                    chunk_buffer,
+                    self._normalize_stream_usage(usage),
+                )
 
         chat_response = ChatResponse.from_anthropic_response(
             self._build_stream_response(message_data, content_blocks, message_delta, usage)
@@ -394,6 +403,24 @@ class AnthropicAdapter(LLMAdapterBase):
         delta_usage = payload.get("usage")
         if isinstance(delta_usage, Mapping):
             usage.update(delta_usage)
+
+    @staticmethod
+    def _normalize_stream_usage(raw_usage: Mapping[str, Any]) -> Optional[Usage]:
+        input_tokens = AnthropicAdapter._token_count(raw_usage.get("input_tokens"))
+        output_tokens = AnthropicAdapter._token_count(raw_usage.get("output_tokens"))
+        if input_tokens is None and output_tokens is None:
+            return None
+        return Usage(
+            input_tokens=input_tokens or 0,
+            output_tokens=output_tokens or 0,
+            total_tokens=(input_tokens or 0) + (output_tokens or 0),
+        )
+
+    @staticmethod
+    def _token_count(value: Any) -> Optional[int]:
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return None
 
     def _build_stream_response(
         self,

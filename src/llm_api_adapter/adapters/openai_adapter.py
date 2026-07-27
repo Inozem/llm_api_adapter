@@ -8,64 +8,13 @@ import warnings
 
 from ..adapters.base_adapter import LLMAdapterBase, OnChunk, OnDelta, OnDone, OnToolCall
 from ..errors.llm_api_error import LLMAPIError
-from ..llms.streaming import StreamChunkBuffer
+from ..llms.streaming import StreamChunkBuffer, StreamUsageTracker
 from ..llms.openai.sync_client import OpenAISyncClient
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse, Usage
 from ..models.tools import ToolSpec
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class _OpenAIStreamUsageTracker:
-    """Attach provider usage snapshots to future emitted stream chunks."""
-
-    input_field: str
-    output_field: str
-    _last_output_tokens: Optional[int] = None
-
-    def record(self, buffer: StreamChunkBuffer, raw_usage: Any) -> None:
-        usage = self._normalize(raw_usage)
-        if usage is None:
-            return
-
-        previous_output_tokens = self._last_output_tokens
-        output_tokens_delta = (
-            usage.output_tokens
-            if previous_output_tokens is None
-            else max(0, usage.output_tokens - previous_output_tokens)
-        )
-        self._last_output_tokens = (
-            usage.output_tokens
-            if previous_output_tokens is None
-            else max(previous_output_tokens, usage.output_tokens)
-        )
-        buffer.update_metadata(
-            usage=usage,
-            output_tokens_delta=output_tokens_delta,
-        )
-
-    def _normalize(self, raw_usage: Any) -> Optional[Usage]:
-        if not isinstance(raw_usage, Mapping):
-            return None
-
-        input_tokens = self._token_count(raw_usage.get(self.input_field))
-        output_tokens = self._token_count(raw_usage.get(self.output_field))
-        total_tokens = self._token_count(raw_usage.get("total_tokens"))
-        if input_tokens is None and output_tokens is None and total_tokens is None:
-            return None
-        return Usage(
-            input_tokens=input_tokens or 0,
-            output_tokens=output_tokens or 0,
-            total_tokens=total_tokens or 0,
-        )
-
-    @staticmethod
-    def _token_count(value: Any) -> Optional[int]:
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            return value
-        return None
 
 
 @dataclass(repr=False)
@@ -335,10 +284,7 @@ class OpenAIAdapter(LLMAdapterBase):
         text_parts: List[str] = []
         function_calls: Dict[str, Dict[str, Any]] = {}
         chunk_buffer = StreamChunkBuffer(buffer_chars)
-        usage_tracker = _OpenAIStreamUsageTracker(
-            input_field="input_tokens",
-            output_field="output_tokens",
-        )
+        usage_tracker = StreamUsageTracker()
         for event in self._iter_provider_stream_events(events):
             payload = event.data if isinstance(event.data, Mapping) else {}
             event_type = event.event or payload.get("type")
@@ -347,7 +293,11 @@ class OpenAIAdapter(LLMAdapterBase):
                 response_metadata.update(response_data)
             usage_tracker.record(
                 chunk_buffer,
-                self._response_event_usage(payload, response_data),
+                self._normalize_stream_usage(
+                    self._response_event_usage(payload, response_data),
+                    input_field="input_tokens",
+                    output_field="output_tokens",
+                ),
             )
             if event_type == "response.output_text.delta":
                 delta = payload.get("delta")
@@ -428,14 +378,18 @@ class OpenAIAdapter(LLMAdapterBase):
         legacy_response: Dict[str, Any] = {"model": self.model, "choices": []}
         finish_reason: Optional[str] = None
         chunk_buffer = StreamChunkBuffer(buffer_chars)
-        usage_tracker = _OpenAIStreamUsageTracker(
-            input_field="prompt_tokens",
-            output_field="completion_tokens",
-        )
+        usage_tracker = StreamUsageTracker()
         for event in self._iter_provider_stream_events(events):
             payload = event.data if isinstance(event.data, Mapping) else {}
             self._update_legacy_stream_metadata(payload, legacy_response)
-            usage_tracker.record(chunk_buffer, payload.get("usage"))
+            usage_tracker.record(
+                chunk_buffer,
+                self._normalize_stream_usage(
+                    payload.get("usage"),
+                    input_field="prompt_tokens",
+                    output_field="completion_tokens",
+                ),
+            )
             choices = payload.get("choices")
             if not isinstance(choices, list):
                 continue
@@ -493,6 +447,33 @@ class OpenAIAdapter(LLMAdapterBase):
             return payload["usage"]
         if isinstance(response_data, Mapping):
             return response_data.get("usage")
+        return None
+
+    @staticmethod
+    def _normalize_stream_usage(
+        raw_usage: Any,
+        *,
+        input_field: str,
+        output_field: str,
+    ) -> Optional[Usage]:
+        if not isinstance(raw_usage, Mapping):
+            return None
+
+        input_tokens = OpenAIAdapter._token_count(raw_usage.get(input_field))
+        output_tokens = OpenAIAdapter._token_count(raw_usage.get(output_field))
+        total_tokens = OpenAIAdapter._token_count(raw_usage.get("total_tokens"))
+        if input_tokens is None and output_tokens is None and total_tokens is None:
+            return None
+        return Usage(
+            input_tokens=input_tokens or 0,
+            output_tokens=output_tokens or 0,
+            total_tokens=total_tokens or 0,
+        )
+
+    @staticmethod
+    def _token_count(value: Any) -> Optional[int]:
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
         return None
 
     def _consume_legacy_stream_choice(

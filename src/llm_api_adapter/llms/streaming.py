@@ -157,6 +157,38 @@ class StreamChunkBuffer:
         return chunk
 
 
+class StreamUsageTracker:
+    """Attach cumulative provider usage snapshots to future stream chunks."""
+
+    def __init__(self) -> None:
+        self._last_output_tokens: Optional[int] = None
+
+    def record(
+        self,
+        buffer: StreamChunkBuffer,
+        usage: Optional[Usage],
+    ) -> None:
+        """Store ``usage`` and its output-token increment for the next chunk."""
+        if usage is None:
+            return
+
+        previous_output_tokens = self._last_output_tokens
+        output_tokens_delta = (
+            usage.output_tokens
+            if previous_output_tokens is None
+            else max(0, usage.output_tokens - previous_output_tokens)
+        )
+        self._last_output_tokens = (
+            usage.output_tokens
+            if previous_output_tokens is None
+            else max(previous_output_tokens, usage.output_tokens)
+        )
+        buffer.update_metadata(
+            usage=usage,
+            output_tokens_delta=output_tokens_delta,
+        )
+
+
 def _decode_line(line: bytes | str) -> str:
     if isinstance(line, bytes):
         return line.decode("utf-8")

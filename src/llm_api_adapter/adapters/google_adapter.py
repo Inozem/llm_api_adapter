@@ -8,9 +8,9 @@ import warnings
 from ..adapters.base_adapter import LLMAdapterBase, OnChunk, OnDelta, OnDone, OnToolCall
 from ..errors.llm_api_error import LLMAPIError
 from ..llms.google.sync_client import GeminiSyncClient
-from ..llms.streaming import StreamChunkBuffer
+from ..llms.streaming import StreamChunkBuffer, StreamUsageTracker
 from ..models.messages.chat_message import Message, Messages
-from ..models.responses.chat_response import ChatResponse
+from ..models.responses.chat_response import ChatResponse, Usage
 from ..models.tools import ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -233,6 +233,7 @@ class GoogleAdapter(LLMAdapterBase):
         usage_metadata: Dict[str, Any] = {}
         response_metadata: Dict[str, Any] = {}
         chunk_buffer = StreamChunkBuffer(buffer_chars)
+        usage_tracker = StreamUsageTracker()
 
         for event in self._iter_provider_stream_events(events):
             chunk = event.data if isinstance(event.data, Mapping) else {}
@@ -242,6 +243,10 @@ class GoogleAdapter(LLMAdapterBase):
             chunk_usage = chunk.get("usageMetadata")
             if isinstance(chunk_usage, Mapping):
                 usage_metadata.update(chunk_usage)
+                usage_tracker.record(
+                    chunk_buffer,
+                    self._normalize_stream_usage(usage_metadata),
+                )
             candidates = chunk.get("candidates")
             if not isinstance(candidates, list) or not candidates:
                 continue
@@ -301,6 +306,33 @@ class GoogleAdapter(LLMAdapterBase):
             on_tool_call,
             on_done,
         )
+
+    @staticmethod
+    def _normalize_stream_usage(raw_usage: Mapping[str, Any]) -> Optional[Usage]:
+        input_tokens = GoogleAdapter._token_count(raw_usage.get("promptTokenCount"))
+        candidate_tokens = GoogleAdapter._token_count(
+            raw_usage.get("candidatesTokenCount")
+        )
+        thoughts_tokens = GoogleAdapter._token_count(raw_usage.get("thoughtsTokenCount"))
+        total_tokens = GoogleAdapter._token_count(raw_usage.get("totalTokenCount"))
+        if (
+            input_tokens is None
+            and candidate_tokens is None
+            and thoughts_tokens is None
+            and total_tokens is None
+        ):
+            return None
+        return Usage(
+            input_tokens=input_tokens or 0,
+            output_tokens=(candidate_tokens or 0) + (thoughts_tokens or 0),
+            total_tokens=total_tokens or 0,
+        )
+
+    @staticmethod
+    def _token_count(value: Any) -> Optional[int]:
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return None
 
     # Fields not supported by Google's responseSchema subset of JSON Schema.
     _GOOGLE_SCHEMA_UNSUPPORTED = frozenset({"additionalProperties", "$schema", "$id", "$ref"})
