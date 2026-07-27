@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,8 @@ import pytest
 from src.llm_api_adapter.llm_registry.llm_registry import (
     DEFAULT_REGISTRY_PATH, ModelSpec, Pricing, ProviderSpec, RegistrySpec
 )
+
+SONNET_5_STANDARD_PRICING_DATE = date(2026, 9, 1)
 
 @pytest.mark.unit
 def test_pricing_setters():
@@ -65,3 +68,14 @@ def test_default_registry_json_exists():
     assert isinstance(DEFAULT_REGISTRY_PATH, Path)
     assert DEFAULT_REGISTRY_PATH.exists(), f"Expected JSON at {DEFAULT_REGISTRY_PATH}"
     assert DEFAULT_REGISTRY_PATH.is_file(), f"Expected a file at {DEFAULT_REGISTRY_PATH}"
+
+@pytest.mark.unit
+def test_sonnet_5_temporary_pricing_is_updated_after_promotion():
+    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
+    sonnet_5 = registry.providers["anthropic"].models["claude-sonnet-5"]
+    if date.today() < SONNET_5_STANDARD_PRICING_DATE:
+        expected_input, expected_output = 2.0, 10.0
+    else:
+        expected_input, expected_output = 3.0, 15.0
+    assert pytest.approx(sonnet_5.pricing.in_per_token * 1_000_000) == expected_input
+    assert pytest.approx(sonnet_5.pricing.out_per_token * 1_000_000) == expected_output
