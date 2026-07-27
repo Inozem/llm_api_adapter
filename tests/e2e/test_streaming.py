@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from llm_api_adapter.models.messages.chat_message import UserMessage
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from src.llm_api_adapter.models.messages.chat_message import UserMessage
+from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 _STREAMING_SCENARIOS = [
@@ -32,22 +32,40 @@ def test_stream_chat_returns_text_and_finalized_response(
         api_key=api_key,
     )
     completed_responses = []
-    chunks = stream_with_retry(
+    observed_chunks = []
+    text_chunks = stream_with_retry(
         adapter,
         messages=[UserMessage("Reply with exactly: OK")],
         max_tokens=64,
         temperature=0,
         timeout_s=60,
+        buffer_chars=8,
+        on_chunk=observed_chunks.append,
         on_done=completed_responses.append,
     )
 
-    assert "".join(chunks).strip()
+    streamed_text = "".join(text_chunks)
+    assert streamed_text.strip()
+    assert [chunk.text for chunk in observed_chunks] == text_chunks
+    assert [chunk.index for chunk in observed_chunks] == list(range(len(observed_chunks)))
+    assert [chunk.elapsed_s for chunk in observed_chunks] == sorted(
+        chunk.elapsed_s for chunk in observed_chunks
+    )
+    assert all(chunk.delta_s >= 0 for chunk in observed_chunks)
     assert len(completed_responses) == 1
 
     response = completed_responses[0]
     assert isinstance(response.model, str) and response.model
-    assert response.usage is not None
-    assert response.usage.input_tokens >= 0
-    assert response.usage.output_tokens >= 0
-    assert response.usage.total_tokens >= response.usage.input_tokens
+    assert response.content == streamed_text
+    if response.usage is not None:
+        assert response.usage.input_tokens >= 0
+        assert response.usage.output_tokens >= 0
+        assert response.usage.total_tokens >= response.usage.input_tokens
+    for chunk in observed_chunks:
+        if chunk.usage is not None:
+            assert chunk.usage.input_tokens >= 0
+            assert chunk.usage.output_tokens >= 0
+            assert chunk.usage.total_tokens >= chunk.usage.input_tokens
+        if chunk.output_tokens_delta is not None:
+            assert chunk.output_tokens_delta >= 0
     assert isinstance(response.finish_reason, str) and response.finish_reason

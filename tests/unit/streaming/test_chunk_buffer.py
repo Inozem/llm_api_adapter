@@ -4,7 +4,7 @@ import pytest
 
 from src.llm_api_adapter.models import StreamChunk
 from src.llm_api_adapter.models.responses.chat_response import Usage
-from src.llm_api_adapter.llms.streaming import StreamChunkBuffer
+from src.llm_api_adapter.llms.streaming import StreamChunkBuffer, StreamUsageTracker
 
 
 class FakeClock:
@@ -79,3 +79,25 @@ def test_buffer_updates_metadata_without_text_until_a_chunk_is_emitted():
 
     assert chunk.usage == usage
     assert chunk.output_tokens_delta == 1
+
+
+@pytest.mark.unit
+def test_usage_tracker_calculates_cumulative_output_token_deltas():
+    buffer = StreamChunkBuffer(clock=FakeClock(0.0, 0.1, 0.2, 0.3))
+    tracker = StreamUsageTracker()
+
+    tracker.record(buffer, Usage(input_tokens=2, output_tokens=1, total_tokens=3))
+    first_chunk = next(buffer.add("one"))
+    tracker.record(buffer, Usage(input_tokens=2, output_tokens=4, total_tokens=6))
+    second_chunk = next(buffer.add("two"))
+    tracker.record(buffer, Usage(input_tokens=2, output_tokens=3, total_tokens=5))
+    third_chunk = next(buffer.add("three"))
+
+    assert [chunk.usage for chunk in (first_chunk, second_chunk, third_chunk)] == [
+        Usage(input_tokens=2, output_tokens=1, total_tokens=3),
+        Usage(input_tokens=2, output_tokens=4, total_tokens=6),
+        Usage(input_tokens=2, output_tokens=3, total_tokens=5),
+    ]
+    assert [
+        chunk.output_tokens_delta for chunk in (first_chunk, second_chunk, third_chunk)
+    ] == [1, 3, 0]
