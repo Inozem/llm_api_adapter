@@ -18,7 +18,12 @@ from ..errors.llm_api_error import (
 from ..llm_registry.llm_registry import Pricing, LLM_REGISTRY
 from ..models.messages.chat_message import Messages
 from ..models.responses.chat_response import ChatResponse
+from ..models.responses.reasoning_event import (
+    ReasoningEvent,
+    ReasoningEventKind,
+)
 from ..models.responses.stream_chunk import StreamChunk
+from ..llms.streaming import StreamReasoningCollector
 from ..models.tools import ToolCall, ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -36,6 +41,7 @@ OnDelta = Callable[[str], None]
 OnChunk = Callable[[StreamChunk], None]
 OnToolCall = Callable[[ToolCall], None]
 OnDone = Callable[[ChatResponse], None]
+OnReasoning = Callable[[ReasoningEvent], None]
 
 
 @dataclass
@@ -78,9 +84,28 @@ class LLMAdapterBase(ABC):
             self.is_adaptive_thinking = getattr(model_spec, "is_adaptive_thinking", False)
 
     @abstractmethod
-    def chat(self, **kwargs) -> ChatResponse:
+    def chat(
+        self,
+        messages: Any,
+        max_tokens: Optional[int] = None,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        reasoning_level: Optional[str | int] = None,
+        timeout_s: Optional[float] = None,
+        tools: Optional[List[ToolSpec]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: Optional[bool] = None,
+        previous_response: Optional[ChatResponse] = None,
+        json_schema: Optional[dict] = None,
+        response_model: Optional[Any] = None,
+        *,
+        capture_reasoning: bool = False,
+    ) -> ChatResponse:
         """
         Generates a response based on the provided conversation.
+
+        ``capture_reasoning`` is an opt-in request flag implemented by
+        provider adapters; the default preserves the existing request.
         """
         raise NotImplementedError
 
@@ -104,12 +129,18 @@ class LLMAdapterBase(ABC):
         on_done: Optional[OnDone] = None,
         buffer_chars: Optional[int] = None,
         on_chunk: Optional[OnChunk] = None,
+        *,
+        capture_reasoning: bool = False,
+        on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
         """Stream normalized text deltas synchronously.
 
         ``buffer_chars`` optionally coalesces visible text into bounded
         chunks.  ``on_chunk`` receives each emitted :class:`StreamChunk`
         before the corresponding ``on_delta`` callback and yielded text.
+        ``on_reasoning`` receives provider-normalized reasoning events only
+        when ``capture_reasoning`` is enabled; reasoning is never yielded as
+        visible text.
         """
         raise NotImplementedError
 
@@ -409,6 +440,35 @@ class LLMAdapterBase(ABC):
                 on_tool_call(tool_call)
         if on_done is not None:
             on_done(chat_response)
+
+    def _record_reasoning_event(
+        self,
+        chat_response: ChatResponse,
+        collector: StreamReasoningCollector,
+        text: str,
+        *,
+        capture_reasoning: bool,
+        kind: ReasoningEventKind = "summary",
+        on_reasoning: Optional[OnReasoning] = None,
+    ) -> Optional[ReasoningEvent]:
+        """Append an opt-in reasoning event and then notify its callback.
+
+        The response is updated before ``on_reasoning`` runs, so a later
+        ``on_done`` callback observes the same sequence.  This helper is
+        intentionally separate from visible-text emission and therefore does
+        not call ``on_delta`` or yield anything.
+        """
+        if not capture_reasoning:
+            return None
+
+        event = collector.add(text, kind=kind)
+        if event is None:
+            return None
+
+        chat_response.reasoning_events.append(event)
+        if on_reasoning is not None:
+            on_reasoning(event)
+        return event
 
     def _emit_stream_chunks(
         self,

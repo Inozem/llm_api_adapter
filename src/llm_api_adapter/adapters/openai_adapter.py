@@ -6,7 +6,14 @@ import logging
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 import warnings
 
-from ..adapters.base_adapter import LLMAdapterBase, OnChunk, OnDelta, OnDone, OnToolCall
+from ..adapters.base_adapter import (
+    LLMAdapterBase,
+    OnChunk,
+    OnDelta,
+    OnDone,
+    OnReasoning,
+    OnToolCall,
+)
 from ..errors.llm_api_error import LLMAPIError
 from ..llms.streaming import StreamChunkBuffer, StreamUsageTracker
 from ..llms.openai.sync_client import OpenAISyncClient
@@ -35,6 +42,8 @@ class OpenAIAdapter(LLMAdapterBase):
         previous_response: Optional[ChatResponse] = None,
         json_schema: Optional[dict] = None,
         response_model: Optional[Any] = None,
+        *,
+        capture_reasoning: bool = False,
     ) -> ChatResponse:
         temperature = self._validate_parameter(
             name="temperature",
@@ -162,6 +171,9 @@ class OpenAIAdapter(LLMAdapterBase):
         on_done: Optional[OnDone] = None,
         buffer_chars: Optional[int] = None,
         on_chunk: Optional[OnChunk] = None,
+        *,
+        capture_reasoning: bool = False,
+        on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
         temperature = self._validate_parameter("temperature", temperature, 0, 2)
         top_p = self._validate_parameter("top_p", top_p, 0, 1)
