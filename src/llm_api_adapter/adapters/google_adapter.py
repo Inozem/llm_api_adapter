@@ -63,74 +63,114 @@ class GoogleAdapter(LLMAdapterBase):
         try:
             self._validate_tools(tools)
             effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-            validated_tools = tools
             normalized_tool_choice = self._normalize_tool_choice(
                 tool_choice,
-                validated_tools,
+                tools,
             )
             normalized_messages = self._normalize_messages(messages)
-            _ = previous_response
-            system_prompt, transformed_messages = normalized_messages.to_google()
-            generation_config: Dict[str, Any] = {
-                "maxOutputTokens": max_tokens,
-                "temperature": temperature,
-                "topP": top_p,
-            }
-            if effective_schema is not None:
-                generation_config["responseMimeType"] = "application/json"
-                generation_config["responseSchema"] = self._to_google_schema(effective_schema)
-            thinking_config = self._build_thinking_config(
+            params = self._build_chat_params(
+                normalized_messages=normalized_messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
                 reasoning_level=reasoning_level,
+                timeout_s=timeout_s,
+                tools=tools,
+                normalized_tool_choice=normalized_tool_choice,
+                effective_schema=effective_schema,
                 capture_reasoning=capture_reasoning,
             )
-            if thinking_config is not None:
-                generation_config["thinkingConfig"] = thinking_config
-            payload: Dict[str, Any] = {
-                "contents": transformed_messages,
-                "generationConfig": generation_config,
-            }
-            if system_prompt:
-                payload["system_instruction"] = {
-                    "parts": [{"text": system_prompt}]
-                }
-            if validated_tools:
-                payload["tools"] = [
-                    {
-                        "functionDeclarations": [
-                            self._to_google_function_declaration(tool)
-                            for tool in validated_tools
-                        ]
-                    }
-                ]
-            tool_config = self._to_google_tool_config(normalized_tool_choice)
-            if tool_config is not None:
-                payload["toolConfig"] = tool_config
+            _ = previous_response
             _ = parallel_tool_calls
             client = GeminiSyncClient(self.api_key)
-            response_json = client.chat_completion(
-                model=self.model,
-                timeout_s=timeout_s,
-                **payload,
+            response = client.chat_completion(**params)
+            chat_response = self._parse_chat_response(
+                response,
+                capture_reasoning=capture_reasoning,
             )
-            parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
-            chat_response = ChatResponse.from_google_response(
-                response_json,
-                **parser_kwargs,
+            return self._finalize_chat_response(
+                chat_response,
+                effective_schema=effective_schema,
+                response_model=response_model,
             )
-            chat_response.parsed_json = self._parse_json_response(chat_response.content, effective_schema)
-            chat_response.parsed_model = self._parse_response_model(chat_response.parsed_json, response_model)
-            if self.pricing:
-                chat_response.apply_pricing(
-                    price_input_per_token=self.pricing.in_per_token,
-                    price_output_per_token=self.pricing.out_per_token,
-                    currency=self.pricing.currency,
-                )
-            return chat_response
         except LLMAPIError as e:
             self.handle_error(e)
         except Exception as e:
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
+
+    def _build_chat_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        max_tokens: Optional[int],
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        timeout_s: Optional[float],
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> Dict[str, Any]:
+        system_prompt, transformed_messages = normalized_messages.to_google()
+        params: Dict[str, Any] = {
+            "model": self.model,
+            "timeout_s": timeout_s,
+            "contents": transformed_messages,
+            "generationConfig": self._build_generation_config(
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                effective_schema=effective_schema,
+                capture_reasoning=capture_reasoning,
+            ),
+        }
+        if system_prompt:
+            params["system_instruction"] = {"parts": [{"text": system_prompt}]}
+        if tools:
+            params["tools"] = [{
+                "functionDeclarations": [
+                    self._to_google_function_declaration(tool) for tool in tools
+                ]
+            }]
+        tool_config = self._to_google_tool_config(normalized_tool_choice)
+        if tool_config is not None:
+            params["toolConfig"] = tool_config
+        return {key: value for key, value in params.items() if value is not None}
+
+    @staticmethod
+    def _parse_chat_response(
+        response: dict,
+        *,
+        capture_reasoning: bool,
+    ) -> ChatResponse:
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        return ChatResponse.from_google_response(response, **parser_kwargs)
+
+    def _finalize_chat_response(
+        self,
+        chat_response: ChatResponse,
+        *,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        chat_response.parsed_json = self._parse_json_response(
+            chat_response.content,
+            effective_schema,
+        )
+        chat_response.parsed_model = self._parse_response_model(
+            chat_response.parsed_json,
+            response_model,
+        )
+        if self.pricing:
+            chat_response.apply_pricing(
+                price_input_per_token=self.pricing.in_per_token,
+                price_output_per_token=self.pricing.out_per_token,
+                currency=self.pricing.currency,
+            )
+        return chat_response
 
     def stream_chat(
         self,
@@ -203,20 +243,14 @@ class GoogleAdapter(LLMAdapterBase):
         capture_reasoning: bool,
     ) -> Dict[str, Any]:
         system_prompt, transformed_messages = normalized_messages.to_google()
-        generation_config: Dict[str, Any] = {
-            "maxOutputTokens": max_tokens,
-            "temperature": temperature,
-            "topP": top_p,
-        }
-        if effective_schema is not None:
-            generation_config["responseMimeType"] = "application/json"
-            generation_config["responseSchema"] = self._to_google_schema(effective_schema)
-        thinking_config = self._build_thinking_config(
+        generation_config = self._build_generation_config(
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
             reasoning_level=reasoning_level,
+            effective_schema=effective_schema,
             capture_reasoning=capture_reasoning,
         )
-        if thinking_config is not None:
-            generation_config["thinkingConfig"] = thinking_config
         payload: Dict[str, Any] = {
             "contents": transformed_messages,
             "generationConfig": generation_config,
@@ -233,6 +267,32 @@ class GoogleAdapter(LLMAdapterBase):
         if tool_config is not None:
             payload["toolConfig"] = tool_config
         return payload
+
+    def _build_generation_config(
+        self,
+        *,
+        max_tokens: Optional[int],
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> Dict[str, Any]:
+        generation_config: Dict[str, Any] = {
+            "maxOutputTokens": max_tokens,
+            "temperature": temperature,
+            "topP": top_p,
+        }
+        if effective_schema is not None:
+            generation_config["responseMimeType"] = "application/json"
+            generation_config["responseSchema"] = self._to_google_schema(effective_schema)
+        thinking_config = self._build_thinking_config(
+            reasoning_level=reasoning_level,
+            capture_reasoning=capture_reasoning,
+        )
+        if thinking_config is not None:
+            generation_config["thinkingConfig"] = thinking_config
+        return generation_config
 
     def _consume_stream(
         self,
