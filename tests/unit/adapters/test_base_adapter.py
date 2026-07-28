@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from inspect import signature
 from unittest.mock import patch
 
 import pytest
@@ -18,7 +19,12 @@ from src.llm_api_adapter.models.messages.chat_message import (
     UserMessage,
 )
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
-from src.llm_api_adapter.models.tools import ToolSpec
+from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
+from src.llm_api_adapter.llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+)
+from src.llm_api_adapter.models.tools import ToolCall, ToolSpec
 
 
 class DummyClient:
@@ -199,6 +205,24 @@ def test_normalize_messages_accepts_list_and_messages(adapter):
 
 
 @pytest.mark.unit
+def test_prepare_chat_request_normalizes_provider_neutral_context(adapter):
+    tool = make_tool()
+
+    context = adapter._prepare_chat_request(
+        [UserMessage("hi")],
+        [tool],
+        "auto",
+        None,
+        None,
+    )
+
+    assert isinstance(context.normalized_messages, Messages)
+    assert context.normalized_messages.items[0] == UserMessage("hi")
+    assert context.effective_schema is None
+    assert context.normalized_tool_choice == "auto"
+
+
+@pytest.mark.unit
 def test_generate_chat_answer_emits_deprecation_warning(adapter):
     with pytest.warns(DeprecationWarning):
         adapter.generate_chat_answer(messages=[UserMessage("hi")])
@@ -220,7 +244,7 @@ def test_handle_error_reraises_and_logs(adapter, caplog):
 @pytest.mark.unit
 def test_base_abstract_chat_method_raises_not_implemented(adapter):
     with pytest.raises(NotImplementedError):
-        LLMAdapterBase.chat(adapter)
+        LLMAdapterBase.chat(adapter, messages=[UserMessage("hello")])
 
 
 @pytest.mark.unit
@@ -231,6 +255,140 @@ def test_base_stream_chat_contract_raises_not_implemented(adapter):
             messages=[UserMessage("hello")],
             on_delta=lambda delta: None,
         )
+
+
+@pytest.mark.unit
+def test_reasoning_contract_is_exposed_by_all_provider_adapters():
+    from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
+    from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
+    from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
+
+    for adapter_class in (OpenAIAdapter, AnthropicAdapter, GoogleAdapter):
+        chat_params = signature(adapter_class.chat).parameters
+        stream_params = signature(adapter_class.stream_chat).parameters
+        assert chat_params["capture_reasoning"].default is False
+        assert stream_params["capture_reasoning"].default is False
+        assert stream_params["on_reasoning"].default is None
+
+
+@pytest.mark.unit
+def test_record_reasoning_event_updates_response_before_callback(adapter):
+    response = ChatResponse()
+    collector = StreamReasoningCollector(clock=iter([0.0, 0.25]).__next__)
+    observed = []
+
+    def on_reasoning(event):
+        observed.append((event, list(response.reasoning_events)))
+
+    event = adapter._record_reasoning_event(
+        response,
+        collector,
+        "visible summary",
+        capture_reasoning=True,
+        on_reasoning=on_reasoning,
+    )
+
+    expected = ReasoningEvent("visible summary", "summary", 0, 0.25, 0.25)
+    assert event == expected
+    assert response.reasoning_events == [expected]
+    assert collector.snapshot() == [expected]
+    assert observed == [(expected, [expected])]
+
+    completed = []
+    adapter._invoke_stream_completion_callbacks(response, None, completed.append)
+    assert completed == [response]
+    assert completed[0].reasoning_events == [expected]
+
+
+@pytest.mark.unit
+def test_complete_stream_flushes_chunks_before_completion_callbacks(adapter):
+    response = ChatResponse(
+        content="Hello",
+        tool_calls=[ToolCall(name="weather", arguments={"city": "Tel Aviv"})],
+    )
+    chunk_buffer = StreamChunkBuffer(buffer_chars=10)
+    list(chunk_buffer.add("Hello"))
+    events = []
+
+    output = list(
+        adapter._complete_stream(
+            response,
+            chunk_buffer,
+            on_chunk=lambda chunk: events.append(("chunk", chunk.text)),
+            on_delta=lambda text: events.append(("delta", text)),
+            on_tool_call=lambda call: events.append(("tool", call.name)),
+            on_done=lambda completed: events.append(("done", completed.content)),
+        )
+    )
+
+    assert output == ["Hello"]
+    assert events == [
+        ("chunk", "Hello"),
+        ("delta", "Hello"),
+        ("tool", "weather"),
+        ("done", "Hello"),
+    ]
+
+
+@pytest.mark.unit
+def test_finalize_stream_response_attaches_reasoning_and_structured_output(adapter):
+    class StreamAnswer(BaseModel):
+        answer: str
+
+    response = ChatResponse(content='{"answer": "Hello"}')
+    collector = StreamReasoningCollector(clock=iter([0.0, 0.25]).__next__)
+    event = collector.add("Plan")
+
+    finalized = adapter._finalize_stream_response(
+        response,
+        reasoning_collector=collector,
+        effective_schema={"type": "object"},
+        response_model=StreamAnswer,
+    )
+
+    assert finalized is response
+    assert finalized.reasoning_events == [event]
+    assert finalized.parsed_json == {"answer": "Hello"}
+    assert finalized.parsed_model == StreamAnswer(answer="Hello")
+
+
+@pytest.mark.unit
+def test_record_reasoning_event_is_opt_in_and_does_not_call_callback(adapter):
+    response = ChatResponse()
+    collector = StreamReasoningCollector(clock=iter([0.0, 0.25]).__next__)
+    callbacks = []
+
+    assert adapter._record_reasoning_event(
+        response,
+        collector,
+        "not captured",
+        capture_reasoning=False,
+        on_reasoning=callbacks.append,
+    ) is None
+
+    assert response.reasoning_events == []
+    assert collector.snapshot() == []
+    assert callbacks == []
+
+
+@pytest.mark.unit
+def test_reasoning_callback_exception_preserves_existing_callback_semantics(adapter):
+    response = ChatResponse()
+    collector = StreamReasoningCollector(clock=iter([0.0, 0.25]).__next__)
+
+    with pytest.raises(RuntimeError, match="callback failed"):
+        adapter._record_reasoning_event(
+            response,
+            collector,
+            "captured before failure",
+            capture_reasoning=True,
+            on_reasoning=lambda event: (_ for _ in ()).throw(
+                RuntimeError("callback failed")
+            ),
+        )
+
+    assert len(response.reasoning_events) == 1
+    assert response.reasoning_events[0].text == "captured before failure"
 
 
 @pytest.mark.unit

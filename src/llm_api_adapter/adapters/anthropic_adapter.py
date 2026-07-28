@@ -6,16 +6,37 @@ import logging
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 import warnings
 
-from ..adapters.base_adapter import LLMAdapterBase, OnChunk, OnDelta, OnDone, OnToolCall
+from ..adapters.base_adapter import (
+    LLMAdapterBase,
+    OnChunk,
+    OnDelta,
+    OnDone,
+    OnReasoning,
+    OnToolCall,
+    _StreamState,
+)
 from ..errors.llm_api_error import InvalidToolArgumentsError, LLMAPIError
 from ..errors.config_errors import LLMReasoningLevelError
 from ..llms.anthropic.sync_client import ClaudeSyncClient
-from ..llms.streaming import StreamChunkBuffer, StreamUsageTracker
+from ..llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+    StreamUsageTracker,
+)
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse, Usage
 from ..models.tools.tool_spec import ToolSpec
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _AnthropicStreamState(_StreamState):
+    message_data: Dict[str, Any]
+    content_blocks: Dict[int, Dict[str, Any]]
+    input_json_fragments: Dict[int, List[str]]
+    usage: Dict[str, Any]
+    message_delta: Dict[str, Any]
 
 
 @dataclass(repr=False)
@@ -37,139 +58,55 @@ class AnthropicAdapter(LLMAdapterBase):
         previous_response: Optional[ChatResponse] = None,
         json_schema: Optional[dict] = None,
         response_model: Optional[Any] = None,
+        capture_reasoning: bool = False,
     ) -> ChatResponse:
-        temperature = self._validate_parameter("temperature", temperature, 0, 2)
-        top_p = self._validate_parameter("top_p", top_p, 0, 1)
+        temperature, top_p = self._validate_sampling_parameters(
+            temperature,
+            top_p,
+        )
         try:
-            self._validate_tools(tools)
-            effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-            validated_tools = tools
-            normalized_tool_choice = self._normalize_tool_choice(
+            request_context = self._prepare_chat_request(
+                messages,
+                tools,
                 tool_choice,
-                validated_tools,
+                json_schema,
+                response_model,
             )
-            normalized_messages = self._normalize_messages(messages)
-            system_prompt, transformed_messages = normalized_messages.to_anthropic()
-            params: Dict[str, Any] = {
-                "model": self.model,
-                "messages": transformed_messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "system": system_prompt,
-                "timeout_s": timeout_s,
-                "is_adaptive_thinking": self.is_adaptive_thinking,
-            }
-            if validated_tools:
-                params["tools"] = [
-                    self._to_anthropic_tool(tool)
-                    for tool in validated_tools
-                ]
-            if normalized_tool_choice is not None:
-                params["tool_choice"] = self._to_anthropic_tool_choice(
-                    normalized_tool_choice
-                )
-            if parallel_tool_calls is False:
-                params["disable_parallel_tool_use"] = True
-            elif parallel_tool_calls is True:
-                params["disable_parallel_tool_use"] = False
-            if effective_schema is not None:
-                params["output_config"] = {
-                    "format": {
-                        "type": "json_schema",
-                        "schema": self._enforce_strict_schema(effective_schema),
-                    }
-                }
-            if reasoning_level:
-                normalized_reasoning_level = self._normalize_reasoning_level(
-                    reasoning_level
-                )
-                if normalized_reasoning_level:
-                    if not self.is_adaptive_thinking:
-                        self.validate_reasoning_and_tokens(
-                            max_tokens=max_tokens,
-                            reasoning_level=reasoning_level,
-                            normalized_reasoning_level=normalized_reasoning_level,
-                        )
-                    params["budget_tokens"] = normalized_reasoning_level
-                if self.is_reasoning:
-                    effort = self._reasoning_level_to_effort(reasoning_level)
-                    if effort:
-                        params["effort"] = effort
-            params = {k: v for k, v in params.items() if v is not None}
+            effective_schema = request_context.effective_schema
+            normalized_tool_choice = request_context.normalized_tool_choice
+            normalized_messages = request_context.normalized_messages
+            params = self._build_chat_params(
+                normalized_messages=normalized_messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                timeout_s=timeout_s,
+                tools=tools,
+                normalized_tool_choice=normalized_tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
+                effective_schema=effective_schema,
+                capture_reasoning=capture_reasoning,
+            )
             _ = previous_response
             client = ClaudeSyncClient(api_key=self.api_key)
             response = client.chat_completion(**params)
-            chat_response = ChatResponse.from_anthropic_response(response)
-            chat_response.parsed_json = self._parse_json_response(chat_response.content, effective_schema)
-            chat_response.parsed_model = self._parse_response_model(chat_response.parsed_json, response_model)
-            if self.pricing:
-                chat_response.apply_pricing(
-                    price_input_per_token=self.pricing.in_per_token,
-                    price_output_per_token=self.pricing.out_per_token,
-                    currency=self.pricing.currency,
-                )
-            return chat_response
+            chat_response = self._parse_chat_response(
+                response,
+                capture_reasoning=capture_reasoning,
+            )
+            return self._finalize_chat_response(
+                chat_response,
+                effective_schema=effective_schema,
+                response_model=response_model,
+            )
         except LLMAPIError as e:
             self.handle_error(e)
         except Exception as e:
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
 
-    def stream_chat(
-        self,
-        messages: List[Message] | Messages,
-        max_tokens: int,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None,
-        timeout_s: Optional[float] = None,
-        *,
-        tools: Optional[List[ToolSpec]] = None,
-        tool_choice: Optional[str | dict] = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None,
-        json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None,
-        on_delta: Optional[OnDelta] = None,
-        on_tool_call: Optional[OnToolCall] = None,
-        on_done: Optional[OnDone] = None,
-        buffer_chars: Optional[int] = None,
-        on_chunk: Optional[OnChunk] = None,
-    ) -> Iterator[str]:
-        temperature = self._validate_parameter("temperature", temperature, 0, 2)
-        top_p = self._validate_parameter("top_p", top_p, 0, 1)
-        self._validate_tools(tools)
-        effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-        normalized_tool_choice = self._normalize_tool_choice(tool_choice, tools)
-        normalized_messages = self._normalize_messages(messages)
-        params = self._build_stream_params(
-            normalized_messages=normalized_messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_level=reasoning_level,
-            timeout_s=timeout_s,
-            tools=tools,
-            normalized_tool_choice=normalized_tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            effective_schema=effective_schema,
-        )
-        _ = previous_response
-        client = ClaudeSyncClient(api_key=self.api_key)
-        events = client.stream(**params)
-        yield from self._consume_stream(
-            events,
-            effective_schema,
-            response_model,
-            on_delta,
-            on_tool_call,
-            on_done,
-            buffer_chars,
-            on_chunk,
-        )
-
-    def _build_stream_params(
+    def _build_chat_params(
         self,
         *,
         normalized_messages: Messages,
@@ -182,6 +119,7 @@ class AnthropicAdapter(LLMAdapterBase):
         normalized_tool_choice: Optional[str],
         parallel_tool_calls: Optional[bool],
         effective_schema: Optional[dict],
+        capture_reasoning: bool,
     ) -> Dict[str, Any]:
         system_prompt, transformed_messages = normalized_messages.to_anthropic()
         params: Dict[str, Any] = {
@@ -225,6 +163,147 @@ class AnthropicAdapter(LLMAdapterBase):
                 effort = self._reasoning_level_to_effort(reasoning_level)
                 if effort:
                     params["effort"] = effort
+        if capture_reasoning:
+            params["capture_reasoning"] = True
+        return {key: value for key, value in params.items() if value is not None}
+
+    @staticmethod
+    def _parse_chat_response(
+        response: dict,
+        *,
+        capture_reasoning: bool,
+    ) -> ChatResponse:
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        return ChatResponse.from_anthropic_response(
+            response,
+            **parser_kwargs,
+        )
+
+    def stream_chat(
+        self,
+        messages: List[Message] | Messages,
+        max_tokens: int,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        reasoning_level: Optional[str | int] = None,
+        timeout_s: Optional[float] = None,
+        *,
+        tools: Optional[List[ToolSpec]] = None,
+        tool_choice: Optional[str | dict] = None,
+        parallel_tool_calls: Optional[bool] = None,
+        previous_response: Optional[ChatResponse] = None,
+        json_schema: Optional[dict] = None,
+        response_model: Optional[Any] = None,
+        on_delta: Optional[OnDelta] = None,
+        on_tool_call: Optional[OnToolCall] = None,
+        on_done: Optional[OnDone] = None,
+        buffer_chars: Optional[int] = None,
+        on_chunk: Optional[OnChunk] = None,
+        capture_reasoning: bool = False,
+        on_reasoning: Optional[OnReasoning] = None,
+    ) -> Iterator[str]:
+        temperature, top_p = self._validate_sampling_parameters(
+            temperature,
+            top_p,
+        )
+        request_context = self._prepare_chat_request(
+            messages,
+            tools,
+            tool_choice,
+            json_schema,
+            response_model,
+        )
+        effective_schema = request_context.effective_schema
+        normalized_tool_choice = request_context.normalized_tool_choice
+        normalized_messages = request_context.normalized_messages
+        params = self._build_stream_params(
+            normalized_messages=normalized_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            reasoning_level=reasoning_level,
+            timeout_s=timeout_s,
+            tools=tools,
+            normalized_tool_choice=normalized_tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            effective_schema=effective_schema,
+            capture_reasoning=capture_reasoning,
+        )
+        _ = previous_response
+        client = ClaudeSyncClient(api_key=self.api_key)
+        events = client.stream(**params)
+        yield from self._consume_stream(
+            events,
+            effective_schema,
+            response_model,
+            on_delta,
+            on_tool_call,
+            on_done,
+            buffer_chars,
+            on_chunk,
+            capture_reasoning,
+            on_reasoning,
+        )
+
+    def _build_stream_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        timeout_s: Optional[float],
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        parallel_tool_calls: Optional[bool],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> Dict[str, Any]:
+        system_prompt, transformed_messages = normalized_messages.to_anthropic()
+        params: Dict[str, Any] = {
+            "model": self.model,
+            "messages": transformed_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "system": system_prompt,
+            "timeout_s": timeout_s,
+            "is_adaptive_thinking": self.is_adaptive_thinking,
+        }
+        if tools:
+            params["tools"] = [self._to_anthropic_tool(tool) for tool in tools]
+        if normalized_tool_choice is not None:
+            params["tool_choice"] = self._to_anthropic_tool_choice(
+                normalized_tool_choice
+            )
+        if parallel_tool_calls is False:
+            params["disable_parallel_tool_use"] = True
+        elif parallel_tool_calls is True:
+            params["disable_parallel_tool_use"] = False
+        if effective_schema is not None:
+            params["output_config"] = {
+                "format": {
+                    "type": "json_schema",
+                    "schema": self._enforce_strict_schema(effective_schema),
+                }
+            }
+        if reasoning_level:
+            normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
+            if normalized_reasoning_level:
+                if not self.is_adaptive_thinking:
+                    self.validate_reasoning_and_tokens(
+                        max_tokens=max_tokens,
+                        reasoning_level=reasoning_level,
+                        normalized_reasoning_level=normalized_reasoning_level,
+                    )
+                params["budget_tokens"] = normalized_reasoning_level
+                if self.is_reasoning:
+                    effort = self._reasoning_level_to_effort(reasoning_level)
+                    if effort:
+                        params["effort"] = effort
+        if capture_reasoning:
+            params["capture_reasoning"] = True
         return {key: value for key, value in params.items() if value is not None}
 
     def _consume_stream(
@@ -237,65 +316,122 @@ class AnthropicAdapter(LLMAdapterBase):
         on_done: Optional[OnDone],
         buffer_chars: Optional[int],
         on_chunk: Optional[OnChunk],
+        capture_reasoning: bool,
+        on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
-        message_data: Dict[str, Any] = {"model": self.model, "content": []}
-        content_blocks: Dict[int, Dict[str, Any]] = {}
-        input_json_fragments: Dict[int, List[str]] = {}
-        usage: Dict[str, Any] = {}
-        message_delta: Dict[str, Any] = {}
-        chunk_buffer = StreamChunkBuffer(buffer_chars)
-        usage_tracker = StreamUsageTracker()
+        state = _AnthropicStreamState(
+            message_data={"model": self.model, "content": []},
+            content_blocks={},
+            input_json_fragments={},
+            usage={},
+            message_delta={},
+            chunk_buffer=StreamChunkBuffer(buffer_chars),
+            usage_tracker=StreamUsageTracker(),
+            reasoning_collector=(
+                StreamReasoningCollector() if capture_reasoning else None
+            ),
+            reasoning_response=ChatResponse() if capture_reasoning else None,
+        )
 
         for event in self._iter_provider_stream_events(events):
-            payload = event.data if isinstance(event.data, Mapping) else {}
-            event_type = event.event or payload.get("type")
-            if event_type == "message_start":
-                message_data = self._handle_message_start(payload, usage, message_data)
-                usage_tracker.record(
-                    chunk_buffer,
-                    self._normalize_stream_usage(usage),
-                )
-            elif event_type == "content_block_start":
-                self._start_content_block(payload, content_blocks)
-            elif event_type == "content_block_delta":
-                yield from self._consume_content_block_delta(
-                    payload,
-                    content_blocks,
-                    input_json_fragments,
-                    chunk_buffer,
-                    on_chunk,
-                    on_delta,
-                )
-            elif event_type == "content_block_stop":
-                self._finalize_content_block(
-                    payload,
-                    content_blocks,
-                    input_json_fragments,
-                )
-            elif event_type == "message_delta":
-                self._handle_message_delta(payload, message_delta, usage)
-                usage_tracker.record(
-                    chunk_buffer,
-                    self._normalize_stream_usage(usage),
-                )
+            yield from self._consume_stream_event(
+                event,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+            )
 
-        chat_response = ChatResponse.from_anthropic_response(
-            self._build_stream_response(message_data, content_blocks, message_delta, usage)
+        chat_response = self._finalize_stream_response(
+            state,
+            capture_reasoning=capture_reasoning,
+            effective_schema=effective_schema,
+            response_model=response_model,
         )
-        self._prepare_stream_response(
+        yield from self._complete_stream(
             chat_response,
-            effective_schema,
-            response_model,
-        )
-        yield from self._emit_stream_chunks(
-            chunk_buffer.flush(),
+            state.chunk_buffer,
             on_chunk,
             on_delta,
-        )
-        self._invoke_stream_completion_callbacks(
-            chat_response,
             on_tool_call,
             on_done,
+        )
+
+    def _consume_stream_event(
+        self,
+        event: Any,
+        state: _AnthropicStreamState,
+        *,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+        on_reasoning: Optional[OnReasoning],
+    ) -> Iterator[str]:
+        payload = event.data if isinstance(event.data, Mapping) else {}
+        event_type = event.event or payload.get("type")
+        if event_type == "message_start":
+            state.message_data = self._handle_message_start(
+                payload,
+                state.usage,
+                state.message_data,
+            )
+            state.usage_tracker.record(
+                state.chunk_buffer,
+                self._normalize_stream_usage(state.usage),
+            )
+        elif event_type == "content_block_start":
+            self._start_content_block(payload, state.content_blocks)
+        elif event_type == "content_block_delta":
+            yield from self._consume_content_block_delta(
+                payload,
+                state.content_blocks,
+                state.input_json_fragments,
+                state.chunk_buffer,
+                on_chunk,
+                on_delta,
+                state.reasoning_collector,
+                state.reasoning_response,
+                on_reasoning,
+            )
+        elif event_type == "content_block_stop":
+            self._finalize_content_block(
+                payload,
+                state.content_blocks,
+                state.input_json_fragments,
+            )
+        elif event_type == "message_delta":
+            self._handle_message_delta(
+                payload,
+                state.message_delta,
+                state.usage,
+            )
+            state.usage_tracker.record(
+                state.chunk_buffer,
+                self._normalize_stream_usage(state.usage),
+            )
+
+    def _finalize_stream_response(
+        self,
+        state: _AnthropicStreamState,
+        *,
+        capture_reasoning: bool,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        chat_response = ChatResponse.from_anthropic_response(
+            self._build_stream_response(
+                state.message_data,
+                state.content_blocks,
+                state.message_delta,
+                state.usage,
+            ),
+            **parser_kwargs,
+        )
+        return super()._finalize_stream_response(
+            chat_response,
+            reasoning_collector=state.reasoning_collector,
+            effective_schema=effective_schema,
+            response_model=response_model,
         )
 
     def _handle_message_start(
@@ -324,6 +460,8 @@ class AnthropicAdapter(LLMAdapterBase):
         content_blocks[index] = dict(block)
         if block.get("type") == "text":
             content_blocks[index]["text"] = str(block.get("text") or "")
+        elif block.get("type") == "thinking":
+            content_blocks[index]["thinking"] = str(block.get("thinking") or "")
         elif block.get("type") == "tool_use":
             current_input = block.get("input")
             content_blocks[index]["input"] = (
@@ -338,6 +476,9 @@ class AnthropicAdapter(LLMAdapterBase):
         chunk_buffer: StreamChunkBuffer,
         on_chunk: Optional[OnChunk],
         on_delta: Optional[OnDelta],
+        reasoning_collector: Optional[StreamReasoningCollector],
+        reasoning_response: Optional[ChatResponse],
+        on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
         index = payload.get("index")
         delta = payload.get("delta")
@@ -355,6 +496,19 @@ class AnthropicAdapter(LLMAdapterBase):
                     on_chunk,
                     on_delta,
                 )
+        elif delta.get("type") == "thinking_delta":
+            thinking_text = delta.get("thinking")
+            if isinstance(thinking_text, str) and thinking_text:
+                block["thinking"] = f"{block.get('thinking', '')}{thinking_text}"
+                if reasoning_collector is not None and reasoning_response is not None:
+                    self._record_reasoning_event(
+                        reasoning_response,
+                        reasoning_collector,
+                        thinking_text,
+                        capture_reasoning=True,
+                        kind="summary",
+                        on_reasoning=on_reasoning,
+                    )
         elif delta.get("type") == "input_json_delta":
             partial_json = delta.get("partial_json")
             if isinstance(partial_json, str):

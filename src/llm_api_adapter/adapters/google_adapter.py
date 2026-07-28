@@ -1,19 +1,40 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 import warnings
 
-from ..adapters.base_adapter import LLMAdapterBase, OnChunk, OnDelta, OnDone, OnToolCall
+from ..adapters.base_adapter import (
+    LLMAdapterBase,
+    OnChunk,
+    OnDelta,
+    OnDone,
+    OnReasoning,
+    OnToolCall,
+    _StreamState,
+)
 from ..errors.llm_api_error import LLMAPIError
 from ..llms.google.sync_client import GeminiSyncClient
-from ..llms.streaming import StreamChunkBuffer, StreamUsageTracker
+from ..llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+    StreamUsageTracker,
+)
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse, Usage
 from ..models.tools import ToolSpec
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _GoogleStreamState(_StreamState):
+    text_parts: List[str] = field(default_factory=list)
+    function_parts: List[Dict[str, Any]] = field(default_factory=list)
+    finish_reason: Optional[str] = None
+    usage_metadata: Dict[str, Any] = field(default_factory=dict)
+    response_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(repr=False)
@@ -35,89 +56,103 @@ class GoogleAdapter(LLMAdapterBase):
         previous_response: Optional[ChatResponse] = None,
         json_schema: Optional[dict] = None,
         response_model: Optional[Any] = None,
+        capture_reasoning: bool = False,
     ) -> ChatResponse:
-        temperature = self._validate_parameter(
-            name="temperature",
-            value=temperature,
-            min_value=0,
-            max_value=2,
-        )
-        top_p = self._validate_parameter(
-            name="top_p",
-            value=top_p,
-            min_value=0,
-            max_value=1,
+        temperature, top_p = self._validate_sampling_parameters(
+            temperature,
+            top_p,
         )
         try:
-            self._validate_tools(tools)
-            effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-            validated_tools = tools
-            normalized_tool_choice = self._normalize_tool_choice(
+            request_context = self._prepare_chat_request(
+                messages,
+                tools,
                 tool_choice,
-                validated_tools,
+                json_schema,
+                response_model,
             )
-            normalized_messages = self._normalize_messages(messages)
+            effective_schema = request_context.effective_schema
+            normalized_tool_choice = request_context.normalized_tool_choice
+            normalized_messages = request_context.normalized_messages
+            params = self._build_chat_params(
+                normalized_messages=normalized_messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                timeout_s=timeout_s,
+                tools=tools,
+                normalized_tool_choice=normalized_tool_choice,
+                effective_schema=effective_schema,
+                capture_reasoning=capture_reasoning,
+            )
             _ = previous_response
-            system_prompt, transformed_messages = normalized_messages.to_google()
-            generation_config: Dict[str, Any] = {
-                "maxOutputTokens": max_tokens,
-                "temperature": temperature,
-                "topP": top_p,
-            }
-            if effective_schema is not None:
-                generation_config["responseMimeType"] = "application/json"
-                generation_config["responseSchema"] = self._to_google_schema(effective_schema)
-            if reasoning_level:
-                normalized_reasoning_level = self._normalize_reasoning_level(
-                    reasoning_level
-                )
-                if normalized_reasoning_level is not None:
-                    generation_config["thinkingConfig"] = {
-                        "thinkingBudget": normalized_reasoning_level,
-                        "includeThoughts": False,
-                    }
-            payload: Dict[str, Any] = {
-                "contents": transformed_messages,
-                "generationConfig": generation_config,
-            }
-            if system_prompt:
-                payload["system_instruction"] = {
-                    "parts": [{"text": system_prompt}]
-                }
-            if validated_tools:
-                payload["tools"] = [
-                    {
-                        "functionDeclarations": [
-                            self._to_google_function_declaration(tool)
-                            for tool in validated_tools
-                        ]
-                    }
-                ]
-            tool_config = self._to_google_tool_config(normalized_tool_choice)
-            if tool_config is not None:
-                payload["toolConfig"] = tool_config
             _ = parallel_tool_calls
             client = GeminiSyncClient(self.api_key)
-            response_json = client.chat_completion(
-                model=self.model,
-                timeout_s=timeout_s,
-                **payload,
+            response = client.chat_completion(**params)
+            chat_response = self._parse_chat_response(
+                response,
+                capture_reasoning=capture_reasoning,
             )
-            chat_response = ChatResponse.from_google_response(response_json)
-            chat_response.parsed_json = self._parse_json_response(chat_response.content, effective_schema)
-            chat_response.parsed_model = self._parse_response_model(chat_response.parsed_json, response_model)
-            if self.pricing:
-                chat_response.apply_pricing(
-                    price_input_per_token=self.pricing.in_per_token,
-                    price_output_per_token=self.pricing.out_per_token,
-                    currency=self.pricing.currency,
-                )
-            return chat_response
+            return self._finalize_chat_response(
+                chat_response,
+                effective_schema=effective_schema,
+                response_model=response_model,
+            )
         except LLMAPIError as e:
             self.handle_error(e)
         except Exception as e:
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
+
+    def _build_chat_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        max_tokens: Optional[int],
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        timeout_s: Optional[float],
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> Dict[str, Any]:
+        system_prompt, transformed_messages = normalized_messages.to_google()
+        params: Dict[str, Any] = {
+            "model": self.model,
+            "timeout_s": timeout_s,
+            "contents": transformed_messages,
+            "generationConfig": self._build_generation_config(
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                effective_schema=effective_schema,
+                capture_reasoning=capture_reasoning,
+            ),
+        }
+        if system_prompt:
+            params["system_instruction"] = {"parts": [{"text": system_prompt}]}
+        if tools:
+            params["tools"] = [{
+                "functionDeclarations": [
+                    self._to_google_function_declaration(tool) for tool in tools
+                ]
+            }]
+        tool_config = self._to_google_tool_config(normalized_tool_choice)
+        if tool_config is not None:
+            params["toolConfig"] = tool_config
+        return {key: value for key, value in params.items() if value is not None}
+
+    @staticmethod
+    def _parse_chat_response(
+        response: dict,
+        *,
+        capture_reasoning: bool,
+    ) -> ChatResponse:
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        return ChatResponse.from_google_response(response, **parser_kwargs)
 
     def stream_chat(
         self,
@@ -139,13 +174,23 @@ class GoogleAdapter(LLMAdapterBase):
         on_done: Optional[OnDone] = None,
         buffer_chars: Optional[int] = None,
         on_chunk: Optional[OnChunk] = None,
+        capture_reasoning: bool = False,
+        on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
-        temperature = self._validate_parameter("temperature", temperature, 0, 2)
-        top_p = self._validate_parameter("top_p", top_p, 0, 1)
-        self._validate_tools(tools)
-        effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-        normalized_tool_choice = self._normalize_tool_choice(tool_choice, tools)
-        normalized_messages = self._normalize_messages(messages)
+        temperature, top_p = self._validate_sampling_parameters(
+            temperature,
+            top_p,
+        )
+        request_context = self._prepare_chat_request(
+            messages,
+            tools,
+            tool_choice,
+            json_schema,
+            response_model,
+        )
+        effective_schema = request_context.effective_schema
+        normalized_tool_choice = request_context.normalized_tool_choice
+        normalized_messages = request_context.normalized_messages
         _ = previous_response
         payload = self._build_stream_payload(
             normalized_messages=normalized_messages,
@@ -156,6 +201,7 @@ class GoogleAdapter(LLMAdapterBase):
             tools=tools,
             normalized_tool_choice=normalized_tool_choice,
             effective_schema=effective_schema,
+            capture_reasoning=capture_reasoning,
         )
         _ = parallel_tool_calls
         client = GeminiSyncClient(self.api_key)
@@ -169,6 +215,8 @@ class GoogleAdapter(LLMAdapterBase):
             on_done,
             buffer_chars,
             on_chunk,
+            capture_reasoning,
+            on_reasoning,
         )
 
     def _build_stream_payload(
@@ -182,23 +230,17 @@ class GoogleAdapter(LLMAdapterBase):
         tools: Optional[List[ToolSpec]],
         normalized_tool_choice: Optional[str],
         effective_schema: Optional[dict],
+        capture_reasoning: bool,
     ) -> Dict[str, Any]:
         system_prompt, transformed_messages = normalized_messages.to_google()
-        generation_config: Dict[str, Any] = {
-            "maxOutputTokens": max_tokens,
-            "temperature": temperature,
-            "topP": top_p,
-        }
-        if effective_schema is not None:
-            generation_config["responseMimeType"] = "application/json"
-            generation_config["responseSchema"] = self._to_google_schema(effective_schema)
-        if reasoning_level:
-            normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
-            if normalized_reasoning_level is not None:
-                generation_config["thinkingConfig"] = {
-                    "thinkingBudget": normalized_reasoning_level,
-                    "includeThoughts": False,
-                }
+        generation_config = self._build_generation_config(
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            reasoning_level=reasoning_level,
+            effective_schema=effective_schema,
+            capture_reasoning=capture_reasoning,
+        )
         payload: Dict[str, Any] = {
             "contents": transformed_messages,
             "generationConfig": generation_config,
@@ -216,6 +258,32 @@ class GoogleAdapter(LLMAdapterBase):
             payload["toolConfig"] = tool_config
         return payload
 
+    def _build_generation_config(
+        self,
+        *,
+        max_tokens: Optional[int],
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> Dict[str, Any]:
+        generation_config: Dict[str, Any] = {
+            "maxOutputTokens": max_tokens,
+            "temperature": temperature,
+            "topP": top_p,
+        }
+        if effective_schema is not None:
+            generation_config["responseMimeType"] = "application/json"
+            generation_config["responseSchema"] = self._to_google_schema(effective_schema)
+        thinking_config = self._build_thinking_config(
+            reasoning_level=reasoning_level,
+            capture_reasoning=capture_reasoning,
+        )
+        if thinking_config is not None:
+            generation_config["thinkingConfig"] = thinking_config
+        return generation_config
+
     def _consume_stream(
         self,
         events: Iterator[Any],
@@ -226,86 +294,183 @@ class GoogleAdapter(LLMAdapterBase):
         on_done: Optional[OnDone],
         buffer_chars: Optional[int],
         on_chunk: Optional[OnChunk],
+        capture_reasoning: bool,
+        on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
-        text_parts: List[str] = []
-        function_parts: List[Dict[str, Any]] = []
-        finish_reason: Optional[str] = None
-        usage_metadata: Dict[str, Any] = {}
-        response_metadata: Dict[str, Any] = {}
-        chunk_buffer = StreamChunkBuffer(buffer_chars)
-        usage_tracker = StreamUsageTracker()
+        state = _GoogleStreamState(
+            chunk_buffer=StreamChunkBuffer(buffer_chars),
+            usage_tracker=StreamUsageTracker(),
+            reasoning_collector=(
+                StreamReasoningCollector() if capture_reasoning else None
+            ),
+            reasoning_response=ChatResponse() if capture_reasoning else None,
+        )
 
         for event in self._iter_provider_stream_events(events):
-            chunk = event.data if isinstance(event.data, Mapping) else {}
-            for field in ("modelVersion", "responseId", "promptFeedback"):
-                if field in chunk:
-                    response_metadata[field] = chunk[field]
-            chunk_usage = chunk.get("usageMetadata")
-            if isinstance(chunk_usage, Mapping):
-                usage_metadata.update(chunk_usage)
-                usage_tracker.record(
-                    chunk_buffer,
-                    self._normalize_stream_usage(usage_metadata),
-                )
-            candidates = chunk.get("candidates")
-            if not isinstance(candidates, list) or not candidates:
-                continue
-            candidate = candidates[0]
-            if not isinstance(candidate, Mapping):
-                continue
-            if candidate.get("finishReason") is not None:
-                finish_reason = str(candidate["finishReason"])
-            content = candidate.get("content")
-            parts = content.get("parts") if isinstance(content, Mapping) else []
-            if not isinstance(parts, list):
-                continue
-            for part in parts:
-                if not isinstance(part, Mapping):
-                    continue
-                text = part.get("text")
-                if (
-                    isinstance(text, str)
-                    and text
-                    and not part.get("thought", False)
-                ):
-                    text_parts.append(text)
-                    yield from self._emit_stream_chunks(
-                        chunk_buffer.add(text),
-                        on_chunk,
-                        on_delta,
-                    )
-                if isinstance(part.get("functionCall"), Mapping):
-                    function_parts.append(dict(part))
+            yield from self._consume_stream_event(
+                event,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+            )
 
-        final_parts: List[Dict[str, Any]] = []
-        if text_parts:
-            final_parts.append({"text": "".join(text_parts)})
-        final_parts.extend(function_parts)
-        final_candidate: Dict[str, Any] = {"content": {"parts": final_parts}}
-        if finish_reason is not None:
-            final_candidate["finishReason"] = finish_reason
-        final_response: Dict[str, Any] = {
-            **response_metadata,
-            "candidates": [final_candidate],
-        }
-        if usage_metadata:
-            final_response["usageMetadata"] = usage_metadata
-        chat_response = ChatResponse.from_google_response(final_response)
-        self._prepare_stream_response(
-            chat_response,
-            effective_schema,
-            response_model,
+        chat_response = self._finalize_stream_response(
+            state,
+            capture_reasoning=capture_reasoning,
+            effective_schema=effective_schema,
+            response_model=response_model,
         )
-        yield from self._emit_stream_chunks(
-            chunk_buffer.flush(),
+        yield from self._complete_stream(
+            chat_response,
+            state.chunk_buffer,
             on_chunk,
             on_delta,
-        )
-        self._invoke_stream_completion_callbacks(
-            chat_response,
             on_tool_call,
             on_done,
         )
+
+    def _consume_stream_event(
+        self,
+        event: Any,
+        state: _GoogleStreamState,
+        *,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+        on_reasoning: Optional[OnReasoning],
+    ) -> Iterator[str]:
+        chunk = event.data if isinstance(event.data, Mapping) else {}
+        self._update_stream_state_from_chunk(chunk, state)
+
+        candidates = chunk.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            return
+        candidate = candidates[0]
+        if not isinstance(candidate, Mapping):
+            return
+        if candidate.get("finishReason") is not None:
+            state.finish_reason = str(candidate["finishReason"])
+        content = candidate.get("content")
+        parts = content.get("parts") if isinstance(content, Mapping) else []
+        if not isinstance(parts, list):
+            return
+        for part in parts:
+            yield from self._consume_stream_part(
+                part,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+            )
+
+    def _update_stream_state_from_chunk(
+        self,
+        chunk: Mapping[str, Any],
+        state: _GoogleStreamState,
+    ) -> None:
+        for field in ("modelVersion", "responseId", "promptFeedback"):
+            if field in chunk:
+                state.response_metadata[field] = chunk[field]
+        chunk_usage = chunk.get("usageMetadata")
+        if isinstance(chunk_usage, Mapping):
+            state.usage_metadata.update(chunk_usage)
+            state.usage_tracker.record(
+                state.chunk_buffer,
+                self._normalize_stream_usage(state.usage_metadata),
+            )
+
+    def _consume_stream_part(
+        self,
+        part: Any,
+        state: _GoogleStreamState,
+        *,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+        on_reasoning: Optional[OnReasoning],
+    ) -> Iterator[str]:
+        if not isinstance(part, Mapping):
+            return
+        text = part.get("text")
+        if part.get("thought"):
+            if (
+                state.reasoning_collector is not None
+                and state.reasoning_response is not None
+                and isinstance(text, str)
+                and text
+            ):
+                self._record_reasoning_event(
+                    state.reasoning_response,
+                    state.reasoning_collector,
+                    text,
+                    capture_reasoning=True,
+                    kind="summary",
+                    on_reasoning=on_reasoning,
+                )
+        elif isinstance(text, str) and text:
+            state.text_parts.append(text)
+            yield from self._emit_stream_chunks(
+                state.chunk_buffer.add(text),
+                on_chunk,
+                on_delta,
+            )
+        if isinstance(part.get("functionCall"), Mapping):
+            state.function_parts.append(dict(part))
+
+    def _finalize_stream_response(
+        self,
+        state: _GoogleStreamState,
+        *,
+        capture_reasoning: bool,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        final_response = self._build_stream_response(state)
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        chat_response = ChatResponse.from_google_response(
+            final_response,
+            **parser_kwargs,
+        )
+        return super()._finalize_stream_response(
+            chat_response,
+            reasoning_collector=state.reasoning_collector,
+            effective_schema=effective_schema,
+            response_model=response_model,
+        )
+
+    @staticmethod
+    def _build_stream_response(state: _GoogleStreamState) -> Dict[str, Any]:
+        final_parts: List[Dict[str, Any]] = []
+        if state.text_parts:
+            final_parts.append({"text": "".join(state.text_parts)})
+        final_parts.extend(state.function_parts)
+        final_candidate: Dict[str, Any] = {"content": {"parts": final_parts}}
+        if state.finish_reason is not None:
+            final_candidate["finishReason"] = state.finish_reason
+        final_response: Dict[str, Any] = {
+            **state.response_metadata,
+            "candidates": [final_candidate],
+        }
+        if state.usage_metadata:
+            final_response["usageMetadata"] = state.usage_metadata
+        return final_response
+
+    def _build_thinking_config(
+        self,
+        *,
+        reasoning_level: Optional[str | int],
+        capture_reasoning: bool,
+    ) -> Optional[Dict[str, Any]]:
+        thinking_config: Dict[str, Any] = {}
+        if reasoning_level:
+            normalized_reasoning_level = self._normalize_reasoning_level(
+                reasoning_level
+            )
+            if normalized_reasoning_level is not None:
+                thinking_config["thinkingBudget"] = normalized_reasoning_level
+                thinking_config["includeThoughts"] = False
+        if capture_reasoning:
+            thinking_config["includeThoughts"] = True
+        return thinking_config or None
 
     @staticmethod
     def _normalize_stream_usage(raw_usage: Mapping[str, Any]) -> Optional[Usage]:

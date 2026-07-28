@@ -188,6 +188,52 @@ def test_chat_responses_api_builds_expected_params(adapter):
 
 
 @pytest.mark.unit
+def test_chat_responses_api_capture_reasoning_is_opt_in_and_normalized(adapter):
+    fake_response = {
+        "id": "resp_123",
+        "model": "gpt-5",
+        "status": "completed",
+        "output": [
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "Plan"}],
+            },
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Answer"}],
+            },
+        ],
+    }
+
+    with patch.object(OpenAISyncClient, "complete", return_value=fake_response) as mock_complete:
+        result = adapter.chat(
+            [UserMessage("hi")],
+            capture_reasoning=True,
+        )
+
+    assert mock_complete.call_args.kwargs["capture_reasoning"] is True
+    assert [event.text for event in result.reasoning_events] == ["Plan"]
+    assert result.reasoning_events[0].kind == "summary"
+
+
+@pytest.mark.unit
+def test_chat_legacy_capture_reasoning_does_not_add_responses_field(legacy_adapter):
+    fake_response = {
+        "model": "gpt-4o",
+        "choices": [{"message": {"content": "Answer"}}],
+    }
+
+    with patch.object(OpenAISyncClient, "complete", return_value=fake_response) as mock_complete:
+        result = legacy_adapter.chat(
+            [UserMessage("hi")],
+            capture_reasoning=True,
+        )
+
+    assert "capture_reasoning" not in mock_complete.call_args.kwargs
+    assert result.reasoning_events == []
+
+
+@pytest.mark.unit
 def test_chat_legacy_api_builds_expected_params(legacy_adapter):
     fake_response = {"id": "chatcmpl_123"}
     fake_chat_response = ChatResponse()
@@ -721,6 +767,73 @@ def test_stream_chat_responses_uses_completed_response(adapter):
     assert done[0].response_id == "resp_123"
     assert done[0].usage.total_tokens == 3
     assert tool_calls[0].arguments == {"city": "Tel Aviv"}
+
+
+@pytest.mark.unit
+def test_stream_chat_responses_separates_reasoning_events_from_visible_text(adapter):
+    events = iter([
+        SSEEvent(
+            event="response.reasoning_summary_text.delta",
+            data={
+                "type": "response.reasoning_summary_text.delta",
+                "delta": "Plan",
+            },
+        ),
+        SSEEvent(
+            event="response.reasoning_text.delta",
+            data={
+                "type": "response.reasoning_text.delta",
+                "delta": "Details",
+            },
+        ),
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"type": "response.output_text.delta", "delta": "Answer"},
+        ),
+        SSEEvent(
+            event="response.completed",
+            data={
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_123",
+                    "model": "gpt-5",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "reasoning",
+                            "summary": [{"type": "summary_text", "text": "Plan"}],
+                            "content": [{"type": "reasoning_text", "text": "Details"}],
+                        },
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "Answer"}],
+                        },
+                    ],
+                },
+            },
+        ),
+    ])
+    reasoning = []
+    deltas = []
+    done = []
+
+    with patch.object(OpenAISyncClient, "stream", return_value=events) as mock_stream:
+        output = list(adapter.stream_chat(
+            [UserMessage("hi")],
+            capture_reasoning=True,
+            on_reasoning=reasoning.append,
+            on_delta=deltas.append,
+            on_done=done.append,
+        ))
+
+    assert output == ["Answer"]
+    assert deltas == ["Answer"]
+    assert [(event.text, event.kind, event.index) for event in reasoning] == [
+        ("Plan", "summary", 0),
+        ("Details", "content", 1),
+    ]
+    assert done[0].reasoning_events == reasoning
+    assert mock_stream.call_args.kwargs["capture_reasoning"] is True
 
 
 @pytest.mark.unit

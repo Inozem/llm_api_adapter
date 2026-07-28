@@ -18,7 +18,16 @@ from ..errors.llm_api_error import (
 from ..llm_registry.llm_registry import Pricing, LLM_REGISTRY
 from ..models.messages.chat_message import Messages
 from ..models.responses.chat_response import ChatResponse
+from ..models.responses.reasoning_event import (
+    ReasoningEvent,
+    ReasoningEventKind,
+)
 from ..models.responses.stream_chunk import StreamChunk
+from ..llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+    StreamUsageTracker,
+)
 from ..models.tools import ToolCall, ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -32,10 +41,27 @@ REASONING_LEVELS_DEFAULT = {
 
 TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
+
+@dataclass(frozen=True)
+class _ChatRequestContext:
+    normalized_messages: Messages
+    effective_schema: Optional[dict]
+    normalized_tool_choice: Optional[str]
+
+
 OnDelta = Callable[[str], None]
 OnChunk = Callable[[StreamChunk], None]
 OnToolCall = Callable[[ToolCall], None]
 OnDone = Callable[[ChatResponse], None]
+OnReasoning = Callable[[ReasoningEvent], None]
+
+
+@dataclass
+class _StreamState:
+    chunk_buffer: StreamChunkBuffer
+    usage_tracker: StreamUsageTracker
+    reasoning_collector: Optional[StreamReasoningCollector]
+    reasoning_response: Optional[ChatResponse]
 
 
 @dataclass
@@ -78,9 +104,28 @@ class LLMAdapterBase(ABC):
             self.is_adaptive_thinking = getattr(model_spec, "is_adaptive_thinking", False)
 
     @abstractmethod
-    def chat(self, **kwargs) -> ChatResponse:
+    def chat(
+        self,
+        messages: Any,
+        max_tokens: Optional[int] = None,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        reasoning_level: Optional[str | int] = None,
+        timeout_s: Optional[float] = None,
+        tools: Optional[List[ToolSpec]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: Optional[bool] = None,
+        previous_response: Optional[ChatResponse] = None,
+        json_schema: Optional[dict] = None,
+        response_model: Optional[Any] = None,
+        *,
+        capture_reasoning: bool = False,
+    ) -> ChatResponse:
         """
         Generates a response based on the provided conversation.
+
+        ``capture_reasoning`` is an opt-in request flag implemented by
+        provider adapters; the default preserves the existing request.
         """
         raise NotImplementedError
 
@@ -104,12 +149,18 @@ class LLMAdapterBase(ABC):
         on_done: Optional[OnDone] = None,
         buffer_chars: Optional[int] = None,
         on_chunk: Optional[OnChunk] = None,
+        *,
+        capture_reasoning: bool = False,
+        on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
         """Stream normalized text deltas synchronously.
 
         ``buffer_chars`` optionally coalesces visible text into bounded
         chunks.  ``on_chunk`` receives each emitted :class:`StreamChunk`
         before the corresponding ``on_delta`` callback and yielded text.
+        ``on_reasoning`` receives provider-normalized reasoning events only
+        when ``capture_reasoning`` is enabled; reasoning is never yielded as
+        visible text.
         """
         raise NotImplementedError
 
@@ -132,6 +183,43 @@ class LLMAdapterBase(ABC):
             logger.error(error_message)
             raise ValueError(error_message)
         return value
+
+    def _validate_sampling_parameters(
+        self,
+        temperature: float,
+        top_p: float,
+    ) -> tuple[float, float]:
+        """Validate the sampling parameters shared by all providers."""
+        return (
+            self._validate_parameter("temperature", temperature, 0, 2),
+            self._validate_parameter("top_p", top_p, 0, 1),
+        )
+
+    def _prepare_chat_request(
+        self,
+        messages: Any,
+        tools: Optional[List[ToolSpec]],
+        tool_choice: Any,
+        json_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> _ChatRequestContext:
+        """Validate and normalize provider-neutral chat inputs."""
+        self._validate_tools(tools)
+        effective_schema = self._resolve_json_schema(
+            json_schema,
+            response_model,
+            tools,
+        )
+        normalized_tool_choice = self._normalize_tool_choice(
+            tool_choice,
+            tools,
+        )
+        normalized_messages = self._normalize_messages(messages)
+        return _ChatRequestContext(
+            normalized_messages=normalized_messages,
+            effective_schema=effective_schema,
+            normalized_tool_choice=normalized_tool_choice,
+        )
 
     def _normalize_messages(self, messages: Any) -> Messages:
         if isinstance(messages, Messages):
@@ -369,6 +457,30 @@ class LLMAdapterBase(ABC):
             error_message = getattr(error, "text", None) or str(error)
             self.handle_error(error=error, error_message=error_message)
 
+    def _finalize_chat_response(
+        self,
+        chat_response: ChatResponse,
+        *,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        """Apply common structured-output parsing and pricing to a response."""
+        chat_response.parsed_json = self._parse_json_response(
+            chat_response.content,
+            effective_schema,
+        )
+        chat_response.parsed_model = self._parse_response_model(
+            chat_response.parsed_json,
+            response_model,
+        )
+        if self.pricing:
+            chat_response.apply_pricing(
+                price_input_per_token=self.pricing.in_per_token,
+                price_output_per_token=self.pricing.out_per_token,
+                currency=self.pricing.currency,
+            )
+        return chat_response
+
     def _prepare_stream_response(
         self,
         chat_response: ChatResponse,
@@ -410,6 +522,35 @@ class LLMAdapterBase(ABC):
         if on_done is not None:
             on_done(chat_response)
 
+    def _record_reasoning_event(
+        self,
+        chat_response: ChatResponse,
+        collector: StreamReasoningCollector,
+        text: str,
+        *,
+        capture_reasoning: bool,
+        kind: ReasoningEventKind = "summary",
+        on_reasoning: Optional[OnReasoning] = None,
+    ) -> Optional[ReasoningEvent]:
+        """Append an opt-in reasoning event and then notify its callback.
+
+        The response is updated before ``on_reasoning`` runs, so a later
+        ``on_done`` callback observes the same sequence.  This helper is
+        intentionally separate from visible-text emission and therefore does
+        not call ``on_delta`` or yield anything.
+        """
+        if not capture_reasoning:
+            return None
+
+        event = collector.add(text, kind=kind)
+        if event is None:
+            return None
+
+        chat_response.reasoning_events.append(event)
+        if on_reasoning is not None:
+            on_reasoning(event)
+        return event
+
     def _emit_stream_chunks(
         self,
         chunks: Iterable[StreamChunk],
@@ -427,16 +568,37 @@ class LLMAdapterBase(ABC):
     def _finalize_stream_response(
         self,
         chat_response: ChatResponse,
+        *,
+        reasoning_collector: Optional[StreamReasoningCollector] = None,
         effective_schema: Optional[dict],
         response_model: Optional[Any],
-        on_tool_call: Optional[OnToolCall],
-        on_done: Optional[OnDone],
-    ) -> None:
-        """Apply normal response post-processing, then invoke stream callbacks."""
+    ) -> ChatResponse:
+        """Apply common reasoning, structured-output and pricing finalization."""
+        if reasoning_collector is not None:
+            streamed_reasoning_events = reasoning_collector.snapshot()
+            if streamed_reasoning_events:
+                chat_response.reasoning_events = streamed_reasoning_events
         self._prepare_stream_response(
             chat_response,
             effective_schema,
             response_model,
+        )
+        return chat_response
+
+    def _complete_stream(
+        self,
+        chat_response: ChatResponse,
+        chunk_buffer: StreamChunkBuffer,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+        on_tool_call: Optional[OnToolCall],
+        on_done: Optional[OnDone],
+    ) -> Iterator[str]:
+        """Flush visible text and invoke the common stream callbacks."""
+        yield from self._emit_stream_chunks(
+            chunk_buffer.flush(),
+            on_chunk,
+            on_delta,
         )
         self._invoke_stream_completion_callbacks(
             chat_response,

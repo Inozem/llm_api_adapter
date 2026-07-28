@@ -91,10 +91,16 @@ class OpenAISyncClient:
         if "max_tokens" in payload:
             payload["max_output_tokens"] = payload.pop("max_tokens")
         reasoning_effort = payload.pop("reasoning_effort", None)
+        capture_reasoning = payload.pop("capture_reasoning", False)
+        reasoning: dict = {}
         if reasoning_effort is not None:
             if model in ("gpt-5", "gpt-5-nano", "gpt-5-mini") and reasoning_effort == "none":
                 reasoning_effort = "minimal"
-            payload["reasoning"] = {"effort": reasoning_effort}
+            reasoning["effort"] = reasoning_effort
+        if capture_reasoning:
+            reasoning["summary"] = "auto"
+        if reasoning:
+            payload["reasoning"] = reasoning
         if model.startswith("gpt-5-nano"):
             temperature = payload.pop("temperature", None)
             if temperature not in (None, 1.0):

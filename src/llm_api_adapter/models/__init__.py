@@ -1,3 +1,9 @@
-from .responses import ChatResponse, StreamChunk, Usage
+from .responses import ChatResponse, ReasoningEvent, ReasoningEventKind, StreamChunk, Usage
 
-__all__ = ["ChatResponse", "StreamChunk", "Usage"]
+__all__ = [
+    "ChatResponse",
+    "ReasoningEvent",
+    "ReasoningEventKind",
+    "StreamChunk",
+    "Usage",
+]

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import json
 import logging
 import time
-from typing import Any, Callable, Iterator, Mapping, Optional
+from typing import Any, Callable, Iterator, List, Mapping, Optional
 
 import requests
 
@@ -23,6 +23,7 @@ from ..errors.llm_api_error import (
     LLMAPITimeoutError,
 )
 from ..models.responses.chat_response import Usage
+from ..models.responses.reasoning_event import ReasoningEvent, ReasoningEventKind
 from ..models.responses.stream_chunk import StreamChunk
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,46 @@ class StreamChunkBuffer:
         self._last_emitted_at = emitted_at
         self._output_tokens_delta = None
         return chunk
+
+
+class StreamReasoningCollector:
+    """Collect normalized reasoning fragments with deterministic timing."""
+
+    def __init__(self, *, clock: Clock = time.perf_counter) -> None:
+        self._clock = clock
+        self._started_at = clock()
+        self._last_emitted_at = self._started_at
+        self._next_index = 0
+        self._events: List[ReasoningEvent] = []
+
+    def add(
+        self,
+        text: str,
+        *,
+        kind: ReasoningEventKind = "summary",
+    ) -> Optional[ReasoningEvent]:
+        """Record a non-empty reasoning fragment and return its event."""
+        if not isinstance(text, str):
+            raise TypeError("text must be a string")
+        if not text:
+            return None
+
+        emitted_at = self._clock()
+        event = ReasoningEvent(
+            text=text,
+            kind=kind,
+            index=self._next_index,
+            elapsed_s=emitted_at - self._started_at,
+            delta_s=emitted_at - self._last_emitted_at,
+        )
+        self._events.append(event)
+        self._next_index += 1
+        self._last_emitted_at = emitted_at
+        return event
+
+    def snapshot(self) -> List[ReasoningEvent]:
+        """Return a shallow copy of the collected immutable events."""
+        return list(self._events)
 
 
 class StreamUsageTracker:
