@@ -23,6 +23,13 @@ class _ParsedResponsesOutput:
 
 
 @dataclass
+class _ParsedAnthropicContent:
+    text: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+    reasoning_events: List[ReasoningEvent] = field(default_factory=list)
+
+
+@dataclass
 class ChatResponse:
     model: Optional[str] = None
     response_id: Optional[str] = None
@@ -275,50 +282,80 @@ class ChatResponse:
             output_tokens=u.get("output_tokens", 0),
             total_tokens=u.get("input_tokens", 0) + u.get("output_tokens", 0),
         )
-        blocks = api_response.get("content", []) or []
-        parsed_tool_calls: Optional[List[ToolCall]] = None
-        text_content: Optional[str] = None
-        reasoning_events: List[ReasoningEvent] = []
-        for block in blocks:
-            block_type = block.get("type")
-            if block_type == "text" and text_content is None:
-                text_content = block.get("text")
-            elif block_type == "thinking" and capture_reasoning:
-                thinking_text = block.get("thinking")
-                if isinstance(thinking_text, str) and thinking_text:
-                    reasoning_events.append(
-                        ReasoningEvent(
-                            text=thinking_text,
-                            kind="summary",
-                            index=len(reasoning_events),
-                            elapsed_s=0.0,
-                            delta_s=0.0,
-                        )
-                    )
-            elif block_type == "tool_use":
-                if parsed_tool_calls is None:
-                    parsed_tool_calls = []
-                name = block.get("name")
-                arguments = block.get("input")
-                if not isinstance(arguments, dict):
-                    raise InvalidToolArgumentsError(
-                        detail=f"Anthropic tool input must be dict for tool={name!r}"
-                    )
-                parsed_tool_calls.append(
-                    ToolCall(
-                        name=name,
-                        arguments=arguments,
-                        call_id=block.get("id"),
-                    )
-                )
+        parsed_content = cls._parse_anthropic_content_blocks(
+            api_response.get("content", []) or [],
+            capture_reasoning=capture_reasoning,
+        )
         return cls(
             model=api_response.get("model"),
             response_id=api_response.get("id"),
             usage=usage,
-            content=text_content,
-            tool_calls=parsed_tool_calls,
+            content=parsed_content.text,
+            tool_calls=parsed_content.tool_calls,
             finish_reason=api_response.get("stop_reason"),
-            reasoning_events=reasoning_events,
+            reasoning_events=parsed_content.reasoning_events,
+        )
+
+    @classmethod
+    def _parse_anthropic_content_blocks(
+        cls,
+        blocks: Any,
+        *,
+        capture_reasoning: bool,
+    ) -> _ParsedAnthropicContent:
+        parsed_content = _ParsedAnthropicContent()
+        for block in blocks:
+            block_type = block.get("type")
+            if block_type == "text" and parsed_content.text is None:
+                parsed_content.text = cls._parse_anthropic_text_block(block)
+            elif block_type == "thinking" and capture_reasoning:
+                reasoning_event = cls._parse_anthropic_thinking_block(
+                    block,
+                    index=len(parsed_content.reasoning_events),
+                )
+                if reasoning_event is not None:
+                    parsed_content.reasoning_events.append(reasoning_event)
+            elif block_type == "tool_use":
+                if parsed_content.tool_calls is None:
+                    parsed_content.tool_calls = []
+                parsed_content.tool_calls.append(
+                    cls._parse_anthropic_tool_use_block(block)
+                )
+        return parsed_content
+
+    @staticmethod
+    def _parse_anthropic_text_block(block: dict) -> Optional[str]:
+        return block.get("text")
+
+    @staticmethod
+    def _parse_anthropic_thinking_block(
+        block: dict,
+        *,
+        index: int,
+    ) -> Optional[ReasoningEvent]:
+        thinking_text = block.get("thinking")
+        if not isinstance(thinking_text, str) or not thinking_text:
+            return None
+        return ReasoningEvent(
+            text=thinking_text,
+            kind="summary",
+            index=index,
+            elapsed_s=0.0,
+            delta_s=0.0,
+        )
+
+    @staticmethod
+    def _parse_anthropic_tool_use_block(block: dict) -> ToolCall:
+        name = block.get("name")
+        arguments = block.get("input")
+        if not isinstance(arguments, dict):
+            raise InvalidToolArgumentsError(
+                detail=f"Anthropic tool input must be dict for tool={name!r}"
+            )
+        return ToolCall(
+            name=name,
+            arguments=arguments,
+            call_id=block.get("id"),
         )
 
     @classmethod
