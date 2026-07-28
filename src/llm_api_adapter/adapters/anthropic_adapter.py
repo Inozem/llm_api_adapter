@@ -177,29 +177,6 @@ class AnthropicAdapter(LLMAdapterBase):
             **parser_kwargs,
         )
 
-    def _finalize_chat_response(
-        self,
-        chat_response: ChatResponse,
-        *,
-        effective_schema: Optional[dict],
-        response_model: Optional[Any],
-    ) -> ChatResponse:
-        chat_response.parsed_json = self._parse_json_response(
-            chat_response.content,
-            effective_schema,
-        )
-        chat_response.parsed_model = self._parse_response_model(
-            chat_response.parsed_json,
-            response_model,
-        )
-        if self.pricing:
-            chat_response.apply_pricing(
-                price_input_per_token=self.pricing.in_per_token,
-                price_output_per_token=self.pricing.out_per_token,
-                currency=self.pricing.currency,
-            )
-        return chat_response
-
     def stream_chat(
         self,
         messages: List[Message] | Messages,

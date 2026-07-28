@@ -400,6 +400,30 @@ class LLMAdapterBase(ABC):
             error_message = getattr(error, "text", None) or str(error)
             self.handle_error(error=error, error_message=error_message)
 
+    def _finalize_chat_response(
+        self,
+        chat_response: ChatResponse,
+        *,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        """Apply common structured-output parsing and pricing to a response."""
+        chat_response.parsed_json = self._parse_json_response(
+            chat_response.content,
+            effective_schema,
+        )
+        chat_response.parsed_model = self._parse_response_model(
+            chat_response.parsed_json,
+            response_model,
+        )
+        if self.pricing:
+            chat_response.apply_pricing(
+                price_input_per_token=self.pricing.in_per_token,
+                price_output_per_token=self.pricing.out_per_token,
+                currency=self.pricing.currency,
+            )
+        return chat_response
+
     def _prepare_stream_response(
         self,
         chat_response: ChatResponse,
