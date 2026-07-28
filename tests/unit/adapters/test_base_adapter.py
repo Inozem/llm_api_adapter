@@ -202,6 +202,24 @@ def test_normalize_messages_accepts_list_and_messages(adapter):
 
 
 @pytest.mark.unit
+def test_prepare_chat_request_normalizes_provider_neutral_context(adapter):
+    tool = make_tool()
+
+    context = adapter._prepare_chat_request(
+        [UserMessage("hi")],
+        [tool],
+        "auto",
+        None,
+        None,
+    )
+
+    assert isinstance(context.normalized_messages, Messages)
+    assert context.normalized_messages.items[0] == UserMessage("hi")
+    assert context.effective_schema is None
+    assert context.normalized_tool_choice == "auto"
+
+
+@pytest.mark.unit
 def test_generate_chat_answer_emits_deprecation_warning(adapter):
     with pytest.warns(DeprecationWarning):
         adapter.generate_chat_answer(messages=[UserMessage("hi")])

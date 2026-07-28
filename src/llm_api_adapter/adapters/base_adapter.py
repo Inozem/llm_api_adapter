@@ -37,6 +37,14 @@ REASONING_LEVELS_DEFAULT = {
 
 TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
+
+@dataclass(frozen=True)
+class _ChatRequestContext:
+    normalized_messages: Messages
+    effective_schema: Optional[dict]
+    normalized_tool_choice: Optional[str]
+
+
 OnDelta = Callable[[str], None]
 OnChunk = Callable[[StreamChunk], None]
 OnToolCall = Callable[[ToolCall], None]
@@ -163,6 +171,43 @@ class LLMAdapterBase(ABC):
             logger.error(error_message)
             raise ValueError(error_message)
         return value
+
+    def _validate_sampling_parameters(
+        self,
+        temperature: float,
+        top_p: float,
+    ) -> tuple[float, float]:
+        """Validate the sampling parameters shared by all providers."""
+        return (
+            self._validate_parameter("temperature", temperature, 0, 2),
+            self._validate_parameter("top_p", top_p, 0, 1),
+        )
+
+    def _prepare_chat_request(
+        self,
+        messages: Any,
+        tools: Optional[List[ToolSpec]],
+        tool_choice: Any,
+        json_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> _ChatRequestContext:
+        """Validate and normalize provider-neutral chat inputs."""
+        self._validate_tools(tools)
+        effective_schema = self._resolve_json_schema(
+            json_schema,
+            response_model,
+            tools,
+        )
+        normalized_tool_choice = self._normalize_tool_choice(
+            tool_choice,
+            tools,
+        )
+        normalized_messages = self._normalize_messages(messages)
+        return _ChatRequestContext(
+            normalized_messages=normalized_messages,
+            effective_schema=effective_schema,
+            normalized_tool_choice=normalized_tool_choice,
+        )
 
     def _normalize_messages(self, messages: Any) -> Messages:
         if isinstance(messages, Messages):

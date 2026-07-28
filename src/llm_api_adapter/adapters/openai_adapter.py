@@ -61,25 +61,23 @@ class OpenAIAdapter(LLMAdapterBase):
         *,
         capture_reasoning: bool = False,
     ) -> ChatResponse:
-        temperature = self._validate_parameter(
-            name="temperature",
-            value=temperature,
-            min_value=0,
-            max_value=2,
+        temperature, top_p = self._validate_sampling_parameters(
+            temperature,
+            top_p,
         )
-        top_p = self._validate_parameter(
-            name="top_p",
-            value=top_p,
-            min_value=0,
-            max_value=1,
+        request_context = self._prepare_chat_request(
+            messages,
+            tools,
+            tool_choice,
+            json_schema,
+            response_model,
         )
-        self._validate_tools(tools)
-        effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-        normalized_tool_choice = self._normalize_tool_choice(tool_choice, tools)
+        effective_schema = request_context.effective_schema
+        normalized_tool_choice = request_context.normalized_tool_choice
 
         try:
             client = OpenAISyncClient(api_key=self.api_key)
-            normalized_messages = self._normalize_messages(messages)
+            normalized_messages = request_context.normalized_messages
             use_responses_api = client._should_use_responses_api(self.model)
             params = self._build_chat_params(
                 normalized_messages=normalized_messages,
@@ -263,13 +261,21 @@ class OpenAIAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
-        temperature = self._validate_parameter("temperature", temperature, 0, 2)
-        top_p = self._validate_parameter("top_p", top_p, 0, 1)
-        self._validate_tools(tools)
-        effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-        normalized_tool_choice = self._normalize_tool_choice(tool_choice, tools)
+        temperature, top_p = self._validate_sampling_parameters(
+            temperature,
+            top_p,
+        )
+        request_context = self._prepare_chat_request(
+            messages,
+            tools,
+            tool_choice,
+            json_schema,
+            response_model,
+        )
+        effective_schema = request_context.effective_schema
+        normalized_tool_choice = request_context.normalized_tool_choice
         client = OpenAISyncClient(api_key=self.api_key)
-        normalized_messages = self._normalize_messages(messages)
+        normalized_messages = request_context.normalized_messages
         use_responses_api = client._should_use_responses_api(self.model)
         params = self._build_stream_params(
             normalized_messages=normalized_messages,

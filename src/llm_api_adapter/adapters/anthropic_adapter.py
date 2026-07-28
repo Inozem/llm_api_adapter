@@ -63,16 +63,21 @@ class AnthropicAdapter(LLMAdapterBase):
         response_model: Optional[Any] = None,
         capture_reasoning: bool = False,
     ) -> ChatResponse:
-        temperature = self._validate_parameter("temperature", temperature, 0, 2)
-        top_p = self._validate_parameter("top_p", top_p, 0, 1)
+        temperature, top_p = self._validate_sampling_parameters(
+            temperature,
+            top_p,
+        )
         try:
-            self._validate_tools(tools)
-            effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-            normalized_tool_choice = self._normalize_tool_choice(
-                tool_choice,
+            request_context = self._prepare_chat_request(
+                messages,
                 tools,
+                tool_choice,
+                json_schema,
+                response_model,
             )
-            normalized_messages = self._normalize_messages(messages)
+            effective_schema = request_context.effective_schema
+            normalized_tool_choice = request_context.normalized_tool_choice
+            normalized_messages = request_context.normalized_messages
             params = self._build_chat_params(
                 normalized_messages=normalized_messages,
                 max_tokens=max_tokens,
@@ -200,12 +205,20 @@ class AnthropicAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
-        temperature = self._validate_parameter("temperature", temperature, 0, 2)
-        top_p = self._validate_parameter("top_p", top_p, 0, 1)
-        self._validate_tools(tools)
-        effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-        normalized_tool_choice = self._normalize_tool_choice(tool_choice, tools)
-        normalized_messages = self._normalize_messages(messages)
+        temperature, top_p = self._validate_sampling_parameters(
+            temperature,
+            top_p,
+        )
+        request_context = self._prepare_chat_request(
+            messages,
+            tools,
+            tool_choice,
+            json_schema,
+            response_model,
+        )
+        effective_schema = request_context.effective_schema
+        normalized_tool_choice = request_context.normalized_tool_choice
+        normalized_messages = request_context.normalized_messages
         params = self._build_stream_params(
             normalized_messages=normalized_messages,
             max_tokens=max_tokens,
