@@ -29,6 +29,19 @@ from ..models.tools.tool_spec import ToolSpec
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _AnthropicStreamState:
+    message_data: Dict[str, Any]
+    content_blocks: Dict[int, Dict[str, Any]]
+    input_json_fragments: Dict[int, List[str]]
+    usage: Dict[str, Any]
+    message_delta: Dict[str, Any]
+    chunk_buffer: StreamChunkBuffer
+    usage_tracker: StreamUsageTracker
+    reasoning_collector: Optional[StreamReasoningCollector]
+    reasoning_response: Optional[ChatResponse]
+
+
 @dataclass(repr=False)
 class AnthropicAdapter(LLMAdapterBase):
     company: str = "anthropic"
@@ -319,70 +332,37 @@ class AnthropicAdapter(LLMAdapterBase):
         capture_reasoning: bool,
         on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
-        message_data: Dict[str, Any] = {"model": self.model, "content": []}
-        content_blocks: Dict[int, Dict[str, Any]] = {}
-        input_json_fragments: Dict[int, List[str]] = {}
-        usage: Dict[str, Any] = {}
-        message_delta: Dict[str, Any] = {}
-        chunk_buffer = StreamChunkBuffer(buffer_chars)
-        usage_tracker = StreamUsageTracker()
-        reasoning_collector = (
-            StreamReasoningCollector() if capture_reasoning else None
+        state = _AnthropicStreamState(
+            message_data={"model": self.model, "content": []},
+            content_blocks={},
+            input_json_fragments={},
+            usage={},
+            message_delta={},
+            chunk_buffer=StreamChunkBuffer(buffer_chars),
+            usage_tracker=StreamUsageTracker(),
+            reasoning_collector=(
+                StreamReasoningCollector() if capture_reasoning else None
+            ),
+            reasoning_response=ChatResponse() if capture_reasoning else None,
         )
-        reasoning_response = ChatResponse() if capture_reasoning else None
 
         for event in self._iter_provider_stream_events(events):
-            payload = event.data if isinstance(event.data, Mapping) else {}
-            event_type = event.event or payload.get("type")
-            if event_type == "message_start":
-                message_data = self._handle_message_start(payload, usage, message_data)
-                usage_tracker.record(
-                    chunk_buffer,
-                    self._normalize_stream_usage(usage),
-                )
-            elif event_type == "content_block_start":
-                self._start_content_block(payload, content_blocks)
-            elif event_type == "content_block_delta":
-                yield from self._consume_content_block_delta(
-                    payload,
-                    content_blocks,
-                    input_json_fragments,
-                    chunk_buffer,
-                    on_chunk,
-                    on_delta,
-                    reasoning_collector,
-                    reasoning_response,
-                    on_reasoning,
-                )
-            elif event_type == "content_block_stop":
-                self._finalize_content_block(
-                    payload,
-                    content_blocks,
-                    input_json_fragments,
-                )
-            elif event_type == "message_delta":
-                self._handle_message_delta(payload, message_delta, usage)
-                usage_tracker.record(
-                    chunk_buffer,
-                    self._normalize_stream_usage(usage),
-                )
+            yield from self._consume_stream_event(
+                event,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+            )
 
-        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
-        chat_response = ChatResponse.from_anthropic_response(
-            self._build_stream_response(message_data, content_blocks, message_delta, usage),
-            **parser_kwargs,
-        )
-        if reasoning_collector is not None:
-            streamed_reasoning_events = reasoning_collector.snapshot()
-            if streamed_reasoning_events:
-                chat_response.reasoning_events = streamed_reasoning_events
-        self._prepare_stream_response(
-            chat_response,
-            effective_schema,
-            response_model,
+        chat_response = self._finalize_stream_response(
+            state,
+            capture_reasoning=capture_reasoning,
+            effective_schema=effective_schema,
+            response_model=response_model,
         )
         yield from self._emit_stream_chunks(
-            chunk_buffer.flush(),
+            state.chunk_buffer.flush(),
             on_chunk,
             on_delta,
         )
@@ -391,6 +371,87 @@ class AnthropicAdapter(LLMAdapterBase):
             on_tool_call,
             on_done,
         )
+
+    def _consume_stream_event(
+        self,
+        event: Any,
+        state: _AnthropicStreamState,
+        *,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+        on_reasoning: Optional[OnReasoning],
+    ) -> Iterator[str]:
+        payload = event.data if isinstance(event.data, Mapping) else {}
+        event_type = event.event or payload.get("type")
+        if event_type == "message_start":
+            state.message_data = self._handle_message_start(
+                payload,
+                state.usage,
+                state.message_data,
+            )
+            state.usage_tracker.record(
+                state.chunk_buffer,
+                self._normalize_stream_usage(state.usage),
+            )
+        elif event_type == "content_block_start":
+            self._start_content_block(payload, state.content_blocks)
+        elif event_type == "content_block_delta":
+            yield from self._consume_content_block_delta(
+                payload,
+                state.content_blocks,
+                state.input_json_fragments,
+                state.chunk_buffer,
+                on_chunk,
+                on_delta,
+                state.reasoning_collector,
+                state.reasoning_response,
+                on_reasoning,
+            )
+        elif event_type == "content_block_stop":
+            self._finalize_content_block(
+                payload,
+                state.content_blocks,
+                state.input_json_fragments,
+            )
+        elif event_type == "message_delta":
+            self._handle_message_delta(
+                payload,
+                state.message_delta,
+                state.usage,
+            )
+            state.usage_tracker.record(
+                state.chunk_buffer,
+                self._normalize_stream_usage(state.usage),
+            )
+
+    def _finalize_stream_response(
+        self,
+        state: _AnthropicStreamState,
+        *,
+        capture_reasoning: bool,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        chat_response = ChatResponse.from_anthropic_response(
+            self._build_stream_response(
+                state.message_data,
+                state.content_blocks,
+                state.message_delta,
+                state.usage,
+            ),
+            **parser_kwargs,
+        )
+        if state.reasoning_collector is not None:
+            streamed_reasoning_events = state.reasoning_collector.snapshot()
+            if streamed_reasoning_events:
+                chat_response.reasoning_events = streamed_reasoning_events
+        self._prepare_stream_response(
+            chat_response,
+            effective_schema,
+            response_model,
+        )
+        return chat_response
 
     def _handle_message_start(
         self,
