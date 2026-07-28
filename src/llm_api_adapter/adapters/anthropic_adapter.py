@@ -55,84 +55,137 @@ class AnthropicAdapter(LLMAdapterBase):
         try:
             self._validate_tools(tools)
             effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-            validated_tools = tools
             normalized_tool_choice = self._normalize_tool_choice(
                 tool_choice,
-                validated_tools,
+                tools,
             )
             normalized_messages = self._normalize_messages(messages)
-            system_prompt, transformed_messages = normalized_messages.to_anthropic()
-            params: Dict[str, Any] = {
-                "model": self.model,
-                "messages": transformed_messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "system": system_prompt,
-                "timeout_s": timeout_s,
-                "is_adaptive_thinking": self.is_adaptive_thinking,
-            }
-            if validated_tools:
-                params["tools"] = [
-                    self._to_anthropic_tool(tool)
-                    for tool in validated_tools
-                ]
-            if normalized_tool_choice is not None:
-                params["tool_choice"] = self._to_anthropic_tool_choice(
-                    normalized_tool_choice
-                )
-            if parallel_tool_calls is False:
-                params["disable_parallel_tool_use"] = True
-            elif parallel_tool_calls is True:
-                params["disable_parallel_tool_use"] = False
-            if effective_schema is not None:
-                params["output_config"] = {
-                    "format": {
-                        "type": "json_schema",
-                        "schema": self._enforce_strict_schema(effective_schema),
-                    }
-                }
-            if reasoning_level:
-                normalized_reasoning_level = self._normalize_reasoning_level(
-                    reasoning_level
-                )
-                if normalized_reasoning_level:
-                    if not self.is_adaptive_thinking:
-                        self.validate_reasoning_and_tokens(
-                            max_tokens=max_tokens,
-                            reasoning_level=reasoning_level,
-                            normalized_reasoning_level=normalized_reasoning_level,
-                        )
-                    params["budget_tokens"] = normalized_reasoning_level
-                if self.is_reasoning:
-                    effort = self._reasoning_level_to_effort(reasoning_level)
-                    if effort:
-                        params["effort"] = effort
-            if capture_reasoning:
-                params["capture_reasoning"] = True
-            params = {k: v for k, v in params.items() if v is not None}
+            params = self._build_chat_params(
+                normalized_messages=normalized_messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                timeout_s=timeout_s,
+                tools=tools,
+                normalized_tool_choice=normalized_tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
+                effective_schema=effective_schema,
+                capture_reasoning=capture_reasoning,
+            )
             _ = previous_response
             client = ClaudeSyncClient(api_key=self.api_key)
             response = client.chat_completion(**params)
-            parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
-            chat_response = ChatResponse.from_anthropic_response(
+            chat_response = self._parse_chat_response(
                 response,
-                **parser_kwargs,
+                capture_reasoning=capture_reasoning,
             )
-            chat_response.parsed_json = self._parse_json_response(chat_response.content, effective_schema)
-            chat_response.parsed_model = self._parse_response_model(chat_response.parsed_json, response_model)
-            if self.pricing:
-                chat_response.apply_pricing(
-                    price_input_per_token=self.pricing.in_per_token,
-                    price_output_per_token=self.pricing.out_per_token,
-                    currency=self.pricing.currency,
-                )
-            return chat_response
+            return self._finalize_chat_response(
+                chat_response,
+                effective_schema=effective_schema,
+                response_model=response_model,
+            )
         except LLMAPIError as e:
             self.handle_error(e)
         except Exception as e:
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
+
+    def _build_chat_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        timeout_s: Optional[float],
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        parallel_tool_calls: Optional[bool],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> Dict[str, Any]:
+        system_prompt, transformed_messages = normalized_messages.to_anthropic()
+        params: Dict[str, Any] = {
+            "model": self.model,
+            "messages": transformed_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "system": system_prompt,
+            "timeout_s": timeout_s,
+            "is_adaptive_thinking": self.is_adaptive_thinking,
+        }
+        if tools:
+            params["tools"] = [self._to_anthropic_tool(tool) for tool in tools]
+        if normalized_tool_choice is not None:
+            params["tool_choice"] = self._to_anthropic_tool_choice(
+                normalized_tool_choice
+            )
+        if parallel_tool_calls is False:
+            params["disable_parallel_tool_use"] = True
+        elif parallel_tool_calls is True:
+            params["disable_parallel_tool_use"] = False
+        if effective_schema is not None:
+            params["output_config"] = {
+                "format": {
+                    "type": "json_schema",
+                    "schema": self._enforce_strict_schema(effective_schema),
+                }
+            }
+        if reasoning_level:
+            normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
+            if normalized_reasoning_level:
+                if not self.is_adaptive_thinking:
+                    self.validate_reasoning_and_tokens(
+                        max_tokens=max_tokens,
+                        reasoning_level=reasoning_level,
+                        normalized_reasoning_level=normalized_reasoning_level,
+                    )
+                params["budget_tokens"] = normalized_reasoning_level
+            if self.is_reasoning:
+                effort = self._reasoning_level_to_effort(reasoning_level)
+                if effort:
+                    params["effort"] = effort
+        if capture_reasoning:
+            params["capture_reasoning"] = True
+        return {key: value for key, value in params.items() if value is not None}
+
+    @staticmethod
+    def _parse_chat_response(
+        response: dict,
+        *,
+        capture_reasoning: bool,
+    ) -> ChatResponse:
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        return ChatResponse.from_anthropic_response(
+            response,
+            **parser_kwargs,
+        )
+
+    def _finalize_chat_response(
+        self,
+        chat_response: ChatResponse,
+        *,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        chat_response.parsed_json = self._parse_json_response(
+            chat_response.content,
+            effective_schema,
+        )
+        chat_response.parsed_model = self._parse_response_model(
+            chat_response.parsed_json,
+            response_model,
+        )
+        if self.pricing:
+            chat_response.apply_pricing(
+                price_input_per_token=self.pricing.in_per_token,
+                price_output_per_token=self.pricing.out_per_token,
+                currency=self.pricing.currency,
+            )
+        return chat_response
 
     def stream_chat(
         self,
