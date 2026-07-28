@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 import warnings
@@ -25,6 +25,19 @@ from ..models.responses.chat_response import ChatResponse, Usage
 from ..models.tools import ToolSpec
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _GoogleStreamState:
+    chunk_buffer: StreamChunkBuffer
+    usage_tracker: StreamUsageTracker
+    text_parts: List[str] = field(default_factory=list)
+    function_parts: List[Dict[str, Any]] = field(default_factory=list)
+    finish_reason: Optional[str] = None
+    usage_metadata: Dict[str, Any] = field(default_factory=dict)
+    response_metadata: Dict[str, Any] = field(default_factory=dict)
+    reasoning_collector: Optional[StreamReasoningCollector] = None
+    reasoning_response: Optional[ChatResponse] = None
 
 
 @dataclass(repr=False)
@@ -284,103 +297,32 @@ class GoogleAdapter(LLMAdapterBase):
         capture_reasoning: bool,
         on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
-        text_parts: List[str] = []
-        function_parts: List[Dict[str, Any]] = []
-        finish_reason: Optional[str] = None
-        usage_metadata: Dict[str, Any] = {}
-        response_metadata: Dict[str, Any] = {}
-        chunk_buffer = StreamChunkBuffer(buffer_chars)
-        usage_tracker = StreamUsageTracker()
-        reasoning_collector = (
-            StreamReasoningCollector() if capture_reasoning else None
+        state = _GoogleStreamState(
+            chunk_buffer=StreamChunkBuffer(buffer_chars),
+            usage_tracker=StreamUsageTracker(),
+            reasoning_collector=(
+                StreamReasoningCollector() if capture_reasoning else None
+            ),
+            reasoning_response=ChatResponse() if capture_reasoning else None,
         )
-        reasoning_response = ChatResponse() if capture_reasoning else None
 
         for event in self._iter_provider_stream_events(events):
-            chunk = event.data if isinstance(event.data, Mapping) else {}
-            for field in ("modelVersion", "responseId", "promptFeedback"):
-                if field in chunk:
-                    response_metadata[field] = chunk[field]
-            chunk_usage = chunk.get("usageMetadata")
-            if isinstance(chunk_usage, Mapping):
-                usage_metadata.update(chunk_usage)
-                usage_tracker.record(
-                    chunk_buffer,
-                    self._normalize_stream_usage(usage_metadata),
-                )
-            candidates = chunk.get("candidates")
-            if not isinstance(candidates, list) or not candidates:
-                continue
-            candidate = candidates[0]
-            if not isinstance(candidate, Mapping):
-                continue
-            if candidate.get("finishReason") is not None:
-                finish_reason = str(candidate["finishReason"])
-            content = candidate.get("content")
-            parts = content.get("parts") if isinstance(content, Mapping) else []
-            if not isinstance(parts, list):
-                continue
-            for part in parts:
-                if not isinstance(part, Mapping):
-                    continue
-                text = part.get("text")
-                if part.get("thought"):
-                    if (
-                        reasoning_collector is not None
-                        and reasoning_response is not None
-                        and isinstance(text, str)
-                        and text
-                    ):
-                        self._record_reasoning_event(
-                            reasoning_response,
-                            reasoning_collector,
-                            text,
-                            capture_reasoning=True,
-                            kind="summary",
-                            on_reasoning=on_reasoning,
-                        )
-                elif (
-                    isinstance(text, str)
-                    and text
-                ):
-                    text_parts.append(text)
-                    yield from self._emit_stream_chunks(
-                        chunk_buffer.add(text),
-                        on_chunk,
-                        on_delta,
-                    )
-                if isinstance(part.get("functionCall"), Mapping):
-                    function_parts.append(dict(part))
+            yield from self._consume_stream_event(
+                event,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+            )
 
-        final_parts: List[Dict[str, Any]] = []
-        if text_parts:
-            final_parts.append({"text": "".join(text_parts)})
-        final_parts.extend(function_parts)
-        final_candidate: Dict[str, Any] = {"content": {"parts": final_parts}}
-        if finish_reason is not None:
-            final_candidate["finishReason"] = finish_reason
-        final_response: Dict[str, Any] = {
-            **response_metadata,
-            "candidates": [final_candidate],
-        }
-        if usage_metadata:
-            final_response["usageMetadata"] = usage_metadata
-        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
-        chat_response = ChatResponse.from_google_response(
-            final_response,
-            **parser_kwargs,
-        )
-        if reasoning_collector is not None:
-            streamed_reasoning_events = reasoning_collector.snapshot()
-            if streamed_reasoning_events:
-                chat_response.reasoning_events = streamed_reasoning_events
-        self._prepare_stream_response(
-            chat_response,
-            effective_schema,
-            response_model,
+        chat_response = self._finalize_stream_response(
+            state,
+            capture_reasoning=capture_reasoning,
+            effective_schema=effective_schema,
+            response_model=response_model,
         )
         yield from self._emit_stream_chunks(
-            chunk_buffer.flush(),
+            state.chunk_buffer.flush(),
             on_chunk,
             on_delta,
         )
@@ -389,6 +331,134 @@ class GoogleAdapter(LLMAdapterBase):
             on_tool_call,
             on_done,
         )
+
+    def _consume_stream_event(
+        self,
+        event: Any,
+        state: _GoogleStreamState,
+        *,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+        on_reasoning: Optional[OnReasoning],
+    ) -> Iterator[str]:
+        chunk = event.data if isinstance(event.data, Mapping) else {}
+        self._update_stream_state_from_chunk(chunk, state)
+
+        candidates = chunk.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            return
+        candidate = candidates[0]
+        if not isinstance(candidate, Mapping):
+            return
+        if candidate.get("finishReason") is not None:
+            state.finish_reason = str(candidate["finishReason"])
+        content = candidate.get("content")
+        parts = content.get("parts") if isinstance(content, Mapping) else []
+        if not isinstance(parts, list):
+            return
+        for part in parts:
+            yield from self._consume_stream_part(
+                part,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+            )
+
+    def _update_stream_state_from_chunk(
+        self,
+        chunk: Mapping[str, Any],
+        state: _GoogleStreamState,
+    ) -> None:
+        for field in ("modelVersion", "responseId", "promptFeedback"):
+            if field in chunk:
+                state.response_metadata[field] = chunk[field]
+        chunk_usage = chunk.get("usageMetadata")
+        if isinstance(chunk_usage, Mapping):
+            state.usage_metadata.update(chunk_usage)
+            state.usage_tracker.record(
+                state.chunk_buffer,
+                self._normalize_stream_usage(state.usage_metadata),
+            )
+
+    def _consume_stream_part(
+        self,
+        part: Any,
+        state: _GoogleStreamState,
+        *,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+        on_reasoning: Optional[OnReasoning],
+    ) -> Iterator[str]:
+        if not isinstance(part, Mapping):
+            return
+        text = part.get("text")
+        if part.get("thought"):
+            if (
+                state.reasoning_collector is not None
+                and state.reasoning_response is not None
+                and isinstance(text, str)
+                and text
+            ):
+                self._record_reasoning_event(
+                    state.reasoning_response,
+                    state.reasoning_collector,
+                    text,
+                    capture_reasoning=True,
+                    kind="summary",
+                    on_reasoning=on_reasoning,
+                )
+        elif isinstance(text, str) and text:
+            state.text_parts.append(text)
+            yield from self._emit_stream_chunks(
+                state.chunk_buffer.add(text),
+                on_chunk,
+                on_delta,
+            )
+        if isinstance(part.get("functionCall"), Mapping):
+            state.function_parts.append(dict(part))
+
+    def _finalize_stream_response(
+        self,
+        state: _GoogleStreamState,
+        *,
+        capture_reasoning: bool,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        final_response = self._build_stream_response(state)
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        chat_response = ChatResponse.from_google_response(
+            final_response,
+            **parser_kwargs,
+        )
+        if state.reasoning_collector is not None:
+            streamed_reasoning_events = state.reasoning_collector.snapshot()
+            if streamed_reasoning_events:
+                chat_response.reasoning_events = streamed_reasoning_events
+        self._prepare_stream_response(
+            chat_response,
+            effective_schema,
+            response_model,
+        )
+        return chat_response
+
+    @staticmethod
+    def _build_stream_response(state: _GoogleStreamState) -> Dict[str, Any]:
+        final_parts: List[Dict[str, Any]] = []
+        if state.text_parts:
+            final_parts.append({"text": "".join(state.text_parts)})
+        final_parts.extend(state.function_parts)
+        final_candidate: Dict[str, Any] = {"content": {"parts": final_parts}}
+        if state.finish_reason is not None:
+            final_candidate["finishReason"] = state.finish_reason
+        final_response: Dict[str, Any] = {
+            **state.response_metadata,
+            "candidates": [final_candidate],
+        }
+        if state.usage_metadata:
+            final_response["usageMetadata"] = state.usage_metadata
+        return final_response
 
     def _build_thinking_config(
         self,
