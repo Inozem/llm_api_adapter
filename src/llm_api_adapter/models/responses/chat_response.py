@@ -30,6 +30,14 @@ class _ParsedAnthropicContent:
 
 
 @dataclass
+class _ParsedGoogleContent:
+    text: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+    finish_reason: Optional[str] = None
+    reasoning_events: List[ReasoningEvent] = field(default_factory=list)
+
+
+@dataclass
 class ChatResponse:
     model: Optional[str] = None
     response_id: Optional[str] = None
@@ -365,81 +373,117 @@ class ChatResponse:
         *,
         capture_reasoning: bool = False,
     ) -> "ChatResponse":
-        u = api_response.get("usageMetadata", {}) or {}
-        thoughts_tokens = u.get("thoughtsTokenCount", 0)
-        usage = Usage(
-            input_tokens=u.get("promptTokenCount", 0),
-            output_tokens=u.get("candidatesTokenCount", 0) + thoughts_tokens,
-            total_tokens=u.get("totalTokenCount", 0),
-        )
+        usage = cls._parse_google_usage(api_response)
         first_candidate = (api_response.get("candidates") or [None])[0] or {}
-        finish_reason = first_candidate.get("finishReason")
-        finish_reason_str = str(finish_reason) if finish_reason is not None else None
-        content_obj = first_candidate.get("content") or {}
+        parsed_content = cls._parse_google_content(
+            first_candidate,
+            capture_reasoning=capture_reasoning,
+        )
+        return cls(
+            model=api_response.get("modelVersion"),
+            usage=usage,
+            content=parsed_content.text,
+            tool_calls=parsed_content.tool_calls,
+            finish_reason=parsed_content.finish_reason,
+            reasoning_events=parsed_content.reasoning_events,
+        )
+
+    @staticmethod
+    def _parse_google_usage(api_response: dict) -> Usage:
+        usage_data = api_response.get("usageMetadata", {}) or {}
+        thoughts_tokens = usage_data.get("thoughtsTokenCount", 0)
+        return Usage(
+            input_tokens=usage_data.get("promptTokenCount", 0),
+            output_tokens=usage_data.get("candidatesTokenCount", 0) + thoughts_tokens,
+            total_tokens=usage_data.get("totalTokenCount", 0),
+        )
+
+    @classmethod
+    def _parse_google_content(
+        cls,
+        candidate: dict,
+        *,
+        capture_reasoning: bool,
+    ) -> _ParsedGoogleContent:
+        finish_reason = candidate.get("finishReason")
+        parsed_content = _ParsedGoogleContent(
+            finish_reason=(
+                str(finish_reason) if finish_reason is not None else None
+            )
+        )
+        content_obj = candidate.get("content") or {}
         parts = content_obj.get("parts") or []
         if not isinstance(parts, list):
             raise LLMAPIError(
                 "Google API returned malformed response",
                 detail="content.parts is not a list",
             )
-        parsed_tool_calls: Optional[List[ToolCall]] = None
-        text_content: Optional[str] = None
-        reasoning_events: List[ReasoningEvent] = []
         for part in parts:
-            if not isinstance(part, dict):
-                continue
-            if part.get("thought"):
-                if capture_reasoning:
-                    thought_text = part.get("text")
-                    if isinstance(thought_text, str) and thought_text:
-                        reasoning_events.append(
-                            ReasoningEvent(
-                                text=thought_text,
-                                kind="summary",
-                                index=len(reasoning_events),
-                                elapsed_s=0.0,
-                                delta_s=0.0,
-                            )
+            cls._parse_google_part(
+                part,
+                parsed_content,
+                capture_reasoning=capture_reasoning,
+            )
+        return parsed_content
+
+    @classmethod
+    def _parse_google_part(
+        cls,
+        part: Any,
+        parsed_content: _ParsedGoogleContent,
+        *,
+        capture_reasoning: bool,
+    ) -> None:
+        if not isinstance(part, dict):
+            return
+        if part.get("thought"):
+            if capture_reasoning:
+                thought_text = part.get("text")
+                if isinstance(thought_text, str) and thought_text:
+                    parsed_content.reasoning_events.append(
+                        ReasoningEvent(
+                            text=thought_text,
+                            kind="summary",
+                            index=len(parsed_content.reasoning_events),
+                            elapsed_s=0.0,
+                            delta_s=0.0,
                         )
-            elif text_content is None and "text" in part:
-                text_content = part.get("text")
-            fc = part.get("functionCall") or part.get("function_call")
-            if isinstance(fc, dict) and fc:
-                if parsed_tool_calls is None:
-                    parsed_tool_calls = []
-                name = fc.get("name")
-                if not isinstance(name, str) or not name:
-                    raise InvalidToolArgumentsError(
-                        detail="Google functionCall.name must be non-empty str"
                     )
-                args = fc.get("args") if "args" in fc else fc.get("arguments", {})
-                if args is None:
-                    args = {}
-                if not isinstance(args, dict):
-                    raise InvalidToolArgumentsError(
-                        detail=f"Google functionCall args must be dict for tool={name!r}"
-                    )
-                thought_signature = part.get("thoughtSignature")
-                provider_data = None
-                if thought_signature is not None:
-                    provider_data = {
-                        "thoughtSignature": thought_signature,
-                    }
-                parsed_tool_calls.append(
-                    ToolCall(
-                        name=name,
-                        arguments=args,
-                        call_id=name,
-                        provider_data=provider_data,
-                    )
-                )
-        return cls(
-            model=api_response.get("modelVersion"),
-            usage=usage,
-            content=text_content,
-            tool_calls=parsed_tool_calls,
-            finish_reason=finish_reason_str,
-            reasoning_events=reasoning_events,
+        elif parsed_content.text is None and "text" in part:
+            parsed_content.text = part.get("text")
+        fc = part.get("functionCall") or part.get("function_call")
+        if isinstance(fc, dict) and fc:
+            if parsed_content.tool_calls is None:
+                parsed_content.tool_calls = []
+            parsed_content.tool_calls.append(cls._parse_google_tool_call(part, fc))
+
+    @staticmethod
+    def _parse_google_tool_call(part: dict, function_call: dict) -> ToolCall:
+        name = function_call.get("name")
+        if not isinstance(name, str) or not name:
+            raise InvalidToolArgumentsError(
+                detail="Google functionCall.name must be non-empty str"
+            )
+        args = (
+            function_call.get("args")
+            if "args" in function_call
+            else function_call.get("arguments", {})
+        )
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            raise InvalidToolArgumentsError(
+                detail=f"Google functionCall args must be dict for tool={name!r}"
+            )
+        thought_signature = part.get("thoughtSignature")
+        provider_data = None
+        if thought_signature is not None:
+            provider_data = {"thoughtSignature": thought_signature}
+        return ToolCall(
+            name=name,
+            arguments=args,
+            call_id=name,
+            provider_data=provider_data,
         )
 
     def apply_pricing(
