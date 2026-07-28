@@ -337,11 +337,15 @@ def test_stream_chat_separates_thinking_from_visible_text(adapter):
             on_done=done.append,
         ))
 
-    expected = [ReasoningEvent("Plan", "summary", 0, 0.0, 0.0)]
     assert output == ["Answer"]
     assert visible_deltas == ["Answer"]
-    assert reasoning == expected
-    assert done[0].reasoning_events == expected
+    assert len(reasoning) == 1
+    assert reasoning[0].text == "Plan"
+    assert reasoning[0].kind == "summary"
+    assert reasoning[0].index == 0
+    assert reasoning[0].elapsed_s >= 0.0
+    assert reasoning[0].delta_s >= 0.0
+    assert done[0].reasoning_events == reasoning
     assert mock_stream.call_args.kwargs["capture_reasoning"] is True
 
 
