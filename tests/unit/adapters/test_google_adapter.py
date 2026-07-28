@@ -9,6 +9,7 @@ from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from src.llm_api_adapter.models.tools import ToolSpec
 from src.llm_api_adapter.llms.streaming import SSEEvent
+from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 
 @pytest.fixture
 def adapter():
@@ -121,6 +122,40 @@ def test_chat_adds_thinking_config_when_reasoning_level_set(adapter):
     assert "thinkingConfig" in gen_cfg
     assert isinstance(gen_cfg["thinkingConfig"], dict)
     assert gen_cfg["thinkingConfig"]["includeThoughts"] is False
+
+
+@pytest.mark.unit
+def test_chat_captures_google_thought_summaries_when_opted_in(adapter):
+    fake_response = {
+        "modelVersion": "gemini-2.5-pro",
+        "candidates": [{
+            "content": {
+                "parts": [
+                    {"text": "Plan", "thought": True},
+                    {"text": "Answer"},
+                ]
+            }
+        }],
+    }
+
+    with patch.object(
+        GeminiSyncClient,
+        "chat_completion",
+        return_value=fake_response,
+    ) as mock_client:
+        response = adapter.chat(
+            [UserMessage("hi")],
+            capture_reasoning=True,
+        )
+
+    thinking_config = mock_client.call_args.kwargs["generationConfig"][
+        "thinkingConfig"
+    ]
+    assert thinking_config == {"includeThoughts": True}
+    assert response.content == "Answer"
+    assert response.reasoning_events == [
+        ReasoningEvent("Plan", "summary", 0, 0.0, 0.0),
+    ]
 
 @pytest.mark.unit
 def test_normalize_reasoning_level_bool_raises(adapter):
@@ -250,6 +285,47 @@ def test_stream_chat_normalizes_chunks_excludes_thoughts_and_finalizes(adapter):
     assert done[0].usage.total_tokens == 5
     assert tool_calls[0].name == "get_weather"
     assert tool_calls[0].arguments == {"city": "Tel Aviv"}
+
+
+@pytest.mark.unit
+def test_stream_chat_captures_google_thought_summaries_separately(adapter):
+    events = iter([
+        SSEEvent(data={
+            "candidates": [{
+                "content": {"parts": [{"text": "Plan", "thought": True}]}
+            }],
+        }, event=None),
+        SSEEvent(data={
+            "candidates": [{
+                "content": {"parts": [{"text": "Answer"}]}
+            }],
+        }, event=None),
+        SSEEvent(data={
+            "candidates": [{
+                "content": {"parts": [{"text": "Details", "thought": True}]},
+                "finishReason": "STOP",
+            }],
+        }, event=None),
+    ])
+    reasoning = []
+    done = []
+
+    with patch.object(GeminiSyncClient, "stream", return_value=events) as mock_stream:
+        output = list(adapter.stream_chat(
+            [UserMessage("hi")],
+            capture_reasoning=True,
+            on_reasoning=reasoning.append,
+            on_done=done.append,
+        ))
+
+    assert output == ["Answer"]
+    assert [event.text for event in reasoning] == ["Plan", "Details"]
+    assert done[0].content == "Answer"
+    assert done[0].reasoning_events == reasoning
+    thinking_config = mock_stream.call_args.kwargs["generationConfig"][
+        "thinkingConfig"
+    ]
+    assert thinking_config == {"includeThoughts": True}
 
 
 @pytest.mark.unit

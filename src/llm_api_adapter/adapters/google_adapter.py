@@ -15,7 +15,11 @@ from ..adapters.base_adapter import (
 )
 from ..errors.llm_api_error import LLMAPIError
 from ..llms.google.sync_client import GeminiSyncClient
-from ..llms.streaming import StreamChunkBuffer, StreamUsageTracker
+from ..llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+    StreamUsageTracker,
+)
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse, Usage
 from ..models.tools import ToolSpec
@@ -75,15 +79,12 @@ class GoogleAdapter(LLMAdapterBase):
             if effective_schema is not None:
                 generation_config["responseMimeType"] = "application/json"
                 generation_config["responseSchema"] = self._to_google_schema(effective_schema)
-            if reasoning_level:
-                normalized_reasoning_level = self._normalize_reasoning_level(
-                    reasoning_level
-                )
-                if normalized_reasoning_level is not None:
-                    generation_config["thinkingConfig"] = {
-                        "thinkingBudget": normalized_reasoning_level,
-                        "includeThoughts": False,
-                    }
+            thinking_config = self._build_thinking_config(
+                reasoning_level=reasoning_level,
+                capture_reasoning=capture_reasoning,
+            )
+            if thinking_config is not None:
+                generation_config["thinkingConfig"] = thinking_config
             payload: Dict[str, Any] = {
                 "contents": transformed_messages,
                 "generationConfig": generation_config,
@@ -111,7 +112,11 @@ class GoogleAdapter(LLMAdapterBase):
                 timeout_s=timeout_s,
                 **payload,
             )
-            chat_response = ChatResponse.from_google_response(response_json)
+            parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+            chat_response = ChatResponse.from_google_response(
+                response_json,
+                **parser_kwargs,
+            )
             chat_response.parsed_json = self._parse_json_response(chat_response.content, effective_schema)
             chat_response.parsed_model = self._parse_response_model(chat_response.parsed_json, response_model)
             if self.pricing:
@@ -166,6 +171,7 @@ class GoogleAdapter(LLMAdapterBase):
             tools=tools,
             normalized_tool_choice=normalized_tool_choice,
             effective_schema=effective_schema,
+            capture_reasoning=capture_reasoning,
         )
         _ = parallel_tool_calls
         client = GeminiSyncClient(self.api_key)
@@ -179,6 +185,8 @@ class GoogleAdapter(LLMAdapterBase):
             on_done,
             buffer_chars,
             on_chunk,
+            capture_reasoning,
+            on_reasoning,
         )
 
     def _build_stream_payload(
@@ -192,6 +200,7 @@ class GoogleAdapter(LLMAdapterBase):
         tools: Optional[List[ToolSpec]],
         normalized_tool_choice: Optional[str],
         effective_schema: Optional[dict],
+        capture_reasoning: bool,
     ) -> Dict[str, Any]:
         system_prompt, transformed_messages = normalized_messages.to_google()
         generation_config: Dict[str, Any] = {
@@ -202,13 +211,12 @@ class GoogleAdapter(LLMAdapterBase):
         if effective_schema is not None:
             generation_config["responseMimeType"] = "application/json"
             generation_config["responseSchema"] = self._to_google_schema(effective_schema)
-        if reasoning_level:
-            normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
-            if normalized_reasoning_level is not None:
-                generation_config["thinkingConfig"] = {
-                    "thinkingBudget": normalized_reasoning_level,
-                    "includeThoughts": False,
-                }
+        thinking_config = self._build_thinking_config(
+            reasoning_level=reasoning_level,
+            capture_reasoning=capture_reasoning,
+        )
+        if thinking_config is not None:
+            generation_config["thinkingConfig"] = thinking_config
         payload: Dict[str, Any] = {
             "contents": transformed_messages,
             "generationConfig": generation_config,
@@ -236,6 +244,8 @@ class GoogleAdapter(LLMAdapterBase):
         on_done: Optional[OnDone],
         buffer_chars: Optional[int],
         on_chunk: Optional[OnChunk],
+        capture_reasoning: bool,
+        on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
         text_parts: List[str] = []
         function_parts: List[Dict[str, Any]] = []
@@ -244,6 +254,10 @@ class GoogleAdapter(LLMAdapterBase):
         response_metadata: Dict[str, Any] = {}
         chunk_buffer = StreamChunkBuffer(buffer_chars)
         usage_tracker = StreamUsageTracker()
+        reasoning_collector = (
+            StreamReasoningCollector() if capture_reasoning else None
+        )
+        reasoning_response = ChatResponse() if capture_reasoning else None
 
         for event in self._iter_provider_stream_events(events):
             chunk = event.data if isinstance(event.data, Mapping) else {}
@@ -273,10 +287,24 @@ class GoogleAdapter(LLMAdapterBase):
                 if not isinstance(part, Mapping):
                     continue
                 text = part.get("text")
-                if (
+                if part.get("thought"):
+                    if (
+                        reasoning_collector is not None
+                        and reasoning_response is not None
+                        and isinstance(text, str)
+                        and text
+                    ):
+                        self._record_reasoning_event(
+                            reasoning_response,
+                            reasoning_collector,
+                            text,
+                            capture_reasoning=True,
+                            kind="summary",
+                            on_reasoning=on_reasoning,
+                        )
+                elif (
                     isinstance(text, str)
                     and text
-                    and not part.get("thought", False)
                 ):
                     text_parts.append(text)
                     yield from self._emit_stream_chunks(
@@ -300,7 +328,15 @@ class GoogleAdapter(LLMAdapterBase):
         }
         if usage_metadata:
             final_response["usageMetadata"] = usage_metadata
-        chat_response = ChatResponse.from_google_response(final_response)
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        chat_response = ChatResponse.from_google_response(
+            final_response,
+            **parser_kwargs,
+        )
+        if reasoning_collector is not None:
+            streamed_reasoning_events = reasoning_collector.snapshot()
+            if streamed_reasoning_events:
+                chat_response.reasoning_events = streamed_reasoning_events
         self._prepare_stream_response(
             chat_response,
             effective_schema,
@@ -316,6 +352,24 @@ class GoogleAdapter(LLMAdapterBase):
             on_tool_call,
             on_done,
         )
+
+    def _build_thinking_config(
+        self,
+        *,
+        reasoning_level: Optional[str | int],
+        capture_reasoning: bool,
+    ) -> Optional[Dict[str, Any]]:
+        thinking_config: Dict[str, Any] = {}
+        if reasoning_level:
+            normalized_reasoning_level = self._normalize_reasoning_level(
+                reasoning_level
+            )
+            if normalized_reasoning_level is not None:
+                thinking_config["thinkingBudget"] = normalized_reasoning_level
+                thinking_config["includeThoughts"] = False
+        if capture_reasoning:
+            thinking_config["includeThoughts"] = True
+        return thinking_config or None
 
     @staticmethod
     def _normalize_stream_usage(raw_usage: Mapping[str, Any]) -> Optional[Usage]:

@@ -359,7 +359,12 @@ class ChatResponse:
         )
 
     @classmethod
-    def from_google_response(cls, api_response: dict) -> "ChatResponse":
+    def from_google_response(
+        cls,
+        api_response: dict,
+        *,
+        capture_reasoning: bool = False,
+    ) -> "ChatResponse":
         u = api_response.get("usageMetadata", {}) or {}
         thoughts_tokens = u.get("thoughtsTokenCount", 0)
         usage = Usage(
@@ -379,10 +384,24 @@ class ChatResponse:
             )
         parsed_tool_calls: Optional[List[ToolCall]] = None
         text_content: Optional[str] = None
+        reasoning_events: List[ReasoningEvent] = []
         for part in parts:
             if not isinstance(part, dict):
                 continue
-            if text_content is None and "text" in part:
+            if part.get("thought"):
+                if capture_reasoning:
+                    thought_text = part.get("text")
+                    if isinstance(thought_text, str) and thought_text:
+                        reasoning_events.append(
+                            ReasoningEvent(
+                                text=thought_text,
+                                kind="summary",
+                                index=len(reasoning_events),
+                                elapsed_s=0.0,
+                                delta_s=0.0,
+                            )
+                        )
+            elif text_content is None and "text" in part:
                 text_content = part.get("text")
             fc = part.get("functionCall") or part.get("function_call")
             if isinstance(fc, dict) and fc:
@@ -420,6 +439,7 @@ class ChatResponse:
             content=text_content,
             tool_calls=parsed_tool_calls,
             finish_reason=finish_reason_str,
+            reasoning_events=reasoning_events,
         )
 
     def apply_pricing(

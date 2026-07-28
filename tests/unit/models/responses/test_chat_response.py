@@ -616,6 +616,35 @@ def test_from_google_response():
 
 
 @pytest.mark.unit
+def test_from_google_response_captures_thought_parts_only_when_opted_in():
+    api_response = {
+        "candidates": [{
+            "content": {
+                "parts": [
+                    {"text": "Plan", "thought": True},
+                    {"text": "Answer"},
+                    {"text": "Details", "thought": True},
+                ]
+            }
+        }],
+    }
+
+    without_capture = ChatResponse.from_google_response(api_response)
+    with_capture = ChatResponse.from_google_response(
+        api_response,
+        capture_reasoning=True,
+    )
+
+    assert without_capture.content == "Answer"
+    assert without_capture.reasoning_events == []
+    assert with_capture.content == "Answer"
+    assert with_capture.reasoning_events == [
+        ReasoningEvent("Plan", "summary", 0, 0.0, 0.0),
+        ReasoningEvent("Details", "summary", 1, 0.0, 0.0),
+    ]
+
+
+@pytest.mark.unit
 def test_from_google_response_parses_usage_and_function_call():
     api_response = {
         "usageMetadata": {
