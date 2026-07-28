@@ -1,20 +1,40 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 import warnings
 
-from ..adapters.base_adapter import LLMAdapterBase, OnChunk, OnDelta, OnDone, OnToolCall
+from ..adapters.base_adapter import (
+    LLMAdapterBase,
+    OnChunk,
+    OnDelta,
+    OnDone,
+    OnReasoning,
+    OnToolCall,
+    _StreamState,
+)
 from ..errors.llm_api_error import LLMAPIError
-from ..llms.streaming import StreamChunkBuffer, StreamUsageTracker
+from ..llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+    StreamUsageTracker,
+)
 from ..llms.openai.sync_client import OpenAISyncClient
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse, Usage
 from ..models.tools import ToolSpec
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _ResponsesStreamState(_StreamState):
+    final_response: Optional[dict] = None
+    response_metadata: Dict[str, Any] = field(default_factory=dict)
+    text_parts: List[str] = field(default_factory=list)
+    function_calls: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(repr=False)
@@ -35,113 +55,185 @@ class OpenAIAdapter(LLMAdapterBase):
         previous_response: Optional[ChatResponse] = None,
         json_schema: Optional[dict] = None,
         response_model: Optional[Any] = None,
+        *,
+        capture_reasoning: bool = False,
     ) -> ChatResponse:
-        temperature = self._validate_parameter(
-            name="temperature",
-            value=temperature,
-            min_value=0,
-            max_value=2,
+        temperature, top_p = self._validate_sampling_parameters(
+            temperature,
+            top_p,
         )
-        top_p = self._validate_parameter(
-            name="top_p",
-            value=top_p,
-            min_value=0,
-            max_value=1,
+        request_context = self._prepare_chat_request(
+            messages,
+            tools,
+            tool_choice,
+            json_schema,
+            response_model,
         )
-        self._validate_tools(tools)
-        effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-        normalized_tool_choice = self._normalize_tool_choice(tool_choice, tools)
+        effective_schema = request_context.effective_schema
+        normalized_tool_choice = request_context.normalized_tool_choice
 
         try:
             client = OpenAISyncClient(api_key=self.api_key)
-            normalized_messages = self._normalize_messages(messages)
+            normalized_messages = request_context.normalized_messages
             use_responses_api = client._should_use_responses_api(self.model)
-            normalized_reasoning_level = self._normalize_reasoning_level(
-                reasoning_level
+            params = self._build_chat_params(
+                normalized_messages=normalized_messages,
+                use_responses_api=use_responses_api,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                tools=tools,
+                normalized_tool_choice=normalized_tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
+                previous_response=previous_response,
+                effective_schema=effective_schema,
+                capture_reasoning=capture_reasoning,
             )
-
-            previous_response_id: Optional[str] = None
-            if previous_response is not None:
-                previous_response_id = previous_response.response_id
-
-            if use_responses_api:
-                transformed_messages = normalized_messages.to_openai_responses_input()
-                instructions = normalized_messages.to_openai_responses_instructions()
-                openai_tools = self._map_tools_to_openai_responses(tools)
-                openai_tool_choice = self._map_tool_choice_to_openai_responses(
-                    normalized_tool_choice
-                )
-            else:
-                transformed_messages = normalized_messages.to_openai()
-                instructions = None
-                openai_tools = self._map_tools_to_openai(tools)
-                openai_tool_choice = self._map_tool_choice_to_openai(
-                    normalized_tool_choice
-                )
-
-            params: Dict[str, Any] = {
-                "model": self.model,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "reasoning_effort": normalized_reasoning_level,
-                "tools": openai_tools,
-                "tool_choice": openai_tool_choice,
-            }
-
-            if use_responses_api:
-                params["input"] = transformed_messages
-                if instructions is not None:
-                    params["instructions"] = instructions
-                if previous_response_id is not None:
-                    params["previous_response_id"] = previous_response_id
-                if effective_schema is not None:
-                    params["text"] = {
-                        "format": {
-                            "type": "json_schema",
-                            "name": "response",
-                            "strict": True,
-                            "schema": self._enforce_strict_schema(effective_schema),
-                        }
-                    }
-            else:
-                params["messages"] = transformed_messages
-                params["parallel_tool_calls"] = parallel_tool_calls
-                if effective_schema is not None:
-                    params["response_format"] = {
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "response",
-                            "strict": True,
-                            "schema": self._enforce_strict_schema(effective_schema),
-                        },
-                    }
-
-            params = {k: v for k, v in params.items() if v is not None}
             response = client.complete(timeout=timeout_s, **params)
-
-            if use_responses_api:
-                chat_response = ChatResponse.from_openai_responses_response(response)
-            else:
-                chat_response = ChatResponse.from_openai_response(response)
-
-            chat_response.parsed_json = self._parse_json_response(chat_response.content, effective_schema)
-            chat_response.parsed_model = self._parse_response_model(chat_response.parsed_json, response_model)
-
-            if self.pricing:
-                chat_response.apply_pricing(
-                    price_input_per_token=self.pricing.in_per_token,
-                    price_output_per_token=self.pricing.out_per_token,
-                    currency=self.pricing.currency,
-                )
-
-            return chat_response
+            chat_response = self._parse_chat_response(
+                response,
+                use_responses_api=use_responses_api,
+                capture_reasoning=capture_reasoning,
+            )
+            return self._finalize_chat_response(
+                chat_response,
+                effective_schema=effective_schema,
+                response_model=response_model,
+            )
 
         except LLMAPIError as e:
             self.handle_error(e)
         except Exception as e:
             error_message = getattr(e, "text", None) or str(e)
             self.handle_error(error=e, error_message=error_message)
+
+    def _build_chat_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        use_responses_api: bool,
+        max_tokens: Optional[int],
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        parallel_tool_calls: Optional[bool],
+        previous_response: Optional[ChatResponse],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> Dict[str, Any]:
+        normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
+        params: Dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "reasoning_effort": normalized_reasoning_level,
+        }
+
+        if use_responses_api:
+            params.update(
+                self._build_responses_chat_params(
+                    normalized_messages=normalized_messages,
+                    tools=tools,
+                    normalized_tool_choice=normalized_tool_choice,
+                    previous_response=previous_response,
+                    effective_schema=effective_schema,
+                    capture_reasoning=capture_reasoning,
+                )
+            )
+        else:
+            params.update(
+                self._build_chat_completions_params(
+                    normalized_messages=normalized_messages,
+                    tools=tools,
+                    normalized_tool_choice=normalized_tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
+                    effective_schema=effective_schema,
+                )
+            )
+
+        return {key: value for key, value in params.items() if value is not None}
+
+    def _build_responses_chat_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        previous_response: Optional[ChatResponse],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "input": normalized_messages.to_openai_responses_input(),
+            "tools": self._map_tools_to_openai_responses(tools),
+            "tool_choice": self._map_tool_choice_to_openai_responses(
+                normalized_tool_choice
+            ),
+        }
+        if capture_reasoning:
+            params["capture_reasoning"] = True
+        instructions = normalized_messages.to_openai_responses_instructions()
+        if instructions is not None:
+            params["instructions"] = instructions
+        if previous_response is not None and previous_response.response_id is not None:
+            params["previous_response_id"] = previous_response.response_id
+        if effective_schema is not None:
+            params["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "response",
+                    "strict": True,
+                    "schema": self._enforce_strict_schema(effective_schema),
+                }
+            }
+        return params
+
+    def _build_chat_completions_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        parallel_tool_calls: Optional[bool],
+        effective_schema: Optional[dict],
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "messages": normalized_messages.to_openai(),
+            "tools": self._map_tools_to_openai(tools),
+            "tool_choice": self._map_tool_choice_to_openai(
+                normalized_tool_choice
+            ),
+            "parallel_tool_calls": parallel_tool_calls,
+        }
+        if effective_schema is not None:
+            params["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "strict": True,
+                    "schema": self._enforce_strict_schema(effective_schema),
+                },
+            }
+        return params
+
+    @staticmethod
+    def _parse_chat_response(
+        response: dict,
+        *,
+        use_responses_api: bool,
+        capture_reasoning: bool,
+    ) -> ChatResponse:
+        if use_responses_api:
+            parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+            return ChatResponse.from_openai_responses_response(
+                response,
+                **parser_kwargs,
+            )
+        return ChatResponse.from_openai_response(response)
 
     def stream_chat(
         self,
@@ -162,14 +254,25 @@ class OpenAIAdapter(LLMAdapterBase):
         on_done: Optional[OnDone] = None,
         buffer_chars: Optional[int] = None,
         on_chunk: Optional[OnChunk] = None,
+        *,
+        capture_reasoning: bool = False,
+        on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
-        temperature = self._validate_parameter("temperature", temperature, 0, 2)
-        top_p = self._validate_parameter("top_p", top_p, 0, 1)
-        self._validate_tools(tools)
-        effective_schema = self._resolve_json_schema(json_schema, response_model, tools)
-        normalized_tool_choice = self._normalize_tool_choice(tool_choice, tools)
+        temperature, top_p = self._validate_sampling_parameters(
+            temperature,
+            top_p,
+        )
+        request_context = self._prepare_chat_request(
+            messages,
+            tools,
+            tool_choice,
+            json_schema,
+            response_model,
+        )
+        effective_schema = request_context.effective_schema
+        normalized_tool_choice = request_context.normalized_tool_choice
         client = OpenAISyncClient(api_key=self.api_key)
-        normalized_messages = self._normalize_messages(messages)
+        normalized_messages = request_context.normalized_messages
         use_responses_api = client._should_use_responses_api(self.model)
         params = self._build_stream_params(
             normalized_messages=normalized_messages,
@@ -183,6 +286,7 @@ class OpenAIAdapter(LLMAdapterBase):
             parallel_tool_calls=parallel_tool_calls,
             previous_response=previous_response,
             effective_schema=effective_schema,
+            capture_reasoning=capture_reasoning,
         )
         events = client.stream(timeout=timeout_s, **params)
         if use_responses_api:
@@ -195,6 +299,8 @@ class OpenAIAdapter(LLMAdapterBase):
                 on_done,
                 buffer_chars,
                 on_chunk,
+                capture_reasoning,
+                on_reasoning,
             )
             return
         yield from self._consume_chat_completions_stream(
@@ -222,6 +328,7 @@ class OpenAIAdapter(LLMAdapterBase):
         parallel_tool_calls: Optional[bool],
         previous_response: Optional[ChatResponse],
         effective_schema: Optional[dict],
+        capture_reasoning: bool,
     ) -> Dict[str, Any]:
         params: Dict[str, Any] = {
             "model": self.model,
@@ -250,6 +357,8 @@ class OpenAIAdapter(LLMAdapterBase):
                         "schema": self._enforce_strict_schema(effective_schema),
                     }
                 }
+            if capture_reasoning:
+                params["capture_reasoning"] = True
         else:
             params["messages"] = normalized_messages.to_openai()
             params["tools"] = self._map_tools_to_openai(tools)
@@ -278,89 +387,207 @@ class OpenAIAdapter(LLMAdapterBase):
         on_done: Optional[OnDone],
         buffer_chars: Optional[int],
         on_chunk: Optional[OnChunk],
+        capture_reasoning: bool,
+        on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
-        final_response: Optional[dict] = None
-        response_metadata: Dict[str, Any] = {}
-        text_parts: List[str] = []
-        function_calls: Dict[str, Dict[str, Any]] = {}
-        chunk_buffer = StreamChunkBuffer(buffer_chars)
-        usage_tracker = StreamUsageTracker()
-        for event in self._iter_provider_stream_events(events):
-            payload = event.data if isinstance(event.data, Mapping) else {}
-            event_type = event.event or payload.get("type")
-            response_data = payload.get("response")
-            if isinstance(response_data, Mapping):
-                response_metadata.update(response_data)
-            usage_tracker.record(
-                chunk_buffer,
-                self._normalize_stream_usage(
-                    self._response_event_usage(payload, response_data),
-                    input_field="input_tokens",
-                    output_field="output_tokens",
-                ),
-            )
-            if event_type == "response.output_text.delta":
-                delta = payload.get("delta")
-                if isinstance(delta, str) and delta:
-                    text_parts.append(delta)
-                    yield from self._emit_stream_chunks(
-                        chunk_buffer.add(delta),
-                        on_chunk,
-                        on_delta,
-                    )
-            elif event_type in (
-                "response.function_call_arguments.delta",
-                "response.function_call_arguments.done",
-            ):
-                call_key = str(
-                    payload.get("call_id")
-                    or payload.get("item_id")
-                    or payload.get("output_index")
-                    or len(function_calls)
-                )
-                call = function_calls.setdefault(
-                    call_key,
-                    {"type": "function_call", "arguments": ""},
-                )
-                call["call_id"] = payload.get("call_id") or call.get("call_id")
-                call["id"] = payload.get("item_id") or call.get("id")
-                call["name"] = payload.get("name") or call.get("name")
-                if event_type.endswith(".delta") and isinstance(payload.get("delta"), str):
-                    call["arguments"] = f"{call.get('arguments', '')}{payload['delta']}"
-                elif "arguments" in payload:
-                    call["arguments"] = payload["arguments"]
-            elif event_type == "response.completed" and isinstance(response_data, Mapping):
-                final_response = dict(response_data)
-        if final_response is None:
-            output: List[Dict[str, Any]] = []
-            if text_parts:
-                output.append({
-                    "type": "message",
-                    "content": [{"type": "output_text", "text": "".join(text_parts)}],
-                })
-            output.extend(function_calls.values())
-            final_response = {
-                **response_metadata,
-                "model": response_metadata.get("model", self.model),
-                "output": output,
-                "status": response_metadata.get("status", "completed"),
-            }
-        chat_response = ChatResponse.from_openai_responses_response(final_response)
-        self._prepare_stream_response(
-            chat_response,
-            effective_schema,
-            response_model,
+        state = _ResponsesStreamState(
+            chunk_buffer=StreamChunkBuffer(buffer_chars),
+            usage_tracker=StreamUsageTracker(),
+            reasoning_collector=(
+                StreamReasoningCollector() if capture_reasoning else None
+            ),
+            reasoning_response=ChatResponse() if capture_reasoning else None,
         )
-        yield from self._emit_stream_chunks(
-            chunk_buffer.flush(),
+        for event in self._iter_provider_stream_events(events):
+            yield from self._consume_responses_stream_event(
+                event,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+            )
+
+        chat_response = self._finalize_responses_stream(
+            state,
+            capture_reasoning=capture_reasoning,
+            effective_schema=effective_schema,
+            response_model=response_model,
+        )
+        yield from self._complete_stream(
+            chat_response,
+            state.chunk_buffer,
             on_chunk,
             on_delta,
-        )
-        self._invoke_stream_completion_callbacks(
-            chat_response,
             on_tool_call,
             on_done,
         )
+
+    def _consume_responses_stream_event(
+        self,
+        event: Any,
+        state: _ResponsesStreamState,
+        *,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+        on_reasoning: Optional[OnReasoning],
+    ) -> Iterator[str]:
+        payload = event.data if isinstance(event.data, Mapping) else {}
+        event_type = event.event or payload.get("type")
+        response_data = payload.get("response")
+        if isinstance(response_data, Mapping):
+            state.response_metadata.update(response_data)
+        state.usage_tracker.record(
+            state.chunk_buffer,
+            self._normalize_stream_usage(
+                self._response_event_usage(payload, response_data),
+                input_field="input_tokens",
+                output_field="output_tokens",
+            ),
+        )
+
+        if event_type in (
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_text.delta",
+        ):
+            self._handle_responses_reasoning_delta(
+                payload,
+                event_type,
+                state,
+                on_reasoning,
+            )
+        elif event_type == "response.output_text.delta":
+            yield from self._handle_responses_output_text_delta(
+                payload,
+                state,
+                on_chunk,
+                on_delta,
+            )
+        elif event_type in (
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
+        ):
+            self._handle_responses_function_call_event(
+                payload,
+                event_type,
+                state,
+            )
+        elif event_type == "response.completed" and isinstance(response_data, Mapping):
+            state.final_response = dict(response_data)
+
+    def _handle_responses_reasoning_delta(
+        self,
+        payload: Mapping[str, Any],
+        event_type: str,
+        state: _ResponsesStreamState,
+        on_reasoning: Optional[OnReasoning],
+    ) -> None:
+        delta = payload.get("delta")
+        if (
+            state.reasoning_collector is None
+            or state.reasoning_response is None
+            or not isinstance(delta, str)
+            or not delta
+        ):
+            return
+        self._record_reasoning_event(
+            state.reasoning_response,
+            state.reasoning_collector,
+            delta,
+            capture_reasoning=True,
+            kind=(
+                "summary"
+                if event_type == "response.reasoning_summary_text.delta"
+                else "content"
+            ),
+            on_reasoning=on_reasoning,
+        )
+
+    def _handle_responses_output_text_delta(
+        self,
+        payload: Mapping[str, Any],
+        state: _ResponsesStreamState,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+    ) -> Iterator[str]:
+        delta = payload.get("delta")
+        if not isinstance(delta, str) or not delta:
+            return
+        state.text_parts.append(delta)
+        yield from self._emit_stream_chunks(
+            state.chunk_buffer.add(delta),
+            on_chunk,
+            on_delta,
+        )
+
+    @staticmethod
+    def _handle_responses_function_call_event(
+        payload: Mapping[str, Any],
+        event_type: str,
+        state: _ResponsesStreamState,
+    ) -> None:
+        call_key = str(
+            payload.get("call_id")
+            or payload.get("item_id")
+            or payload.get("output_index")
+            or len(state.function_calls)
+        )
+        call = state.function_calls.setdefault(
+            call_key,
+            {"type": "function_call", "arguments": ""},
+        )
+        call["call_id"] = payload.get("call_id") or call.get("call_id")
+        call["id"] = payload.get("item_id") or call.get("id")
+        call["name"] = payload.get("name") or call.get("name")
+        if event_type.endswith(".delta") and isinstance(payload.get("delta"), str):
+            call["arguments"] = f"{call.get('arguments', '')}{payload['delta']}"
+        elif "arguments" in payload:
+            call["arguments"] = payload["arguments"]
+
+    def _finalize_responses_stream(
+        self,
+        state: _ResponsesStreamState,
+        *,
+        capture_reasoning: bool,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        if state.final_response is None:
+            final_response = self._build_responses_stream_response(state)
+        else:
+            final_response = state.final_response
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+        chat_response = ChatResponse.from_openai_responses_response(
+            final_response,
+            **parser_kwargs,
+        )
+        return super()._finalize_stream_response(
+            chat_response,
+            reasoning_collector=state.reasoning_collector,
+            effective_schema=effective_schema,
+            response_model=response_model,
+        )
+
+    def _build_responses_stream_response(
+        self,
+        state: _ResponsesStreamState,
+    ) -> Dict[str, Any]:
+        output: List[Dict[str, Any]] = []
+        if state.text_parts:
+            output.append(
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "".join(state.text_parts)}
+                    ],
+                }
+            )
+        output.extend(state.function_calls.values())
+        return {
+            **state.response_metadata,
+            "model": state.response_metadata.get("model", self.model),
+            "output": output,
+            "status": state.response_metadata.get("status", "completed"),
+        }
 
     def _consume_chat_completions_stream(
         self,
@@ -413,18 +640,16 @@ class OpenAIAdapter(LLMAdapterBase):
             tool_calls,
             finish_reason,
         )
-        self._prepare_stream_response(
+        chat_response = super()._finalize_stream_response(
             chat_response,
-            effective_schema,
-            response_model,
+            effective_schema=effective_schema,
+            response_model=response_model,
         )
-        yield from self._emit_stream_chunks(
-            chunk_buffer.flush(),
+        yield from self._complete_stream(
+            chat_response,
+            chunk_buffer,
             on_chunk,
             on_delta,
-        )
-        self._invoke_stream_completion_callbacks(
-            chat_response,
             on_tool_call,
             on_done,
         )

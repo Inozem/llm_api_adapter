@@ -5,6 +5,7 @@ from src.llm_api_adapter.errors.llm_api_error import (
     LLMAPIError,
 )
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
+from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from src.llm_api_adapter.models.tools import ToolCall
 
 
@@ -324,6 +325,37 @@ def test_from_openai_responses_response_parses_text_and_tool_calls():
 
 
 @pytest.mark.unit
+def test_from_openai_responses_response_parses_reasoning_only_when_opted_in():
+    api_response = {
+        "model": "gpt-5",
+        "output": [
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "Plan"}],
+                "content": [{"type": "reasoning_text", "text": "Details"}],
+            },
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Answer"}],
+            },
+        ],
+    }
+
+    without_capture = ChatResponse.from_openai_responses_response(api_response)
+    with_capture = ChatResponse.from_openai_responses_response(
+        api_response,
+        capture_reasoning=True,
+    )
+
+    assert without_capture.reasoning_events == []
+    assert with_capture.reasoning_events == [
+        ReasoningEvent("Plan", "summary", 0, 0.0, 0.0),
+        ReasoningEvent("Details", "content", 1, 0.0, 0.0),
+    ]
+    assert with_capture.content == "Answer"
+
+
+@pytest.mark.unit
 def test_from_openai_responses_response_uses_id_when_call_id_missing():
     api_response = {
         "output": [
@@ -490,6 +522,34 @@ def test_from_anthropic_response():
 
 
 @pytest.mark.unit
+def test_from_anthropic_response_captures_thinking_only_when_opted_in():
+    api_response = {
+        "model": "claude-sonnet-4-5",
+        "content": [
+            {
+                "type": "thinking",
+                "thinking": "Plan",
+                "signature": "do-not-expose",
+            },
+            {"type": "redacted_thinking", "data": "do-not-expose"},
+            {"type": "text", "text": "Answer"},
+        ],
+    }
+
+    without_capture = ChatResponse.from_anthropic_response(api_response)
+    with_capture = ChatResponse.from_anthropic_response(
+        api_response,
+        capture_reasoning=True,
+    )
+
+    assert without_capture.reasoning_events == []
+    assert with_capture.reasoning_events == [
+        ReasoningEvent("Plan", "summary", 0, 0.0, 0.0),
+    ]
+    assert with_capture.content == "Answer"
+
+
+@pytest.mark.unit
 def test_from_anthropic_response_parses_tool_use_blocks():
     api_response = {
         "usage": {"input_tokens": 5, "output_tokens": 7},
@@ -553,6 +613,35 @@ def test_from_google_response():
     assert response.usage.total_tokens == 42
     assert response.content == "Hello from Google!"
     assert response.finish_reason == "length"
+
+
+@pytest.mark.unit
+def test_from_google_response_captures_thought_parts_only_when_opted_in():
+    api_response = {
+        "candidates": [{
+            "content": {
+                "parts": [
+                    {"text": "Plan", "thought": True},
+                    {"text": "Answer"},
+                    {"text": "Details", "thought": True},
+                ]
+            }
+        }],
+    }
+
+    without_capture = ChatResponse.from_google_response(api_response)
+    with_capture = ChatResponse.from_google_response(
+        api_response,
+        capture_reasoning=True,
+    )
+
+    assert without_capture.content == "Answer"
+    assert without_capture.reasoning_events == []
+    assert with_capture.content == "Answer"
+    assert with_capture.reasoning_events == [
+        ReasoningEvent("Plan", "summary", 0, 0.0, 0.0),
+        ReasoningEvent("Details", "summary", 1, 0.0, 0.0),
+    ]
 
 
 @pytest.mark.unit

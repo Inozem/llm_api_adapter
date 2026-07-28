@@ -55,6 +55,7 @@ This table is a positioning snapshot. Provider capabilities change independently
 ## Features
 
 - **Synchronous Streaming**: Iterate normalized text with `stream_chat()` across OpenAI, Anthropic, and Google. Optionally coalesce it into bounded chunks and observe per-chunk metadata without changing the yielded `str` contract.
+- **Reasoning Observability**: Opt in to provider-emitted reasoning summaries through `capture_reasoning=True`, `ReasoningEvent`, and the `on_reasoning` callback without mixing reasoning into visible text.
 - **Provider-Neutral Messages and Responses**: Use the same typed messages, `ChatResponse`, usage, pricing, parsed output, and tool-call fields regardless of the provider.
 - **Vision Input**: Send images alongside text via `ImagePart` — URL or raw bytes, all providers handled automatically.
 - **PDF Documents**: Send PDF URLs or bytes via `DocumentPart`; provider-specific file/document payloads are generated automatically.
@@ -152,7 +153,7 @@ print(response.content)
 By default, `buffer_chars=None` preserves provider text-delta behavior. Set a positive `buffer_chars` value when a consumer prefers bounded, coalesced text; `on_chunk` then receives a `StreamChunk` with the same text and observability metadata.
 
 ```python
-from llm_api_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 adapter = UniversalLLMAPIAdapter(
     organization="openai",
@@ -186,6 +187,48 @@ Buffering is pull-based and has no background worker or time-based flush. If the
 Streaming in v0.6.1 is synchronous and text-first. Async streaming, a universal provider-event type, partial tool arguments, and tool-call sequencing are deferred to later releases.
 
 Provider event references: [OpenAI Responses streaming](https://platform.openai.com/docs/api-reference/responses-streaming), [Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), and [Google `streamGenerateContent`](https://ai.google.dev/api/generate-content).
+
+### Reasoning observability
+
+Reasoning observability is opt-in and additive. Set `capture_reasoning=True` to retain provider-emitted reasoning summaries or readable thinking content in `ChatResponse.reasoning_events`.
+
+The stream still yields only visible text. Reasoning events are never sent to `on_delta` and never appear in the iterator. When supplied, `on_reasoning(event)` is called as each event is normalized; `on_done(response)` receives the complete `response.reasoning_events` list.
+
+```python
+import logging
+
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+logger = logging.getLogger(__name__)
+observed_events = []
+
+
+def observe_reasoning(event):
+    observed_events.append(event)
+    # Application code decides what to log, redact, retain, or display.
+    logger.info("reasoning event kind=%s index=%s", event.kind, event.index)
+
+
+def on_done(response):
+    logger.info("captured %d reasoning events", len(response.reasoning_events))
+
+
+adapter = UniversalLLMAPIAdapter(
+    organization="openai",
+    model="gpt-5",
+    api_key="...",
+)
+
+for text in adapter.stream_chat(
+    messages=[{"role": "user", "content": "Explain SSE briefly."}],
+    capture_reasoning=True,
+    on_reasoning=observe_reasoning,
+    on_done=on_done,
+):
+    print(text, end="", flush=True)
+```
+
+`ReasoningEvent` contains `text`, `kind`, `index`, `elapsed_s`, and `delta_s`. Availability and content depend on the provider and model; an empty list is a valid result. The library does not automatically log, display, redact, or send reasoning to telemetry, and it does not promise access to a model's private chain of thought. Applications should apply their own redaction and retention policy.
 
 ## Handling Errors
 
@@ -979,6 +1022,30 @@ E2E tests require provider API keys to be present in environment variables:
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 - `GOOGLE_API_KEY`
+
+### Reasoning smoke script
+
+The standalone [reasoning_smoke.py](scripts/reasoning_smoke.py) script is intended for
+manual live checks and is not part of the pytest E2E suite or CI. It uses the
+default dog-and-potato prompt unless another prompt is supplied:
+
+```powershell
+python scripts/reasoning_smoke.py `
+  --provider openai `
+  --model gpt-5.6-sol `
+  --require-reasoning `
+  --dump-raw
+```
+
+Use `--prompt` to test another task. During the request, the reasoning summary
+is printed under `[summary]`, and the visible answer under a `-------------`
+separator and `[final answer]`, as they arrive. A successful run ends after
+the final answer; diagnostic JSON is printed only when expected reasoning is
+missing or callback finalization differs. The script also captures every decoded provider SSE event before
+adapter parsing. If no normalized reasoning event is found, it prints event
+names and payload keys; `--dump-raw` also prints the complete payloads. Raw
+output may contain model-generated reasoning, tool arguments, or other
+sensitive response data.
 
 ## License
 

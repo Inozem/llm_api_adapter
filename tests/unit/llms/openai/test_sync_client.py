@@ -191,6 +191,23 @@ def test_prepare_responses_payload_preserves_temperature_for_other_gpt5_models(c
 
 
 @pytest.mark.unit
+def test_prepare_responses_payload_merges_reasoning_summary_with_effort(client):
+    payload = client._prepare_responses_payload_for_model(
+        "gpt-5",
+        {
+            "reasoning_effort": "high",
+            "capture_reasoning": True,
+        },
+    )
+
+    assert payload["reasoning"] == {
+        "effort": "high",
+        "summary": "auto",
+    }
+    assert "capture_reasoning" not in payload
+
+
+@pytest.mark.unit
 @patch("src.llm_api_adapter.llms.streaming.requests.post")
 def test_stream_closes_response_when_consumer_stops_early(mock_post, client):
     response = StreamingResponse([

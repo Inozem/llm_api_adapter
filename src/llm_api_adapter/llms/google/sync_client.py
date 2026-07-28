@@ -58,7 +58,12 @@ class GeminiSyncClient:
             thinking_config = gen_cfg["thinkingConfig"]
             thinking_budget = thinking_config.get("thinkingBudget")
             min_budget = MIN_THINKING_BUDGET.get(model)
-            if min_budget is None or thinking_budget < min_budget:
+            if (
+                min_budget is not None
+                and isinstance(thinking_budget, int)
+                and not isinstance(thinking_budget, bool)
+                and thinking_budget < min_budget
+            ):
                 thinking_config["thinkingBudget"] = min_budget
         return {"model": model, **kwargs}
 

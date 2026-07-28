@@ -179,6 +179,18 @@ def test_stream_reuses_model_specific_thinking_payload_preparation(mock_post, cl
 
 
 @pytest.mark.unit
+def test_prepare_payload_allows_thought_summaries_without_budget(client):
+    payload = client._prepare_chat_payload_for_model(
+        "gemini-2.5-pro",
+        {"generationConfig": {"thinkingConfig": {"includeThoughts": True}}},
+    )
+
+    assert payload["generationConfig"] == {
+        "thinkingConfig": {"includeThoughts": True}
+    }
+
+
+@pytest.mark.unit
 @patch("src.llm_api_adapter.llms.streaming.requests.post")
 def test_stream_closes_response_when_consumer_stops_early(mock_post, client):
     response = StreamingResponse([
