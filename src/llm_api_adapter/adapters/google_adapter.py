@@ -12,6 +12,7 @@ from ..adapters.base_adapter import (
     OnDone,
     OnReasoning,
     OnToolCall,
+    _StreamState,
 )
 from ..errors.llm_api_error import LLMAPIError
 from ..llms.google.sync_client import GeminiSyncClient
@@ -28,16 +29,12 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class _GoogleStreamState:
-    chunk_buffer: StreamChunkBuffer
-    usage_tracker: StreamUsageTracker
+class _GoogleStreamState(_StreamState):
     text_parts: List[str] = field(default_factory=list)
     function_parts: List[Dict[str, Any]] = field(default_factory=list)
     finish_reason: Optional[str] = None
     usage_metadata: Dict[str, Any] = field(default_factory=dict)
     response_metadata: Dict[str, Any] = field(default_factory=dict)
-    reasoning_collector: Optional[StreamReasoningCollector] = None
-    reasoning_response: Optional[ChatResponse] = None
 
 
 @dataclass(repr=False)
@@ -324,13 +321,11 @@ class GoogleAdapter(LLMAdapterBase):
             effective_schema=effective_schema,
             response_model=response_model,
         )
-        yield from self._emit_stream_chunks(
-            state.chunk_buffer.flush(),
+        yield from self._complete_stream(
+            chat_response,
+            state.chunk_buffer,
             on_chunk,
             on_delta,
-        )
-        self._invoke_stream_completion_callbacks(
-            chat_response,
             on_tool_call,
             on_done,
         )
@@ -435,16 +430,12 @@ class GoogleAdapter(LLMAdapterBase):
             final_response,
             **parser_kwargs,
         )
-        if state.reasoning_collector is not None:
-            streamed_reasoning_events = state.reasoning_collector.snapshot()
-            if streamed_reasoning_events:
-                chat_response.reasoning_events = streamed_reasoning_events
-        self._prepare_stream_response(
+        return super()._finalize_stream_response(
             chat_response,
-            effective_schema,
-            response_model,
+            reasoning_collector=state.reasoning_collector,
+            effective_schema=effective_schema,
+            response_model=response_model,
         )
-        return chat_response
 
     @staticmethod
     def _build_stream_response(state: _GoogleStreamState) -> Dict[str, Any]:

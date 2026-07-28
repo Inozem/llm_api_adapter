@@ -23,7 +23,11 @@ from ..models.responses.reasoning_event import (
     ReasoningEventKind,
 )
 from ..models.responses.stream_chunk import StreamChunk
-from ..llms.streaming import StreamReasoningCollector
+from ..llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+    StreamUsageTracker,
+)
 from ..models.tools import ToolCall, ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -50,6 +54,14 @@ OnChunk = Callable[[StreamChunk], None]
 OnToolCall = Callable[[ToolCall], None]
 OnDone = Callable[[ChatResponse], None]
 OnReasoning = Callable[[ReasoningEvent], None]
+
+
+@dataclass
+class _StreamState:
+    chunk_buffer: StreamChunkBuffer
+    usage_tracker: StreamUsageTracker
+    reasoning_collector: Optional[StreamReasoningCollector]
+    reasoning_response: Optional[ChatResponse]
 
 
 @dataclass
@@ -556,16 +568,37 @@ class LLMAdapterBase(ABC):
     def _finalize_stream_response(
         self,
         chat_response: ChatResponse,
+        *,
+        reasoning_collector: Optional[StreamReasoningCollector] = None,
         effective_schema: Optional[dict],
         response_model: Optional[Any],
-        on_tool_call: Optional[OnToolCall],
-        on_done: Optional[OnDone],
-    ) -> None:
-        """Apply normal response post-processing, then invoke stream callbacks."""
+    ) -> ChatResponse:
+        """Apply common reasoning, structured-output and pricing finalization."""
+        if reasoning_collector is not None:
+            streamed_reasoning_events = reasoning_collector.snapshot()
+            if streamed_reasoning_events:
+                chat_response.reasoning_events = streamed_reasoning_events
         self._prepare_stream_response(
             chat_response,
             effective_schema,
             response_model,
+        )
+        return chat_response
+
+    def _complete_stream(
+        self,
+        chat_response: ChatResponse,
+        chunk_buffer: StreamChunkBuffer,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+        on_tool_call: Optional[OnToolCall],
+        on_done: Optional[OnDone],
+    ) -> Iterator[str]:
+        """Flush visible text and invoke the common stream callbacks."""
+        yield from self._emit_stream_chunks(
+            chunk_buffer.flush(),
+            on_chunk,
+            on_delta,
         )
         self._invoke_stream_completion_callbacks(
             chat_response,

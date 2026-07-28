@@ -13,6 +13,7 @@ from ..adapters.base_adapter import (
     OnDone,
     OnReasoning,
     OnToolCall,
+    _StreamState,
 )
 from ..errors.llm_api_error import InvalidToolArgumentsError, LLMAPIError
 from ..errors.config_errors import LLMReasoningLevelError
@@ -30,16 +31,12 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class _AnthropicStreamState:
+class _AnthropicStreamState(_StreamState):
     message_data: Dict[str, Any]
     content_blocks: Dict[int, Dict[str, Any]]
     input_json_fragments: Dict[int, List[str]]
     usage: Dict[str, Any]
     message_delta: Dict[str, Any]
-    chunk_buffer: StreamChunkBuffer
-    usage_tracker: StreamUsageTracker
-    reasoning_collector: Optional[StreamReasoningCollector]
-    reasoning_response: Optional[ChatResponse]
 
 
 @dataclass(repr=False)
@@ -351,13 +348,11 @@ class AnthropicAdapter(LLMAdapterBase):
             effective_schema=effective_schema,
             response_model=response_model,
         )
-        yield from self._emit_stream_chunks(
-            state.chunk_buffer.flush(),
+        yield from self._complete_stream(
+            chat_response,
+            state.chunk_buffer,
             on_chunk,
             on_delta,
-        )
-        self._invoke_stream_completion_callbacks(
-            chat_response,
             on_tool_call,
             on_done,
         )
@@ -432,16 +427,12 @@ class AnthropicAdapter(LLMAdapterBase):
             ),
             **parser_kwargs,
         )
-        if state.reasoning_collector is not None:
-            streamed_reasoning_events = state.reasoning_collector.snapshot()
-            if streamed_reasoning_events:
-                chat_response.reasoning_events = streamed_reasoning_events
-        self._prepare_stream_response(
+        return super()._finalize_stream_response(
             chat_response,
-            effective_schema,
-            response_model,
+            reasoning_collector=state.reasoning_collector,
+            effective_schema=effective_schema,
+            response_model=response_model,
         )
-        return chat_response
 
     def _handle_message_start(
         self,
