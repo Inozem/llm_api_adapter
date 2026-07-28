@@ -20,8 +20,11 @@ from src.llm_api_adapter.models.messages.chat_message import (
 )
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
-from src.llm_api_adapter.llms.streaming import StreamReasoningCollector
-from src.llm_api_adapter.models.tools import ToolSpec
+from src.llm_api_adapter.llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+)
+from src.llm_api_adapter.models.tools import ToolCall, ToolSpec
 
 
 class DummyClient:
@@ -295,6 +298,58 @@ def test_record_reasoning_event_updates_response_before_callback(adapter):
     adapter._invoke_stream_completion_callbacks(response, None, completed.append)
     assert completed == [response]
     assert completed[0].reasoning_events == [expected]
+
+
+@pytest.mark.unit
+def test_complete_stream_flushes_chunks_before_completion_callbacks(adapter):
+    response = ChatResponse(
+        content="Hello",
+        tool_calls=[ToolCall(name="weather", arguments={"city": "Tel Aviv"})],
+    )
+    chunk_buffer = StreamChunkBuffer(buffer_chars=10)
+    list(chunk_buffer.add("Hello"))
+    events = []
+
+    output = list(
+        adapter._complete_stream(
+            response,
+            chunk_buffer,
+            on_chunk=lambda chunk: events.append(("chunk", chunk.text)),
+            on_delta=lambda text: events.append(("delta", text)),
+            on_tool_call=lambda call: events.append(("tool", call.name)),
+            on_done=lambda completed: events.append(("done", completed.content)),
+        )
+    )
+
+    assert output == ["Hello"]
+    assert events == [
+        ("chunk", "Hello"),
+        ("delta", "Hello"),
+        ("tool", "weather"),
+        ("done", "Hello"),
+    ]
+
+
+@pytest.mark.unit
+def test_finalize_stream_response_attaches_reasoning_and_structured_output(adapter):
+    class StreamAnswer(BaseModel):
+        answer: str
+
+    response = ChatResponse(content='{"answer": "Hello"}')
+    collector = StreamReasoningCollector(clock=iter([0.0, 0.25]).__next__)
+    event = collector.add("Plan")
+
+    finalized = adapter._finalize_stream_response(
+        response,
+        reasoning_collector=collector,
+        effective_schema={"type": "object"},
+        response_model=StreamAnswer,
+    )
+
+    assert finalized is response
+    assert finalized.reasoning_events == [event]
+    assert finalized.parsed_json == {"answer": "Hello"}
+    assert finalized.parsed_model == StreamAnswer(answer="Hello")
 
 
 @pytest.mark.unit
