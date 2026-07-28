@@ -17,7 +17,11 @@ from ..adapters.base_adapter import (
 from ..errors.llm_api_error import InvalidToolArgumentsError, LLMAPIError
 from ..errors.config_errors import LLMReasoningLevelError
 from ..llms.anthropic.sync_client import ClaudeSyncClient
-from ..llms.streaming import StreamChunkBuffer, StreamUsageTracker
+from ..llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+    StreamUsageTracker,
+)
 from ..models.messages.chat_message import Message, Messages
 from ..models.responses.chat_response import ChatResponse, Usage
 from ..models.tools.tool_spec import ToolSpec
@@ -104,11 +108,17 @@ class AnthropicAdapter(LLMAdapterBase):
                     effort = self._reasoning_level_to_effort(reasoning_level)
                     if effort:
                         params["effort"] = effort
+            if capture_reasoning:
+                params["capture_reasoning"] = True
             params = {k: v for k, v in params.items() if v is not None}
             _ = previous_response
             client = ClaudeSyncClient(api_key=self.api_key)
             response = client.chat_completion(**params)
-            chat_response = ChatResponse.from_anthropic_response(response)
+            parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
+            chat_response = ChatResponse.from_anthropic_response(
+                response,
+                **parser_kwargs,
+            )
             chat_response.parsed_json = self._parse_json_response(chat_response.content, effective_schema)
             chat_response.parsed_model = self._parse_response_model(chat_response.parsed_json, response_model)
             if self.pricing:
@@ -164,6 +174,7 @@ class AnthropicAdapter(LLMAdapterBase):
             normalized_tool_choice=normalized_tool_choice,
             parallel_tool_calls=parallel_tool_calls,
             effective_schema=effective_schema,
+            capture_reasoning=capture_reasoning,
         )
         _ = previous_response
         client = ClaudeSyncClient(api_key=self.api_key)
@@ -177,6 +188,8 @@ class AnthropicAdapter(LLMAdapterBase):
             on_done,
             buffer_chars,
             on_chunk,
+            capture_reasoning,
+            on_reasoning,
         )
 
     def _build_stream_params(
@@ -192,6 +205,7 @@ class AnthropicAdapter(LLMAdapterBase):
         normalized_tool_choice: Optional[str],
         parallel_tool_calls: Optional[bool],
         effective_schema: Optional[dict],
+        capture_reasoning: bool,
     ) -> Dict[str, Any]:
         system_prompt, transformed_messages = normalized_messages.to_anthropic()
         params: Dict[str, Any] = {
@@ -231,10 +245,12 @@ class AnthropicAdapter(LLMAdapterBase):
                         normalized_reasoning_level=normalized_reasoning_level,
                     )
                 params["budget_tokens"] = normalized_reasoning_level
-            if self.is_reasoning:
-                effort = self._reasoning_level_to_effort(reasoning_level)
-                if effort:
-                    params["effort"] = effort
+                if self.is_reasoning:
+                    effort = self._reasoning_level_to_effort(reasoning_level)
+                    if effort:
+                        params["effort"] = effort
+        if capture_reasoning:
+            params["capture_reasoning"] = True
         return {key: value for key, value in params.items() if value is not None}
 
     def _consume_stream(
@@ -247,6 +263,8 @@ class AnthropicAdapter(LLMAdapterBase):
         on_done: Optional[OnDone],
         buffer_chars: Optional[int],
         on_chunk: Optional[OnChunk],
+        capture_reasoning: bool,
+        on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
         message_data: Dict[str, Any] = {"model": self.model, "content": []}
         content_blocks: Dict[int, Dict[str, Any]] = {}
@@ -255,6 +273,10 @@ class AnthropicAdapter(LLMAdapterBase):
         message_delta: Dict[str, Any] = {}
         chunk_buffer = StreamChunkBuffer(buffer_chars)
         usage_tracker = StreamUsageTracker()
+        reasoning_collector = (
+            StreamReasoningCollector() if capture_reasoning else None
+        )
+        reasoning_response = ChatResponse() if capture_reasoning else None
 
         for event in self._iter_provider_stream_events(events):
             payload = event.data if isinstance(event.data, Mapping) else {}
@@ -275,6 +297,9 @@ class AnthropicAdapter(LLMAdapterBase):
                     chunk_buffer,
                     on_chunk,
                     on_delta,
+                    reasoning_collector,
+                    reasoning_response,
+                    on_reasoning,
                 )
             elif event_type == "content_block_stop":
                 self._finalize_content_block(
@@ -289,9 +314,15 @@ class AnthropicAdapter(LLMAdapterBase):
                     self._normalize_stream_usage(usage),
                 )
 
+        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
         chat_response = ChatResponse.from_anthropic_response(
-            self._build_stream_response(message_data, content_blocks, message_delta, usage)
+            self._build_stream_response(message_data, content_blocks, message_delta, usage),
+            **parser_kwargs,
         )
+        if reasoning_collector is not None:
+            streamed_reasoning_events = reasoning_collector.snapshot()
+            if streamed_reasoning_events:
+                chat_response.reasoning_events = streamed_reasoning_events
         self._prepare_stream_response(
             chat_response,
             effective_schema,
@@ -334,6 +365,8 @@ class AnthropicAdapter(LLMAdapterBase):
         content_blocks[index] = dict(block)
         if block.get("type") == "text":
             content_blocks[index]["text"] = str(block.get("text") or "")
+        elif block.get("type") == "thinking":
+            content_blocks[index]["thinking"] = str(block.get("thinking") or "")
         elif block.get("type") == "tool_use":
             current_input = block.get("input")
             content_blocks[index]["input"] = (
@@ -348,6 +381,9 @@ class AnthropicAdapter(LLMAdapterBase):
         chunk_buffer: StreamChunkBuffer,
         on_chunk: Optional[OnChunk],
         on_delta: Optional[OnDelta],
+        reasoning_collector: Optional[StreamReasoningCollector],
+        reasoning_response: Optional[ChatResponse],
+        on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
         index = payload.get("index")
         delta = payload.get("delta")
@@ -365,6 +401,19 @@ class AnthropicAdapter(LLMAdapterBase):
                     on_chunk,
                     on_delta,
                 )
+        elif delta.get("type") == "thinking_delta":
+            thinking_text = delta.get("thinking")
+            if isinstance(thinking_text, str) and thinking_text:
+                block["thinking"] = f"{block.get('thinking', '')}{thinking_text}"
+                if reasoning_collector is not None and reasoning_response is not None:
+                    self._record_reasoning_event(
+                        reasoning_response,
+                        reasoning_collector,
+                        thinking_text,
+                        capture_reasoning=True,
+                        kind="summary",
+                        on_reasoning=on_reasoning,
+                    )
         elif delta.get("type") == "input_json_delta":
             partial_json = delta.get("partial_json")
             if isinstance(partial_json, str):

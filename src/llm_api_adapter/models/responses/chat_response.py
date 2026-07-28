@@ -263,7 +263,12 @@ class ChatResponse:
         )
 
     @classmethod
-    def from_anthropic_response(cls, api_response: dict) -> "ChatResponse":
+    def from_anthropic_response(
+        cls,
+        api_response: dict,
+        *,
+        capture_reasoning: bool = False,
+    ) -> "ChatResponse":
         u = api_response.get("usage", {}) or {}
         usage = Usage(
             input_tokens=u.get("input_tokens", 0),
@@ -273,10 +278,23 @@ class ChatResponse:
         blocks = api_response.get("content", []) or []
         parsed_tool_calls: Optional[List[ToolCall]] = None
         text_content: Optional[str] = None
+        reasoning_events: List[ReasoningEvent] = []
         for block in blocks:
             block_type = block.get("type")
             if block_type == "text" and text_content is None:
                 text_content = block.get("text")
+            elif block_type == "thinking" and capture_reasoning:
+                thinking_text = block.get("thinking")
+                if isinstance(thinking_text, str) and thinking_text:
+                    reasoning_events.append(
+                        ReasoningEvent(
+                            text=thinking_text,
+                            kind="summary",
+                            index=len(reasoning_events),
+                            elapsed_s=0.0,
+                            delta_s=0.0,
+                        )
+                    )
             elif block_type == "tool_use":
                 if parsed_tool_calls is None:
                     parsed_tool_calls = []
@@ -300,6 +318,7 @@ class ChatResponse:
             content=text_content,
             tool_calls=parsed_tool_calls,
             finish_reason=api_response.get("stop_reason"),
+            reasoning_events=reasoning_events,
         )
 
     @classmethod

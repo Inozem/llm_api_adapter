@@ -522,6 +522,34 @@ def test_from_anthropic_response():
 
 
 @pytest.mark.unit
+def test_from_anthropic_response_captures_thinking_only_when_opted_in():
+    api_response = {
+        "model": "claude-sonnet-4-5",
+        "content": [
+            {
+                "type": "thinking",
+                "thinking": "Plan",
+                "signature": "do-not-expose",
+            },
+            {"type": "redacted_thinking", "data": "do-not-expose"},
+            {"type": "text", "text": "Answer"},
+        ],
+    }
+
+    without_capture = ChatResponse.from_anthropic_response(api_response)
+    with_capture = ChatResponse.from_anthropic_response(
+        api_response,
+        capture_reasoning=True,
+    )
+
+    assert without_capture.reasoning_events == []
+    assert with_capture.reasoning_events == [
+        ReasoningEvent("Plan", "summary", 0, 0.0, 0.0),
+    ]
+    assert with_capture.content == "Answer"
+
+
+@pytest.mark.unit
 def test_from_anthropic_response_parses_tool_use_blocks():
     api_response = {
         "usage": {"input_tokens": 5, "output_tokens": 7},

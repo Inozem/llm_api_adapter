@@ -52,6 +52,7 @@ class ClaudeSyncClient:
         budget_tokens = kwargs.pop("budget_tokens", None)
         effort = kwargs.pop("effort", None)
         is_adaptive_thinking = kwargs.pop("is_adaptive_thinking", False)
+        capture_reasoning = kwargs.pop("capture_reasoning", False)
         if is_adaptive_thinking:
             kwargs.pop("top_p", None)
             if effort:
@@ -65,6 +66,10 @@ class ClaudeSyncClient:
                 kwargs.pop("top_p", None)
             if budget_tokens:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
+        if capture_reasoning:
+            thinking = kwargs.get("thinking")
+            if isinstance(thinking, dict):
+                kwargs["thinking"] = {**thinking, "display": "summarized"}
         return {"model": model, **kwargs}
 
     def _send_request(self, url: str, payload: dict, timeout_s: float | None = None):

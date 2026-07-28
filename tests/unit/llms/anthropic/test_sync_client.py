@@ -139,6 +139,23 @@ def test_prepare_payload_legacy_sets_budget_tokens_thinking(client):
 
 
 @pytest.mark.unit
+def test_prepare_payload_capture_reasoning_requests_summarized_thinking(client):
+    kwargs = {
+        "messages": [],
+        "budget_tokens": 4096,
+        "is_adaptive_thinking": False,
+        "capture_reasoning": True,
+    }
+    payload = client._prepare_chat_payload_for_model("claude-opus-4-5", kwargs)
+    assert payload["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 4096,
+        "display": "summarized",
+    }
+    assert "capture_reasoning" not in payload
+
+
+@pytest.mark.unit
 def test_prepare_payload_is_adaptive_thinking_never_in_result(client):
     for flag in (True, False):
         kwargs = {"messages": [], "is_adaptive_thinking": flag}

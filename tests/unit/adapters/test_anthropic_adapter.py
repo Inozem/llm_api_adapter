@@ -7,6 +7,7 @@ from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
 from src.llm_api_adapter.adapters.anthropic_adapter import ClaudeSyncClient
 from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
+from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from src.llm_api_adapter.models.tools import ToolSpec
 from src.llm_api_adapter.llms.streaming import SSEEvent
 
@@ -113,6 +114,35 @@ def test_chat_sets_thinking_when_reasoning_level_provided(adapter):
         kwargs = mock_chat.call_args.kwargs
         assert "budget_tokens" in kwargs
         assert kwargs["budget_tokens"] == 4096
+
+
+@pytest.mark.unit
+def test_chat_capture_reasoning_is_opt_in(adapter):
+    fake_response = {
+        "model": "claude-sonnet-4-5",
+        "content": [
+            {"type": "thinking", "thinking": "Plan", "signature": "secret"},
+            {"type": "text", "text": "Answer"},
+        ],
+    }
+    with patch.object(
+        ClaudeSyncClient,
+        "chat_completion",
+        return_value=fake_response,
+    ) as mock_chat:
+        result = adapter.chat(
+            [UserMessage("hi")],
+            max_tokens=2048,
+            reasoning_level=1024,
+            capture_reasoning=True,
+        )
+
+    assert mock_chat.call_args.kwargs["capture_reasoning"] is True
+    assert result.reasoning_events == [
+        ReasoningEvent("Plan", "summary", 0, 0.0, 0.0),
+    ]
+    assert result.content == "Answer"
+
 
 @pytest.mark.unit
 def test_validate_reasoning_and_tokens_raises_llm_reasoning_level_error(adapter):
@@ -241,6 +271,78 @@ def test_stream_chat_normalizes_text_and_completed_tool_use(adapter):
     assert done[0].finish_reason == "tool_use"
     assert tool_calls[0].name == "get_weather"
     assert tool_calls[0].arguments == {"city": "Tel Aviv"}
+
+
+@pytest.mark.unit
+def test_stream_chat_separates_thinking_from_visible_text(adapter):
+    events = iter([
+        SSEEvent(
+            event="message_start",
+            data={"type": "message_start", "message": {
+                "model": "claude-sonnet-4-5", "content": [],
+            }},
+        ),
+        SSEEvent(
+            event="content_block_start",
+            data={"type": "content_block_start", "index": 0, "content_block": {
+                "type": "thinking", "thinking": "",
+            }},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={"type": "content_block_delta", "index": 0, "delta": {
+                "type": "thinking_delta", "thinking": "Plan",
+            }},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={"type": "content_block_delta", "index": 0, "delta": {
+                "type": "signature_delta", "signature": "secret",
+            }},
+        ),
+        SSEEvent(
+            event="content_block_stop",
+            data={"type": "content_block_stop", "index": 0},
+        ),
+        SSEEvent(
+            event="content_block_start",
+            data={"type": "content_block_start", "index": 1, "content_block": {
+                "type": "text", "text": "",
+            }},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={"type": "content_block_delta", "index": 1, "delta": {
+                "type": "text_delta", "text": "Answer",
+            }},
+        ),
+        SSEEvent(
+            event="content_block_stop",
+            data={"type": "content_block_stop", "index": 1},
+        ),
+        SSEEvent(event="message_stop", data={"type": "message_stop"}),
+    ])
+    reasoning = []
+    visible_deltas = []
+    done = []
+
+    with patch.object(ClaudeSyncClient, "stream", return_value=events) as mock_stream:
+        output = list(adapter.stream_chat(
+            [UserMessage("hi")],
+            max_tokens=2048,
+            reasoning_level=1024,
+            capture_reasoning=True,
+            on_delta=visible_deltas.append,
+            on_reasoning=reasoning.append,
+            on_done=done.append,
+        ))
+
+    expected = [ReasoningEvent("Plan", "summary", 0, 0.0, 0.0)]
+    assert output == ["Answer"]
+    assert visible_deltas == ["Answer"]
+    assert reasoning == expected
+    assert done[0].reasoning_events == expected
+    assert mock_stream.call_args.kwargs["capture_reasoning"] is True
 
 
 @pytest.mark.unit
