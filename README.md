@@ -184,7 +184,7 @@ for chunk in chunk_metadata:
 
 Buffering is pull-based and has no background worker or time-based flush. If the stream fails or a caller closes the iterator early, pending text is not emitted as a successful final chunk and `on_done` is not called.
 
-Streaming in v0.6.1 is synchronous and text-first. Async streaming, a universal provider-event type, partial tool arguments, and tool-call sequencing are deferred to later releases.
+Streaming is synchronous and text-first. Async streaming, a universal provider-event type, partial tool arguments, and tool-call sequencing are deferred to later releases.
 
 Provider event references: [OpenAI Responses streaming](https://platform.openai.com/docs/api-reference/responses-streaming), [Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), and [Google `streamGenerateContent`](https://ai.google.dev/api/generate-content).
 
