@@ -140,29 +140,19 @@ class _OpenAIStreamingMixin:
             ),
             reasoning_response=ChatResponse() if capture_reasoning else None,
         )
-        async for event in self._aiter_provider_stream_events(events):
-            async for text in self._consume_responses_stream_event_async(
-                event,
-                state,
-                on_chunk=on_chunk,
-                on_delta=on_delta,
-                on_reasoning=on_reasoning,
-            ):
-                yield text
-
-        chat_response = self._finalize_responses_stream(
+        async for text in self._run_async_stream(
+            events,
             state,
-            capture_reasoning=capture_reasoning,
+            consume_event=self._consume_responses_stream_event_async,
+            finalize_response=self._finalize_responses_stream,
             effective_schema=effective_schema,
             response_model=response_model,
-        )
-        async for text in self._complete_async_stream(
-            chat_response,
-            state.chunk_buffer,
-            on_chunk,
-            on_delta,
-            on_tool_call,
-            on_done,
+            on_delta=on_delta,
+            on_tool_call=on_tool_call,
+            on_done=on_done,
+            on_chunk=on_chunk,
+            capture_reasoning=capture_reasoning,
+            on_reasoning=on_reasoning,
         ):
             yield text
 
@@ -270,28 +260,19 @@ class _OpenAIStreamingMixin:
             ),
             reasoning_response=ChatResponse() if capture_reasoning else None,
         )
-        for event in self._iter_provider_stream_events(events):
-            yield from self._consume_responses_stream_event(
-                event,
-                state,
-                on_chunk=on_chunk,
-                on_delta=on_delta,
-                on_reasoning=on_reasoning,
-            )
-
-        chat_response = self._finalize_responses_stream(
+        yield from self._run_sync_stream(
+            events,
             state,
-            capture_reasoning=capture_reasoning,
+            consume_event=self._consume_responses_stream_event,
+            finalize_response=self._finalize_responses_stream,
             effective_schema=effective_schema,
             response_model=response_model,
-        )
-        yield from self._complete_stream(
-            chat_response,
-            state.chunk_buffer,
-            on_chunk,
-            on_delta,
-            on_tool_call,
-            on_done,
+            on_delta=on_delta,
+            on_tool_call=on_tool_call,
+            on_done=on_done,
+            on_chunk=on_chunk,
+            capture_reasoning=capture_reasoning,
+            on_reasoning=on_reasoning,
         )
 
     def _consume_responses_stream_event(
@@ -703,5 +684,3 @@ class _OpenAIStreamingMixin:
             message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
         legacy_response["choices"] = [{"message": message, "finish_reason": finish_reason}]
         return ChatResponse.from_openai_response(legacy_response)
-
-

@@ -2,11 +2,12 @@ import asyncio
 
 import pytest
 
-from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
+from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase, _StreamState
 from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
 from src.llm_api_adapter.llms.streaming import (
     StreamChunkBuffer,
     StreamReasoningCollector,
+    StreamUsageTracker,
 )
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 from src.llm_api_adapter.models.responses.stream_chunk import StreamChunk
@@ -40,6 +41,98 @@ def make_chunk(text="hello"):
         elapsed_s=0.0,
         delta_s=0.0,
     )
+
+
+def make_stream_state(buffer_chars=10):
+    return _StreamState(
+        chunk_buffer=StreamChunkBuffer(buffer_chars=buffer_chars),
+        usage_tracker=StreamUsageTracker(),
+        reasoning_collector=None,
+        reasoning_response=None,
+    )
+
+
+@pytest.mark.unit
+def test_sync_stream_lifecycle_delegates_events_and_completes_callbacks(adapter):
+    state = make_stream_state()
+    order = []
+
+    def consume_event(event, state, *, on_chunk, on_delta, on_reasoning):
+        yield from adapter._emit_stream_chunks(
+            state.chunk_buffer.add(event),
+            on_chunk,
+            on_delta,
+        )
+
+    def finalize_response(state, **kwargs):
+        assert kwargs["capture_reasoning"] is False
+        return ChatResponse(content="complete")
+
+    output = list(
+        adapter._run_sync_stream(
+            iter(["hello"]),
+            state,
+            consume_event=consume_event,
+            finalize_response=finalize_response,
+            effective_schema=None,
+            response_model=None,
+            on_delta=lambda text: order.append(("delta", text)),
+            on_tool_call=None,
+            on_done=lambda response: order.append(("done", response.content)),
+            on_chunk=None,
+            capture_reasoning=False,
+            on_reasoning=None,
+        )
+    )
+
+    assert output == ["hello"]
+    assert order == [("delta", "hello"), ("done", "complete")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_async_stream_lifecycle_delegates_events_and_completes_callbacks(adapter):
+    state = make_stream_state()
+    order = []
+
+    async def events():
+        yield "hello"
+
+    async def consume_event(event, state, *, on_chunk, on_delta, on_reasoning):
+        async for text in adapter._emit_async_stream_chunks(
+            state.chunk_buffer.add(event),
+            on_chunk,
+            on_delta,
+        ):
+            yield text
+
+    def finalize_response(state, **kwargs):
+        assert kwargs["capture_reasoning"] is False
+        return ChatResponse(content="complete")
+
+    async def on_done(response):
+        order.append(("done", response.content))
+
+    output = [
+        text
+        async for text in adapter._run_async_stream(
+            events(),
+            state,
+            consume_event=consume_event,
+            finalize_response=finalize_response,
+            effective_schema=None,
+            response_model=None,
+            on_delta=lambda text: order.append(("delta", text)),
+            on_tool_call=None,
+            on_done=on_done,
+            on_chunk=None,
+            capture_reasoning=False,
+            on_reasoning=None,
+        )
+    ]
+
+    assert output == ["hello"]
+    assert order == [("delta", "hello"), ("done", "complete")]
 
 
 @pytest.mark.asyncio

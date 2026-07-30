@@ -535,6 +535,92 @@ class LLMAdapterBase(ABC):
             error_message = getattr(error, "text", None) or str(error)
             self.handle_error(error=error, error_message=error_message)
 
+    def _run_sync_stream(
+        self,
+        events: Iterator[Any],
+        state: Any,
+        *,
+        consume_event: Callable[..., Iterator[str]],
+        finalize_response: Optional[Callable[..., ChatResponse]] = None,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+        on_delta: Optional[OnDelta],
+        on_tool_call: Optional[OnToolCall],
+        on_done: Optional[OnDone],
+        on_chunk: Optional[OnChunk],
+        capture_reasoning: bool,
+        on_reasoning: Optional[OnReasoning],
+    ) -> Iterator[str]:
+        """Run the shared synchronous stream lifecycle for a provider."""
+        for event in self._iter_provider_stream_events(events):
+            yield from consume_event(
+                event,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+            )
+
+        finalizer = finalize_response or self._finalize_stream_response
+        chat_response = finalizer(
+            state,
+            capture_reasoning=capture_reasoning,
+            effective_schema=effective_schema,
+            response_model=response_model,
+        )
+        yield from self._complete_stream(
+            chat_response,
+            state.chunk_buffer,
+            on_chunk,
+            on_delta,
+            on_tool_call,
+            on_done,
+        )
+
+    async def _run_async_stream(
+        self,
+        events: AsyncIterable[Any],
+        state: Any,
+        *,
+        consume_event: Callable[..., AsyncIterator[str]],
+        finalize_response: Optional[Callable[..., ChatResponse]] = None,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+        on_delta: Optional[AsyncOnDelta],
+        on_tool_call: Optional[AsyncOnToolCall],
+        on_done: Optional[AsyncOnDone],
+        on_chunk: Optional[AsyncOnChunk],
+        capture_reasoning: bool,
+        on_reasoning: Optional[AsyncOnReasoning],
+    ) -> AsyncIterator[str]:
+        """Run the shared asynchronous stream lifecycle for a provider."""
+        async for event in self._aiter_provider_stream_events(events):
+            async for text in consume_event(
+                event,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+            ):
+                yield text
+
+        finalizer = finalize_response or self._finalize_stream_response
+        chat_response = finalizer(
+            state,
+            capture_reasoning=capture_reasoning,
+            effective_schema=effective_schema,
+            response_model=response_model,
+        )
+        async for text in self._complete_async_stream(
+            chat_response,
+            state.chunk_buffer,
+            on_chunk,
+            on_delta,
+            on_tool_call,
+            on_done,
+        ):
+            yield text
+
     async def _invoke_async_callback(
         self,
         callback: Optional[Callable[[Any], Any]],
