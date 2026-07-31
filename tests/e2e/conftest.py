@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from itertools import zip_longest
@@ -14,6 +15,14 @@ from src.llm_api_adapter.errors import (
 )
 
 _FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
+_RETRY_DELAYS = [2, 4, 8]
+_MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1
+_TRANSIENT_ERRORS = (
+    LLMAPIServerError,
+    LLMAPIRateLimitError,
+    SourceLLMAPIServerError,
+    SourceLLMAPIRateLimitError,
+)
 
 load_dotenv()
 
@@ -41,21 +50,18 @@ def chat_with_retry():
 
     Delays follow exponential backoff: 2s, 4s, 8s.
     """
-    _delays = [2, 4, 8]
-    _max_attempts = len(_delays) + 1
-
     def _call(adapter, **kwargs):
-        for attempt in range(_max_attempts):
+        for attempt in range(_MAX_ATTEMPTS):
             try:
                 resp = adapter.chat(**kwargs)
-            except (LLMAPIServerError, LLMAPIRateLimitError):
-                if attempt == _max_attempts - 1:
+            except _TRANSIENT_ERRORS:
+                if attempt == _MAX_ATTEMPTS - 1:
                     raise
-                time.sleep(_delays[attempt])
+                time.sleep(_RETRY_DELAYS[attempt])
                 continue
-            if resp.finish_reason != "refusal" or attempt == _max_attempts - 1:
+            if resp.finish_reason != "refusal" or attempt == _MAX_ATTEMPTS - 1:
                 return resp
-            time.sleep(_delays[attempt])
+            time.sleep(_RETRY_DELAYS[attempt])
         return resp
     return _call
 
@@ -66,26 +72,59 @@ def stream_with_retry():
 
     ``on_retry`` may reset callback observers after a partial failed attempt.
     """
-    _delays = [2, 4, 8]
-    _max_attempts = len(_delays) + 1
-    _transient_errors = (
-        LLMAPIServerError,
-        LLMAPIRateLimitError,
-        SourceLLMAPIServerError,
-        SourceLLMAPIRateLimitError,
-    )
-
     def _call(adapter, **kwargs):
         on_retry = kwargs.pop("on_retry", None)
-        for attempt in range(_max_attempts):
+        for attempt in range(_MAX_ATTEMPTS):
             try:
                 return list(adapter.stream_chat(**kwargs))
-            except _transient_errors:
-                if attempt == _max_attempts - 1:
+            except _TRANSIENT_ERRORS:
+                if attempt == _MAX_ATTEMPTS - 1:
                     raise
                 if on_retry is not None:
                     on_retry()
-                time.sleep(_delays[attempt])
+                time.sleep(_RETRY_DELAYS[attempt])
+        return []
+
+    return _call
+
+
+@pytest.fixture(scope="session")
+def async_chat_with_retry():
+    """Return an async helper that retries transient achat() failures."""
+    async def _call(adapter, **kwargs):
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                response = await adapter.achat(**kwargs)
+            except _TRANSIENT_ERRORS:
+                if attempt == _MAX_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(_RETRY_DELAYS[attempt])
+                continue
+            if response.finish_reason != "refusal" or attempt == _MAX_ATTEMPTS - 1:
+                return response
+            await asyncio.sleep(_RETRY_DELAYS[attempt])
+        return response
+
+    return _call
+
+
+@pytest.fixture(scope="session")
+def async_stream_with_retry():
+    """Return an async helper that retries a complete astream_chat() run."""
+    async def _call(adapter, **kwargs):
+        on_retry = kwargs.pop("on_retry", None)
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                chunks = []
+                async for chunk in adapter.astream_chat(**kwargs):
+                    chunks.append(chunk)
+                return chunks
+            except _TRANSIENT_ERRORS:
+                if attempt == _MAX_ATTEMPTS - 1:
+                    raise
+                if on_retry is not None:
+                    on_retry()
+                await asyncio.sleep(_RETRY_DELAYS[attempt])
         return []
 
     return _call
@@ -115,3 +154,45 @@ def providers():
             }
         )
     return providers_with_models
+
+
+@pytest.fixture(scope="session")
+def async_e2e_models(providers):
+    """Select one budget-friendly model per provider for async E2E coverage."""
+    selected = []
+    for provider in providers:
+        provider_spec = LLM_REGISTRY.providers[provider["name"]]
+        env_name = f"ASYNC_E2E_{provider['name'].upper()}_MODEL"
+        override = os.getenv(env_name)
+
+        if override:
+            if override not in provider["models"]:
+                raise pytest.UsageError(
+                    f"{env_name}={override!r} is not registered for "
+                    f"{provider['name']}"
+                )
+            model = override
+        else:
+            def model_cost(name):
+                pricing = provider_spec.models[name].pricing
+                if pricing is None:
+                    return float("inf")
+                return pricing.in_per_token + pricing.out_per_token
+
+            model = min(
+                provider["models"],
+                key=model_cost,
+            )
+
+        selected.append((provider, model))
+    return selected
+
+
+@pytest.fixture(scope="session")
+def configured_async_e2e_models(async_e2e_models):
+    """Return the selected async E2E models whose API keys are configured."""
+    return [
+        (provider, model)
+        for provider, model in async_e2e_models
+        if provider["api_key"]
+    ]
