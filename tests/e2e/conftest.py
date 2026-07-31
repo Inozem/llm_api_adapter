@@ -23,6 +23,10 @@ _TRANSIENT_ERRORS = (
     SourceLLMAPIServerError,
     SourceLLMAPIRateLimitError,
 )
+_LATEST_MODEL_BY_PROVIDER = {
+    provider_name: next(iter(provider_spec.models), None)
+    for provider_name, provider_spec in LLM_REGISTRY.providers.items()
+}
 
 load_dotenv()
 
@@ -158,10 +162,9 @@ def providers():
 
 @pytest.fixture(scope="session")
 def async_e2e_models(providers):
-    """Select one budget-friendly model per provider for async E2E coverage."""
+    """Select the latest registered model per provider for async E2E coverage."""
     selected = []
     for provider in providers:
-        provider_spec = LLM_REGISTRY.providers[provider["name"]]
         env_name = f"ASYNC_E2E_{provider['name'].upper()}_MODEL"
         override = os.getenv(env_name)
 
@@ -173,16 +176,11 @@ def async_e2e_models(providers):
                 )
             model = override
         else:
-            def model_cost(name):
-                pricing = provider_spec.models[name].pricing
-                if pricing is None:
-                    return float("inf")
-                return pricing.in_per_token + pricing.out_per_token
-
-            model = min(
-                provider["models"],
-                key=model_cost,
-            )
+            model = _LATEST_MODEL_BY_PROVIDER.get(provider["name"])
+            if model is None or model not in provider["models"]:
+                raise pytest.UsageError(
+                    f"No latest model is registered for {provider['name']}"
+                )
 
         selected.append((provider, model))
     return selected

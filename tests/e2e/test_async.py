@@ -91,12 +91,18 @@ async def test_async_chat_returns_structured_response_and_pricing(
                             'Return JSON with name="Alice" and age=30.'
                         )
                     ],
-                    max_tokens=256,
+                    max_tokens=1024,
                     json_schema=SIMPLE_SCHEMA,
                     timeout_s=60,
                 )
             except JSONSchemaError as exc:
                 pytest.skip(f"Model returned non-JSON in schema mode: {exc}")
+
+            if response.content is None:
+                pytest.skip(
+                    "Model returned no visible content "
+                    f"(finish_reason={response.finish_reason!r})"
+                )
 
             assert isinstance(response.content, str)
             assert response.parsed_json == {"name": "Alice", "age": 30}
@@ -136,7 +142,7 @@ async def test_async_streaming_preserves_callbacks_and_final_response(
             text_chunks = await async_stream_with_retry(
                 _adapter(provider, model),
                 messages=[UserMessage("Reply with exactly: OK")],
-                max_tokens=256,
+                max_tokens=1024,
                 timeout_s=60,
                 buffer_chars=8,
                 on_chunk=on_chunk,
@@ -180,7 +186,7 @@ async def test_async_tools_round_trip_with_previous_response(
                 messages=messages,
                 tools=[FRUIT_TOOL],
                 tool_choice="get_fruit_popularity",
-                max_tokens=256,
+                max_tokens=512,
                 timeout_s=60,
             )
 
@@ -206,7 +212,7 @@ async def test_async_tools_round_trip_with_previous_response(
                 adapter,
                 messages=messages,
                 previous_response=first,
-                max_tokens=256,
+                max_tokens=512,
                 timeout_s=60,
             )
             assert final.content and final.content.strip()
@@ -235,7 +241,7 @@ async def test_async_image_and_document_inputs_return_text(
                         files=[ImagePart(data=vision_image_bytes, media_type="image/png")],
                     )
                 ],
-                max_tokens=128,
+                max_tokens=512,
                 timeout_s=60,
             )
             assert image_response.content and image_response.content.strip()
@@ -257,7 +263,7 @@ async def test_async_image_and_document_inputs_return_text(
                         ],
                     )
                 ],
-                max_tokens=128,
+                max_tokens=512,
                 timeout_s=60,
             )
             assert document_response.content and document_response.content.strip()
