@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-api-adapter"
-version = "0.6.2"
+version = "0.7.0"
 description = "Lightweight, pluggable adapter for multiple LLM APIs (OpenAI, Anthropic, Google)"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -19,6 +19,9 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 dependencies = ["requests>=2.32"]
+
+[project.optional-dependencies]
+async = ["httpx>=0.28"]
 
 [project.urls]
 Repository = "https://github.com/Inozem/llm_api_adapter/"

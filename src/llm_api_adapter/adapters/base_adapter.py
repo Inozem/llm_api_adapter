@@ -5,8 +5,20 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 import logging
+import inspect
 import re
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
+from typing import (
+    Any,
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+)
 import warnings
 
 from ..errors.llm_api_error import (
@@ -54,6 +66,12 @@ OnChunk = Callable[[StreamChunk], None]
 OnToolCall = Callable[[ToolCall], None]
 OnDone = Callable[[ChatResponse], None]
 OnReasoning = Callable[[ReasoningEvent], None]
+AsyncCallbackResult = Optional[Awaitable[None]]
+AsyncOnDelta = Callable[[str], AsyncCallbackResult]
+AsyncOnChunk = Callable[[StreamChunk], AsyncCallbackResult]
+AsyncOnToolCall = Callable[[ToolCall], AsyncCallbackResult]
+AsyncOnDone = Callable[[ChatResponse], AsyncCallbackResult]
+AsyncOnReasoning = Callable[[ReasoningEvent], AsyncCallbackResult]
 
 
 @dataclass
@@ -162,6 +180,52 @@ class LLMAdapterBase(ABC):
         when ``capture_reasoning`` is enabled; reasoning is never yielded as
         visible text.
         """
+        raise NotImplementedError
+
+    async def achat(
+        self,
+        messages: Any,
+        max_tokens: Optional[int] = None,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        reasoning_level: Optional[str | int] = None,
+        timeout_s: Optional[float] = None,
+        tools: Optional[List[ToolSpec]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: Optional[bool] = None,
+        previous_response: Optional[ChatResponse] = None,
+        json_schema: Optional[dict] = None,
+        response_model: Optional[Any] = None,
+        *,
+        capture_reasoning: bool = False,
+    ) -> ChatResponse:
+        """Generate one response asynchronously in provider adapters."""
+        raise NotImplementedError
+
+    def astream_chat(
+        self,
+        messages: Any,
+        max_tokens: Optional[int] = None,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        reasoning_level: Optional[str | int] = None,
+        timeout_s: Optional[float] = None,
+        tools: Optional[List[ToolSpec]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: Optional[bool] = None,
+        previous_response: Optional[ChatResponse] = None,
+        json_schema: Optional[dict] = None,
+        response_model: Optional[Any] = None,
+        on_delta: Optional[AsyncOnDelta] = None,
+        on_tool_call: Optional[AsyncOnToolCall] = None,
+        on_done: Optional[AsyncOnDone] = None,
+        buffer_chars: Optional[int] = None,
+        on_chunk: Optional[AsyncOnChunk] = None,
+        *,
+        capture_reasoning: bool = False,
+        on_reasoning: Optional[AsyncOnReasoning] = None,
+    ) -> AsyncIterator[str]:
+        """Stream normalized text deltas asynchronously in provider adapters."""
         raise NotImplementedError
 
     @abstractmethod
@@ -457,6 +521,118 @@ class LLMAdapterBase(ABC):
             error_message = getattr(error, "text", None) or str(error)
             self.handle_error(error=error, error_message=error_message)
 
+    async def _aiter_provider_stream_events(
+        self,
+        events: AsyncIterable[Any],
+    ) -> AsyncIterator[Any]:
+        """Yield async provider events while preserving the adapter error contract."""
+        try:
+            async for event in events:
+                yield event
+        except LLMAPIError as error:
+            self.handle_error(error)
+        except Exception as error:
+            error_message = getattr(error, "text", None) or str(error)
+            self.handle_error(error=error, error_message=error_message)
+
+    def _run_sync_stream(
+        self,
+        events: Iterator[Any],
+        state: Any,
+        *,
+        consume_event: Callable[..., Iterator[str]],
+        finalize_response: Optional[Callable[..., ChatResponse]] = None,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+        on_delta: Optional[OnDelta],
+        on_tool_call: Optional[OnToolCall],
+        on_done: Optional[OnDone],
+        on_chunk: Optional[OnChunk],
+        capture_reasoning: bool,
+        on_reasoning: Optional[OnReasoning],
+    ) -> Iterator[str]:
+        """Run the shared synchronous stream lifecycle for a provider."""
+        for event in self._iter_provider_stream_events(events):
+            yield from consume_event(
+                event,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+            )
+
+        finalizer = finalize_response or self._finalize_stream_response
+        chat_response = finalizer(
+            state,
+            capture_reasoning=capture_reasoning,
+            effective_schema=effective_schema,
+            response_model=response_model,
+        )
+        yield from self._complete_stream(
+            chat_response,
+            state.chunk_buffer,
+            on_chunk,
+            on_delta,
+            on_tool_call,
+            on_done,
+        )
+
+    async def _run_async_stream(
+        self,
+        events: AsyncIterable[Any],
+        state: Any,
+        *,
+        consume_event: Callable[..., AsyncIterator[str]],
+        finalize_response: Optional[Callable[..., ChatResponse]] = None,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+        on_delta: Optional[AsyncOnDelta],
+        on_tool_call: Optional[AsyncOnToolCall],
+        on_done: Optional[AsyncOnDone],
+        on_chunk: Optional[AsyncOnChunk],
+        capture_reasoning: bool,
+        on_reasoning: Optional[AsyncOnReasoning],
+    ) -> AsyncIterator[str]:
+        """Run the shared asynchronous stream lifecycle for a provider."""
+        async for event in self._aiter_provider_stream_events(events):
+            async for text in consume_event(
+                event,
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+            ):
+                yield text
+
+        finalizer = finalize_response or self._finalize_stream_response
+        chat_response = finalizer(
+            state,
+            capture_reasoning=capture_reasoning,
+            effective_schema=effective_schema,
+            response_model=response_model,
+        )
+        async for text in self._complete_async_stream(
+            chat_response,
+            state.chunk_buffer,
+            on_chunk,
+            on_delta,
+            on_tool_call,
+            on_done,
+        ):
+            yield text
+
+    async def _invoke_async_callback(
+        self,
+        callback: Optional[Callable[[Any], Any]],
+        value: Any,
+    ) -> None:
+        """Invoke a callback and await its result when it is awaitable."""
+        if callback is None:
+            return
+        result = callback(value)
+        if inspect.isawaitable(result):
+            await result
+
     def _finalize_chat_response(
         self,
         chat_response: ChatResponse,
@@ -565,6 +741,18 @@ class LLMAdapterBase(ABC):
                 on_delta(chunk.text)
             yield chunk.text
 
+    async def _emit_async_stream_chunks(
+        self,
+        chunks: Iterable[StreamChunk],
+        on_chunk: Optional[AsyncOnChunk],
+        on_delta: Optional[AsyncOnDelta],
+    ) -> AsyncIterator[str]:
+        """Invoke async-capable callbacks before yielding each visible chunk."""
+        for chunk in chunks:
+            await self._invoke_async_callback(on_chunk, chunk)
+            await self._invoke_async_callback(on_delta, chunk.text)
+            yield chunk.text
+
     def _finalize_stream_response(
         self,
         chat_response: ChatResponse,
@@ -605,6 +793,61 @@ class LLMAdapterBase(ABC):
             on_tool_call,
             on_done,
         )
+
+    async def _invoke_async_stream_completion_callbacks(
+        self,
+        chat_response: ChatResponse,
+        on_tool_call: Optional[AsyncOnToolCall],
+        on_done: Optional[AsyncOnDone],
+    ) -> None:
+        """Deliver async-capable tool and completion callbacks in order."""
+        for tool_call in chat_response.tool_calls or []:
+            await self._invoke_async_callback(on_tool_call, tool_call)
+        await self._invoke_async_callback(on_done, chat_response)
+
+    async def _complete_async_stream(
+        self,
+        chat_response: ChatResponse,
+        chunk_buffer: StreamChunkBuffer,
+        on_chunk: Optional[AsyncOnChunk],
+        on_delta: Optional[AsyncOnDelta],
+        on_tool_call: Optional[AsyncOnToolCall],
+        on_done: Optional[AsyncOnDone],
+    ) -> AsyncIterator[str]:
+        """Flush visible text, then invoke async tool and completion callbacks."""
+        async for text in self._emit_async_stream_chunks(
+            chunk_buffer.flush(),
+            on_chunk,
+            on_delta,
+        ):
+            yield text
+        await self._invoke_async_stream_completion_callbacks(
+            chat_response,
+            on_tool_call,
+            on_done,
+        )
+
+    async def _record_async_reasoning_event(
+        self,
+        chat_response: ChatResponse,
+        collector: StreamReasoningCollector,
+        text: str,
+        *,
+        capture_reasoning: bool,
+        kind: ReasoningEventKind = "summary",
+        on_reasoning: Optional[AsyncOnReasoning] = None,
+    ) -> Optional[ReasoningEvent]:
+        """Append a reasoning event and await its optional callback."""
+        if not capture_reasoning:
+            return None
+
+        event = collector.add(text, kind=kind)
+        if event is None:
+            return None
+
+        chat_response.reasoning_events.append(event)
+        await self._invoke_async_callback(on_reasoning, event)
+        return event
 
     def handle_error(self, error: Exception, error_message: Optional[str] = None):
         err_msg = (
