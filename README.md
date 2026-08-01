@@ -1132,6 +1132,10 @@ logging.getLogger("urllib3").setLevel(logging.DEBUG)
 
 Use this only in development.
 
+## Adoption
+
+[Vertec](https://www.vertec.com/en-ch/kb/llm-client/) documents `llm-api-adapter` as its generic LLM client for Python scripting in Vertec Cloud Suite and On-Premises.
+
 ## Related project
 
 For production applications that need retries, multi-provider failover,
