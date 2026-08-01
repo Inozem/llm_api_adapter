@@ -107,7 +107,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dump-raw",
         action="store_true",
-        help="Print complete decoded provider events when no reasoning is captured.",
+        help=(
+            "Print complete decoded provider events when no reasoning is captured "
+            "or the stream fails."
+        ),
     )
     return parser.parse_args()
 
@@ -136,6 +139,32 @@ def _raw_event_metadata(event: Any) -> dict[str, Any]:
             else None
         ),
     }
+
+
+def _configure_console_output() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # pragma: no cover - non-standard streams
+            pass
+
+
+def _print_raw_report(
+    provider: str,
+    model: str,
+    prompt: str,
+    raw_events: list[dict[str, Any]],
+) -> None:
+    raw_report = {
+        "provider": provider,
+        "model": model,
+        "prompt": prompt,
+        "events": raw_events,
+    }
+    print(
+        "REASONING_SMOKE_RAW "
+        + json.dumps(raw_report, default=str, ensure_ascii=False, sort_keys=True)
+    )
 
 
 @contextmanager
@@ -193,6 +222,7 @@ def _stream_with_retry(
 
 
 def main() -> int:
+    _configure_console_output()
     args = _parse_args()
     if load_dotenv is not None:
         load_dotenv(PROJECT_ROOT / ".env")
@@ -244,16 +274,26 @@ def main() -> int:
     if expected_reasoning:
         request_kwargs["reasoning_level"] = "high"
 
-    with _capture_provider_events(args.provider, raw_events):
-        text_chunks = _stream_with_retry(
-            adapter,
-            request_kwargs,
-            completed_responses,
-            observed_deltas,
-            observed_reasoning,
-            raw_events,
-            live_output,
+    try:
+        with _capture_provider_events(args.provider, raw_events):
+            text_chunks = _stream_with_retry(
+                adapter,
+                request_kwargs,
+                completed_responses,
+                observed_deltas,
+                observed_reasoning,
+                raw_events,
+                live_output,
+            )
+    except Exception as exc:
+        live_output.finish()
+        print(
+            f"Reasoning smoke stream failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
         )
+        if args.dump_raw:
+            _print_raw_report(args.provider, args.model, args.prompt, raw_events)
+        return 1
 
     live_output.finish()
 
@@ -288,16 +328,7 @@ def main() -> int:
 
     if reasoning_expected and not observed_reasoning:
         if args.dump_raw:
-            raw_report = {
-                "provider": args.provider,
-                "model": args.model,
-                "prompt": args.prompt,
-                "events": raw_events,
-            }
-            print(
-                "REASONING_SMOKE_RAW "
-                + json.dumps(raw_report, default=str, ensure_ascii=False, sort_keys=True)
-            )
+            _print_raw_report(args.provider, args.model, args.prompt, raw_events)
         else:
             print(
                 "No normalized reasoning events captured. Re-run with --dump-raw "

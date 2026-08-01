@@ -22,7 +22,7 @@ Calling an LLM from Python usually means choosing between a provider-specific SD
 | Built-in per-response cost| ✓ | ✓ | via callbacks | ✗ |
 | Unified error hierarchy   | ✓ | OpenAI-compatible | framework-specific | ✗ |
 | Sync streaming            | ✓ text-first | ✓ | ✓ | ✓ |
-| Async API                 | ✗ | ✓ | ✓ | ✓ |
+| Async API                 | ✓ optional | ✓ | ✓ | ✓ |
 | Number of providers       | 3 | 100+ | 50+ | 1 |
 
 * `reasoning_level` is one application-level parameter, but the available levels, native mapping, and emitted reasoning content remain model/provider-dependent.
@@ -48,13 +48,14 @@ This table is a positioning snapshot. Provider capabilities change independently
 
 ### Use something else when
 
-- **LiteLLM** — you need providers beyond OpenAI, Anthropic/Claude, and Google (for example AWS Bedrock-hosted models), async API support, or a gateway/router layer with retries, fallbacks, and observability
+- **LiteLLM** — you need providers beyond OpenAI, Anthropic/Claude, and Google (for example AWS Bedrock-hosted models), or a gateway/router layer with retries, fallbacks, and observability
 - **LangChain** — you need chains, memory, RAG, agents, async workflows, or a larger orchestration framework
 - **Provider SDK directly** — you'll never switch, need provider-specific async features, and don't need cost tracking
 
 ## Features
 
 - **Synchronous Streaming**: Iterate normalized text with `stream_chat()` across OpenAI, Anthropic, and Google. Optionally coalesce it into bounded chunks and observe per-chunk metadata without changing the yielded `str` contract.
+- **Asynchronous API**: Use `achat()` and `astream_chat()` with the optional `[async]` installation for non-blocking HTTPX requests and awaitable callbacks.
 - **Reasoning Observability**: Opt in to provider-emitted reasoning summaries through `capture_reasoning=True`, `ReasoningEvent`, and the `on_reasoning` callback without mixing reasoning into visible text.
 - **Provider-Neutral Messages and Responses**: Use the same typed messages, `ChatResponse`, usage, pricing, parsed output, and tool-call fields regardless of the provider.
 - **Vision Input**: Send images alongside text via `ImagePart` — URL or raw bytes, all providers handled automatically.
@@ -73,6 +74,17 @@ To install the SDK, you can use pip:
 ```bash
 pip install llm-api-adapter
 ```
+
+The asynchronous API is an optional dependency:
+
+```bash
+pip install "llm-api-adapter[async]"
+```
+
+The base installation keeps `requests` as its only runtime dependency. The
+`[async]` extra adds `httpx`; it is imported lazily when an async request is
+made. The synchronous API continues to use `requests` and does not require
+`httpx`.
 
 **Note:** You will need to obtain API keys from each LLM provider you wish to use (OpenAI, Anthropic, Google). Refer to their respective documentation for instructions on obtaining API keys.
 
@@ -184,48 +196,154 @@ for chunk in chunk_metadata:
 
 Buffering is pull-based and has no background worker or time-based flush. If the stream fails or a caller closes the iterator early, pending text is not emitted as a successful final chunk and `on_done` is not called.
 
-Streaming in v0.6.1 is synchronous and text-first. Async streaming, a universal provider-event type, partial tool arguments, and tool-call sequencing are deferred to later releases.
+Streaming is text-first for both APIs. Synchronous streaming uses the existing
+`requests` transport; asynchronous streaming uses a separate `httpx.AsyncClient`
+transport. The two transports share the provider-neutral response and callback
+contract, while provider-specific event parsing remains inside each adapter.
 
 Provider event references: [OpenAI Responses streaming](https://platform.openai.com/docs/api-reference/responses-streaming), [Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), and [Google `streamGenerateContent`](https://ai.google.dev/api/generate-content).
+
+## Async API
+
+Install the optional dependency before using asynchronous methods:
+
+```bash
+pip install "llm-api-adapter[async]"
+```
+
+`achat()` and `astream_chat()` are available through the same
+`UniversalLLMAPIAdapter` facade for OpenAI, Anthropic, and Google. They accept
+the same provider-neutral messages, tools, structured-output, file, pricing,
+usage, and reasoning options as their synchronous counterparts.
+
+Both async methods accept the common request parameters `messages`,
+`max_tokens`, `temperature`, `top_p`, `reasoning_level`, `timeout_s`, `tools`,
+`tool_choice`, `parallel_tool_calls`, `previous_response`, `json_schema`,
+`response_model`, and `capture_reasoning`. `astream_chat()` additionally
+accepts `on_delta`, `on_tool_call`, `on_done`, `buffer_chars`, `on_chunk`, and
+`on_reasoning`, and returns an async iterator of visible text strings.
+
+`ImagePart` and `DocumentPart` are supported by both async methods. File bytes
+are encoded locally and sent in the async HTTPX request; file URLs are passed
+to the provider and are not downloaded by the adapter. As with the synchronous
+API, `DocumentPart` URLs require OpenAI Responses API models; OpenAI Chat
+Completions supports PDF bytes but not PDF URLs.
+
+### Async request
+
+```python
+import asyncio
+import os
+
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+
+async def main():
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai",
+        model="gpt-5",
+        api_key=os.environ["OPENAI_API_KEY"],
+    )
+    response = await adapter.achat(
+        messages=[{"role": "user", "content": "Explain SSE in one sentence."}],
+        max_tokens=80,
+    )
+    print(response.content)
+
+
+asyncio.run(main())
+```
+
+### Async streaming
+
+```python
+import asyncio
+import os
+
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+
+async def main():
+    adapter = UniversalLLMAPIAdapter(
+        organization="anthropic",
+        model="claude-sonnet-4-5",
+        api_key=os.environ["ANTHROPIC_API_KEY"],
+    )
+
+    async def on_chunk(chunk):
+        print(f"chunk {chunk.index}: {chunk.text!r}")
+
+    async def on_done(response):
+        print(f"\nusage: {response.usage}")
+
+    async for delta in adapter.astream_chat(
+        messages=[{"role": "user", "content": "Explain SSE in one sentence."}],
+        max_tokens=80,
+        buffer_chars=80,
+        on_chunk=on_chunk,
+        on_done=on_done,
+    ):
+        print(delta, end="", flush=True)
+
+
+asyncio.run(main())
+```
+
+Async callbacks may be regular functions or `async def` functions. For every
+visible chunk, callbacks are processed serially in this order:
+`on_chunk` → `on_delta` → `yield`. Reasoning callbacks follow the same awaited
+ordering and reasoning text is never yielded as visible output.
+
+Async requests do not add automatic retries, provider fallback, or idempotency
+behavior. If a task is cancelled, the HTTP response and client are closed;
+pending text is not flushed and `on_done` is not called. The same cleanup
+applies when an async stream is closed before normal completion.
+
+Async HTTPX requests use the same `LLMAPIError` hierarchy as synchronous
+requests. Authentication, rate-limit, client, server, and timeout failures are
+normalized to the same provider-neutral exceptions.
 
 ### Reasoning observability
 
 Reasoning observability is opt-in and additive. Set `capture_reasoning=True` to retain provider-emitted reasoning summaries or readable thinking content in `ChatResponse.reasoning_events`.
 
+With `achat()`, the events are available on the returned `ChatResponse`. With
+`astream_chat()`, they are delivered through `on_reasoning` and included in the
+final response passed to `on_done`.
+
 The stream still yields only visible text. Reasoning events are never sent to `on_delta` and never appear in the iterator. When supplied, `on_reasoning(event)` is called as each event is normalized; `on_done(response)` receives the complete `response.reasoning_events` list.
 
 ```python
-import logging
+import asyncio
+import os
 
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
-logger = logging.getLogger(__name__)
-observed_events = []
+
+async def main():
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai",
+        model="gpt-5",
+        api_key=os.environ["OPENAI_API_KEY"],
+    )
+
+    async def observe_reasoning(event):
+        # Application code decides what to log, redact, retain, or display.
+        print(f"reasoning[{event.index}]: {event.text}")
+
+    async def on_done(response):
+        print(f"captured {len(response.reasoning_events)} reasoning events")
+
+    async for text in adapter.astream_chat(
+        messages=[{"role": "user", "content": "Explain SSE briefly."}],
+        capture_reasoning=True,
+        on_reasoning=observe_reasoning,
+        on_done=on_done,
+    ):
+        print(text, end="", flush=True)
 
 
-def observe_reasoning(event):
-    observed_events.append(event)
-    # Application code decides what to log, redact, retain, or display.
-    logger.info("reasoning event kind=%s index=%s", event.kind, event.index)
-
-
-def on_done(response):
-    logger.info("captured %d reasoning events", len(response.reasoning_events))
-
-
-adapter = UniversalLLMAPIAdapter(
-    organization="openai",
-    model="gpt-5",
-    api_key="...",
-)
-
-for text in adapter.stream_chat(
-    messages=[{"role": "user", "content": "Explain SSE briefly."}],
-    capture_reasoning=True,
-    on_reasoning=observe_reasoning,
-    on_done=on_done,
-):
-    print(text, end="", flush=True)
+asyncio.run(main())
 ```
 
 `ReasoningEvent` contains `text`, `kind`, `index`, `elapsed_s`, and `delta_s`. Availability and content depend on the provider and model; an empty list is a valid result. The library does not automatically log, display, redact, or send reasoning to telemetry, and it does not promise access to a model's private chain of thought. Applications should apply their own redaction and retention policy.
@@ -277,7 +395,7 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 | `LLMAPITokenLimitError` | `MaxTokensExceededError`, `TokenLimitError` | — | — |
 | `LLMAPIClientError` | HTTP 4xx; `InvalidRequestError`, `BadRequestError` | HTTP 4xx; `InvalidRequestError`, `RequestTooLargeError`, `NotFoundError` | HTTP 4xx; `INVALID_ARGUMENT`, `FAILED_PRECONDITION`, `NOT_FOUND` |
 | `LLMAPIServerError` | HTTP 5xx; `InternalServerError`, `ServiceUnavailableError` | HTTP 5xx; `APIError`, `OverloadedError` | HTTP 5xx; `INTERNAL`, `UNAVAILABLE` |
-| `LLMAPITimeoutError` | `requests.Timeout`; `TimeoutError` | `requests.Timeout` | `requests.Timeout`; `DEADLINE_EXCEEDED` |
+| `LLMAPITimeoutError` | `requests.Timeout`, `httpx.TimeoutException`; `TimeoutError` | `requests.Timeout`, `httpx.TimeoutException` | `requests.Timeout`, `httpx.TimeoutException`; `DEADLINE_EXCEEDED` |
 | `LLMAPIUsageLimitError` | `UsageLimitError`, `QuotaExceededError` | — | — |
 
 > - `LLMAPITokenLimitError` and `LLMAPIUsageLimitError` are OpenAI-only; equivalent cases for Anthropic and Google fall into `LLMAPIClientError` (HTTP 4xx).
@@ -401,7 +519,7 @@ The SDK supports per-request timeouts for all providers.
 
 ### timeout\_s parameter
 
-`timeout_s` defines the maximum time (in seconds) the SDK will wait for an LLM response.
+`timeout_s` defines the maximum time (in seconds) the SDK will wait for an LLM response. It applies to `chat()`, `achat()`, `stream_chat()`, and `astream_chat()`.
 
 If the timeout is exceeded, the request is aborted and `LLMAPITimeoutError` is raised.
 
@@ -442,7 +560,7 @@ except LLMAPITimeoutError:
 
 ## Reasoning Support
 
-This section describes the provider-neutral `reasoning_level` parameter. It gives application code one input surface; it does not claim that every model exposes the same levels or consumes the same number of reasoning tokens.
+This section describes the provider-neutral `reasoning_level` parameter for `chat()`, `achat()`, `stream_chat()`, and `astream_chat()`. It gives application code one input surface; it does not claim that every model exposes the same levels or consumes the same number of reasoning tokens.
 
 ```python
 response = adapter.chat(
@@ -533,10 +651,22 @@ tool = ToolSpec(
 
 ### Tool parameters
 
-`chat()` supports:
+All request methods support the same tool parameters:
 
 - `tools`
 - `tool_choice`
+
+This includes `chat()`, `achat()`, `stream_chat()`, and `astream_chat()`.
+The async methods return the same normalized `ToolCall` objects as the sync
+methods. During streaming, completed calls are delivered through
+`on_tool_call`; the callback may be synchronous or asynchronous. The adapter
+does not execute tools, so the caller must append the resulting `ToolMessage`
+and make the follow-up request itself.
+
+`parallel_tool_calls` is also accepted by all request methods. Its effect is
+provider-dependent and matches the synchronous API: Anthropic can enable or
+disable parallel tool use, OpenAI supports it for Chat Completions, and Google
+ignores it because Gemini has no equivalent option.
 
 ### Tool round‑trip example
 
@@ -612,9 +742,28 @@ if first.tool_calls:
     print(final.content)
 ```
 
+The same tool round-trip is asynchronous when using `achat()`:
+
+```python
+first = await adapter.achat(
+    messages=messages,
+    tools=tools,
+    tool_choice="auto",
+    max_tokens=1000,
+)
+
+# Execute first.tool_calls and append AIMessage/ToolMessage as above.
+final = await adapter.achat(
+    messages=messages,
+    previous_response=first,
+    max_tokens=1000,
+)
+```
+
 ### `previous_response` parameter
 
-`previous_response` accepts the `ChatResponse` returned by an earlier `chat()` call.
+`previous_response` accepts the `ChatResponse` returned by an earlier `chat()`
+or `achat()` call, and can also be passed to the streaming methods.
 
 For OpenAI models that use the Responses API (o-series and newer GPT models), the adapter extracts `response_id` from the previous response and passes it to the API as `previous_response_id`. This enables stateful multi-turn conversations where the model retains context server-side, which reduces the tokens you need to send in subsequent turns.
 
@@ -624,7 +773,12 @@ If you omit `previous_response`, the call works normally; you just won't get the
 
 ## Structured Output
 
-The SDK supports two ways to get structured output from `chat()`: a raw `json_schema` dict, or a Pydantic model via `response_model`. Both use the same application-level contract across supported providers; provider-specific availability and schema restrictions are handled by the adapter.
+The SDK supports two ways to get structured output from `chat()`, `achat()`,
+`stream_chat()`, and `astream_chat()`: a raw `json_schema` dict, or a Pydantic
+model via `response_model`. Both use the same application-level contract
+across supported providers; provider-specific availability and schema
+restrictions are handled by the adapter. For streaming methods, parsed fields
+are available on the finalized `ChatResponse` passed to `on_done`.
 
 ### Pydantic Integration (`response_model`)
 
@@ -664,7 +818,10 @@ print(response.parsed_json)   # {"name": "Alice", "age": 30}
 
 ### Raw JSON Schema (`json_schema`)
 
-The SDK also supports structured JSON output via a `json_schema` parameter in `chat()`. Pass any JSON Schema object — the adapter normalizes it for each provider automatically and returns the parsed result in `ChatResponse.parsed_json`.
+The SDK also supports structured JSON output via a `json_schema` parameter in
+`chat()`, `achat()`, `stream_chat()`, and `astream_chat()`. Pass any JSON
+Schema object — the adapter normalizes it for each provider automatically and
+returns the parsed result in `ChatResponse.parsed_json`.
 
 ```python
 from llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
@@ -860,6 +1017,11 @@ For bytes, the adapter sends the PDF as base64 data in the provider-specific req
 
 ## Token Usage and Pricing
 
+`achat()` returns the same `usage`, `currency`, and cost fields as `chat()`.
+For `astream_chat()`, the finalized response passed to `on_done` contains the
+same fields, while `StreamChunk.usage` is populated when the provider reports
+usage during streaming.
+
 ### Token Usage and Pricing Example
 
 ```python
@@ -1041,11 +1203,11 @@ Use `--prompt` to test another task. During the request, the reasoning summary
 is printed under `[summary]`, and the visible answer under a `-------------`
 separator and `[final answer]`, as they arrive. A successful run ends after
 the final answer; diagnostic JSON is printed only when expected reasoning is
-missing or callback finalization differs. The script also captures every decoded provider SSE event before
-adapter parsing. If no normalized reasoning event is found, it prints event
-names and payload keys; `--dump-raw` also prints the complete payloads. Raw
-output may contain model-generated reasoning, tool arguments, or other
-sensitive response data.
+missing or callback finalization differs. The script also captures every
+decoded provider SSE event before adapter parsing. If no normalized reasoning
+event is found or the stream fails, it prints event names and payload keys;
+`--dump-raw` also prints the complete payloads. Raw output may contain
+model-generated reasoning, tool arguments, or other sensitive response data.
 
 ## License
 
