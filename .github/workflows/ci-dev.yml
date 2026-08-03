@@ -38,6 +38,10 @@ jobs:
       - name: Integration tests
         run: pytest -v -m integration --cov=src/llm_api_adapter --cov-report=xml --cov-append
 
+      - name: Show canonical coverage summary
+        if: ${{ matrix.python-version == '3.10' }}
+        run: coverage report --show-missing
+
       - name: Upload coverage to Codecov
         if: ${{ matrix.python-version == '3.10' }}
         uses: codecov/codecov-action@v4
