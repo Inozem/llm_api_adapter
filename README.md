@@ -1,6 +1,7 @@
 # LLM API Adapter SDK for Python
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/llm-api-adapter?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/llm-api-adapter)
 [![Tests](https://github.com/Inozem/llm_api_adapter/actions/workflows/ci-main.yml/badge.svg)](https://github.com/Inozem/llm_api_adapter/actions/workflows/ci-main.yml)
+[![Python versions](https://img.shields.io/pypi/pyversions/llm-api-adapter.svg)](https://pypi.org/project/llm-api-adapter/)
 [![codecov](https://codecov.io/github/Inozem/llm_api_adapter/branch/dev/graph/badge.svg?token=T83ZPH1F7Z)](https://codecov.io/github/Inozem/llm_api_adapter)
 
 ## Overview
@@ -8,6 +9,8 @@
 Calling an LLM from Python usually means choosing between a provider-specific SDK, a larger application framework, or an API gateway.
 
 **llm-api-adapter** is a minimal, typed multi-provider adapter for OpenAI, Anthropic, and Google. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching providers means changing two arguments.
+
+Supports Python 3.9–3.14.
 
 ## Why this library?
 

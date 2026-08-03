@@ -53,7 +53,7 @@ python -m pytest -v -m integration
 python tests/tests_runner.py
 ```
 
-The `dev` and `main` CI workflows run this deterministic coverage across Python 3.9, 3.10, 3.11, 3.12, and 3.13. Provider keys and live E2E calls are excluded from every matrix job.
+The `dev` and `main` CI workflows run this deterministic coverage across Python 3.9, 3.10, 3.11, 3.12, 3.13, and 3.14. Provider keys and live E2E calls are excluded from every matrix job.
 
 Keep deterministic tests free of network access, provider credentials, and model-specific prompt tuning. New provider behavior should use sanitized fixtures or mocked transports.
 
