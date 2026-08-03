@@ -1153,65 +1153,7 @@ provider-neutral interface unchanged.
 
 ## Development & Testing
 
-> **Note**  
-> This section is intended for developers working with the source code from GitHub.  
-> It is **not** relevant for users installing the package from PyPI.
-
-This project uses `pytest` for testing. Tests are located in the `tests/` directory.
-
-### Test suites
-
-- **unit**: fast, offline, no real provider calls
-- **integration**: adapter-level integration tests (may use mocked/provider-shaped responses)
-- **e2e**: real API calls against providers (requires API keys)
-
-### Running tests
-
-Run everything:
-
-```bash
-pytest
-```
-
-Run by marker:
-
-```bash
-pytest -m unit
-pytest -m integration
-pytest -m e2e
-```
-
-### E2E requirements
-
-E2E tests require provider API keys to be present in environment variables:
-
-- `OPENAI_API_KEY`
-- `ANTHROPIC_API_KEY`
-- `GOOGLE_API_KEY`
-
-### Reasoning smoke script
-
-The standalone [reasoning_smoke.py](scripts/reasoning_smoke.py) script is intended for
-manual live checks and is not part of the pytest E2E suite or CI. It uses the
-default dog-and-potato prompt unless another prompt is supplied:
-
-```powershell
-python scripts/reasoning_smoke.py `
-  --provider openai `
-  --model gpt-5.6-sol `
-  --require-reasoning `
-  --dump-raw
-```
-
-Use `--prompt` to test another task. During the request, the reasoning summary
-is printed under `[summary]`, and the visible answer under a `-------------`
-separator and `[final answer]`, as they arrive. A successful run ends after
-the final answer; diagnostic JSON is printed only when expected reasoning is
-missing or callback finalization differs. The script also captures every
-decoded provider SSE event before adapter parsing. If no normalized reasoning
-event is found or the stream fails, it prints event names and payload keys;
-`--dump-raw` also prints the complete payloads. Raw output may contain
-model-generated reasoning, tool arguments, or other sensitive response data.
+Developer setup, deterministic unit and mocked-integration commands, paid E2E requirements, provider-key safety, documentation rules, and the release flow are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
