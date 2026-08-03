@@ -53,6 +53,8 @@ python -m pytest -v -m integration
 python tests/tests_runner.py
 ```
 
+The `dev` and `main` CI workflows run this deterministic coverage across Python 3.9, 3.10, 3.11, 3.12, and 3.13. Provider keys and live E2E calls are excluded from every matrix job.
+
 Keep deterministic tests free of network access, provider credentials, and model-specific prompt tuning. New provider behavior should use sanitized fixtures or mocked transports.
 
 ## E2E tests and provider keys
@@ -73,7 +75,7 @@ The required environment variables are:
 
 Async E2E checks use the latest registered model for each provider by default; providers without configured API keys are skipped. Override a provider's model only when needed with `ASYNC_E2E_OPENAI_MODEL`, `ASYNC_E2E_ANTHROPIC_MODEL`, or `ASYNC_E2E_GOOGLE_MODEL`.
 
-For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit to `dev`. The current [dev workflow](.github/workflows/ci-dev.yml) runs deterministic unit and integration tests with coverage, publishes the package to TestPyPI, and then runs the paid E2E marker. That marker currently exercises all registered models in the synchronous scenarios, while async scenarios select one latest registered model per provider. After the workflow passes, the maintainer manually installs the TestPyPI package and verifies the changed behavior and critical flows before merging the pull request. Do not ask contributors to push to `dev`, open pull requests to `dev`, run the paid job as part of a deterministic PR matrix, or multiply it across Python versions.
+For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic unit and integration tests with coverage. Only after the staging pull request is merged does the separate [dev release workflow](.github/workflows/ci-dev-release.yml) publish the package to TestPyPI and run E2E tests that make paid calls to the configured providers. The synchronous scenarios currently exercise all registered models, while async scenarios select one latest registered model per provider. After the workflow passes, the maintainer manually installs the TestPyPI package and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
 
 ## Provider-key safety
 
@@ -124,9 +126,11 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
    ```
 
 4. Open or update the pull request to `main`. Wait for review and the deterministic main CI to pass.
-5. The maintainer pushes that exact candidate commit to `dev`. The dev workflow publishes it to TestPyPI and runs the current post-publish E2E job. Provide keys through CI Secrets only, and remember that the current synchronous E2E scenarios may exercise every registered model. Do not use a pull request to `dev` for this promotion.
+5. The maintainer opens and merges a staging pull request containing that exact candidate commit into protected `dev`. The dev release workflow then publishes it to TestPyPI and runs E2E tests that make paid calls to the configured providers. Only an approved repository administrator should merge this staging pull request. Provide keys through CI Secrets only, and remember that the current synchronous E2E scenarios may exercise every registered model.
 6. After the E2E job passes, the maintainer manually installs the package from TestPyPI and verifies the changed behavior, critical flows, and absence of regressions.
 7. Merge the already verified pull request into `main`.
 8. After the pull request is merged, create the release tag so the main workflow publishes the final package.
 
-The post-publish E2E job is a release-candidate gate, not a general development check. Keep it out of pull-request jobs and Python-version matrices so paid calls remain bounded.
+The post-publish E2E job is a release-candidate gate, not a general development check. Keep it out of pull-request jobs and Python-version matrices so paid provider calls remain bounded.
+
+To keep this gate maintainer-controlled, protect `dev` with an active repository ruleset that targets only `dev`, requires a pull request before merging, restricts updates, blocks force pushes, and grants bypass only to the approved repository administrators. The `Require a pull request before merging` rule is essential: `Restrict updates` alone still permits an administrator to push directly to `dev`.
