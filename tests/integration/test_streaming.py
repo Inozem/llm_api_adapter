@@ -8,7 +8,11 @@ import requests
 import requests_mock
 from pydantic import BaseModel
 
-from src.llm_api_adapter.errors.llm_api_error import JSONSchemaError
+from src.llm_api_adapter.errors.llm_api_error import (
+    JSONSchemaError,
+    LLMAPIRateLimitError,
+    LLMAPIServerError,
+)
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.models.responses.chat_response import Usage
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -169,6 +173,241 @@ _STRUCTURED_STREAM_CASES = [
         ),
         {},
         id="google",
+    ),
+]
+
+
+def _reasoning_events(provider: str):
+    if provider == "openai":
+        return [
+            (
+                "response.reasoning_summary_text.delta",
+                {
+                    "type": "response.reasoning_summary_text.delta",
+                    "delta": "Plan",
+                },
+            ),
+            (
+                "response.output_text.delta",
+                {"type": "response.output_text.delta", "delta": "Answer"},
+            ),
+            (
+                "response.completed",
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "reasoning_resp_123",
+                        "model": "gpt-5",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "reasoning",
+                                "summary": [{"type": "summary_text", "text": "Plan"}],
+                            },
+                            {
+                                "type": "message",
+                                "content": [{"type": "output_text", "text": "Answer"}],
+                            },
+                        ],
+                    },
+                },
+            ),
+        ]
+    if provider == "anthropic":
+        return [
+            (
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "reasoning_msg_123",
+                        "model": "claude-sonnet-4-5",
+                        "content": [],
+                        "usage": {"input_tokens": 2, "output_tokens": 0},
+                    },
+                },
+            ),
+            (
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": ""},
+                },
+            ),
+            (
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "Plan"},
+                },
+            ),
+            (
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            (
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "text_delta", "text": "Answer"},
+                },
+            ),
+            (
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 2},
+                },
+            ),
+            ("message_stop", {"type": "message_stop"}),
+        ]
+    if provider == "google":
+        return [
+            (
+                None,
+                {
+                    "candidates": [{
+                        "content": {"parts": [{"text": "Plan", "thought": True}]}
+                    }]
+                },
+            ),
+            (
+                None,
+                {
+                    "candidates": [{
+                        "content": {"parts": [{"text": "Answer"}]},
+                        "finishReason": "STOP",
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 2,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 3,
+                    },
+                },
+            ),
+        ]
+    raise AssertionError(f"Unsupported provider: {provider}")
+
+
+def _failure_events(provider: str):
+    if provider == "openai":
+        return [
+            (
+                "response.output_text.delta",
+                {"type": "response.output_text.delta", "delta": "partial"},
+            ),
+            (
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "error": {
+                            "type": "server_error",
+                            "message": "provider failed",
+                        }
+                    },
+                },
+            ),
+        ]
+    if provider == "anthropic":
+        return [
+            (
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "failed_msg_123",
+                        "model": "claude-sonnet-4-5",
+                        "content": [],
+                        "usage": {"input_tokens": 2, "output_tokens": 0},
+                    },
+                },
+            ),
+            (
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            (
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "partial"},
+                },
+            ),
+            (
+                "error",
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "overloaded_error",
+                        "message": "provider overloaded",
+                    },
+                },
+            ),
+        ]
+    if provider == "google":
+        return [
+            (
+                None,
+                {
+                    "candidates": [{
+                        "content": {"parts": [{"text": "partial"}]}
+                    }]
+                },
+            ),
+            (
+                None,
+                {
+                    "error": {
+                        "status": "RESOURCE_EXHAUSTED",
+                        "message": "quota exhausted",
+                    }
+                },
+            ),
+        ]
+    raise AssertionError(f"Unsupported provider: {provider}")
+
+
+_FAILURE_STREAM_CASES = [
+    pytest.param(
+        "openai",
+        "gpt-5",
+        "https://api.openai.com/v1/responses",
+        LLMAPIServerError,
+        {"max_tokens": 64},
+        id="openai-response-failed",
+    ),
+    pytest.param(
+        "anthropic",
+        "claude-sonnet-4-5",
+        "https://api.anthropic.com/v1/messages",
+        LLMAPIServerError,
+        {"max_tokens": 64},
+        id="anthropic-error-event",
+    ),
+    pytest.param(
+        "google",
+        "gemini-2.5-pro",
+        (
+            "https://generativelanguage.googleapis.com/v1beta/"
+            "models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+        ),
+        LLMAPIRateLimitError,
+        {},
+        id="google-resource-exhausted",
     ),
 ]
 
@@ -694,3 +933,125 @@ async def test_async_structured_stream_failure_skips_on_done(
     assert route.call_count == 1
     assert yielded == fragments
     assert done == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("provider", "model", "url", "expected_error", "stream_kwargs"),
+    _FAILURE_STREAM_CASES,
+)
+async def test_async_provider_stream_failure_closes_and_skips_completion(
+    provider,
+    model,
+    url,
+    expected_error,
+    stream_kwargs,
+):
+    with respx.mock(assert_all_called=False) as router:
+        route = router.post(url)
+        route.return_value = httpx.Response(
+            200,
+            text=_sse(*_failure_events(provider)),
+            headers={"content-type": "text/event-stream"},
+        )
+        adapter = UniversalLLMAPIAdapter(
+            organization=provider,
+            model=model,
+            api_key="dummy_key",
+        )
+        chunks = []
+        deltas = []
+        done = []
+        yielded = []
+
+        async def on_chunk(chunk):
+            chunks.append(chunk)
+
+        async def on_delta(text):
+            deltas.append(text)
+
+        with pytest.raises(expected_error):
+            async for text in adapter.astream_chat(
+                messages=[UserMessage("Stream an answer.")],
+                buffer_chars=16,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_done=done.append,
+                **stream_kwargs,
+            ):
+                yielded.append(text)
+
+    assert route.call_count == 1
+    assert route.calls[0].response.is_closed is True
+    assert chunks == []
+    assert deltas == []
+    assert yielded == []
+    assert done == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("provider", "model", "url", "stream_kwargs"),
+    _STRUCTURED_STREAM_CASES,
+)
+async def test_async_reasoning_callbacks_precede_visible_chunks_and_done(
+    provider,
+    model,
+    url,
+    stream_kwargs,
+):
+    with respx.mock(assert_all_called=False) as router:
+        route = router.post(url)
+        route.return_value = httpx.Response(
+            200,
+            text=_sse(*_reasoning_events(provider)),
+            headers={"content-type": "text/event-stream"},
+        )
+        adapter = UniversalLLMAPIAdapter(
+            organization=provider,
+            model=model,
+            api_key="dummy_key",
+        )
+        order = []
+        done = []
+
+        async def on_reasoning(event):
+            order.append(("reasoning", event.text))
+
+        async def on_chunk(chunk):
+            order.append(("chunk", chunk.text))
+
+        async def on_delta(text):
+            order.append(("delta", text))
+
+        async def on_done(response):
+            done.append(response)
+            order.append(("done", response.content))
+
+        yielded = []
+        async for text in adapter.astream_chat(
+            messages=[UserMessage("Think, then answer.")],
+            capture_reasoning=True,
+            on_reasoning=on_reasoning,
+            on_chunk=on_chunk,
+            on_delta=on_delta,
+            on_done=on_done,
+            **stream_kwargs,
+        ):
+            yielded.append(text)
+            order.append(("yield", text))
+
+    assert route.call_count == 1
+    assert route.calls[0].response.is_closed is True
+    assert yielded == ["Answer"]
+    assert order == [
+        ("reasoning", "Plan"),
+        ("chunk", "Answer"),
+        ("delta", "Answer"),
+        ("yield", "Answer"),
+        ("done", "Answer"),
+    ]
+    assert len(done) == 1
+    assert [event.text for event in done[0].reasoning_events] == ["Plan"]
