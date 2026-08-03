@@ -1,10 +1,14 @@
 import json
 from unittest.mock import patch
 
+import httpx
 import pytest
+import respx
 import requests
 import requests_mock
+from pydantic import BaseModel
 
+from src.llm_api_adapter.errors.llm_api_error import JSONSchemaError
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.models.responses.chat_response import Usage
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -19,6 +23,154 @@ def _sse(*events: tuple[str | None, dict]) -> str:
         lines.append(f"data: {json.dumps(payload)}")
         chunks.append("\n".join(lines))
     return "\n\n".join(chunks) + "\n\n"
+
+
+STRUCTURED_JSON = '{"answer":"ok"}'
+STRUCTURED_SCHEMA = {
+    "type": "object",
+    "properties": {"answer": {"type": "string"}},
+    "required": ["answer"],
+}
+
+
+class StreamAnswer(BaseModel):
+    answer: str
+
+
+def _structured_events(provider: str, content: str):
+    first, second = content[:10], content[10:]
+    if provider == "openai":
+        return [
+            (
+                "response.output_text.delta",
+                {"type": "response.output_text.delta", "delta": first},
+            ),
+            (
+                "response.output_text.delta",
+                {"type": "response.output_text.delta", "delta": second},
+            ),
+            (
+                "response.completed",
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "structured_resp_123",
+                        "model": "gpt-5",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [
+                                    {"type": "output_text", "text": content}
+                                ],
+                            }
+                        ],
+                    },
+                },
+            ),
+        ]
+    if provider == "anthropic":
+        return [
+            (
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "structured_msg_123",
+                        "model": "claude-sonnet-4-5",
+                        "content": [],
+                        "usage": {"input_tokens": 2, "output_tokens": 0},
+                    },
+                },
+            ),
+            (
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            (
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": first},
+                },
+            ),
+            (
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": second},
+                },
+            ),
+            (
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 2},
+                },
+            ),
+            ("message_stop", {"type": "message_stop"}),
+        ]
+    if provider == "google":
+        return [
+            (
+                None,
+                {"candidates": [{"content": {"parts": [{"text": first}]}}]},
+            ),
+            (
+                None,
+                {
+                    "candidates": [{
+                        "content": {"parts": [{"text": second}]},
+                        "finishReason": "STOP",
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 2,
+                        "candidatesTokenCount": 2,
+                        "totalTokenCount": 4,
+                    },
+                },
+            ),
+        ]
+    raise AssertionError(f"Unsupported provider: {provider}")
+
+
+def _content_fragments(content: str):
+    return [fragment for fragment in (content[:10], content[10:]) if fragment]
+
+
+_STRUCTURED_STREAM_CASES = [
+    pytest.param(
+        "openai",
+        "gpt-5",
+        "https://api.openai.com/v1/responses",
+        {"max_tokens": 64},
+        id="openai-responses",
+    ),
+    pytest.param(
+        "anthropic",
+        "claude-sonnet-4-5",
+        "https://api.anthropic.com/v1/messages",
+        {"max_tokens": 64},
+        id="anthropic",
+    ),
+    pytest.param(
+        "google",
+        "gemini-2.5-pro",
+        (
+            "https://generativelanguage.googleapis.com/v1beta/"
+            "models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+        ),
+        {},
+        id="google",
+    ),
+]
 
 
 @pytest.mark.integration
@@ -406,3 +558,139 @@ def test_streaming_contract_is_consistent_for_all_providers(
         ("yield", "o!"),
         ("done", "Hello!"),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("provider", "model", "url", "stream_kwargs"),
+    _STRUCTURED_STREAM_CASES,
+)
+@pytest.mark.parametrize(
+    ("option_name", "option_value"),
+    [
+        pytest.param("json_schema", STRUCTURED_SCHEMA, id="json-schema"),
+        pytest.param("response_model", StreamAnswer, id="response-model"),
+    ],
+)
+async def test_async_structured_stream_finalization(
+    provider,
+    model,
+    url,
+    stream_kwargs,
+    option_name,
+    option_value,
+):
+    fragments = _content_fragments(STRUCTURED_JSON)
+    with respx.mock(assert_all_called=False) as router:
+        route = router.post(url)
+        route.return_value = httpx.Response(
+            200,
+            text=_sse(*_structured_events(provider, STRUCTURED_JSON)),
+            headers={"content-type": "text/event-stream"},
+        )
+        adapter = UniversalLLMAPIAdapter(
+            organization=provider,
+            model=model,
+            api_key="dummy_key",
+        )
+        done = []
+        order = []
+
+        async def on_delta(text):
+            order.append(("delta", text))
+
+        async def on_done(response):
+            done.append(response)
+            order.append(("done", response.content))
+
+        yielded = []
+        yielded_kwargs = {
+            "messages": [UserMessage("Return a structured answer.")],
+            **stream_kwargs,
+            option_name: option_value,
+            "on_delta": on_delta,
+            "on_done": on_done,
+        }
+        async for text in adapter.astream_chat(**yielded_kwargs):
+            yielded.append(text)
+            order.append(("yield", text))
+
+    assert route.call_count == 1
+    assert yielded == fragments
+    assert order == [
+        ("delta", fragments[0]),
+        ("yield", fragments[0]),
+        ("delta", fragments[1]),
+        ("yield", fragments[1]),
+        ("done", STRUCTURED_JSON),
+    ]
+    assert len(done) == 1
+    assert done[0].content == STRUCTURED_JSON
+    assert done[0].parsed_json == {"answer": "ok"}
+    if option_name == "response_model":
+        assert done[0].parsed_model == StreamAnswer(answer="ok")
+    else:
+        assert done[0].parsed_model is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("provider", "model", "url", "stream_kwargs"),
+    _STRUCTURED_STREAM_CASES,
+)
+@pytest.mark.parametrize(
+    ("option_name", "option_value", "invalid_content"),
+    [
+        pytest.param(
+            "json_schema",
+            STRUCTURED_SCHEMA,
+            '{"answer":',
+            id="json-schema-invalid-json",
+        ),
+        pytest.param(
+            "response_model",
+            StreamAnswer,
+            "{}",
+            id="response-model-validation-error",
+        ),
+    ],
+)
+async def test_async_structured_stream_failure_skips_on_done(
+    provider,
+    model,
+    url,
+    stream_kwargs,
+    option_name,
+    option_value,
+    invalid_content,
+):
+    fragments = _content_fragments(invalid_content)
+    with respx.mock(assert_all_called=False) as router:
+        route = router.post(url)
+        route.return_value = httpx.Response(
+            200,
+            text=_sse(*_structured_events(provider, invalid_content)),
+            headers={"content-type": "text/event-stream"},
+        )
+        adapter = UniversalLLMAPIAdapter(
+            organization=provider,
+            model=model,
+            api_key="dummy_key",
+        )
+        done = []
+        yielded = []
+        yielded_kwargs = {
+            "messages": [UserMessage("Return a structured answer.")],
+            **stream_kwargs,
+            option_name: option_value,
+            "on_done": done.append,
+        }
+        with pytest.raises(JSONSchemaError):
+            async for text in adapter.astream_chat(**yielded_kwargs):
+                yielded.append(text)
+
+    assert route.call_count == 1
+    assert yielded == fragments
+    assert done == []
