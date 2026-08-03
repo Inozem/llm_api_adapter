@@ -59,7 +59,7 @@ Keep deterministic tests free of network access, provider credentials, and model
 
 ## Coverage baseline
 
-The recorded deterministic baseline (2026-08-03) is **93.29% line coverage** (`2,946 / 3,158` lines), measured on Python 3.10 across the unit and mocked-integration suites. The measured scope is `src/llm_api_adapter`; E2E tests, provider calls, and credentials are excluded. Python 3.10 is the canonical coverage lane, while the other matrix versions verify compatibility. This baseline is informational for now; no minimum threshold is enforced yet. Do not update it for ordinary releases; refresh it only when intentionally approving a new baseline and threshold.
+The recorded deterministic baseline (2026-08-03) is **93.29% line coverage** (`2,946 / 3,158` lines), measured on Python 3.10 across the unit and mocked-integration suites. The measured scope is `src/llm_api_adapter`; E2E tests, provider calls, and credentials are excluded. Python 3.10 is the canonical coverage lane, while the other matrix versions verify compatibility. CI now enforces a **90% non-regression threshold** on this canonical report. Do not update the baseline for ordinary releases; refresh it only when intentionally approving a new baseline and threshold.
 
 To reproduce the combined report locally:
 
@@ -72,6 +72,7 @@ python -m pytest -q -m integration \
   --cov-append \
   --cov-report=term-missing \
   --cov-report=xml:coverage.xml
+python -m coverage report --show-missing --fail-under=90
 ```
 
 ## E2E tests and provider keys

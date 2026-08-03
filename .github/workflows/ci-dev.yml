@@ -40,7 +40,7 @@ jobs:
 
       - name: Show canonical coverage summary
         if: ${{ matrix.python-version == '3.10' }}
-        run: coverage report --show-missing
+        run: coverage report --show-missing --fail-under=90
 
       - name: Upload coverage to Codecov
         if: ${{ matrix.python-version == '3.10' }}
