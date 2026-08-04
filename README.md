@@ -77,6 +77,7 @@ This table is a positioning snapshot. Provider capabilities change independently
 ### Use something else when
 
 - **LiteLLM** — you need providers beyond OpenAI, Anthropic/Claude, and Google, or a gateway/router layer with retries, fallbacks, load balancing, and observability
+- **AISuite** — you prefer an OpenAI-compatible client across more providers, or built-in agents, MCP, and automatic tool-execution abstractions
 - **LangChain** — you need chains, memory, RAG, agents, or a larger orchestration framework
 - **Provider SDK directly** — you use one provider and need an API or feature outside this SDK's provider-neutral contract
 
