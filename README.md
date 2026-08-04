@@ -4,8 +4,15 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/llm-api-adapter.svg)](https://pypi.org/project/llm-api-adapter/)
 [![codecov](https://codecov.io/github/Inozem/llm_api_adapter/branch/dev/graph/badge.svg?token=T83ZPH1F7Z)](https://codecov.io/github/Inozem/llm_api_adapter)
 
-<details>
-<summary>Contents</summary>
+## Overview
+
+Calling an LLM from Python usually means choosing between a provider-specific SDK, a larger application framework, or an API gateway.
+
+**llm-api-adapter** is a minimal, typed multi-provider adapter for OpenAI, Anthropic, and Google. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching providers means changing two arguments.
+
+Supports Python 3.9–3.14.
+
+## Contents
 
 - [Overview](#overview)
 - [Why this library?](#why-this-library)
@@ -29,15 +36,6 @@
 - [Related project](#related-project)
 - [Development & Testing](#development--testing)
 - [License](#license)
-</details>
-
-## Overview
-
-Calling an LLM from Python usually means choosing between a provider-specific SDK, a larger application framework, or an API gateway.
-
-**llm-api-adapter** is a minimal, typed multi-provider adapter for OpenAI, Anthropic, and Google. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching providers means changing two arguments.
-
-Supports Python 3.9–3.14.
 
 ## Why this library?
 
