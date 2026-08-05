@@ -4,7 +4,7 @@ This guide covers local development, deterministic tests, paid provider checks, 
 
 ## Local setup
 
-The project supports Python 3.9 and newer. It uses a `src/` layout and keeps provider SDKs out of the runtime dependencies.
+The project supports Python 3.10 and newer. It uses a `src/` layout and keeps provider SDKs out of the runtime dependencies.
 
 Create an isolated environment and install the test and editable package dependencies:
 
@@ -53,7 +53,7 @@ python -m pytest -v -m integration
 python tests/tests_runner.py
 ```
 
-The `dev` and `main` CI workflows run this deterministic coverage across Python 3.9, 3.10, 3.11, 3.12, 3.13, and 3.14. Provider keys and live E2E calls are excluded from every matrix job.
+The `dev` and `main` CI workflows run this deterministic coverage across Python 3.10, 3.11, 3.12, 3.13, and 3.14. Provider keys and live E2E calls are excluded from every matrix job.
 
 Keep deterministic tests free of network access, provider credentials, and model-specific prompt tuning. New provider behavior should use sanitized fixtures or mocked transports.
 

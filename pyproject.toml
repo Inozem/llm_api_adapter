@@ -7,13 +7,12 @@ name = "llm-api-adapter"
 version = "0.7.0"
 description = "Lightweight, pluggable adapter for multiple LLM APIs (OpenAI, Anthropic, Google)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [{name = "Sergey Inozemtsev"}]
 keywords = ["llm", "adapter", "lightweight", "api"]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",

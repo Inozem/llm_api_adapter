@@ -10,7 +10,7 @@ Calling an LLM from Python usually means choosing between a provider-specific SD
 
 **llm-api-adapter** is a minimal, typed multi-provider adapter for OpenAI, Anthropic, and Google. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching providers means changing two arguments.
 
-Supports Python 3.9–3.14.
+Supports Python 3.10–3.14.
 
 ## Contents
 
