@@ -1,6 +1,7 @@
 # LLM API Adapter SDK for Python
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/llm-api-adapter?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/llm-api-adapter)
 [![Tests](https://github.com/Inozem/llm_api_adapter/actions/workflows/ci-main.yml/badge.svg)](https://github.com/Inozem/llm_api_adapter/actions/workflows/ci-main.yml)
+[![Python versions](https://img.shields.io/pypi/pyversions/llm-api-adapter.svg)](https://pypi.org/project/llm-api-adapter/)
 [![codecov](https://codecov.io/github/Inozem/llm_api_adapter/branch/dev/graph/badge.svg?token=T83ZPH1F7Z)](https://codecov.io/github/Inozem/llm_api_adapter)
 
 ## Overview
@@ -8,6 +9,33 @@
 Calling an LLM from Python usually means choosing between a provider-specific SDK, a larger application framework, or an API gateway.
 
 **llm-api-adapter** is a minimal, typed multi-provider adapter for OpenAI, Anthropic, and Google. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching providers means changing two arguments.
+
+Supports Python 3.10–3.14.
+
+## Contents
+
+- [Overview](#overview)
+- [Why this library?](#why-this-library)
+- [Features](#features)
+- [Installation](#installation)
+- [Getting Started](#getting-started)
+- [Streaming](#streaming)
+- [Async API](#async-api)
+- [Handling Errors](#handling-errors)
+- [Configuration and Management](#configuration-and-management)
+- [Example Use Case](#example-use-case)
+- [Timeout Support](#timeout-support)
+- [Reasoning Support](#reasoning-support)
+- [Tool / Function Calling](#tool--function-calling)
+- [Structured Output](#structured-output)
+- [Vision Input](#vision-input)
+- [Document Input](#document-input)
+- [Token Usage and Pricing](#token-usage-and-pricing)
+- [Logging](#logging)
+- [Adoption](#adoption)
+- [Related project](#related-project)
+- [Development & Testing](#development--testing)
+- [License](#license)
 
 ## Why this library?
 
@@ -48,14 +76,15 @@ This table is a positioning snapshot. Provider capabilities change independently
 
 ### Use something else when
 
-- **LiteLLM** — you need providers beyond OpenAI, Anthropic/Claude, and Google (for example AWS Bedrock-hosted models), or a gateway/router layer with retries, fallbacks, and observability
-- **LangChain** — you need chains, memory, RAG, agents, async workflows, or a larger orchestration framework
-- **Provider SDK directly** — you'll never switch, need provider-specific async features, and don't need cost tracking
+- **LiteLLM** — you need providers beyond OpenAI, Anthropic/Claude, and Google, or a gateway/router layer with retries, fallbacks, load balancing, and observability
+- **AISuite** — you prefer an OpenAI-compatible client across more providers, or built-in agents, MCP, and automatic tool-execution abstractions
+- **LangChain** — you need chains, memory, RAG, agents, or a larger orchestration framework
+- **Provider SDK directly** — you use one provider and need an API or feature outside this SDK's provider-neutral contract
 
 ## Features
 
 - **Synchronous Streaming**: Iterate normalized text with `stream_chat()` across OpenAI, Anthropic, and Google. Optionally coalesce it into bounded chunks and observe per-chunk metadata without changing the yielded `str` contract.
-- **Asynchronous API**: Use `achat()` and `astream_chat()` with the optional `[async]` installation for non-blocking HTTPX requests and awaitable callbacks.
+- **Asynchronous API**: Use `achat()` and `astream_chat()` with the optional `[async]` installation for non-blocking HTTPX requests and awaitable callbacks. See the [Async API guide](ASYNC_API.md).
 - **Reasoning Observability**: Opt in to provider-emitted reasoning summaries through `capture_reasoning=True`, `ReasoningEvent`, and the `on_reasoning` callback without mixing reasoning into visible text.
 - **Provider-Neutral Messages and Responses**: Use the same typed messages, `ChatResponse`, usage, pricing, parsed output, and tool-call fields regardless of the provider.
 - **Vision Input**: Send images alongside text via `ImagePart` — URL or raw bytes, all providers handled automatically.
@@ -75,16 +104,8 @@ To install the SDK, you can use pip:
 pip install llm-api-adapter
 ```
 
-The asynchronous API is an optional dependency:
-
-```bash
-pip install "llm-api-adapter[async]"
-```
-
-The base installation keeps `requests` as its only runtime dependency. The
-`[async]` extra adds `httpx`; it is imported lazily when an async request is
-made. The synchronous API continues to use `requests` and does not require
-`httpx`.
+For non-blocking requests, install the optional `[async]` extra and follow the
+[Async API guide](ASYNC_API.md).
 
 **Note:** You will need to obtain API keys from each LLM provider you wish to use (OpenAI, Anthropic, Google). Refer to their respective documentation for instructions on obtaining API keys.
 
@@ -196,157 +217,17 @@ for chunk in chunk_metadata:
 
 Buffering is pull-based and has no background worker or time-based flush. If the stream fails or a caller closes the iterator early, pending text is not emitted as a successful final chunk and `on_done` is not called.
 
-Streaming is text-first for both APIs. Synchronous streaming uses the existing
-`requests` transport; asynchronous streaming uses a separate `httpx.AsyncClient`
-transport. The two transports share the provider-neutral response and callback
-contract, while provider-specific event parsing remains inside each adapter.
+`stream_chat()` uses the synchronous `requests` transport. For the matching
+`astream_chat()` contract and its `httpx.AsyncClient` transport, see the
+[Async API guide](ASYNC_API.md#async-streaming).
 
 Provider event references: [OpenAI Responses streaming](https://platform.openai.com/docs/api-reference/responses-streaming), [Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), and [Google `streamGenerateContent`](https://ai.google.dev/api/generate-content).
 
 ## Async API
 
-Install the optional dependency before using asynchronous methods:
-
-```bash
-pip install "llm-api-adapter[async]"
-```
-
-`achat()` and `astream_chat()` are available through the same
-`UniversalLLMAPIAdapter` facade for OpenAI, Anthropic, and Google. They accept
-the same provider-neutral messages, tools, structured-output, file, pricing,
-usage, and reasoning options as their synchronous counterparts.
-
-Both async methods accept the common request parameters `messages`,
-`max_tokens`, `temperature`, `top_p`, `reasoning_level`, `timeout_s`, `tools`,
-`tool_choice`, `parallel_tool_calls`, `previous_response`, `json_schema`,
-`response_model`, and `capture_reasoning`. `astream_chat()` additionally
-accepts `on_delta`, `on_tool_call`, `on_done`, `buffer_chars`, `on_chunk`, and
-`on_reasoning`, and returns an async iterator of visible text strings.
-
-`ImagePart` and `DocumentPart` are supported by both async methods. File bytes
-are encoded locally and sent in the async HTTPX request; file URLs are passed
-to the provider and are not downloaded by the adapter. As with the synchronous
-API, `DocumentPart` URLs require OpenAI Responses API models; OpenAI Chat
-Completions supports PDF bytes but not PDF URLs.
-
-### Async request
-
-```python
-import asyncio
-import os
-
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
-
-
-async def main():
-    adapter = UniversalLLMAPIAdapter(
-        organization="openai",
-        model="gpt-5",
-        api_key=os.environ["OPENAI_API_KEY"],
-    )
-    response = await adapter.achat(
-        messages=[{"role": "user", "content": "Explain SSE in one sentence."}],
-        max_tokens=80,
-    )
-    print(response.content)
-
-
-asyncio.run(main())
-```
-
-### Async streaming
-
-```python
-import asyncio
-import os
-
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
-
-
-async def main():
-    adapter = UniversalLLMAPIAdapter(
-        organization="anthropic",
-        model="claude-sonnet-4-5",
-        api_key=os.environ["ANTHROPIC_API_KEY"],
-    )
-
-    async def on_chunk(chunk):
-        print(f"chunk {chunk.index}: {chunk.text!r}")
-
-    async def on_done(response):
-        print(f"\nusage: {response.usage}")
-
-    async for delta in adapter.astream_chat(
-        messages=[{"role": "user", "content": "Explain SSE in one sentence."}],
-        max_tokens=80,
-        buffer_chars=80,
-        on_chunk=on_chunk,
-        on_done=on_done,
-    ):
-        print(delta, end="", flush=True)
-
-
-asyncio.run(main())
-```
-
-Async callbacks may be regular functions or `async def` functions. For every
-visible chunk, callbacks are processed serially in this order:
-`on_chunk` → `on_delta` → `yield`. Reasoning callbacks follow the same awaited
-ordering and reasoning text is never yielded as visible output.
-
-Async requests do not add automatic retries, provider fallback, or idempotency
-behavior. If a task is cancelled, the HTTP response and client are closed;
-pending text is not flushed and `on_done` is not called. The same cleanup
-applies when an async stream is closed before normal completion.
-
-Async HTTPX requests use the same `LLMAPIError` hierarchy as synchronous
-requests. Authentication, rate-limit, client, server, and timeout failures are
-normalized to the same provider-neutral exceptions.
-
-### Reasoning observability
-
-Reasoning observability is opt-in and additive. Set `capture_reasoning=True` to retain provider-emitted reasoning summaries or readable thinking content in `ChatResponse.reasoning_events`.
-
-With `achat()`, the events are available on the returned `ChatResponse`. With
-`astream_chat()`, they are delivered through `on_reasoning` and included in the
-final response passed to `on_done`.
-
-The stream still yields only visible text. Reasoning events are never sent to `on_delta` and never appear in the iterator. When supplied, `on_reasoning(event)` is called as each event is normalized; `on_done(response)` receives the complete `response.reasoning_events` list.
-
-```python
-import asyncio
-import os
-
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
-
-
-async def main():
-    adapter = UniversalLLMAPIAdapter(
-        organization="openai",
-        model="gpt-5",
-        api_key=os.environ["OPENAI_API_KEY"],
-    )
-
-    async def observe_reasoning(event):
-        # Application code decides what to log, redact, retain, or display.
-        print(f"reasoning[{event.index}]: {event.text}")
-
-    async def on_done(response):
-        print(f"captured {len(response.reasoning_events)} reasoning events")
-
-    async for text in adapter.astream_chat(
-        messages=[{"role": "user", "content": "Explain SSE briefly."}],
-        capture_reasoning=True,
-        on_reasoning=observe_reasoning,
-        on_done=on_done,
-    ):
-        print(text, end="", flush=True)
-
-
-asyncio.run(main())
-```
-
-`ReasoningEvent` contains `text`, `kind`, `index`, `elapsed_s`, and `delta_s`. Availability and content depend on the provider and model; an empty list is a valid result. The library does not automatically log, display, redact, or send reasoning to telemetry, and it does not promise access to a model's private chain of thought. Applications should apply their own redaction and retention policy.
+The optional asynchronous client, installation command, `achat()` and
+`astream_chat()` examples, callback ordering, cancellation behavior, and
+reasoning observability are documented in the [Async API guide](ASYNC_API.md).
 
 ## Handling Errors
 
@@ -655,16 +536,13 @@ All request methods support the same tool parameters:
 
 - `tools`
 - `tool_choice`
+- `parallel_tool_calls`
 
-This includes `chat()`, `achat()`, `stream_chat()`, and `astream_chat()`.
-The async methods return the same normalized `ToolCall` objects as the sync
-methods. During streaming, completed calls are delivered through
-`on_tool_call`; the callback may be synchronous or asynchronous. The adapter
-does not execute tools, so the caller must append the resulting `ToolMessage`
-and make the follow-up request itself.
+Tool calls are returned as normalized `ToolCall` objects. The adapter does not
+execute them, so the caller appends each resulting `ToolMessage` and makes the
+follow-up request itself.
 
-`parallel_tool_calls` is also accepted by all request methods. Its effect is
-provider-dependent and matches the synchronous API: Anthropic can enable or
+`parallel_tool_calls` is provider-dependent: Anthropic can enable or
 disable parallel tool use, OpenAI supports it for Chat Completions, and Google
 ignores it because Gemini has no equivalent option.
 
@@ -742,23 +620,7 @@ if first.tool_calls:
     print(final.content)
 ```
 
-The same tool round-trip is asynchronous when using `achat()`:
-
-```python
-first = await adapter.achat(
-    messages=messages,
-    tools=tools,
-    tool_choice="auto",
-    max_tokens=1000,
-)
-
-# Execute first.tool_calls and append AIMessage/ToolMessage as above.
-final = await adapter.achat(
-    messages=messages,
-    previous_response=first,
-    max_tokens=1000,
-)
-```
+For a complete async tool round-trip, see the [Async API guide](ASYNC_API.md#tool-calling).
 
 ### `previous_response` parameter
 
@@ -1153,65 +1015,7 @@ provider-neutral interface unchanged.
 
 ## Development & Testing
 
-> **Note**  
-> This section is intended for developers working with the source code from GitHub.  
-> It is **not** relevant for users installing the package from PyPI.
-
-This project uses `pytest` for testing. Tests are located in the `tests/` directory.
-
-### Test suites
-
-- **unit**: fast, offline, no real provider calls
-- **integration**: adapter-level integration tests (may use mocked/provider-shaped responses)
-- **e2e**: real API calls against providers (requires API keys)
-
-### Running tests
-
-Run everything:
-
-```bash
-pytest
-```
-
-Run by marker:
-
-```bash
-pytest -m unit
-pytest -m integration
-pytest -m e2e
-```
-
-### E2E requirements
-
-E2E tests require provider API keys to be present in environment variables:
-
-- `OPENAI_API_KEY`
-- `ANTHROPIC_API_KEY`
-- `GOOGLE_API_KEY`
-
-### Reasoning smoke script
-
-The standalone [reasoning_smoke.py](scripts/reasoning_smoke.py) script is intended for
-manual live checks and is not part of the pytest E2E suite or CI. It uses the
-default dog-and-potato prompt unless another prompt is supplied:
-
-```powershell
-python scripts/reasoning_smoke.py `
-  --provider openai `
-  --model gpt-5.6-sol `
-  --require-reasoning `
-  --dump-raw
-```
-
-Use `--prompt` to test another task. During the request, the reasoning summary
-is printed under `[summary]`, and the visible answer under a `-------------`
-separator and `[final answer]`, as they arrive. A successful run ends after
-the final answer; diagnostic JSON is printed only when expected reasoning is
-missing or callback finalization differs. The script also captures every
-decoded provider SSE event before adapter parsing. If no normalized reasoning
-event is found or the stream fails, it prints event names and payload keys;
-`--dump-raw` also prints the complete payloads. Raw output may contain
-model-generated reasoning, tool arguments, or other sensitive response data.
+Developer setup, deterministic unit and mocked-integration commands, paid E2E requirements, provider-key safety, documentation rules, and the release flow are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
