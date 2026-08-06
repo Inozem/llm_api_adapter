@@ -6,8 +6,6 @@
 
 ## Overview
 
-Calling an LLM from Python usually means choosing between a provider-specific SDK, a larger application framework, or an API gateway.
-
 **llm-api-adapter** is a minimal, typed multi-provider adapter for OpenAI, Anthropic, and Google. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching providers means changing two arguments.
 
 Supports Python 3.10–3.14.
@@ -996,7 +994,7 @@ Use this only in development.
 
 ## Adoption
 
-[Vertec](https://www.vertec.com/en-ch/kb/llm-client/) documents `llm-api-adapter` as its generic LLM client for Python scripting in Vertec Cloud Suite and On-Premises.
+[Vertec](https://www.vertec.com/en-ch/kb/llm-client/) bundles llm-api-adapter with Vertec Cloud Suite and On-Premises, allowing customers to call OpenAI, Anthropic, and Google models from custom Python extensions through a unified interface.
 
 ## Related project
 
