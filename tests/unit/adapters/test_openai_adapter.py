@@ -7,6 +7,7 @@ from src.llm_api_adapter.errors.llm_api_error import JSONSchemaError, LLMAPIErro
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
+from src.llm_api_adapter.llm_registry.llm_registry import Pricing
 from src.llm_api_adapter.models.tools import ToolSpec
 from src.llm_api_adapter.llms.streaming import SSEEvent
 
@@ -82,15 +83,10 @@ def test_chat_handles_generic_exception(adapter):
 
 @pytest.mark.unit
 def test_pricing_is_applied_when_present_for_responses_api(adapter):
-    adapter.pricing = type(
-        "P",
-        (),
-        {
-            "in_per_token": 0.001,
-            "out_per_token": 0.002,
-            "currency": "USD",
-        },
-    )()
+    adapter.pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": None, "input_per_1m": 1_000, "output_per_1m": 2_000}],
+        currency="USD",
+    )
     fake_response = {"some": "openai response"}
     fake_chat_response = ChatResponse()
 
@@ -108,8 +104,8 @@ def test_pricing_is_applied_when_present_for_responses_api(adapter):
     mock_client.assert_called_once()
     mock_from.assert_called_once_with(fake_response)
     mock_apply.assert_called_once_with(
-        price_input_per_token=adapter.pricing.in_per_token,
-        price_output_per_token=adapter.pricing.out_per_token,
+        price_input_per_token=adapter.pricing.tiers[0].in_per_token,
+        price_output_per_token=adapter.pricing.tiers[0].out_per_token,
         currency=adapter.pricing.currency,
     )
     assert result is fake_chat_response
@@ -117,15 +113,16 @@ def test_pricing_is_applied_when_present_for_responses_api(adapter):
 
 @pytest.mark.unit
 def test_pricing_is_applied_when_present_for_legacy_api(legacy_adapter):
-    legacy_adapter.pricing = type(
-        "P",
-        (),
-        {
-            "in_per_token": 0.001,
-            "out_per_token": 0.002,
-            "currency": "USD",
-        },
-    )()
+    legacy_adapter.pricing = Pricing.from_dict(
+        [
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": 1_000,
+                "output_per_1m": 2_000,
+            }
+        ],
+        currency="USD",
+    )
     fake_response = {"some": "openai response"}
     fake_chat_response = ChatResponse()
 
@@ -143,8 +140,8 @@ def test_pricing_is_applied_when_present_for_legacy_api(legacy_adapter):
     mock_client.assert_called_once()
     mock_from.assert_called_once_with(fake_response)
     mock_apply.assert_called_once_with(
-        price_input_per_token=legacy_adapter.pricing.in_per_token,
-        price_output_per_token=legacy_adapter.pricing.out_per_token,
+        price_input_per_token=legacy_adapter.pricing.tiers[0].in_per_token,
+        price_output_per_token=legacy_adapter.pricing.tiers[0].out_per_token,
         currency=legacy_adapter.pricing.currency,
     )
     assert result is fake_chat_response

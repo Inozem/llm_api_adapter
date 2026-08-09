@@ -1,0 +1,263 @@
+{
+  "currency": "USD",
+  "models": {
+    "gpt-5.6-sol": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": 272000,
+          "input_per_1m": 5.0,
+          "output_per_1m": 30.0
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 10.0,
+          "output_per_1m": 45.0
+        }
+      ]
+    },
+    "gpt-5.6-terra": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": 272000,
+          "input_per_1m": 2.0,
+          "output_per_1m": 12.0
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 4.0,
+          "output_per_1m": 18.0
+        }
+      ]
+    },
+    "gpt-5.6-luna": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": 272000,
+          "input_per_1m": 0.2,
+          "output_per_1m": 1.2
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.4,
+          "output_per_1m": 1.8
+        }
+      ]
+    },
+    "gpt-5.5": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": 272000,
+          "input_per_1m": 5.0,
+          "output_per_1m": 30.0
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 10.0,
+          "output_per_1m": 45.0
+        }
+      ]
+    },
+    "gpt-5.4": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": 272000,
+          "input_per_1m": 2.5,
+          "output_per_1m": 15.0
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 5.0,
+          "output_per_1m": 22.5
+        }
+      ]
+    },
+    "gpt-5.4-mini": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 400000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.75,
+          "output_per_1m": 4.5
+        }
+      ]
+    },
+    "gpt-5.4-nano": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 400000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.2,
+          "output_per_1m": 1.25
+        }
+      ]
+    },
+    "gpt-5.2": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 400000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 1.75,
+          "output_per_1m": 14.0
+        }
+      ]
+    },
+    "gpt-5.1": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 400000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 1.25,
+          "output_per_1m": 10.0
+        }
+      ]
+    },
+    "gpt-5": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 400000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 1.25,
+          "output_per_1m": 10.0
+        }
+      ]
+    },
+    "gpt-5-mini": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 400000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.25,
+          "output_per_1m": 2.0
+        }
+      ]
+    },
+    "gpt-5-nano": {
+      "is_reasoning": true,
+      "limits": {
+        "context_window_tokens": 400000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.05,
+          "output_per_1m": 0.4
+        }
+      ]
+    },
+    "gpt-4.1": {
+      "limits": {
+        "context_window_tokens": 1047576,
+        "max_output_tokens": 32768
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 2.0,
+          "output_per_1m": 8.0
+        }
+      ]
+    },
+    "gpt-4.1-mini": {
+      "limits": {
+        "context_window_tokens": 1047576,
+        "max_output_tokens": 32768
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.4,
+          "output_per_1m": 1.6
+        }
+      ]
+    },
+    "gpt-4.1-nano": {
+      "limits": {
+        "context_window_tokens": 1047576,
+        "max_output_tokens": 32768
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.1,
+          "output_per_1m": 0.4
+        }
+      ]
+    },
+    "gpt-4o": {
+      "limits": {
+        "context_window_tokens": 128000,
+        "max_output_tokens": 16384
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 2.5,
+          "output_per_1m": 10.0
+        }
+      ]
+    },
+    "gpt-4o-mini": {
+      "limits": {
+        "context_window_tokens": 128000,
+        "max_output_tokens": 16384
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.15,
+          "output_per_1m": 0.6
+        }
+      ]
+    }
+  }
+}

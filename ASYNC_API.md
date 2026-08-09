@@ -621,6 +621,23 @@ For `astream_chat()`, the finalized response passed to `on_done` has those
 fields, while `StreamChunk.usage` is available when a provider reports usage
 during streaming.
 
+### Tiered standard-rate estimates
+
+Async pricing has the same semantics as `chat()`: when the provider reports
+`usage.input_tokens`, one tier is selected using its inclusive
+`up_to_prompt_tokens` boundary, and that tier's input and output rates price
+the entire request. The final tier is unbounded.
+
+`context_window_tokens` is the combined input/output capacity,
+`max_output_tokens` is the generated-output capacity, and a tier boundary is
+only a price-selection threshold. They are not interchangeable. If the
+provider omits usage, the adapter does not estimate it locally and leaves
+`usage`, `currency`, and `cost_*` as `None`.
+
+These values are standard text-rate estimates, not provider invoices. They
+exclude cached input, cache write/storage, batch, flex, priority,
+modality-specific, provider-hosted tool, and negotiated-volume charges.
+
 ```python
 import asyncio
 import os
@@ -638,16 +655,20 @@ async def main():
         messages=[{"role": "user", "content": "Explain token usage briefly."}],
     )
 
-    print(response.usage.input_tokens, "tokens", f"({response.cost_input} {response.currency})")
-    print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")
-    print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
+    if response.usage is None:
+        print("Provider did not report usage; cost is unavailable.")
+    else:
+        print(response.usage.input_tokens, "tokens", f"({response.cost_input} {response.currency})")
+        print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")
+        print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
 
 
 asyncio.run(main())
 ```
 
 Override registry pricing or currency on an adapter instance before awaiting
-the request:
+the request. A rate override replaces that rate in every pricing tier for the
+selected model:
 
 ```python
 import asyncio
@@ -670,7 +691,8 @@ async def main():
         messages=[{"role": "user", "content": "Explain token usage briefly."}],
     )
     print(response.content)
-    print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
+    if response.usage is not None:
+        print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
 
 
 asyncio.run(main())

@@ -61,7 +61,7 @@ class ClaudeSyncClient:
                 kwargs["output_config"] = {**existing, "effort": effort}
         else:
             if model.startswith(
-                ("claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5", "claude-opus-4-5")
+                ("claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-5")
             ):
                 kwargs.pop("top_p", None)
             if budget_tokens:

@@ -56,11 +56,15 @@ class ChatResponse:
 
     @classmethod
     def from_openai_response(cls, api_response: dict) -> "ChatResponse":
-        u = api_response.get("usage", {}) or {}
-        usage = Usage(
-            input_tokens=u.get("prompt_tokens", 0),
-            output_tokens=u.get("completion_tokens", 0),
-            total_tokens=u.get("total_tokens", 0),
+        usage_data = api_response.get("usage")
+        usage = (
+            Usage(
+                input_tokens=usage_data.get("prompt_tokens", 0),
+                output_tokens=usage_data.get("completion_tokens", 0),
+                total_tokens=usage_data.get("total_tokens", 0),
+            )
+            if isinstance(usage_data, dict)
+            else None
         )
         choice0 = (api_response.get("choices") or [None])[0] or {}
         message = choice0.get("message") or {}
@@ -136,11 +140,15 @@ class ChatResponse:
         *,
         capture_reasoning: bool = False,
     ) -> "ChatResponse":
-        u = api_response.get("usage", {}) or {}
-        usage = Usage(
-            input_tokens=u.get("input_tokens", 0),
-            output_tokens=u.get("output_tokens", 0),
-            total_tokens=u.get("total_tokens", 0),
+        usage_data = api_response.get("usage")
+        usage = (
+            Usage(
+                input_tokens=usage_data.get("input_tokens", 0),
+                output_tokens=usage_data.get("output_tokens", 0),
+                total_tokens=usage_data.get("total_tokens", 0),
+            )
+            if isinstance(usage_data, dict)
+            else None
         )
         parsed_output = cls._parse_responses_output_items(
             api_response.get("output") or [],
@@ -284,11 +292,18 @@ class ChatResponse:
         *,
         capture_reasoning: bool = False,
     ) -> "ChatResponse":
-        u = api_response.get("usage", {}) or {}
-        usage = Usage(
-            input_tokens=u.get("input_tokens", 0),
-            output_tokens=u.get("output_tokens", 0),
-            total_tokens=u.get("input_tokens", 0) + u.get("output_tokens", 0),
+        usage_data = api_response.get("usage")
+        usage = (
+            Usage(
+                input_tokens=usage_data.get("input_tokens", 0),
+                output_tokens=usage_data.get("output_tokens", 0),
+                total_tokens=(
+                    usage_data.get("input_tokens", 0)
+                    + usage_data.get("output_tokens", 0)
+                ),
+            )
+            if isinstance(usage_data, dict)
+            else None
         )
         parsed_content = cls._parse_anthropic_content_blocks(
             api_response.get("content", []) or [],
@@ -389,8 +404,10 @@ class ChatResponse:
         )
 
     @staticmethod
-    def _parse_google_usage(api_response: dict) -> Usage:
-        usage_data = api_response.get("usageMetadata", {}) or {}
+    def _parse_google_usage(api_response: dict) -> Optional[Usage]:
+        usage_data = api_response.get("usageMetadata")
+        if not isinstance(usage_data, dict):
+            return None
         thoughts_tokens = usage_data.get("thoughtsTokenCount", 0)
         return Usage(
             input_tokens=usage_data.get("promptTokenCount", 0),
