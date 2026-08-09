@@ -116,7 +116,7 @@ class LLMAdapterBase(ABC):
             logger.warning(f"Unverified model used: {self.model}")
             self.pricing = None
         else:
-            base_pricing = getattr(model_spec, "pricing", None)
+            base_pricing = getattr(model_spec, "pricing_tiers", None)
             self.pricing = deepcopy(base_pricing) if base_pricing else None
             self.is_reasoning = getattr(model_spec, "is_reasoning", False)
             self.is_adaptive_thinking = getattr(model_spec, "is_adaptive_thinking", False)
@@ -649,10 +649,11 @@ class LLMAdapterBase(ABC):
             chat_response.parsed_json,
             response_model,
         )
-        if self.pricing:
+        if self.pricing and len(self.pricing.tiers) == 1:
+            tier = self.pricing.tiers[0]
             chat_response.apply_pricing(
-                price_input_per_token=self.pricing.in_per_token,
-                price_output_per_token=self.pricing.out_per_token,
+                price_input_per_token=tier.in_per_token,
+                price_output_per_token=tier.out_per_token,
                 currency=self.pricing.currency,
             )
         return chat_response
@@ -673,10 +674,11 @@ class LLMAdapterBase(ABC):
                 chat_response.parsed_json,
                 response_model,
             )
-            if self.pricing:
+            if self.pricing and len(self.pricing.tiers) == 1:
+                tier = self.pricing.tiers[0]
                 chat_response.apply_pricing(
-                    price_input_per_token=self.pricing.in_per_token,
-                    price_output_per_token=self.pricing.out_per_token,
+                    price_input_per_token=tier.in_per_token,
+                    price_output_per_token=tier.out_per_token,
                     currency=self.pricing.currency,
                 )
         except LLMAPIError as error:

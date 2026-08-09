@@ -20,6 +20,7 @@ from src.llm_api_adapter.models.messages.chat_message import (
 )
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
+from src.llm_api_adapter.llm_registry.llm_registry import Pricing
 from src.llm_api_adapter.llms.streaming import (
     StreamChunkBuffer,
     StreamReasoningCollector,
@@ -146,9 +147,23 @@ def test_unverified_model_warns_and_leaves_pricing_none(monkeypatch):
 
 @pytest.mark.unit
 def test_pricing_copied_from_registry(monkeypatch):
-    base_pricing = {"cost_per_token": 0.001}
+    base_pricing = Pricing.from_dict(
+        [
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": 1.0,
+                "output_per_1m": 2.0,
+            }
+        ],
+        currency="USD",
+    )
     provider = SimpleNamespace(
-        models={"m-pro": SimpleNamespace(pricing=base_pricing, is_reasoning=False)}
+        models={
+            "m-pro": SimpleNamespace(
+                pricing_tiers=base_pricing,
+                is_reasoning=False,
+            )
+        }
     )
     monkeypatch.setattr(
         base_module,

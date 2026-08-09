@@ -294,7 +294,16 @@ PROVIDERS = (
 
 def _make_adapter(case: ProviderCase):
     adapter = case.adapter_cls(api_key="test_api_key", model=case.model)
-    adapter.pricing = Pricing(1e-6, 2e-6, "EUR")
+    adapter.pricing = Pricing.from_dict(
+        [
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": 1.0,
+                "output_per_1m": 2.0,
+            }
+        ],
+        currency="EUR",
+    )
     return adapter
 
 
