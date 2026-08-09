@@ -297,9 +297,14 @@ def _make_adapter(case: ProviderCase):
     adapter.pricing = Pricing.from_dict(
         [
             {
-                "up_to_prompt_tokens": None,
+                "up_to_prompt_tokens": 200,
                 "input_per_1m": 1.0,
                 "output_per_1m": 2.0,
+            },
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": 3.0,
+                "output_per_1m": 4.0,
             }
         ],
         currency="EUR",
@@ -433,6 +438,9 @@ async def test_async_stream_has_common_chunks_usage_reasoning_and_callbacks(case
     assert [chunk.index for chunk in chunks] == [0, 1]
     assert chunks[-1].usage == Usage(input_tokens=2, output_tokens=2, total_tokens=4)
     assert done[0].usage == Usage(input_tokens=2, output_tokens=2, total_tokens=4)
+    assert done[0].cost_input == pytest.approx(2e-6)
+    assert done[0].cost_output == pytest.approx(4e-6)
+    assert done[0].cost_total == pytest.approx(6e-6)
     assert [event.text for event in done[0].reasoning_events] == ["Plan"]
     assert order == [
         ("reasoning", "Plan"),
