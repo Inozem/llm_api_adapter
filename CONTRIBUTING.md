@@ -103,6 +103,29 @@ For a release candidate, open a pull request to `main` first. After review and d
 - Treat reasoning output, tool arguments, and `--dump-raw` SSE payloads as potentially sensitive. Redact them before sharing.
 - Do not add provider credentials to a test just to make it pass locally.
 
+## Registry verification
+
+The bundled registry contains only published standard text input/output rates;
+it is not an invoice calculator. For every registry-data update, verify the
+model identifier, context window, maximum output, and tier boundaries against
+the provider's official documentation. Then update `effective_date` and record
+the exact source URLs in this section. Do not infer values when a provider does
+not publish them.
+
+The verification date is the root manifest's `effective_date`; update the
+source list whenever that manifest value changes.
+
+| Provider | Official sources |
+| --- | --- |
+| OpenAI | [Model catalog](https://developers.openai.com/api/docs/models) and [API pricing](https://developers.openai.com/api/docs/pricing) |
+| Anthropic | [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing) and [model deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations) |
+| Google | [Gemini models](https://ai.google.dev/gemini-api/docs/models) and [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) |
+
+This verification excludes cached input, cache write/storage, batch, flex,
+priority, modality-specific, provider-hosted tool, and negotiated-volume
+charges. Record any unsupported modality-specific rate as an explicit registry
+limitation rather than silently applying a text rate.
+
 ## Reasoning smoke script
 
 `scripts/reasoning_smoke.py` is a manual live check, not part of the pytest E2E suite or CI. It uses the default dog-and-potato prompt unless another prompt is supplied:

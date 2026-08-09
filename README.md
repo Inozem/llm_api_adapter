@@ -6,8 +6,6 @@
 
 ## Overview
 
-Calling an LLM from Python usually means choosing between a provider-specific SDK, a larger application framework, or an API gateway.
-
 **llm-api-adapter** is a minimal, typed multi-provider adapter for OpenAI, Anthropic, and Google. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching providers means changing two arguments.
 
 Supports Python 3.10–3.14.
@@ -292,7 +290,7 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, and Google.
 
 - **OpenAI**: You can use models like `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
-- **Anthropic**: Available models include `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`, `claude-opus-4-1`.
+- **Anthropic**: Available models include `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
 - **Google**: Models such as `gemini-3.5-flash`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash` can be used.
 
 Example:
@@ -884,6 +882,25 @@ For `astream_chat()`, the finalized response passed to `on_done` contains the
 same fields, while `StreamChunk.usage` is populated when the provider reports
 usage during streaming.
 
+### Tiered standard-rate estimates
+
+Costs are a standard-rate estimate, not a provider invoice. When a provider
+reports usage, the adapter selects the first pricing tier whose
+`up_to_prompt_tokens` is greater than or equal to `usage.input_tokens`. The
+boundary is inclusive; the final tier has no boundary. Its input and output
+rates are both applied to the entire request.
+
+- `context_window_tokens` is the combined input and generated-output capacity.
+- `max_output_tokens` is the generated-output capacity.
+- A pricing-tier boundary only selects a price; it is not a request limit.
+- If the provider does not report `usage`, the adapter does not estimate tokens
+  locally. `usage`, `currency`, and `cost_*` remain `None`.
+
+The estimate covers bundled standard text input/output rates only. It excludes
+cached input, cache write/storage, batch, flex, priority, modality-specific,
+provider-hosted tool, and negotiated-volume charges. Do not use it to reconcile
+a provider invoice.
+
 ### Token Usage and Pricing Example
 
 ```python
@@ -895,14 +912,19 @@ google = UniversalLLMAPIAdapter(
 
 response = google.chat(**chat_params)
 
-print(response.usage.input_tokens, "tokens", f"({response.cost_input} {response.currency})")
-print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")
-print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
+if response.usage is None:
+    print("Provider did not report usage; cost is unavailable.")
+else:
+    print(response.usage.input_tokens, "tokens", f"({response.cost_input} {response.currency})")
+    print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")
+    print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
 ```
 
 Prices are updated with each release to reflect provider changes. Bundled prices reflect each provider's standard API rates — batch pricing, cached-token discounts, and volume agreements are not accounted for. Use `set_in_per_1m` / `set_out_per_1m` to apply your actual rates if needed:
 
 ### Overriding Pricing or Currency
+
+An override replaces that rate in every pricing tier for the selected model.
 
 ```python
 google = UniversalLLMAPIAdapter(
@@ -917,9 +939,10 @@ google.pricing.set_currency("EUR")
 
 response = google.chat(**chat_params)
 print(response.content)
-print(response.usage.input_tokens, "tokens", f"({response.cost_input} {response.currency})")
-print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")
-print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
+if response.usage is not None:
+    print(response.usage.input_tokens, "tokens", f"({response.cost_input} {response.currency})")
+    print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")
+    print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
 ```
 
 ## Logging
@@ -996,7 +1019,7 @@ Use this only in development.
 
 ## Adoption
 
-[Vertec](https://www.vertec.com/en-ch/kb/llm-client/) documents `llm-api-adapter` as its generic LLM client for Python scripting in Vertec Cloud Suite and On-Premises.
+[Vertec](https://www.vertec.com/en-ch/kb/llm-client/) bundles llm-api-adapter with Vertec Cloud Suite and On-Premises, allowing customers to call OpenAI, Anthropic, and Google models from custom Python extensions through a unified interface.
 
 ## Related project
 

@@ -40,6 +40,53 @@ def test_from_openai_response():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("parser", "api_response"),
+    [
+        (
+            ChatResponse.from_openai_response,
+            {
+                "model": "gpt-4",
+                "choices": [{"message": {"content": "Hello"}}],
+            },
+        ),
+        (
+            ChatResponse.from_openai_responses_response,
+            {
+                "model": "gpt-5",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "Hello"}],
+                    }
+                ],
+            },
+        ),
+        (
+            ChatResponse.from_anthropic_response,
+            {
+                "model": "claude-sonnet-4-5",
+                "content": [{"type": "text", "text": "Hello"}],
+            },
+        ),
+        (
+            ChatResponse.from_google_response,
+            {
+                "modelVersion": "gemini-2.5-pro",
+                "candidates": [
+                    {"content": {"parts": [{"text": "Hello"}]}}
+                ],
+            },
+        ),
+    ],
+)
+def test_provider_response_without_usage_leaves_usage_unset(parser, api_response):
+    response = parser(api_response)
+
+    assert response.usage is None
+
+
+@pytest.mark.unit
 def test_from_openai_response_parses_tool_calls_json_string():
     api_response = {
         "model": "gpt-4",
