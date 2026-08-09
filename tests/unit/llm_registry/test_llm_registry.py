@@ -108,17 +108,22 @@ def test_model_and_provider_from_dict():
 
 @pytest.mark.unit
 def test_registry_reads_json_and_module_loads_llm_registry(tmp_path):
-    content = {
+    providers_dir = tmp_path / "providers"
+    providers_dir.mkdir()
+    provider_path = providers_dir / "example_provider.json"
+    provider_path.write_text(
+        json.dumps({"models": {"example-model": _model_data()}}),
+        encoding="utf-8",
+    )
+    manifest = {
         "schema_version": 42,
         "effective_date": "2030-01-01",
-        "providers": {
-            "example_provider": {
-                "models": {"example-model": _model_data()}
-            }
+        "provider_files": {
+            "example_provider": "providers/example_provider.json",
         },
     }
     json_path = tmp_path / "llm_registry.json"
-    json_path.write_text(json.dumps(content), encoding="utf-8")
+    json_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     registry = RegistrySpec(path=str(json_path))
 
@@ -129,6 +134,24 @@ def test_registry_reads_json_and_module_loads_llm_registry(tmp_path):
     assert model.limits.max_output_tokens == 16_384
     assert model.pricing_tiers.tiers[0].in_per_token == pytest.approx(0.001)
     assert model.pricing_tiers.tiers[0].out_per_token == pytest.approx(0.002)
+
+
+@pytest.mark.unit
+def test_registry_rejects_missing_provider_file(tmp_path):
+    json_path = tmp_path / "llm_registry.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 42,
+                "effective_date": "2030-01-01",
+                "provider_files": {"missing": "providers/missing.json"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Provider registry file is missing"):
+        RegistrySpec(path=str(json_path))
 
 
 @pytest.mark.unit
@@ -220,7 +243,13 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
     assert isinstance(DEFAULT_REGISTRY_PATH, Path)
     assert DEFAULT_REGISTRY_PATH.is_file()
 
+    manifest = json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
+    assert set(manifest["provider_files"]) == {"openai", "anthropic", "google"}
+    for relative_path in manifest["provider_files"].values():
+        assert (DEFAULT_REGISTRY_PATH.parent / relative_path).is_file()
+
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
+    assert registry.schema_version == 9
     for provider in registry.providers.values():
         for model in provider.models.values():
             assert model.limits.context_window_tokens > 0

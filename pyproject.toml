@@ -42,4 +42,4 @@ exclude = ["tests*", "*/tests*"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-"llm_api_adapter.llm_registry" = ["llm_registry.json"]
+"llm_api_adapter.llm_registry" = ["*.json", "providers/*.json"]

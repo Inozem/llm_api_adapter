@@ -188,14 +188,56 @@ class RegistrySpec:
     providers: Dict[str, ProviderSpec]
 
     def __init__(self, path: str | Path = DEFAULT_REGISTRY_PATH) -> None:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        manifest_path = Path(path)
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        provider_files = data.get("provider_files")
+        if not isinstance(provider_files, dict) or not provider_files:
+            raise ValueError("registry manifest must define a non-empty provider_files object")
+
         providers = {
-            provider_name: ProviderSpec.from_dict(provider_name, provider_spec)
-            for provider_name, provider_spec in (data.get("providers") or {}).items()
+            provider_name: ProviderSpec.from_dict(
+                provider_name,
+                self._load_provider_data(
+                    manifest_path,
+                    provider_name,
+                    provider_file,
+                ),
+            )
+            for provider_name, provider_file in provider_files.items()
         }
         object.__setattr__(self, "schema_version", int(data["schema_version"]))
         object.__setattr__(self, "effective_date", str(data["effective_date"]))
         object.__setattr__(self, "providers", providers)
+
+    @staticmethod
+    def _load_provider_data(
+        manifest_path: Path,
+        provider_name: str,
+        provider_file: Any,
+    ) -> Dict[str, Any]:
+        if not isinstance(provider_name, str) or not provider_name:
+            raise ValueError("provider_files keys must be non-empty strings")
+        if not isinstance(provider_file, str) or not provider_file:
+            raise ValueError(
+                f"Provider '{provider_name}' must reference a non-empty relative path"
+            )
+
+        provider_path = Path(provider_file)
+        if provider_path.is_absolute():
+            raise ValueError(
+                f"Provider '{provider_name}' must use a relative registry path"
+            )
+        provider_path = manifest_path.parent / provider_path
+        try:
+            provider_data = json.loads(provider_path.read_text(encoding="utf-8"))
+        except FileNotFoundError as error:
+            raise ValueError(
+                f"Provider registry file is missing for '{provider_name}': {provider_path}"
+            ) from error
+
+        if not isinstance(provider_data, dict):
+            raise ValueError(f"Provider registry data for '{provider_name}' must be an object")
+        return provider_data
 
 
 LLM_REGISTRY = RegistrySpec()
