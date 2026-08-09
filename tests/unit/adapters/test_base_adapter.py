@@ -18,7 +18,7 @@ from src.llm_api_adapter.models.messages.chat_message import (
     Prompt,
     UserMessage,
 )
-from src.llm_api_adapter.models.responses.chat_response import ChatResponse
+from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from src.llm_api_adapter.llm_registry.llm_registry import Pricing
 from src.llm_api_adapter.llms.streaming import (
@@ -174,6 +174,50 @@ def test_pricing_copied_from_registry(monkeypatch):
     adapter_instance = _TestAdapter(company="acme", api_key="k", model="m-pro")
     assert adapter_instance.pricing == base_pricing
     assert adapter_instance.pricing is not base_pricing
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("input_tokens", "expected_cost_input", "expected_cost_output"),
+    [
+        (200, 0.0002, 0.000402),
+        (201, 0.000603, 0.000804),
+    ],
+)
+def test_finalize_chat_response_resolves_pricing_tier_from_usage(
+    adapter,
+    input_tokens,
+    expected_cost_input,
+    expected_cost_output,
+):
+    adapter.pricing = Pricing.from_dict(
+        [
+            {
+                "up_to_prompt_tokens": 200,
+                "input_per_1m": 1,
+                "output_per_1m": 2,
+            },
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": 3,
+                "output_per_1m": 4,
+            },
+        ],
+        currency="USD",
+    )
+    response = ChatResponse(usage=Usage(input_tokens=input_tokens, output_tokens=201))
+
+    adapter._finalize_chat_response(
+        response,
+        effective_schema=None,
+        response_model=None,
+    )
+
+    assert response.cost_input == pytest.approx(expected_cost_input)
+    assert response.cost_output == pytest.approx(expected_cost_output)
+    assert response.cost_total == pytest.approx(
+        expected_cost_input + expected_cost_output
+    )
 
 
 @pytest.mark.unit

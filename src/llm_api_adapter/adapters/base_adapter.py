@@ -633,6 +633,25 @@ class LLMAdapterBase(ABC):
         if inspect.isawaitable(result):
             await result
 
+    def _apply_response_pricing(self, chat_response: ChatResponse) -> None:
+        """Price a response from the provider-reported input-token count."""
+        if not self.pricing:
+            return
+
+        if chat_response.usage is None:
+            if len(self.pricing.tiers) != 1:
+                return
+            tier = self.pricing.tiers[0]
+        else:
+            tier = self.pricing.tier_for_prompt_tokens(
+                chat_response.usage.input_tokens
+            )
+        chat_response.apply_pricing(
+            price_input_per_token=tier.in_per_token,
+            price_output_per_token=tier.out_per_token,
+            currency=self.pricing.currency,
+        )
+
     def _finalize_chat_response(
         self,
         chat_response: ChatResponse,
@@ -649,13 +668,7 @@ class LLMAdapterBase(ABC):
             chat_response.parsed_json,
             response_model,
         )
-        if self.pricing and len(self.pricing.tiers) == 1:
-            tier = self.pricing.tiers[0]
-            chat_response.apply_pricing(
-                price_input_per_token=tier.in_per_token,
-                price_output_per_token=tier.out_per_token,
-                currency=self.pricing.currency,
-            )
+        self._apply_response_pricing(chat_response)
         return chat_response
 
     def _prepare_stream_response(
@@ -674,13 +687,7 @@ class LLMAdapterBase(ABC):
                 chat_response.parsed_json,
                 response_model,
             )
-            if self.pricing and len(self.pricing.tiers) == 1:
-                tier = self.pricing.tiers[0]
-                chat_response.apply_pricing(
-                    price_input_per_token=tier.in_per_token,
-                    price_output_per_token=tier.out_per_token,
-                    currency=self.pricing.currency,
-                )
+            self._apply_response_pricing(chat_response)
         except LLMAPIError as error:
             self.handle_error(error)
         except Exception as error:

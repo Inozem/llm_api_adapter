@@ -126,6 +126,24 @@ class Pricing:
             raise ValueError("currency must be a non-empty string")
         object.__setattr__(self, "currency", value)
 
+    def tier_for_prompt_tokens(self, prompt_tokens: int) -> PricingTier:
+        """Return the rate tier selected by provider-reported prompt tokens."""
+        if (
+            isinstance(prompt_tokens, bool)
+            or not isinstance(prompt_tokens, int)
+            or prompt_tokens < 0
+        ):
+            raise ValueError("prompt_tokens must be a non-negative integer")
+
+        for tier in self.tiers:
+            if (
+                tier.up_to_prompt_tokens is None
+                or prompt_tokens <= tier.up_to_prompt_tokens
+            ):
+                return tier
+
+        raise ValueError("pricing tiers do not cover the prompt token count")
+
 
 @dataclass(frozen=True)
 class ModelSpec:

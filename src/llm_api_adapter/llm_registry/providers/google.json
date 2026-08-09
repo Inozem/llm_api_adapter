@@ -23,9 +23,14 @@
       },
       "pricing_tiers": [
         {
-          "up_to_prompt_tokens": null,
+          "up_to_prompt_tokens": 200000,
           "input_per_1m": 2.0,
           "output_per_1m": 12.0
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 4.0,
+          "output_per_1m": 18.0
         }
       ]
     },
@@ -65,9 +70,14 @@
       },
       "pricing_tiers": [
         {
-          "up_to_prompt_tokens": null,
+          "up_to_prompt_tokens": 200000,
           "input_per_1m": 1.25,
           "output_per_1m": 10.0
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 2.5,
+          "output_per_1m": 15.0
         }
       ]
     },

@@ -147,20 +147,6 @@
           "output_per_1m": 5.0
         }
       ]
-    },
-    "claude-opus-4-1": {
-      "is_reasoning": true,
-      "limits": {
-        "context_window_tokens": 200000,
-        "max_output_tokens": 128000
-      },
-      "pricing_tiers": [
-        {
-          "up_to_prompt_tokens": null,
-          "input_per_1m": 15.0,
-          "output_per_1m": 75.0
-        }
-      ]
     }
   }
 }
