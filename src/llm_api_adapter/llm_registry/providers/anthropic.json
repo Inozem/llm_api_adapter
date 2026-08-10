@@ -2,7 +2,9 @@
   "currency": "USD",
   "models": {
     "claude-fable-5": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high", "xhigh", "max"]
+      },
       "is_adaptive_thinking": true,
       "limits": {
         "context_window_tokens": 1000000,
@@ -17,7 +19,9 @@
       ]
     },
     "claude-opus-5": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high", "xhigh", "max"]
+      },
       "is_adaptive_thinking": true,
       "limits": {
         "context_window_tokens": 1000000,
@@ -32,7 +36,9 @@
       ]
     },
     "claude-sonnet-5": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high", "xhigh", "max"]
+      },
       "is_adaptive_thinking": true,
       "limits": {
         "context_window_tokens": 1000000,
@@ -47,7 +53,9 @@
       ]
     },
     "claude-opus-4-8": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high", "xhigh", "max"]
+      },
       "is_adaptive_thinking": true,
       "limits": {
         "context_window_tokens": 1000000,
@@ -62,7 +70,9 @@
       ]
     },
     "claude-opus-4-7": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high", "xhigh", "max"]
+      },
       "is_adaptive_thinking": true,
       "limits": {
         "context_window_tokens": 1000000,
@@ -77,7 +87,9 @@
       ]
     },
     "claude-opus-4-6": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high", "max"]
+      },
       "is_adaptive_thinking": true,
       "limits": {
         "context_window_tokens": 1000000,
@@ -92,7 +104,9 @@
       ]
     },
     "claude-sonnet-4-6": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high", "max"]
+      },
       "is_adaptive_thinking": true,
       "limits": {
         "context_window_tokens": 1000000,
@@ -107,7 +121,10 @@
       ]
     },
     "claude-opus-4-5": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "min_budget_tokens": 1024,
+        "max_budget_tokens": 128000
+      },
       "limits": {
         "context_window_tokens": 200000,
         "max_output_tokens": 128000
@@ -121,7 +138,10 @@
       ]
     },
     "claude-sonnet-4-5": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "min_budget_tokens": 1024,
+        "max_budget_tokens": 64000
+      },
       "limits": {
         "context_window_tokens": 200000,
         "max_output_tokens": 64000
@@ -135,7 +155,10 @@
       ]
     },
     "claude-haiku-4-5": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "min_budget_tokens": 1024,
+        "max_budget_tokens": 64000
+      },
       "limits": {
         "context_window_tokens": 200000,
         "max_output_tokens": 64000

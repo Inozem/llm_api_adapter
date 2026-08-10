@@ -1,6 +1,6 @@
 {
-  "schema_version": 9,
-  "effective_date": "2026-08-09",
+  "schema_version": 10,
+  "effective_date": "2026-08-10",
   "provider_files": {
     "openai": "providers/openai.json",
     "anthropic": "providers/anthropic.json",

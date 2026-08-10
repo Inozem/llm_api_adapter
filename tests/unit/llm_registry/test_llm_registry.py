@@ -5,9 +5,11 @@ from pathlib import Path
 import pytest
 
 from src.llm_api_adapter.llm_registry.llm_registry import (
+    CategoricalReasoningCapability,
     DEFAULT_REGISTRY_PATH,
     ModelLimits,
     ModelSpec,
+    NumericReasoningCapability,
     Pricing,
     PricingTier,
     ProviderSpec,
@@ -128,6 +130,91 @@ def test_model_and_provider_from_dict():
     assert "gpt-test" in provider.models
     assert isinstance(provider.models["gpt-test"], ModelSpec)
     assert provider.models["gpt-test"].pricing_tiers.currency == "EUR"
+
+
+@pytest.mark.unit
+def test_model_reasoning_capabilities_load_as_verified_contracts():
+    categorical_data = _model_data()
+    categorical_data["reasoning_capability"] = {
+        "allowed_values": ["none", "low", "medium", "high", "xhigh"],
+    }
+    categorical = ModelSpec.from_dict("categorical-model", categorical_data)
+
+    assert categorical.is_reasoning is True
+    assert categorical.reasoning_capability == CategoricalReasoningCapability(
+        allowed_values=("none", "low", "medium", "high", "xhigh"),
+    )
+
+    numeric_data = _model_data()
+    numeric_data["reasoning_capability"] = {
+        "min_budget_tokens": 128,
+        "max_budget_tokens": 32_768,
+    }
+    numeric = ModelSpec.from_dict("numeric-model", numeric_data)
+
+    assert numeric.is_reasoning is True
+    assert numeric.reasoning_capability == NumericReasoningCapability(
+        min_budget_tokens=128,
+        max_budget_tokens=32_768,
+    )
+
+
+@pytest.mark.unit
+def test_non_reasoning_model_has_no_reasoning_capability():
+    model = ModelSpec.from_dict("non-reasoning-model", _model_data())
+
+    assert model.is_reasoning is False
+    assert model.reasoning_capability is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("reasoning_capability", "message"),
+    [
+        (None, "must be an object"),
+        ({}, "numeric reasoning_capability"),
+        ({"allowed_values": []}, "non-empty array"),
+        ({"allowed_values": ["low", "low"]}, "must not contain duplicates"),
+        (
+            {"min_budget_tokens": -1, "max_budget_tokens": 1},
+            "non-negative integer",
+        ),
+        (
+            {"min_budget_tokens": 2, "max_budget_tokens": 1},
+            "must not exceed",
+        ),
+        (
+            {"allowed_values": ["low"], "max_budget_tokens": 1},
+            "categorical reasoning_capability",
+        ),
+    ],
+)
+def test_invalid_reasoning_capabilities_are_rejected(reasoning_capability, message):
+    model_data = _model_data()
+    model_data["reasoning_capability"] = reasoning_capability
+
+    with pytest.raises(ValueError, match=message):
+        ModelSpec.from_dict("invalid-model", model_data)
+
+
+@pytest.mark.unit
+def test_legacy_reasoning_flag_and_orphaned_adaptive_flag_are_rejected():
+    legacy_data = _model_data()
+    legacy_data["is_reasoning"] = True
+    with pytest.raises(ValueError, match="legacy is_reasoning"):
+        ModelSpec.from_dict("legacy-model", legacy_data)
+
+    adaptive_data = _model_data()
+    adaptive_data["is_adaptive_thinking"] = True
+    with pytest.raises(ValueError, match="without reasoning_capability"):
+        ModelSpec.from_dict("invalid-adaptive-model", adaptive_data)
+
+    adaptive_data["reasoning_capability"] = {
+        "min_budget_tokens": 0,
+        "max_budget_tokens": 1,
+    }
+    with pytest.raises(ValueError, match="non-categorical"):
+        ModelSpec.from_dict("invalid-adaptive-model", adaptive_data)
 
 
 @pytest.mark.unit
@@ -273,12 +360,201 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
         assert (DEFAULT_REGISTRY_PATH.parent / relative_path).is_file()
 
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-    assert registry.schema_version == 9
+    assert registry.schema_version == 10
     for provider in registry.providers.values():
         for model in provider.models.values():
             assert model.limits.context_window_tokens > 0
             assert model.limits.max_output_tokens > 0
             assert model.pricing_tiers.tiers[-1].up_to_prompt_tokens is None
+            if model.is_reasoning:
+                assert model.reasoning_capability is not None
+            else:
+                assert model.reasoning_capability is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("provider", "model_name", "expected_capability"),
+    [
+        (
+            "openai",
+            "gpt-5.6-sol",
+            CategoricalReasoningCapability(
+                ("none", "low", "medium", "high", "xhigh", "max")
+            ),
+        ),
+        (
+            "openai",
+            "gpt-5.6-terra",
+            CategoricalReasoningCapability(
+                ("none", "low", "medium", "high", "xhigh", "max")
+            ),
+        ),
+        (
+            "openai",
+            "gpt-5.6-luna",
+            CategoricalReasoningCapability(
+                ("none", "low", "medium", "high", "xhigh", "max")
+            ),
+        ),
+        (
+            "openai",
+            "gpt-5.5",
+            CategoricalReasoningCapability(
+                ("none", "low", "medium", "high", "xhigh")
+            ),
+        ),
+        (
+            "openai",
+            "gpt-5.4",
+            CategoricalReasoningCapability(
+                ("none", "low", "medium", "high", "xhigh")
+            ),
+        ),
+        (
+            "openai",
+            "gpt-5.4-mini",
+            CategoricalReasoningCapability(
+                ("none", "low", "medium", "high", "xhigh")
+            ),
+        ),
+        (
+            "openai",
+            "gpt-5.4-nano",
+            CategoricalReasoningCapability(
+                ("none", "low", "medium", "high", "xhigh")
+            ),
+        ),
+        (
+            "openai",
+            "gpt-5.2",
+            CategoricalReasoningCapability(
+                ("none", "low", "medium", "high", "xhigh")
+            ),
+        ),
+        (
+            "openai",
+            "gpt-5.1",
+            CategoricalReasoningCapability(("none", "low", "medium", "high")),
+        ),
+        (
+            "openai",
+            "gpt-5",
+            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
+        ),
+        (
+            "openai",
+            "gpt-5-mini",
+            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
+        ),
+        (
+            "openai",
+            "gpt-5-nano",
+            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
+        ),
+        (
+            "anthropic",
+            "claude-fable-5",
+            CategoricalReasoningCapability(
+                ("low", "medium", "high", "xhigh", "max")
+            ),
+        ),
+        (
+            "anthropic",
+            "claude-opus-5",
+            CategoricalReasoningCapability(
+                ("low", "medium", "high", "xhigh", "max")
+            ),
+        ),
+        (
+            "anthropic",
+            "claude-sonnet-5",
+            CategoricalReasoningCapability(
+                ("low", "medium", "high", "xhigh", "max")
+            ),
+        ),
+        (
+            "anthropic",
+            "claude-opus-4-8",
+            CategoricalReasoningCapability(
+                ("low", "medium", "high", "xhigh", "max")
+            ),
+        ),
+        (
+            "anthropic",
+            "claude-opus-4-7",
+            CategoricalReasoningCapability(
+                ("low", "medium", "high", "xhigh", "max")
+            ),
+        ),
+        (
+            "anthropic",
+            "claude-opus-4-6",
+            CategoricalReasoningCapability(("low", "medium", "high", "max")),
+        ),
+        (
+            "anthropic",
+            "claude-sonnet-4-6",
+            CategoricalReasoningCapability(("low", "medium", "high", "max")),
+        ),
+        (
+            "anthropic",
+            "claude-opus-4-5",
+            NumericReasoningCapability(1_024, 128_000),
+        ),
+        (
+            "anthropic",
+            "claude-sonnet-4-5",
+            NumericReasoningCapability(1_024, 64_000),
+        ),
+        (
+            "anthropic",
+            "claude-haiku-4-5",
+            NumericReasoningCapability(1_024, 64_000),
+        ),
+        (
+            "google",
+            "gemini-3.5-flash",
+            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
+        ),
+        (
+            "google",
+            "gemini-3.1-pro-preview",
+            CategoricalReasoningCapability(("low", "medium", "high")),
+        ),
+        (
+            "google",
+            "gemini-3.1-flash-lite",
+            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
+        ),
+        (
+            "google",
+            "gemini-3-flash-preview",
+            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
+        ),
+        (
+            "google",
+            "gemini-2.5-pro",
+            NumericReasoningCapability(128, 32_768),
+        ),
+        (
+            "google",
+            "gemini-2.5-flash",
+            NumericReasoningCapability(0, 24_576),
+        ),
+    ],
+)
+def test_default_registry_contains_verified_reasoning_capabilities(
+    provider,
+    model_name,
+    expected_capability,
+):
+    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
+
+    assert (
+        registry.providers[provider].models[model_name].reasoning_capability
+        == expected_capability
+    )
 
 
 @pytest.mark.unit

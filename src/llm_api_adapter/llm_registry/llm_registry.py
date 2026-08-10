@@ -25,6 +25,12 @@ def _non_negative_rate(value: Any, field_name: str) -> float:
     return float(value)
 
 
+def _non_negative_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
+
+
 @dataclass(frozen=True)
 class ModelLimits:
     """Provider-published context and output limits for one model."""
@@ -46,6 +52,85 @@ class ModelLimits:
                 "limits.max_output_tokens",
             ),
         )
+
+
+@dataclass(frozen=True)
+class CategoricalReasoningCapability:
+    """Ordered provider values for a model with categorical reasoning control."""
+
+    allowed_values: tuple[str, ...]
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "CategoricalReasoningCapability":
+        if not isinstance(data, dict) or set(data) != {"allowed_values"}:
+            raise ValueError(
+                "categorical reasoning_capability must contain only allowed_values"
+            )
+
+        allowed_values = data["allowed_values"]
+        if not isinstance(allowed_values, list) or not allowed_values:
+            raise ValueError(
+                "reasoning_capability.allowed_values must be a non-empty array"
+            )
+        if any(
+            not isinstance(value, str) or not value
+            for value in allowed_values
+        ):
+            raise ValueError(
+                "reasoning_capability.allowed_values must contain non-empty strings"
+            )
+        if len(set(allowed_values)) != len(allowed_values):
+            raise ValueError(
+                "reasoning_capability.allowed_values must not contain duplicates"
+            )
+
+        return cls(allowed_values=tuple(allowed_values))
+
+
+@dataclass(frozen=True)
+class NumericReasoningCapability:
+    """Provider token-budget bounds for a model with numeric reasoning control."""
+
+    min_budget_tokens: int
+    max_budget_tokens: int
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "NumericReasoningCapability":
+        expected_fields = {"min_budget_tokens", "max_budget_tokens"}
+        if not isinstance(data, dict) or set(data) != expected_fields:
+            raise ValueError(
+                "numeric reasoning_capability must contain only "
+                "min_budget_tokens and max_budget_tokens"
+            )
+
+        min_budget_tokens = _non_negative_int(
+            data["min_budget_tokens"],
+            "reasoning_capability.min_budget_tokens",
+        )
+        max_budget_tokens = _positive_int(
+            data["max_budget_tokens"],
+            "reasoning_capability.max_budget_tokens",
+        )
+        if min_budget_tokens > max_budget_tokens:
+            raise ValueError(
+                "reasoning_capability.min_budget_tokens must not exceed "
+                "max_budget_tokens"
+            )
+        return cls(
+            min_budget_tokens=min_budget_tokens,
+            max_budget_tokens=max_budget_tokens,
+        )
+
+
+ReasoningCapability = CategoricalReasoningCapability | NumericReasoningCapability
+
+
+def _reasoning_capability_from_dict(data: Any) -> ReasoningCapability:
+    if not isinstance(data, dict):
+        raise ValueError("reasoning_capability must be an object")
+    if "allowed_values" in data:
+        return CategoricalReasoningCapability.from_dict(data)
+    return NumericReasoningCapability.from_dict(data)
 
 
 @dataclass(frozen=True)
@@ -150,8 +235,13 @@ class ModelSpec:
     name: str
     limits: ModelLimits
     pricing_tiers: Pricing
-    is_reasoning: bool = False
+    reasoning_capability: Optional[ReasoningCapability] = None
     is_adaptive_thinking: bool = False
+
+    @property
+    def is_reasoning(self) -> bool:
+        """Backward-compatible marker derived from verified capability metadata."""
+        return self.reasoning_capability is not None
 
     @classmethod
     def from_dict(
@@ -165,6 +255,30 @@ class ModelSpec:
             raise ValueError(
                 f"Model '{name}' uses legacy pricing; use pricing_tiers instead"
             )
+        if "is_reasoning" in data:
+            raise ValueError(
+                f"Model '{name}' uses legacy is_reasoning; "
+                "use reasoning_capability instead"
+            )
+        reasoning_capability = (
+            _reasoning_capability_from_dict(data["reasoning_capability"])
+            if "reasoning_capability" in data
+            else None
+        )
+        is_adaptive_thinking = bool(data.get("is_adaptive_thinking", False))
+        if is_adaptive_thinking and reasoning_capability is None:
+            raise ValueError(
+                f"Model '{name}' enables adaptive thinking without "
+                "reasoning_capability"
+            )
+        if is_adaptive_thinking and not isinstance(
+            reasoning_capability,
+            CategoricalReasoningCapability,
+        ):
+            raise ValueError(
+                f"Model '{name}' enables adaptive thinking with a non-categorical "
+                "reasoning_capability"
+            )
         return cls(
             name=name,
             limits=ModelLimits.from_dict(data.get("limits")),
@@ -172,8 +286,8 @@ class ModelSpec:
                 data.get("pricing_tiers"),
                 currency=currency,
             ),
-            is_reasoning=bool(data.get("is_reasoning", False)),
-            is_adaptive_thinking=bool(data.get("is_adaptive_thinking", False)),
+            reasoning_capability=reasoning_capability,
+            is_adaptive_thinking=is_adaptive_thinking,
         )
 
 
