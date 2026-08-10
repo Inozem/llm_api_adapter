@@ -759,6 +759,9 @@ rounded upward to a native value. For numeric-budget models, canonical values
 from `"minimal"` through `"very_high"` are interpolated across the documented
 budget range. Integer budgets below the minimum fall back with a warning;
 budgets above the documented maximum are forwarded to the provider unchanged.
+When a categorical model has no native `"none"`, its first value is the first
+positive step, so `"minimal"` and a numeric percentage at or below that step
+resolve to it rather than skipping it.
 `"none"` disables reasoning only where the model supports zero; otherwise it
 uses the minimum with a warning. Omitting `reasoning_level` preserves the
 provider's existing default request behavior.

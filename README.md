@@ -471,6 +471,9 @@ canonical strings are projected upward through the model's ordered native
 values; `"none"` becomes the model minimum with a warning if it cannot disable
 reasoning. An integer is treated as a fraction of the model context window,
 clamped to 0–100%, then rounded upward to an available categorical value.
+When the native list has no `"none"`, its first value is the first positive
+step: `"minimal"` and a numeric percentage at or below that step resolve to it
+rather than skipping it.
 
 For a verified numeric-budget model, canonical values from `"minimal"` through
 `"very_high"` are evenly interpolated from that model's documented minimum to

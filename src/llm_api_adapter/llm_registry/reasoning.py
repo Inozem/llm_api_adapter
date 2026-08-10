@@ -8,6 +8,7 @@ adapter concern.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fractions import Fraction
 from math import ceil
 from typing import Optional
 
@@ -85,11 +86,8 @@ def _resolve_categorical(
                 reason="categorical_direct_match",
             )
 
-        position = _canonical_position(reasoning_level)
-        provider_value = capability.allowed_values[
-            _categorical_index(position, len(capability.allowed_values))
-        ]
         if reasoning_level == "none":
+            provider_value = _minimum_categorical_value(capability.allowed_values)
             return ReasoningResolution(
                 provider_value=provider_value,
                 reason="none_to_minimum",
@@ -98,16 +96,26 @@ def _resolve_categorical(
                     f"using its minimum supported level '{provider_value}'."
                 ),
             )
+
+        position = _canonical_position(reasoning_level)
+        provider_value = _categorical_value_for_percentage(
+            capability.allowed_values,
+            Fraction(position, len(CANONICAL_REASONING_LEVELS) - 1),
+        )
         return ReasoningResolution(
             provider_value=provider_value,
             reason="categorical_canonical_projection",
         )
 
     context_window_tokens = model_spec.limits.context_window_tokens
-    percentage = min(max(reasoning_level / context_window_tokens, 0), 1)
-    provider_value = capability.allowed_values[
-        ceil(percentage * (len(capability.allowed_values) - 1))
-    ]
+    percentage = Fraction(
+        min(max(reasoning_level, 0), context_window_tokens),
+        context_window_tokens,
+    )
+    provider_value = _categorical_value_for_percentage(
+        capability.allowed_values,
+        percentage,
+    )
     return ReasoningResolution(
         provider_value=provider_value,
         reason="categorical_context_window_percentage",
@@ -169,9 +177,33 @@ def _canonical_position(reasoning_level: str) -> int:
         ) from error
 
 
-def _categorical_index(position: int, allowed_values_count: int) -> int:
-    percentage = position / (len(CANONICAL_REASONING_LEVELS) - 1)
-    return ceil(percentage * (allowed_values_count - 1))
+def _minimum_categorical_value(allowed_values: tuple[str, ...]) -> str:
+    """Return the first usable thinking value, excluding an optional ``none``."""
+    return next(
+        (value for value in allowed_values if value != "none"),
+        allowed_values[0],
+    )
+
+
+def _categorical_value_for_percentage(
+    allowed_values: tuple[str, ...],
+    percentage: Fraction,
+) -> str:
+    """Return the first native category at or above a normalized percentage.
+
+    ``none`` is a zero-only value. When a model has no such value, its first
+    native category starts the working scale, so small positive percentages and
+    canonical ``minimal`` both resolve to that minimum instead of skipping it.
+    """
+    if percentage == 0 and "none" in allowed_values:
+        return "none"
+
+    working_values = tuple(value for value in allowed_values if value != "none")
+    if not working_values:
+        return allowed_values[0]
+
+    index = max(ceil(percentage * len(working_values)) - 1, 0)
+    return working_values[index]
 
 
 def _interpolate_numeric_budget(

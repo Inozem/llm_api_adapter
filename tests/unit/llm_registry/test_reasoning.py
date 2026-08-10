@@ -87,6 +87,30 @@ def test_categorical_string_projects_canonical_level_with_upward_rounding(regist
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("reasoning_level", "expected_value"),
+    [
+        ("minimal", "low"),
+        ("very_high", "high"),
+    ],
+)
+def test_categorical_projection_without_none_uses_the_working_scale(
+    registry,
+    reasoning_level,
+    expected_value,
+):
+    resolution = resolve_reasoning_level(
+        _model(registry, "google", "gemini-3.1-pro-preview"),
+        reasoning_level,
+    )
+
+    assert resolution == ReasoningResolution(
+        provider_value=expected_value,
+        reason="categorical_canonical_projection",
+    )
+
+
+@pytest.mark.unit
 def test_categorical_none_falls_back_to_minimum_when_disable_is_unavailable(registry):
     resolution = resolve_reasoning_level(
         _model(registry, "google", "gemini-3.1-pro-preview"),
@@ -127,6 +151,32 @@ def test_categorical_integer_uses_virtual_context_window_percentage(
     assert resolution.provider_value == expected_value
     assert resolution.reason == "categorical_context_window_percentage"
     assert isinstance(resolution.provider_value, str)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("reasoning_level", "expected_value"),
+    [
+        (0, "low"),
+        (1, "low"),
+        (349_525, "low"),
+        (349_526, "medium"),
+        (699_050, "medium"),
+        (699_051, "high"),
+    ],
+)
+def test_categorical_integer_without_none_uses_the_working_scale(
+    registry,
+    reasoning_level,
+    expected_value,
+):
+    resolution = resolve_reasoning_level(
+        _model(registry, "google", "gemini-3.1-pro-preview"),
+        reasoning_level,
+    )
+
+    assert resolution.provider_value == expected_value
+    assert resolution.reason == "categorical_context_window_percentage"
 
 
 @pytest.mark.unit
