@@ -43,6 +43,7 @@ LOOKUP_TOOL = ToolSpec(
 @dataclass(frozen=True)
 class ProviderCase:
     name: str
+    provider: str
     adapter_cls: Type[Any]
     sync_client_cls: Type[Any]
     async_client_cls: Type[Any]
@@ -53,6 +54,8 @@ class ProviderCase:
     tools_key: str
     response_factory: Callable[[], Dict[str, Any]]
     stream_factory: Callable[[], AsyncIterator[SSEEvent]]
+    reasoning_level: str | int
+    expected_reasoning_payload: Dict[str, Any]
 
 
 def _openai_response() -> Dict[str, Any]:
@@ -244,38 +247,64 @@ PROVIDERS = (
     pytest.param(
         ProviderCase(
             name="openai",
+            provider="openai",
             adapter_cls=OpenAIAdapter,
             sync_client_cls=OpenAISyncClient,
             async_client_cls=OpenAIAsyncClient,
             completion_method="complete",
-            model="gpt-5",
+            model="gpt-5.5",
             max_tokens=64,
             message_key="input",
             tools_key="tools",
             response_factory=_openai_response,
             stream_factory=_openai_stream,
+            reasoning_level="very_high",
+            expected_reasoning_payload={"reasoning_effort": "xhigh"},
         ),
         id="openai",
     ),
     pytest.param(
         ProviderCase(
-            name="anthropic",
+            name="anthropic-numeric",
+            provider="anthropic",
             adapter_cls=AnthropicAdapter,
             sync_client_cls=ClaudeSyncClient,
             async_client_cls=ClaudeAsyncClient,
             completion_method="chat_completion",
             model="claude-sonnet-4-5",
+            max_tokens=64_000,
+            message_key="messages",
+            tools_key="tools",
+            response_factory=_anthropic_response,
+            stream_factory=_anthropic_stream,
+            reasoning_level="medium",
+            expected_reasoning_payload={"budget_tokens": 32_512},
+        ),
+        id="anthropic-numeric",
+    ),
+    pytest.param(
+        ProviderCase(
+            name="anthropic-adaptive",
+            provider="anthropic",
+            adapter_cls=AnthropicAdapter,
+            sync_client_cls=ClaudeSyncClient,
+            async_client_cls=ClaudeAsyncClient,
+            completion_method="chat_completion",
+            model="claude-sonnet-4-6",
             max_tokens=64,
             message_key="messages",
             tools_key="tools",
             response_factory=_anthropic_response,
             stream_factory=_anthropic_stream,
+            reasoning_level="very_high",
+            expected_reasoning_payload={"effort": "max"},
         ),
-        id="anthropic",
+        id="anthropic-adaptive",
     ),
     pytest.param(
         ProviderCase(
-            name="google",
+            name="google-numeric",
+            provider="google",
             adapter_cls=GoogleAdapter,
             sync_client_cls=GeminiSyncClient,
             async_client_cls=GeminiAsyncClient,
@@ -286,8 +315,35 @@ PROVIDERS = (
             tools_key="tools",
             response_factory=_google_response,
             stream_factory=_google_stream,
+            reasoning_level="medium",
+            expected_reasoning_payload={
+                "thinkingBudget": 16_448,
+                "includeThoughts": True,
+            },
         ),
-        id="google",
+        id="google-numeric",
+    ),
+    pytest.param(
+        ProviderCase(
+            name="google-categorical",
+            provider="google",
+            adapter_cls=GoogleAdapter,
+            sync_client_cls=GeminiSyncClient,
+            async_client_cls=GeminiAsyncClient,
+            completion_method="chat_completion",
+            model="gemini-3.1-pro-preview",
+            max_tokens=64,
+            message_key="contents",
+            tools_key="tools",
+            response_factory=_google_response,
+            stream_factory=_google_stream,
+            reasoning_level="very_high",
+            expected_reasoning_payload={
+                "thinkingLevel": "high",
+                "includeThoughts": True,
+            },
+        ),
+        id="google-categorical",
     ),
 )
 
@@ -318,6 +374,19 @@ def _chat_kwargs(case: ProviderCase) -> Dict[str, Any]:
         "max_tokens": case.max_tokens,
         "json_schema": RESPONSE_SCHEMA,
         "capture_reasoning": True,
+        "reasoning_level": case.reasoning_level,
+    }
+
+
+def _reasoning_payload(case: ProviderCase, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if case.provider == "google":
+        return payload["generationConfig"]["thinkingConfig"]
+    if case.provider == "openai":
+        return {"reasoning_effort": payload["reasoning_effort"]}
+    return {
+        key: payload[key]
+        for key in ("budget_tokens", "effort")
+        if key in payload
     }
 
 
@@ -342,20 +411,30 @@ async def test_async_chat_matches_sync_response_contract(case):
     async_adapter = _make_adapter(case)
     response = case.response_factory()
 
+    sync_completion = Mock(return_value=response)
     with patch.object(
         case.sync_client_cls,
         case.completion_method,
-        new=Mock(return_value=response),
+        new=sync_completion,
     ):
         sync_response = sync_adapter.chat(**_chat_kwargs(case))
 
+    async_completion = AsyncMock(return_value=case.response_factory())
     with patch.object(
         case.async_client_cls,
         case.completion_method,
-        new=AsyncMock(return_value=case.response_factory()),
+        new=async_completion,
     ):
         async_response = await async_adapter.achat(**_chat_kwargs(case))
 
+    assert _reasoning_payload(
+        case,
+        sync_completion.call_args.kwargs,
+    ) == case.expected_reasoning_payload
+    assert _reasoning_payload(
+        case,
+        async_completion.await_args.kwargs,
+    ) == case.expected_reasoning_payload
     assert _response_vector(async_response) == _response_vector(sync_response)
     assert async_response.usage == Usage(input_tokens=2, output_tokens=1, total_tokens=3)
     assert async_response.parsed_json == {"answer": "ok"}
@@ -414,15 +493,17 @@ async def test_async_stream_has_common_chunks_usage_reasoning_and_callbacks(case
         done.append(response)
         order.append(("done", response.content))
 
+    stream = Mock(return_value=case.stream_factory())
     with patch.object(
         case.async_client_cls,
         "stream",
-        new=Mock(return_value=case.stream_factory()),
+        new=stream,
     ):
         yielded = []
         async for text in adapter.astream_chat(
             [UserMessage("hi")],
             max_tokens=case.max_tokens,
+            reasoning_level=case.reasoning_level,
             buffer_chars=4,
             capture_reasoning=True,
             on_reasoning=on_reasoning,
@@ -433,6 +514,10 @@ async def test_async_stream_has_common_chunks_usage_reasoning_and_callbacks(case
             yielded.append(text)
             order.append(("yield", text))
 
+    assert _reasoning_payload(
+        case,
+        stream.call_args.kwargs,
+    ) == case.expected_reasoning_payload
     assert yielded == ["Hell", "o!"]
     assert [chunk.text for chunk in chunks] == yielded
     assert [chunk.index for chunk in chunks] == [0, 1]
@@ -452,6 +537,34 @@ async def test_async_stream_has_common_chunks_usage_reasoning_and_callbacks(case
         ("yield", "o!"),
         ("done", "Hello!"),
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", PROVIDERS)
+def test_sync_stream_uses_the_same_reasoning_payload(case, monkeypatch):
+    adapter = _make_adapter(case)
+    consumer_name = (
+        "_consume_responses_stream"
+        if case.provider == "openai"
+        else "_consume_stream"
+    )
+    monkeypatch.setattr(adapter, consumer_name, lambda *args, **kwargs: iter(()))
+    stream = Mock(return_value=iter(()))
+
+    with patch.object(case.sync_client_cls, "stream", new=stream):
+        assert list(
+            adapter.stream_chat(
+                [UserMessage("hi")],
+                max_tokens=case.max_tokens,
+                reasoning_level=case.reasoning_level,
+                capture_reasoning=True,
+            )
+        ) == []
+
+    assert _reasoning_payload(
+        case,
+        stream.call_args.kwargs,
+    ) == case.expected_reasoning_payload
 
 
 @pytest.mark.asyncio
