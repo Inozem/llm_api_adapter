@@ -27,7 +27,8 @@ from ..errors.llm_api_error import (
     LLMAPIError,
     ToolChoiceError,
 )
-from ..llm_registry.llm_registry import Pricing, LLM_REGISTRY
+from ..llm_registry.llm_registry import LLM_REGISTRY, ModelSpec, Pricing
+from ..llm_registry.reasoning import ReasoningResolution, resolve_reasoning_level
 from ..models.messages.chat_message import Messages
 from ..models.responses.chat_response import ChatResponse
 from ..models.responses.reasoning_event import (
@@ -43,13 +44,6 @@ from ..llms.streaming import (
 from ..models.tools import ToolCall, ToolSpec
 
 logger = logging.getLogger(__name__)
-
-REASONING_LEVELS_DEFAULT = {
-    "none": 0,
-    "low": 100,
-    "medium": 1000,
-    "high": 10000,
-}
 
 TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
@@ -90,9 +84,7 @@ class LLMAdapterBase(ABC):
     pricing: Optional[Pricing] = None
     is_reasoning: bool = False
     is_adaptive_thinking: bool = False
-    reasoning_levels: Dict[str, int] = field(
-        default_factory=lambda: REASONING_LEVELS_DEFAULT.copy()
-    )
+    model_spec: Optional[ModelSpec] = field(default=None, init=False, repr=False)
 
     def __repr__(self) -> str:
         masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
@@ -105,6 +97,7 @@ class LLMAdapterBase(ABC):
             raise ValueError(error_message)
         provider = LLM_REGISTRY.providers.get(self.company)
         model_spec = provider.models.get(self.model) if provider else None
+        self.model_spec = model_spec
         if not model_spec:
             warnings.warn(
                 (
@@ -228,14 +221,27 @@ class LLMAdapterBase(ABC):
         """Stream normalized text deltas asynchronously in provider adapters."""
         raise NotImplementedError
 
-    @abstractmethod
-    def _normalize_reasoning_level(self, level: str | int) -> int | str:
-        """
-        Convert a user-provided reasoning level ('none', 'low', 'medium', 'high' or numeric)
-        into the provider-specific format.
-        Models without reasoning support should ignore
-        """
-        raise NotImplementedError
+    def _resolve_reasoning_level(
+        self,
+        reasoning_level: str | int,
+    ) -> ReasoningResolution:
+        """Resolve a public reasoning level for this adapter's verified model."""
+        if self.model_spec is None:
+            resolution = ReasoningResolution(
+                provider_value=None,
+                reason="unverified_model",
+                warning=(
+                    f"Model '{self.model}' is not verified for the {self.company} "
+                    "adapter; reasoning is disabled."
+                ),
+            )
+        else:
+            resolution = resolve_reasoning_level(self.model_spec, reasoning_level)
+
+        if resolution.warning:
+            warnings.warn(resolution.warning, UserWarning, stacklevel=2)
+            logger.info(resolution.warning)
+        return resolution
 
     def _validate_parameter(
         self, name: str, value: float, min_value: float, max_value: float

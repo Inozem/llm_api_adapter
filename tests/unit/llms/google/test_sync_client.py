@@ -161,7 +161,7 @@ def test_stream_uses_stream_generate_content_and_yields_raw_chunks(mock_post, cl
 
 @pytest.mark.unit
 @patch("src.llm_api_adapter.llms.streaming.requests.post")
-def test_stream_reuses_model_specific_thinking_payload_preparation(mock_post, client):
+def test_stream_preserves_adapter_resolved_thinking_payload(mock_post, client):
     response = StreamingResponse([])
     mock_post.return_value = response
 
@@ -174,7 +174,7 @@ def test_stream_reuses_model_specific_thinking_payload_preparation(mock_post, cl
     assert mock_post.call_args.kwargs["json"] == {
         "model": "gemini-2.5-flash-lite",
         "contents": [],
-        "generationConfig": {"thinkingConfig": {"thinkingBudget": 512}},
+        "generationConfig": {"thinkingConfig": {"thinkingBudget": 1}},
     }
 
 

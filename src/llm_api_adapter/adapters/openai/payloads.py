@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, List, Optional
-import warnings
 
 from ...models.messages.chat_message import Messages
 from ...models.responses.chat_response import ChatResponse
 from ...models.tools import ToolSpec
-
-logger = logging.getLogger(__name__)
-
 
 class _OpenAIPayloadMixin:
     """Build provider payloads while keeping adapter-level options normalized."""
@@ -32,7 +27,9 @@ class _OpenAIPayloadMixin:
         effective_schema: Optional[dict],
         capture_reasoning: bool,
     ) -> Dict[str, Any]:
-        normalized_reasoning_level = self._normalize_reasoning_level(reasoning_level)
+        normalized_reasoning_level = self._resolve_openai_reasoning_effort(
+            reasoning_level
+        )
         params: Dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens,
@@ -164,7 +161,9 @@ class _OpenAIPayloadMixin:
             "max_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
-            "reasoning_effort": self._normalize_reasoning_level(reasoning_level),
+            "reasoning_effort": self._resolve_openai_reasoning_effort(
+                reasoning_level
+            ),
         }
         if use_responses_api:
             params["input"] = normalized_messages.to_openai_responses_input()
@@ -237,34 +236,24 @@ class _OpenAIPayloadMixin:
             return "required"
         return {"type": "function", "function": {"name": tool_choice}}
 
-    def _normalize_reasoning_level(self, level: str | int | None) -> str | None:
-        if level is None:
+    def _resolve_openai_reasoning_effort(
+        self,
+        reasoning_level: str | int | None,
+    ) -> str | None:
+        # A missing value retains the Responses API default used before the
+        # model-aware resolver. OpenAI's client normalizes the older GPT-5
+        # family from ``none`` to ``minimal`` where necessary.
+        if reasoning_level is None:
             return "none" if self.is_reasoning else None
-        if not self.is_reasoning and level not in ("none", 0):
-            warning_message = (
-                f"Model '{self.model}' does not support reasoning вЂ” reasoning disabled."
-            )
-            warnings.warn(warning_message, UserWarning)
-            logger.info(warning_message)
+
+        provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
+        if provider_value is None:
             return None
-        if isinstance(level, bool):
-            raise ValueError("Invalid type for level: bool is not accepted")
-        if isinstance(level, str):
-            if level in self.reasoning_levels:
-                return level
-            raise ValueError(
-                f"Unknown reasoning level key: {level!r}. "
-                f"Valid keys: {list(self.reasoning_levels.keys())}"
+        if not isinstance(provider_value, str):
+            raise TypeError(
+                "OpenAI reasoning resolution must produce a categorical value"
             )
-        if isinstance(level, int):
-            for key, val in self.reasoning_levels.items():
-                if level <= val:
-                    return key
-            return list(self.reasoning_levels.keys())[-1]
-        raise ValueError(
-            "Invalid type for level: expected int or str, "
-            f"got {type(level).__name__!r}"
-        )
+        return provider_value
 
     def _map_tools_to_openai_responses(
         self,

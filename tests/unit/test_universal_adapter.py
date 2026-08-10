@@ -22,9 +22,6 @@ def test_selects_adapter_and_delegates(monkeypatch):
         def greet(self, name: str) -> str:
             return f"hello {name} from {self.company}"
 
-        def _normalize_reasoning_level(self, reasoning_level):
-            return reasoning_level
-
     monkeypatch.setattr(
         universal_module.LLMAdapterBase,
         "__subclasses__",
@@ -53,9 +50,6 @@ def test_unsupported_organization_raises(monkeypatch):
 
         def stream_chat(self, *args, **kwargs):
             yield "streamed"
-
-        def _normalize_reasoning_level(self, reasoning_level):
-            return reasoning_level
 
     monkeypatch.setattr(
         universal_module.LLMAdapterBase,
@@ -91,9 +85,6 @@ def test_getattr_missing_raises_attribute_error(monkeypatch):
         def stream_chat(self, *args, **kwargs):
             yield "streamed"
         
-        def _normalize_reasoning_level(self, reasoning_level):
-            return reasoning_level
-
     monkeypatch.setattr(
         universal_module.LLMAdapterBase,
         "__subclasses__",
