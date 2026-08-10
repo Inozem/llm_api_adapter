@@ -59,7 +59,7 @@ This table is a positioning snapshot. Provider capabilities change independently
 
 **One provider-neutral contract.** The same typed messages, `ToolSpec`, `ChatResponse`, `ImagePart`, and `DocumentPart` are converted to and from each provider's native wire format. Application code does not need provider-specific message, tool, or response parsing.
 
-**Unified reasoning control.** One `reasoning_level` parameter is accepted across supported providers without provider-specific kwargs. The adapter translates it to native effort or budget settings; exact availability and token semantics remain model-dependent.
+**Model-aware reasoning control.** One `reasoning_level` parameter is accepted across supported providers without provider-specific kwargs. Verified model capabilities resolve the canonical level to a native effort or budget setting; exact availability and token semantics remain model-dependent.
 
 **Cost accounting, built-in.** Every response carries `cost_input`, `cost_output`, and `cost_total` in your chosen currency using the bundled model registry. No callback or external observability service is required.
 
@@ -450,12 +450,9 @@ response = adapter.chat(
 
 ### Default behavior
 
-If `reasoning_level` is not passed, reasoning is:
-
-- fully disabled where the provider allows it, or
-- reduced to the minimal supported level if it cannot be turned off.
-
-This keeps the application-level behavior predictable when switching providers or models. The exact fallback is model/provider-dependent.
+When `reasoning_level` is omitted, the adapter bypasses model-aware resolution
+and preserves the provider request behavior that existed before it. Pass a
+level, including `"none"`, when the request must express reasoning intent.
 
 ### `reasoning_level` parameter
 
@@ -463,10 +460,28 @@ This keeps the application-level behavior predictable when switching providers o
 
 Supported forms:
 
-- **int** — explicit numeric level
-- **str** — one of: `"none"`, `"low"`, `"medium"`, `"high"`
+- **int** — explicit reasoning-token budget
+- **str** — one of the canonical levels: `"none"`, `"minimal"`, `"low"`,
+  `"medium"`, `"high"`, or `"very_high"`
 
-Named values are canonical intent labels. Their native meaning and numeric budget are model-dependent; do not treat `"medium"` or a numeric value as an identical token budget across providers. Unsupported levels may be mapped, clamped, or rejected according to the model capabilities.
+For a verified categorical model, an exact provider value listed for that
+model is preserved. This permits native values such as `"xhigh"` or `"max"`
+where the model supports them, but those values are not portable. Other
+canonical strings are projected upward through the model's ordered native
+values; `"none"` becomes the model minimum with a warning if it cannot disable
+reasoning. An integer is treated as a fraction of the model context window,
+clamped to 0–100%, then rounded upward to an available categorical value.
+
+For a verified numeric-budget model, canonical values from `"minimal"` through
+`"very_high"` are evenly interpolated from that model's documented minimum to
+maximum budget (with upward rounding). `"none"` resolves to zero when zero is
+supported, otherwise to the minimum with a warning. An integer is a literal
+budget: a value below the documented minimum falls back to that minimum with a
+warning, while a value above the documented maximum is forwarded so the
+provider can return its native validation error.
+
+Named levels express relative intent. Do not treat `"medium"` or a numeric
+value as an identical token budget across providers or models.
 
 ### Usage examples
 
@@ -483,9 +498,10 @@ response = adapter.chat(
     reasoning_level=2048,
 )
 
-# Reasoning disabled (default)
+# Explicitly disable reasoning where the model supports it
 response = adapter.chat(
     messages=[UserMessage("Simple answer, no reasoning")],
+    reasoning_level="none",
 )
 ```
 

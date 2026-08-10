@@ -747,9 +747,21 @@ asyncio.run(main())
 ## Reasoning level
 
 `reasoning_level` is provider-neutral and applies to `achat()` and
-`astream_chat()`. It accepts an explicit integer or one of `"none"`, `"low"`,
-`"medium"`, and `"high"`. The adapters translate this intent to the native
-provider setting; availability and token semantics remain model-dependent.
+`astream_chat()`. It accepts an explicit integer budget or one of the canonical
+levels: `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, and
+`"very_high"`. Verified model capabilities resolve the value to the native
+provider setting.
+
+For categorical models, a native value listed for that model is preserved;
+other canonical strings are projected upward through the ordered native values.
+An integer is normalized as a 0–100% fraction of the model context window and
+rounded upward to a native value. For numeric-budget models, canonical values
+from `"minimal"` through `"very_high"` are interpolated across the documented
+budget range. Integer budgets below the minimum fall back with a warning;
+budgets above the documented maximum are forwarded to the provider unchanged.
+`"none"` disables reasoning only where the model supports zero; otherwise it
+uses the minimum with a warning. Omitting `reasoning_level` preserves the
+provider's existing default request behavior.
 
 ```python
 import asyncio
@@ -778,10 +790,11 @@ async def main():
     )
     print(explicit_level.content)
 
-    default_level = await adapter.achat(
+    disabled_reasoning = await adapter.achat(
         messages=[UserMessage("Simple answer, no reasoning")],
+        reasoning_level="none",
     )
-    print(default_level.content)
+    print(disabled_reasoning.content)
 
 
 asyncio.run(main())
