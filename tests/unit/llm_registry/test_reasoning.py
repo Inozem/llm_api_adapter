@@ -50,6 +50,30 @@ def test_categorical_string_uses_direct_match_before_projection(registry):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model_name", "reasoning_level"),
+    [
+        ("gpt-5.5", "xhigh"),
+        ("gpt-5.6-sol", "max"),
+    ],
+)
+def test_categorical_string_accepts_provider_native_levels_outside_canonical_scale(
+    registry,
+    model_name,
+    reasoning_level,
+):
+    resolution = resolve_reasoning_level(
+        _model(registry, "openai", model_name),
+        reasoning_level,
+    )
+
+    assert resolution == ReasoningResolution(
+        provider_value=reasoning_level,
+        reason="categorical_direct_match",
+    )
+
+
+@pytest.mark.unit
 def test_categorical_string_projects_canonical_level_with_upward_rounding(registry):
     resolution = resolve_reasoning_level(
         _model(registry, "openai", "gpt-5.5"),
@@ -79,8 +103,13 @@ def test_categorical_none_falls_back_to_minimum_when_disable_is_unavailable(regi
     ("reasoning_level", "expected_value"),
     [
         (0, "none"),
+        (1, "low"),
         (262_500, "low"),
         (262_501, "medium"),
+        (525_000, "medium"),
+        (525_001, "high"),
+        (787_500, "high"),
+        (787_501, "xhigh"),
         (1_050_000, "xhigh"),
         (2_000_000, "xhigh"),
     ],
@@ -120,7 +149,9 @@ def test_categorical_projection_needs_no_provider_specific_mapping(registry):
     ("reasoning_level", "expected_budget"),
     [
         ("minimal", 128),
+        ("low", 8_288),
         ("medium", 16_448),
+        ("high", 24_608),
         ("very_high", 32_768),
     ],
 )
@@ -176,6 +207,35 @@ def test_numeric_integer_preserves_budget_and_clamps_only_below_minimum(registry
     assert "below the model minimum" in minimum_fallback.warning
     assert provider_native_maximum_error == ReasoningResolution(
         provider_value=32_769,
+        reason="numeric_budget",
+    )
+
+
+@pytest.mark.unit
+def test_numeric_integer_preserves_declared_budget_boundaries(registry):
+    minimum = resolve_reasoning_level(
+        _model(registry, "google", "gemini-2.5-pro"),
+        128,
+    )
+    maximum = resolve_reasoning_level(
+        _model(registry, "google", "gemini-2.5-pro"),
+        32_768,
+    )
+    zero = resolve_reasoning_level(
+        _model(registry, "google", "gemini-2.5-flash"),
+        0,
+    )
+
+    assert minimum == ReasoningResolution(
+        provider_value=128,
+        reason="numeric_budget",
+    )
+    assert maximum == ReasoningResolution(
+        provider_value=32_768,
+        reason="numeric_budget",
+    )
+    assert zero == ReasoningResolution(
+        provider_value=0,
         reason="numeric_budget",
     )
 
