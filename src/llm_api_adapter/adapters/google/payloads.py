@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, List, Optional
-import warnings
 
 from ...models.messages.chat_message import Messages
 from ...models.responses.chat_response import ChatResponse
 from ...models.tools import ToolSpec
-
-logger = logging.getLogger(__name__)
-
 
 class _GooglePayloadMixin:
     """Build Gemini payloads while keeping adapter options normalized."""
@@ -128,12 +123,15 @@ class _GooglePayloadMixin:
         capture_reasoning: bool,
     ) -> Optional[Dict[str, Any]]:
         thinking_config: Dict[str, Any] = {}
-        if reasoning_level:
-            normalized_reasoning_level = self._normalize_reasoning_level(
+        if reasoning_level is not None:
+            provider_value = self._resolve_reasoning_level(
                 reasoning_level
-            )
-            if normalized_reasoning_level is not None:
-                thinking_config["thinkingBudget"] = normalized_reasoning_level
+            ).provider_value
+            if isinstance(provider_value, int):
+                thinking_config["thinkingBudget"] = provider_value
+                thinking_config["includeThoughts"] = False
+            elif isinstance(provider_value, str):
+                thinking_config["thinkingLevel"] = provider_value
                 thinking_config["includeThoughts"] = False
         if capture_reasoning:
             thinking_config["includeThoughts"] = True
@@ -202,37 +200,5 @@ class _GooglePayloadMixin:
         if allowed_function_names:
             function_calling_config["allowedFunctionNames"] = allowed_function_names
         return {"functionCallingConfig": function_calling_config}
-
-    def _normalize_reasoning_level(self, level: str | int | None) -> int | None:
-        minimum_level = 0
-        normalized_level: Optional[int] = None
-        if level is not None and not self.is_reasoning:
-            warning_message = (
-                f"Model '{self.model}' does not support reasoning — reasoning disabled."
-            )
-            warnings.warn(warning_message, UserWarning)
-            logger.info(warning_message)
-            return None
-        if isinstance(level, bool):
-            raise ValueError("Invalid type for level: bool is not accepted")
-        if isinstance(level, str):
-            if level in self.reasoning_levels:
-                normalized_level = self.reasoning_levels[level]
-            else:
-                raise ValueError(
-                    f"Unknown reasoning level key: {level!r}. "
-                    f"Valid keys: {list(self.reasoning_levels.keys())}"
-                )
-        if isinstance(level, int):
-            normalized_level = level
-        if normalized_level is not None:
-            if normalized_level >= minimum_level:
-                return normalized_level
-            return minimum_level
-        raise ValueError(
-            "Invalid type for level: expected int or str, "
-            f"got {type(level).__name__!r}"
-        )
-
 
 __all__ = ["_GooglePayloadMixin"]
