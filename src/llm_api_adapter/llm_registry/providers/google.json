@@ -2,7 +2,9 @@
   "currency": "USD",
   "models": {
     "gemini-3.5-flash": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["minimal", "low", "medium", "high"]
+      },
       "limits": {
         "context_window_tokens": 1048576,
         "max_output_tokens": 65536
@@ -16,7 +18,9 @@
       ]
     },
     "gemini-3.1-pro-preview": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high"]
+      },
       "limits": {
         "context_window_tokens": 1048576,
         "max_output_tokens": 65536
@@ -35,7 +39,9 @@
       ]
     },
     "gemini-3.1-flash-lite": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["minimal", "low", "medium", "high"]
+      },
       "limits": {
         "context_window_tokens": 1048576,
         "max_output_tokens": 65536
@@ -49,7 +55,9 @@
       ]
     },
     "gemini-3-flash-preview": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["minimal", "low", "medium", "high"]
+      },
       "limits": {
         "context_window_tokens": 1048576,
         "max_output_tokens": 65536
@@ -63,7 +71,10 @@
       ]
     },
     "gemini-2.5-pro": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "min_budget_tokens": 128,
+        "max_budget_tokens": 32768
+      },
       "limits": {
         "context_window_tokens": 1048576,
         "max_output_tokens": 65536
@@ -82,7 +93,10 @@
       ]
     },
     "gemini-2.5-flash": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "min_budget_tokens": 0,
+        "max_budget_tokens": 24576
+      },
       "limits": {
         "context_window_tokens": 1048576,
         "max_output_tokens": 65536

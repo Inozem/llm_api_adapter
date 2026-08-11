@@ -53,9 +53,6 @@ class _TestAdapter(LLMAdapterBase):
     def stream_chat(self, *args, **kwargs):
         raise NotImplementedError
 
-    def _normalize_reasoning_level(self, reasoning_level):
-        return reasoning_level
-
 
 @pytest.fixture
 def adapter():
@@ -448,12 +445,6 @@ def test_reasoning_callback_exception_preserves_existing_callback_semantics(adap
 
     assert len(response.reasoning_events) == 1
     assert response.reasoning_events[0].text == "captured before failure"
-
-
-@pytest.mark.unit
-def test_base_abstract_normalize_reasoning_level_raises_not_implemented(adapter):
-    with pytest.raises(NotImplementedError):
-        LLMAdapterBase._normalize_reasoning_level(adapter, "low")
 
 
 # ---------------------------

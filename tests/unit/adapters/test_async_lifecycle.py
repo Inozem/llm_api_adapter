@@ -21,9 +21,6 @@ class AsyncLifecycleAdapter(LLMAdapterBase):
     def stream_chat(self, messages, **kwargs):
         raise NotImplementedError
 
-    def _normalize_reasoning_level(self, level):
-        return level
-
 
 @pytest.fixture
 def adapter():

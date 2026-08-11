@@ -38,7 +38,7 @@ async def test_chat_completion_uses_async_transport_and_payload_normalization(cl
     assert request.await_args.kwargs["payload"] == {
         "model": "gemini-2.5-flash-lite",
         "contents": [],
-        "generationConfig": {"thinkingConfig": {"thinkingBudget": 512}},
+        "generationConfig": {"thinkingConfig": {"thinkingBudget": 1}},
     }
 
 

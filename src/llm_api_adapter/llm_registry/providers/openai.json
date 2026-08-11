@@ -2,7 +2,9 @@
   "currency": "USD",
   "models": {
     "gpt-5.6-sol": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "medium", "high", "xhigh", "max"]
+      },
       "limits": {
         "context_window_tokens": 1050000,
         "max_output_tokens": 128000
@@ -21,7 +23,9 @@
       ]
     },
     "gpt-5.6-terra": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "medium", "high", "xhigh", "max"]
+      },
       "limits": {
         "context_window_tokens": 1050000,
         "max_output_tokens": 128000
@@ -40,7 +44,9 @@
       ]
     },
     "gpt-5.6-luna": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "medium", "high", "xhigh", "max"]
+      },
       "limits": {
         "context_window_tokens": 1050000,
         "max_output_tokens": 128000
@@ -59,7 +65,9 @@
       ]
     },
     "gpt-5.5": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "medium", "high", "xhigh"]
+      },
       "limits": {
         "context_window_tokens": 1050000,
         "max_output_tokens": 128000
@@ -78,7 +86,9 @@
       ]
     },
     "gpt-5.4": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "medium", "high", "xhigh"]
+      },
       "limits": {
         "context_window_tokens": 1050000,
         "max_output_tokens": 128000
@@ -97,7 +107,9 @@
       ]
     },
     "gpt-5.4-mini": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "medium", "high", "xhigh"]
+      },
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -111,7 +123,9 @@
       ]
     },
     "gpt-5.4-nano": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "medium", "high", "xhigh"]
+      },
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -125,7 +139,9 @@
       ]
     },
     "gpt-5.2": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "medium", "high", "xhigh"]
+      },
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -139,7 +155,9 @@
       ]
     },
     "gpt-5.1": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "medium", "high"]
+      },
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -153,7 +171,9 @@
       ]
     },
     "gpt-5": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["minimal", "low", "medium", "high"]
+      },
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -167,7 +187,9 @@
       ]
     },
     "gpt-5-mini": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["minimal", "low", "medium", "high"]
+      },
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -181,7 +203,9 @@
       ]
     },
     "gpt-5-nano": {
-      "is_reasoning": true,
+      "reasoning_capability": {
+        "allowed_values": ["minimal", "low", "medium", "high"]
+      },
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000

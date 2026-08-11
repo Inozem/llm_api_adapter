@@ -84,38 +84,16 @@ def test_pricing_is_applied_when_present(adapter):
         )
 
 @pytest.mark.unit
-def test_normalize_reasoning_level_int_below_minimum_warns(adapter):
-    adapter.is_reasoning = True
-    with pytest.warns(UserWarning):
-        result = adapter._normalize_reasoning_level(512)
-    assert result == 1024
-
-@pytest.mark.unit
-def test_normalize_reasoning_level_bool_raises(adapter):
-    adapter.is_reasoning = True
-    with pytest.raises(ValueError):
-        adapter._normalize_reasoning_level(True)
-
-@pytest.mark.unit
-def test_normalize_reasoning_level_unknown_str_raises(adapter):
-    adapter.is_reasoning = True
-    adapter.reasoning_levels = {"low": 2048}
-    with pytest.raises(ValueError):
-        adapter._normalize_reasoning_level("unknown-key")
-
-@pytest.mark.unit
 def test_chat_sets_thinking_when_reasoning_level_provided(adapter):
-    adapter.is_reasoning = True
-    adapter.reasoning_levels = {"high": 4096}
     fake_response = {"some": "anthropic response"}
     fake_chat_response = ChatResponse(content="fake")
     with patch.object(ClaudeSyncClient, "chat_completion", return_value=fake_response) as mock_chat, \
          patch.object(ChatResponse, "from_anthropic_response", return_value=fake_chat_response):
-        adapter.chat([UserMessage("hi")], max_tokens=10000, reasoning_level="high")
+        adapter.chat([UserMessage("hi")], max_tokens=2048, reasoning_level=1024)
         mock_chat.assert_called_once()
         kwargs = mock_chat.call_args.kwargs
         assert "budget_tokens" in kwargs
-        assert kwargs["budget_tokens"] == 4096
+        assert kwargs["budget_tokens"] == 1024
 
 
 @pytest.mark.unit
@@ -159,15 +137,16 @@ def test_validate_reasoning_and_tokens_raises_llm_reasoning_level_error(adapter)
 
 @pytest.mark.unit
 def test_chat_skips_validation_for_adaptive_thinking_model(adapter):
-    adapter.is_reasoning = True
-    adapter.is_adaptive_thinking = True
-    adapter.reasoning_levels = {"high": 4096}
+    adapter = AnthropicAdapter(
+        api_key="test_api_key",
+        model="claude-sonnet-4-6",
+    )
     fake_response = {"some": "anthropic response"}
     fake_chat_response = ChatResponse(content="fake")
     with patch.object(ClaudeSyncClient, "chat_completion", return_value=fake_response), \
-         patch.object(ChatResponse, "from_anthropic_response", return_value=fake_chat_response):
-        # max_tokens < budget_tokens — would raise LLMReasoningLevelError for a legacy model
+         patch.object(ChatResponse, "from_anthropic_response", return_value=fake_chat_response) as mock_response:
         adapter.chat([UserMessage("hi")], max_tokens=100, reasoning_level="high")
+    assert mock_response.called
 
 
 # ---------------------------

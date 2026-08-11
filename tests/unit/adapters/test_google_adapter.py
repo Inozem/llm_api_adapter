@@ -112,17 +112,16 @@ def test_chat_includes_system_instruction_in_payload(adapter):
 @pytest.mark.unit
 def test_chat_adds_thinking_config_when_reasoning_level_set(adapter):
     from src.llm_api_adapter.models.messages.chat_message import UserMessage
-    adapter.is_reasoning = True
-    adapter.reasoning_levels = {"medium": 5}
     fake_response = {"some": "google response"}
     with patch.object(GeminiSyncClient, "chat_completion", return_value=fake_response) as mock_client, \
          patch.object(ChatResponse, "from_google_response", return_value=ChatResponse()):
-        adapter.chat([UserMessage("hi")], reasoning_level="medium")
+        adapter.chat([UserMessage("hi")], reasoning_level=128)
     kwargs = mock_client.call_args[1]
     assert "generationConfig" in kwargs
     gen_cfg = kwargs["generationConfig"]
     assert "thinkingConfig" in gen_cfg
     assert isinstance(gen_cfg["thinkingConfig"], dict)
+    assert gen_cfg["thinkingConfig"]["thinkingBudget"] == 128
     assert gen_cfg["thinkingConfig"]["includeThoughts"] is False
 
 
@@ -158,34 +157,6 @@ def test_chat_captures_google_thought_summaries_when_opted_in(adapter):
     assert response.reasoning_events == [
         ReasoningEvent("Plan", "summary", 0, 0.0, 0.0),
     ]
-
-@pytest.mark.unit
-def test_normalize_reasoning_level_bool_raises(adapter):
-    with pytest.raises(ValueError):
-        adapter._normalize_reasoning_level(True)
-
-@pytest.mark.unit
-def test_normalize_reasoning_level_unknown_string_raises(adapter):
-    adapter.is_reasoning = True
-    adapter.reasoning_levels = {"low": 1}
-    with pytest.raises(ValueError):
-        adapter._normalize_reasoning_level("unknown_key")
-
-@pytest.mark.unit
-def test_normalize_reasoning_level_int_clamped_and_returns(adapter):
-    adapter.is_reasoning = True
-    adapter.reasoning_levels = {"low": 1}
-    assert adapter._normalize_reasoning_level(-1) == 0
-    assert adapter._normalize_reasoning_level(3) == 3
-
-@pytest.mark.unit
-def test_normalize_reasoning_level_warns_if_model_not_supporting(adapter):
-    adapter.is_reasoning = False
-    adapter.reasoning_levels = {"medium": 5}
-    with pytest.warns(UserWarning):
-        result = adapter._normalize_reasoning_level("medium")
-    assert result is None
-
 
 # ---------------------------
 # json_schema
