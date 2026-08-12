@@ -17,6 +17,7 @@ Supports Python 3.10–3.14.
 - [Features](#features)
 - [Installation](#installation)
 - [Getting Started](#getting-started)
+- [Model-specific request compatibility](#model-specific-request-compatibility)
 - [Streaming](#streaming)
 - [Async API](#async-api)
 - [Handling Errors](#handling-errors)
@@ -91,7 +92,7 @@ This table is a positioning snapshot. Provider capabilities change independently
 - **Strict JSON Mode**: Pass one JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` — provider-specific schema formats and restrictions are handled automatically.
 - **Pydantic Integration**: Pass a Pydantic model as `response_model` and get a typed instance back in `ChatResponse.parsed_model` — no manual schema writing required.
 - **Request Timeouts**: Per-request timeout control via `timeout_s`; raises `LLMAPITimeoutError` on expiry.
-- **Flexible Configuration**: `temperature`, `max_tokens`, `top_p`, and other parameters passed through to the provider.
+- **Flexible Configuration**: `temperature`, `max_tokens`, `top_p`, and other parameters are translated to a verified provider payload; known unsupported fields are omitted predictably.
 - **Pricing Registry**: Model prices stored in a bundled JSON registry with per-model input/output rates; overridable per instance.
 
 ## Installation
@@ -158,6 +159,24 @@ print(response.content)
 - **temperature**: Controls the randomness of the response. Higher values (e.g., 0.8) make the output more random, while lower values (e.g., 0.2) make it more focused and deterministic. Default value: `1.0` (range: 0 to 2).
 
 - **top\_p**: Limits the response to a certain cumulative probability. This is used to create more focused and coherent responses by considering only the highest probability options. Default value: `1.0` (range: 0 to 1).
+
+### Model-specific request compatibility
+
+The public `chat()`, `achat()`, `stream_chat()`, and `astream_chat()` methods
+keep the same arguments across providers. For a verified model, the adapter
+applies its registered payload compatibility rules before making the request;
+sync and async calls use the same rules.
+
+If a rule omits a parameter, its documented default is removed silently. A
+different supplied value is also removed, but emits one `UserWarning` and one
+`WARNING` log record per ignored parameter. Treat that warning as a prompt to
+remove the setting or select a model that supports it.
+
+Rules match the **exact** model names in the bundled registry. The adapter does
+not infer behavior from a name prefix. An unregistered alias receives no
+compatibility transformation; in particular, an unknown OpenAI model uses Chat
+Completions rather than the Responses API. Use a listed model or request a
+verified registry addition when a provider adds a new alias or model.
 
 ### Alternative Message Format
 
@@ -843,7 +862,7 @@ messages = [{
 response = adapter.chat(messages=messages, max_tokens=200)
 ```
 
-> **Note:** `ImagePart` is supported in v0.5.0; `DocumentPart` is introduced in v0.5.1. Google already supports audio input, but `AudioPart` is postponed because Anthropic does not support audio and OpenAI uses a separate audio API (`gpt-audio-1.5` with `modalities`), so there is no common provider-neutral contract yet.
+> **Note:** `ImagePart` is supported in v0.5.0; `DocumentPart` is introduced in v0.5.1. Google already supports audio input, but `AudioPart` is postponed because Anthropic does not support audio and OpenAI uses a separate audio API, so there is no common provider-neutral contract yet.
 
 ## Document Input
 
