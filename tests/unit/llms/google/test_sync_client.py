@@ -52,7 +52,7 @@ def mock_post_success():
 def test_chat_completion_success(client, mock_post_success):
     mock_post, _ = mock_post_success
     result = client.chat_completion(
-        "gemini-1", prompt={"messages":[{"author":"user","content":"Hi"}]}
+        "gemini-2.5-flash", prompt={"messages":[{"author":"user","content":"Hi"}]}
     )
     assert isinstance(result, dict)
     assert "candidates" in result
@@ -60,7 +60,7 @@ def test_chat_completion_success(client, mock_post_success):
     assert candidate_content == "Hello"
     mock_post.assert_called_once()
     assert mock_post.call_args.args[0] == (
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1:generateContent"
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     )
     headers = mock_post.call_args[1]["headers"]
     assert headers["x-goog-api-key"] == "test_api_key"
@@ -122,11 +122,15 @@ def test_stream_uses_stream_generate_content_and_yields_raw_chunks(mock_post, cl
     ])
     mock_post.return_value = response
 
-    events = list(client.stream(
-        "gemini-2.5-flash",
-        contents=[{"role": "user", "parts": [{"text": "Hi"}]}],
-        generationConfig={"maxOutputTokens": 64},
-    ))
+    with pytest.warns(
+        UserWarning,
+        match="Parameter 'generationConfig.maxOutputTokens' is not supported",
+    ):
+        events = list(client.stream(
+            "gemini-2.5-flash",
+            contents=[{"role": "user", "parts": [{"text": "Hi"}]}],
+            generationConfig={"maxOutputTokens": 64},
+        ))
 
     assert events == [
         SSEEvent(
@@ -166,13 +170,13 @@ def test_stream_preserves_adapter_resolved_thinking_payload(mock_post, client):
     mock_post.return_value = response
 
     assert list(client.stream(
-        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
         contents=[],
         generationConfig={"thinkingConfig": {"thinkingBudget": 1}},
     )) == []
 
     assert mock_post.call_args.kwargs["json"] == {
-        "model": "gemini-2.5-flash-lite",
+        "model": "gemini-2.5-flash",
         "contents": [],
         "generationConfig": {"thinkingConfig": {"thinkingBudget": 1}},
     }

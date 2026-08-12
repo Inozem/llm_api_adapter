@@ -11,6 +11,7 @@ from ...errors.llm_api_error import (
     LLMAPIServerError,
     LLMAPITimeoutError,
 )
+from ..request_rules import apply_model_request_rules
 from ..streaming import SSEEvent, stream_request
 
 logger = logging.getLogger(__name__)
@@ -45,12 +46,12 @@ class GeminiSyncClient:
         return self._stream_request(url, payload, timeout_s)
 
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
-        gen_cfg = kwargs.get("generationConfig", {})
-        if "maxOutputTokens" in gen_cfg:
-            if model.startswith(("gemini-2.5")):
-                gen_cfg.pop("maxOutputTokens", None)
-                kwargs["generationConfig"] = gen_cfg
-        return {"model": model, **kwargs}
+        payload, _ = apply_model_request_rules(
+            "google",
+            model,
+            {"model": model, **kwargs},
+        )
+        return payload
 
     def _send_request(self, url: str, payload: dict, timeout_s: float | None = None):
         try:

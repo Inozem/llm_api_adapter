@@ -12,7 +12,7 @@ from src.llm_api_adapter.models.tools import ToolCall
 @pytest.mark.unit
 def test_from_openai_response():
     api_response = {
-        "model": "gpt-4",
+        "model": "gpt-4o",
         "id": "response123",
         "created": 1234567890,
         "usage": {
@@ -28,7 +28,7 @@ def test_from_openai_response():
         ],
     }
     response = ChatResponse.from_openai_response(api_response)
-    assert response.model == "gpt-4"
+    assert response.model == "gpt-4o"
     assert response.response_id == "response123"
     assert response.timestamp == 1234567890
     assert response.usage.input_tokens == 30
@@ -46,7 +46,7 @@ def test_from_openai_response():
         (
             ChatResponse.from_openai_response,
             {
-                "model": "gpt-4",
+                "model": "gpt-4o",
                 "choices": [{"message": {"content": "Hello"}}],
             },
         ),
@@ -89,7 +89,7 @@ def test_provider_response_without_usage_leaves_usage_unset(parser, api_response
 @pytest.mark.unit
 def test_from_openai_response_parses_tool_calls_json_string():
     api_response = {
-        "model": "gpt-4",
+        "model": "gpt-4o",
         "id": "resp_1",
         "created": 111,
         "usage": {},
@@ -552,13 +552,13 @@ def test_from_openai_responses_response_invalid_tool_arguments_raise():
 def test_from_anthropic_response():
     api_response = {
         "usage": {"input_tokens": 30, "output_tokens": 70},
-        "model": "claude-2",
+        "model": "claude-sonnet-4-5",
         "id": "anthropic123",
         "content": [{"type": "text", "text": "Hello from Anthropic!"}],
         "stop_reason": "end",
     }
     response = ChatResponse.from_anthropic_response(api_response)
-    assert response.model == "claude-2"
+    assert response.model == "claude-sonnet-4-5"
     assert response.response_id == "anthropic123"
     assert response.usage.input_tokens == 30
     assert response.usage.output_tokens == 70
@@ -600,7 +600,7 @@ def test_from_anthropic_response_captures_thinking_only_when_opted_in():
 def test_from_anthropic_response_parses_tool_use_blocks():
     api_response = {
         "usage": {"input_tokens": 5, "output_tokens": 7},
-        "model": "claude-3",
+        "model": "claude-sonnet-4-5",
         "id": "a1",
         "content": [
             {"type": "text", "text": "first text"},

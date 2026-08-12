@@ -75,6 +75,9 @@
         "min_budget_tokens": 128,
         "max_budget_tokens": 32768
       },
+      "request_rules": [
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.maxOutputTokens", "default": null}}
+      ],
       "limits": {
         "context_window_tokens": 1048576,
         "max_output_tokens": 65536
@@ -97,6 +100,9 @@
         "min_budget_tokens": 0,
         "max_budget_tokens": 24576
       },
+      "request_rules": [
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.maxOutputTokens", "default": null}}
+      ],
       "limits": {
         "context_window_tokens": 1048576,
         "max_output_tokens": 65536

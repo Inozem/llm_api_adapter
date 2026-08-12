@@ -2,7 +2,6 @@ from dataclasses import dataclass
 import logging
 from typing import Iterator, Mapping
 import requests
-import warnings
 
 from ...errors.llm_api_error import (
     LLMAPIAuthorizationError,
@@ -12,6 +11,12 @@ from ...errors.llm_api_error import (
     LLMAPIServerError,
     LLMAPITimeoutError,
     LLMAPIUsageLimitError,
+)
+from ...llm_registry.llm_registry import CategoricalReasoningCapability
+from ..request_rules import (
+    apply_model_request_rules,
+    model_api_variant,
+    model_spec_for,
 )
 from ..streaming import SSEEvent, stream_request
 
@@ -75,14 +80,15 @@ class OpenAISyncClient:
         return self._stream_request(url, payload, timeout)
 
     def _should_use_responses_api(self, model: str) -> bool:
-        return model.startswith("gpt-5")
+        return model_api_variant("openai", model) == "responses"
 
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
-        kwargs = dict(kwargs)
-        if model.startswith(("gpt-4.1", "o1")):
-            if "max_tokens" in kwargs:
-                kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
-        return {"model": model, **kwargs}
+        payload, _ = apply_model_request_rules(
+            "openai",
+            model,
+            {"model": model, **kwargs},
+        )
+        return payload
 
     def _prepare_responses_payload_for_model(self, model: str, kwargs: dict) -> dict:
         payload = {"model": model, **dict(kwargs)}
@@ -94,30 +100,26 @@ class OpenAISyncClient:
         capture_reasoning = payload.pop("capture_reasoning", False)
         reasoning: dict = {}
         if reasoning_effort is not None:
-            if model in ("gpt-5", "gpt-5-nano", "gpt-5-mini") and reasoning_effort == "none":
+            if self._uses_minimal_reasoning_for_none(model) and reasoning_effort == "none":
                 reasoning_effort = "minimal"
             reasoning["effort"] = reasoning_effort
         if capture_reasoning:
             reasoning["summary"] = "auto"
         if reasoning:
             payload["reasoning"] = reasoning
-        if model.startswith("gpt-5-nano"):
-            temperature = payload.pop("temperature", None)
-            if temperature not in (None, 1.0):
-                warning_message = (
-                    f"Parameter 'temperature' is not supported for model '{model}' "
-                    "and will be ignored."
-                )
-                warnings.warn(warning_message, stacklevel=2)
-                logger.warning(warning_message)
-        if model.startswith("gpt-5") and "top_p" in payload:
-            warning_message = (
-                f"Parameter 'top_p' is not supported for model '{model}' and will be ignored."
-            )
-            warnings.warn(warning_message, stacklevel=2)
-            logger.warning(warning_message)
-            payload.pop("top_p")
+        payload, _ = apply_model_request_rules("openai", model, payload)
         return payload
+
+    @staticmethod
+    def _uses_minimal_reasoning_for_none(model: str) -> bool:
+        """Map legacy ``none`` to the first native effort level when required."""
+        model_spec = model_spec_for("openai", model)
+        capability = model_spec.reasoning_capability if model_spec else None
+        return (
+            isinstance(capability, CategoricalReasoningCapability)
+            and "none" not in capability.allowed_values
+            and "minimal" in capability.allowed_values
+        )
 
     def _send_request(self, url: str, payload: dict, timeout: float | None = None):
         try:
