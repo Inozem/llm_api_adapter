@@ -12,6 +12,7 @@ from ...errors.llm_api_error import (
     LLMAPIServerError,
     LLMAPITimeoutError,
 )
+from ..request_rules import apply_model_request_rules
 from ..streaming import SSEEvent, stream_request
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class ClaudeSyncClient:
         return self._stream_request(url, payload, timeout_s)
 
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
+        kwargs = dict(kwargs)
         budget_tokens = kwargs.pop("budget_tokens", None)
         effort = kwargs.pop("effort", None)
         is_adaptive_thinking = kwargs.pop("is_adaptive_thinking", False)
@@ -60,17 +62,18 @@ class ClaudeSyncClient:
                 existing = kwargs.get("output_config", {})
                 kwargs["output_config"] = {**existing, "effort": effort}
         else:
-            if model.startswith(
-                ("claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-5")
-            ):
-                kwargs.pop("top_p", None)
             if budget_tokens:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
         if capture_reasoning:
             thinking = kwargs.get("thinking")
             if isinstance(thinking, dict):
                 kwargs["thinking"] = {**thinking, "display": "summarized"}
-        return {"model": model, **kwargs}
+        payload, _ = apply_model_request_rules(
+            "anthropic",
+            model,
+            {"model": model, **kwargs},
+        )
+        return payload
 
     def _send_request(self, url: str, payload: dict, timeout_s: float | None = None):
         try:

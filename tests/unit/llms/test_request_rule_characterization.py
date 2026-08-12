@@ -34,6 +34,14 @@ def test_openai_selects_the_api_variant_for_each_model_family(client_class):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
+def test_openai_does_not_assume_an_api_variant_for_unregistered_models(client_class):
+    client = client_class(api_key="test_api_key")
+
+    assert client._should_use_responses_api("gpt-5-unregistered") is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
 def test_openai_renames_max_tokens_for_chat_completions_models(client_class):
     client = client_class(api_key="test_api_key")
 
@@ -60,6 +68,19 @@ def test_openai_converts_the_legacy_gpt5_reasoning_default(client_class):
 
     assert payload["reasoning"] == {"effort": "minimal"}
     assert caught == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
+def test_openai_preserves_native_none_when_registry_allows_it(client_class):
+    client = client_class(api_key="test_api_key")
+
+    payload = client._prepare_responses_payload_for_model(
+        "gpt-5.6-sol",
+        {"reasoning_effort": "none"},
+    )
+
+    assert payload["reasoning"] == {"effort": "none"}
 
 
 @pytest.mark.unit

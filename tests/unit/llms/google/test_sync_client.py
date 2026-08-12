@@ -122,11 +122,15 @@ def test_stream_uses_stream_generate_content_and_yields_raw_chunks(mock_post, cl
     ])
     mock_post.return_value = response
 
-    events = list(client.stream(
-        "gemini-2.5-flash",
-        contents=[{"role": "user", "parts": [{"text": "Hi"}]}],
-        generationConfig={"maxOutputTokens": 64},
-    ))
+    with pytest.warns(
+        UserWarning,
+        match="Parameter 'generationConfig.maxOutputTokens' is not supported",
+    ):
+        events = list(client.stream(
+            "gemini-2.5-flash",
+            contents=[{"role": "user", "parts": [{"text": "Hi"}]}],
+            generationConfig={"maxOutputTokens": 64},
+        ))
 
     assert events == [
         SSEEvent(
