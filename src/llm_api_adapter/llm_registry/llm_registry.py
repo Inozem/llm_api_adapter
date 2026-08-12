@@ -3,6 +3,11 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
+from .request_rules import (
+    RequestRuleRegistry,
+    RequestRules,
+    request_rule_registry_for_provider,
+)
 
 DEFAULT_REGISTRY_PATH = Path(__file__).with_name("llm_registry.json")
 
@@ -237,6 +242,7 @@ class ModelSpec:
     pricing_tiers: Pricing
     reasoning_capability: Optional[ReasoningCapability] = None
     is_adaptive_thinking: bool = False
+    request_rules: RequestRules = RequestRules()
 
     @property
     def is_reasoning(self) -> bool:
@@ -250,6 +256,7 @@ class ModelSpec:
         data: Dict[str, Any],
         *,
         currency: str = "USD",
+        request_rule_registry: Optional[RequestRuleRegistry] = None,
     ) -> "ModelSpec":
         if "pricing" in data:
             raise ValueError(
@@ -266,6 +273,20 @@ class ModelSpec:
             else None
         )
         is_adaptive_thinking = bool(data.get("is_adaptive_thinking", False))
+        raw_request_rules = data.get("request_rules", [])
+        if request_rule_registry is None:
+            if not isinstance(raw_request_rules, list):
+                raise ValueError("request_rules must be an array")
+            if raw_request_rules:
+                raise ValueError(
+                    f"Model '{name}' defines request_rules without a provider schema"
+                )
+            request_rules = RequestRules()
+        else:
+            request_rules = RequestRules.from_dict(
+                raw_request_rules,
+                rule_registry=request_rule_registry,
+            )
         if is_adaptive_thinking and reasoning_capability is None:
             raise ValueError(
                 f"Model '{name}' enables adaptive thinking without "
@@ -288,6 +309,7 @@ class ModelSpec:
             ),
             reasoning_capability=reasoning_capability,
             is_adaptive_thinking=is_adaptive_thinking,
+            request_rules=request_rules,
         )
 
 
@@ -302,11 +324,13 @@ class ProviderSpec:
         currency = data.get("currency", "USD")
         if not isinstance(currency, str) or not currency:
             raise ValueError(f"Provider '{name}' has an invalid currency")
+        request_rule_registry = request_rule_registry_for_provider(name)
         models = {
             model_name: ModelSpec.from_dict(
                 model_name,
                 model_spec,
                 currency=currency,
+                request_rule_registry=request_rule_registry,
             )
             for model_name, model_spec in (data.get("models") or {}).items()
         }
