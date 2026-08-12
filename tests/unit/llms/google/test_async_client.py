@@ -21,7 +21,7 @@ async def test_chat_completion_uses_async_transport_and_payload_normalization(cl
         request,
     ):
         result = await client.chat_completion(
-            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
             contents=[],
             generationConfig={"thinkingConfig": {"thinkingBudget": 1}},
         )
@@ -29,14 +29,14 @@ async def test_chat_completion_uses_async_transport_and_payload_normalization(cl
     assert result == {"candidates": [{"content": "Hello"}]}
     request.assert_awaited_once()
     assert request.await_args.args[0].endswith(
-        "/models/gemini-2.5-flash-lite:generateContent"
+        "/models/gemini-2.5-flash:generateContent"
     )
     assert request.await_args.kwargs["headers"] == {
         "x-goog-api-key": "test_api_key",
         "Content-Type": "application/json",
     }
     assert request.await_args.kwargs["payload"] == {
-        "model": "gemini-2.5-flash-lite",
+        "model": "gemini-2.5-flash",
         "contents": [],
         "generationConfig": {"thinkingConfig": {"thinkingBudget": 1}},
     }

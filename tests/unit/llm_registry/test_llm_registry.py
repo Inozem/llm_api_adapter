@@ -143,9 +143,9 @@ def test_pricing_tier_for_prompt_tokens_uses_inclusive_boundaries():
 def test_model_and_provider_from_dict():
     model_data = _model_data()
 
-    model = ModelSpec.from_dict("gpt-test", model_data)
+    model = ModelSpec.from_dict("gpt-5", model_data)
 
-    assert model.name == "gpt-test"
+    assert model.name == "gpt-5"
     assert model.limits == ModelLimits(
         context_window_tokens=128_000,
         max_output_tokens=16_384,
@@ -160,14 +160,14 @@ def test_model_and_provider_from_dict():
 
     provider = ProviderSpec.from_dict(
         "prov",
-        {"currency": "EUR", "models": {"gpt-test": model_data}},
+        {"currency": "EUR", "models": {"gpt-5": model_data}},
     )
 
     assert provider.name == "prov"
     assert provider.currency == "EUR"
-    assert "gpt-test" in provider.models
-    assert isinstance(provider.models["gpt-test"], ModelSpec)
-    assert provider.models["gpt-test"].pricing_tiers.currency == "EUR"
+    assert "gpt-5" in provider.models
+    assert isinstance(provider.models["gpt-5"], ModelSpec)
+    assert provider.models["gpt-5"].pricing_tiers.currency == "EUR"
 
 
 @pytest.mark.unit
@@ -185,7 +185,7 @@ def test_model_request_rules_load_as_validated_metadata():
     ]
 
     model = ModelSpec.from_dict(
-        "gpt-test",
+        "gpt-5",
         model_data,
         request_rule_registry=OpenAIRequestRuleRegistry(),
     )
@@ -336,7 +336,7 @@ def test_request_rule_schemas_are_scoped_to_their_provider():
 
     with pytest.raises(ValueError, match="not supported for provider 'anthropic'"):
         ModelSpec.from_dict(
-            "claude-test",
+            "claude-sonnet-4-5",
             model_data,
             request_rule_registry=AnthropicRequestRuleRegistry(),
         )
@@ -349,7 +349,7 @@ def test_request_rule_schemas_are_scoped_to_their_provider():
     ]
     with pytest.raises(ValueError, match="unsupported request parameter path"):
         ModelSpec.from_dict(
-            "gemini-test",
+            "gemini-2.5-flash",
             model_data,
             request_rule_registry=GoogleRequestRuleRegistry(),
         )
