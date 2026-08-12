@@ -1,3 +1,5 @@
+import warnings
+
 import pytest
 import requests_mock
 
@@ -128,6 +130,30 @@ def test_openai_chat_gpt5_responses_api(openai_responses_mock):
 
 
 @pytest.mark.integration
+def test_openai_snapshot_uses_responses_api_and_registered_base_rules(
+    openai_responses_mock,
+):
+    model = "gpt-5-2025-08-07"
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai",
+        model=model,
+        api_key="dummy_key",
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        response = adapter.chat([UserMessage("Hi")], max_tokens=64, top_p=1.0)
+
+    request = openai_responses_mock.last_request
+    assert response.content == "Hello from mocked OpenAI!"
+    assert request.url == "https://api.openai.com/v1/responses"
+    assert request.json()["model"] == model
+    assert request.json()["max_output_tokens"] == 64
+    assert "top_p" not in request.json()
+    assert caught == []
+
+
+@pytest.mark.integration
 def test_openai_chat_with_raw_dict_messages_gpt5_responses_api(
     openai_responses_mock,
 ):
@@ -228,6 +254,28 @@ def test_anthropic_chat(anthropic_client_mock):
     resp = adapter.chat(messages=messages, max_tokens=2000)
 
     assert resp.content == "Hello from mocked Anthropic!"
+
+
+@pytest.mark.integration
+def test_anthropic_snapshot_uses_registered_base_rules(anthropic_client_mock):
+    model = "claude-sonnet-4-5-20250929"
+    adapter = UniversalLLMAPIAdapter(
+        organization="anthropic",
+        model=model,
+        api_key="dummy_key",
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        response = adapter.chat([UserMessage("Hi")], max_tokens=64, top_p=1.0)
+
+    request = anthropic_client_mock.last_request
+    assert response.content == "Hello from mocked Anthropic!"
+    assert request.url == "https://api.anthropic.com/v1/messages"
+    assert request.json()["model"] == model
+    assert request.json()["max_tokens"] == 64
+    assert "top_p" not in request.json()
+    assert caught == []
 
 
 @pytest.mark.integration
