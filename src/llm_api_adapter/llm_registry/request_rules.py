@@ -6,8 +6,15 @@ imports code, evaluates expressions, or carries arbitrary callback payloads.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
-from typing import Any, ClassVar, Dict, Optional
+import logging
+from typing import Any, ClassVar, Dict, Mapping, Optional
+import warnings
+
+
+logger = logging.getLogger(__name__)
+_MISSING = object()
 
 
 class RequestRuleRegistry:
@@ -248,6 +255,90 @@ class RequestRules:
         return None
 
 
+@dataclass(frozen=True)
+class AppliedRequestRule:
+    """One request rule that changed a payload during execution."""
+
+    handler: str
+    path: str
+    target_path: Optional[str] = None
+    warning_emitted: bool = False
+
+
+def apply_request_rules(
+    payload: Mapping[str, Any],
+    request_rules: RequestRules,
+    *,
+    model: str,
+) -> tuple[dict[str, Any], tuple[AppliedRequestRule, ...]]:
+    """Apply registry request rules to a copied payload.
+
+    API variant selection is transport metadata, so it is intentionally not a
+    payload transformation. A parameter with a declared default is removed
+    quietly when its value matches that default; any other removed value emits
+    one warning and one log record.
+    """
+    transformed_payload = copy.deepcopy(dict(payload))
+    applied_rules: list[AppliedRequestRule] = []
+
+    for rule in request_rules.rules:
+        if rule.handler == RequestRuleRegistry.RENAME_PARAMETER:
+            source = rule.arguments["from"]
+            target = rule.arguments["to"]
+            value = transformed_payload.pop(source, _MISSING)
+            if value is _MISSING:
+                continue
+            transformed_payload[target] = value
+            applied_rules.append(
+                AppliedRequestRule(
+                    handler=rule.handler,
+                    path=source,
+                    target_path=target,
+                )
+            )
+            continue
+
+        if rule.handler == RequestRuleRegistry.DROP_PARAMETER:
+            path = rule.arguments["path"]
+            value = _pop_payload_path(transformed_payload, path)
+            if value is _MISSING:
+                continue
+
+            warning_emitted = False
+            if "default" in rule.arguments and value != rule.arguments["default"]:
+                _warn_ignored_parameter(path, model)
+                warning_emitted = True
+            applied_rules.append(
+                AppliedRequestRule(
+                    handler=rule.handler,
+                    path=path,
+                    warning_emitted=warning_emitted,
+                )
+            )
+
+    return transformed_payload, tuple(applied_rules)
+
+
+def _pop_payload_path(payload: dict[str, Any], path: str) -> Any:
+    """Pop a validated dotted path, returning a sentinel when it is absent."""
+    target = payload
+    *parents, leaf = path.split(".")
+    for parent in parents:
+        nested = target.get(parent)
+        if not isinstance(nested, dict):
+            return _MISSING
+        target = nested
+    return target.pop(leaf, _MISSING)
+
+
+def _warn_ignored_parameter(path: str, model: str) -> None:
+    message = (
+        f"Parameter {path!r} is not supported for model {model!r} and will be ignored."
+    )
+    warnings.warn(message, UserWarning, stacklevel=3)
+    logger.warning(message)
+
+
 def request_rule_registry_for_provider(
     provider_name: str,
 ) -> Optional[RequestRuleRegistry]:
@@ -256,6 +347,7 @@ def request_rule_registry_for_provider(
 
 
 __all__ = [
+    "AppliedRequestRule",
     "AnthropicRequestRuleRegistry",
     "GoogleRequestRuleRegistry",
     "OpenAIRequestRuleRegistry",
@@ -265,5 +357,6 @@ __all__ = [
     "RequestRuleRegistry",
     "RequestRules",
     "SamplingRequestRuleRegistry",
+    "apply_request_rules",
     "request_rule_registry_for_provider",
 ]
