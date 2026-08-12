@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field, replace
+from datetime import date
 import json
 from pathlib import Path
+import re
 from typing import Any, Dict, Optional, Sequence
 
 from .request_rules import (
@@ -10,6 +12,9 @@ from .request_rules import (
 )
 
 DEFAULT_REGISTRY_PATH = Path(__file__).with_name("llm_registry.json")
+
+_ANTHROPIC_SNAPSHOT_ID = re.compile(r"^(claude-[a-z]+-\d+-\d+)-(\d{8})$")
+_OPENAI_SNAPSHOT_ID = re.compile(r"^(gpt-[A-Za-z0-9.-]+)-(\d{4}-\d{2}-\d{2})$")
 
 
 def _positive_int(value: Any, field_name: str) -> int:
@@ -394,6 +399,53 @@ class RegistrySpec:
         if not isinstance(provider_data, dict):
             raise ValueError(f"Provider registry data for '{provider_name}' must be an object")
         return provider_data
+
+
+def _is_valid_snapshot_date(value: str, *, compact: bool) -> bool:
+    """Return whether a provider snapshot suffix is a real calendar date."""
+    if compact:
+        value = f"{value[:4]}-{value[4:6]}-{value[6:]}"
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _snapshot_base_model_name(provider_name: str, model_name: str) -> Optional[str]:
+    """Return a supported direct-provider snapshot's unsuffixed model ID."""
+    if provider_name == "anthropic":
+        match = _ANTHROPIC_SNAPSHOT_ID.fullmatch(model_name)
+        if match and _is_valid_snapshot_date(match.group(2), compact=True):
+            return match.group(1)
+    elif provider_name == "openai":
+        match = _OPENAI_SNAPSHOT_ID.fullmatch(model_name)
+        if match and _is_valid_snapshot_date(match.group(2), compact=False):
+            return match.group(1)
+    return None
+
+
+def resolve_model_spec(
+    registry: RegistrySpec,
+    provider_name: str,
+    model_name: str,
+) -> Optional[ModelSpec]:
+    """Resolve an exact model or a supported provider snapshot to its base spec.
+
+    The caller must continue to send ``model_name`` to the provider. This
+    resolver only supplies verified registry metadata for direct Anthropic and
+    OpenAI snapshot IDs whose unsuffixed base is registered.
+    """
+    provider = registry.providers.get(provider_name)
+    if not provider:
+        return None
+
+    model_spec = provider.models.get(model_name)
+    if model_spec:
+        return model_spec
+
+    base_model_name = _snapshot_base_model_name(provider_name, model_name)
+    return provider.models.get(base_model_name) if base_model_name else None
 
 
 LLM_REGISTRY = RegistrySpec()

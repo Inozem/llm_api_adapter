@@ -34,6 +34,14 @@ def test_openai_selects_the_api_variant_for_each_model_family(client_class):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
+def test_openai_snapshot_uses_its_registered_base_api_variant(client_class):
+    client = client_class(api_key="test_api_key")
+
+    assert client._should_use_responses_api("gpt-5-2025-08-07") is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
 def test_openai_does_not_assume_an_api_variant_for_unregistered_models(client_class):
     client = client_class(api_key="test_api_key")
 
@@ -47,6 +55,20 @@ def test_openai_renames_max_tokens_for_chat_completions_models(client_class):
 
     payload = client._prepare_chat_payload_for_model(
         "gpt-4.1-mini",
+        {"messages": [], "max_tokens": 256},
+    )
+
+    assert payload["max_completion_tokens"] == 256
+    assert "max_tokens" not in payload
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
+def test_openai_snapshot_uses_its_registered_base_payload_rules(client_class):
+    client = client_class(api_key="test_api_key")
+
+    payload = client._prepare_chat_payload_for_model(
+        "gpt-4.1-2025-04-14",
         {"messages": [], "max_tokens": 256},
     )
 
@@ -164,6 +186,22 @@ def test_anthropic_silently_omits_default_top_p_for_claude_4_5(client_class):
         warnings.simplefilter("always")
         payload = client._prepare_chat_payload_for_model(
             "claude-sonnet-4-5",
+            {"messages": [], "top_p": 1.0},
+        )
+
+    assert "top_p" not in payload
+    assert caught == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
+def test_anthropic_snapshot_uses_its_registered_base_payload_rules(client_class):
+    client = client_class(api_key="test_api_key")
+
+    with _captured_warnings() as caught:
+        warnings.simplefilter("always")
+        payload = client._prepare_chat_payload_for_model(
+            "claude-sonnet-4-5-20250929",
             {"messages": [], "top_p": 1.0},
         )
 

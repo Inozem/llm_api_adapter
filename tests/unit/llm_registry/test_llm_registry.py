@@ -14,6 +14,8 @@ from src.llm_api_adapter.llm_registry.llm_registry import (
     PricingTier,
     ProviderSpec,
     RegistrySpec,
+    LLM_REGISTRY,
+    resolve_model_spec,
 )
 from src.llm_api_adapter.llm_registry.request_rules import (
     AnthropicRequestRuleRegistry,
@@ -27,6 +29,33 @@ from src.llm_api_adapter.llm_registry.request_rules import (
 
 
 SONNET_5_STANDARD_PRICING_DATE = date(2026, 9, 1)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("provider_name", "model_name", "expected_base_name"),
+    (
+        ("anthropic", "claude-sonnet-4-5-20250929", "claude-sonnet-4-5"),
+        ("openai", "gpt-5-2025-08-07", "gpt-5"),
+        ("openai", "gpt-4.1-2025-04-14", "gpt-4.1"),
+        ("google", "gemini-2.5-flash-preview-04-17", None),
+        ("anthropic", "claude-sonnet-4-5-20251301", None),
+        ("openai", "gpt-5-2025-13-01", None),
+        ("openai", "ft:gpt-5:example:custom-2025-08-07", None),
+    ),
+)
+def test_resolve_model_spec_supports_only_verified_provider_snapshots(
+    provider_name,
+    model_name,
+    expected_base_name,
+):
+    model_spec = resolve_model_spec(LLM_REGISTRY, provider_name, model_name)
+
+    if expected_base_name is None:
+        assert model_spec is None
+    else:
+        assert model_spec is not None
+        assert model_spec.name == expected_base_name
 
 
 def _model_data(*, tiers=None):

@@ -172,11 +172,16 @@ different supplied value is also removed, but emits one `UserWarning` and one
 `WARNING` log record per ignored parameter. Treat that warning as a prompt to
 remove the setting or select a model that supports it.
 
-Rules match the **exact** model names in the bundled registry. The adapter does
-not infer behavior from a name prefix. An unregistered alias receives no
-compatibility transformation; in particular, an unknown OpenAI model uses Chat
-Completions rather than the Responses API. Use a listed model or request a
-verified registry addition when a provider adds a new alias or model.
+Rules match the **exact** model names in the bundled registry, with two narrow
+snapshot exceptions for direct provider APIs: Anthropic
+`claude-...-YYYYMMDD` and OpenAI `gpt-...-YYYY-MM-DD` IDs inherit a registered
+unsuffixed base model's metadata when the date is valid. The requested snapshot
+ID is still sent to the provider. The adapter does not infer behavior from a
+name prefix; Google aliases and preview IDs, fine-tuned IDs, and any snapshot
+whose base model is unregistered receive no compatibility transformation. An
+unknown OpenAI model uses Chat Completions rather than the Responses API. Use a
+listed model or request a verified registry addition when a provider adds a new
+alias or model.
 
 ### Alternative Message Format
 

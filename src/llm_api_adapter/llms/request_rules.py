@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-from ..llm_registry.llm_registry import LLM_REGISTRY, ModelSpec
+from ..llm_registry.llm_registry import LLM_REGISTRY, ModelSpec, resolve_model_spec
 from ..llm_registry.request_rules import (
     AppliedRequestRule,
     RequestRules,
@@ -13,9 +13,8 @@ from ..llm_registry.request_rules import (
 
 
 def model_spec_for(provider_name: str, model_name: str) -> Optional[ModelSpec]:
-    """Return the verified model metadata for a provider, if it is known."""
-    provider = LLM_REGISTRY.providers.get(provider_name)
-    return provider.models.get(model_name) if provider else None
+    """Return verified metadata for an exact model or supported snapshot ID."""
+    return resolve_model_spec(LLM_REGISTRY, provider_name, model_name)
 
 
 def model_api_variant(provider_name: str, model_name: str) -> Optional[str]:
