@@ -14,10 +14,48 @@ from src.llm_api_adapter.llm_registry.llm_registry import (
     PricingTier,
     ProviderSpec,
     RegistrySpec,
+    LLM_REGISTRY,
+    resolve_model_spec,
+)
+from src.llm_api_adapter.llm_registry.request_rules import (
+    AnthropicRequestRuleRegistry,
+    GoogleRequestRuleRegistry,
+    OpenAIRequestRuleRegistry,
+    RequestRule,
+    RequestRuleRegistry,
+    RequestRules,
+    SamplingRequestRuleRegistry,
 )
 
 
 SONNET_5_STANDARD_PRICING_DATE = date(2026, 9, 1)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("provider_name", "model_name", "expected_base_name"),
+    (
+        ("anthropic", "claude-sonnet-4-5-20250929", "claude-sonnet-4-5"),
+        ("openai", "gpt-5-2025-08-07", "gpt-5"),
+        ("openai", "gpt-4.1-2025-04-14", "gpt-4.1"),
+        ("google", "gemini-2.5-flash-preview-04-17", None),
+        ("anthropic", "claude-sonnet-4-5-20251301", None),
+        ("openai", "gpt-5-2025-13-01", None),
+        ("openai", "ft:gpt-5:example:custom-2025-08-07", None),
+    ),
+)
+def test_resolve_model_spec_supports_only_verified_provider_snapshots(
+    provider_name,
+    model_name,
+    expected_base_name,
+):
+    model_spec = resolve_model_spec(LLM_REGISTRY, provider_name, model_name)
+
+    if expected_base_name is None:
+        assert model_spec is None
+    else:
+        assert model_spec is not None
+        assert model_spec.name == expected_base_name
 
 
 def _model_data(*, tiers=None):
@@ -105,9 +143,9 @@ def test_pricing_tier_for_prompt_tokens_uses_inclusive_boundaries():
 def test_model_and_provider_from_dict():
     model_data = _model_data()
 
-    model = ModelSpec.from_dict("gpt-test", model_data)
+    model = ModelSpec.from_dict("gpt-5", model_data)
 
-    assert model.name == "gpt-test"
+    assert model.name == "gpt-5"
     assert model.limits == ModelLimits(
         context_window_tokens=128_000,
         max_output_tokens=16_384,
@@ -122,14 +160,224 @@ def test_model_and_provider_from_dict():
 
     provider = ProviderSpec.from_dict(
         "prov",
-        {"currency": "EUR", "models": {"gpt-test": model_data}},
+        {"currency": "EUR", "models": {"gpt-5": model_data}},
     )
 
     assert provider.name == "prov"
     assert provider.currency == "EUR"
-    assert "gpt-test" in provider.models
-    assert isinstance(provider.models["gpt-test"], ModelSpec)
-    assert provider.models["gpt-test"].pricing_tiers.currency == "EUR"
+    assert "gpt-5" in provider.models
+    assert isinstance(provider.models["gpt-5"], ModelSpec)
+    assert provider.models["gpt-5"].pricing_tiers.currency == "EUR"
+
+
+@pytest.mark.unit
+def test_model_request_rules_load_as_validated_metadata():
+    model_data = _model_data()
+    model_data["request_rules"] = [
+        {
+            "handler": "select_api_variant",
+            "arguments": {"variant": "responses"},
+        },
+        {
+            "handler": "drop_parameter",
+            "arguments": {"path": "top_p", "default": 1.0},
+        },
+    ]
+
+    model = ModelSpec.from_dict(
+        "gpt-5",
+        model_data,
+        request_rule_registry=OpenAIRequestRuleRegistry(),
+    )
+
+    assert model.request_rules == RequestRules(
+        rules=(
+            RequestRule(
+                handler="select_api_variant",
+                arguments={"variant": "responses"},
+            ),
+            RequestRule(
+                handler="drop_parameter",
+                arguments={"path": "top_p", "default": 1.0},
+            ),
+        )
+    )
+    assert model.request_rules.api_variant == "responses"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("request_rules", "message"),
+    [
+        (None, "must be an array"),
+        (
+            [{"handler": "custom", "arguments": {}}],
+            "unknown request rule handler",
+        ),
+        (
+            [{"handler": "select_api_variant", "arguments": {"variant": "other"}}],
+            "must be one of: chat_completions, responses",
+        ),
+        (
+            [{"handler": "rename_parameter", "arguments": {"from": "top_p", "to": "topP"}}],
+            "unsupported request parameter rename",
+        ),
+        (
+            [{"handler": "drop_parameter", "arguments": {"path": "messages[0]"}}],
+            "unsupported request parameter path",
+        ),
+        (
+            [
+                {
+                    "handler": "drop_parameter",
+                    "arguments": {"path": "top_p", "default": 0.5},
+                }
+            ],
+            "default for 'top_p' must be 1.0",
+        ),
+        (
+            [
+                {
+                    "handler": "drop_parameter",
+                    "arguments": {"path": "top_p", "default": True},
+                }
+            ],
+            "default for 'top_p' must be 1.0",
+        ),
+        (
+            [
+                {
+                    "handler": "drop_parameter",
+                    "arguments": {"path": "top_p", "custom": {}},
+                }
+            ],
+            "must contain path and optional default",
+        ),
+    ],
+)
+def test_invalid_request_rule_metadata_is_rejected(request_rules, message):
+    model_data = _model_data()
+    model_data["request_rules"] = request_rules
+
+    with pytest.raises(ValueError, match=message):
+        ModelSpec.from_dict(
+            "invalid-model",
+            model_data,
+            request_rule_registry=OpenAIRequestRuleRegistry(),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("request_rules", "message"),
+    [
+        (
+            [
+                {
+                    "handler": "drop_parameter",
+                    "arguments": {"path": "top_p"},
+                },
+                {
+                    "handler": "select_api_variant",
+                    "arguments": {"variant": "responses"},
+                },
+            ],
+            "conflicting execution order",
+        ),
+        (
+            [
+                {
+                    "handler": "select_api_variant",
+                    "arguments": {"variant": "responses"},
+                },
+                {
+                    "handler": "select_api_variant",
+                    "arguments": {"variant": "chat_completions"},
+                },
+            ],
+            "more than one API variant",
+        ),
+        (
+            [
+                {
+                    "handler": "drop_parameter",
+                    "arguments": {"path": "top_p"},
+                },
+                {
+                    "handler": "drop_parameter",
+                    "arguments": {"path": "top_p", "default": 1.0},
+                },
+            ],
+            "conflict on parameter path",
+        ),
+    ],
+)
+def test_conflicting_request_rule_order_is_rejected(request_rules, message):
+    model_data = _model_data()
+    model_data["request_rules"] = request_rules
+
+    with pytest.raises(ValueError, match=message):
+        ModelSpec.from_dict(
+            "invalid-model",
+            model_data,
+            request_rule_registry=OpenAIRequestRuleRegistry(),
+        )
+
+
+@pytest.mark.unit
+def test_request_rule_schemas_are_scoped_to_their_provider():
+    model_data = _model_data()
+    model_data["request_rules"] = [
+        {
+            "handler": "select_api_variant",
+            "arguments": {"variant": "responses"},
+        }
+    ]
+
+    with pytest.raises(ValueError, match="not supported for provider 'anthropic'"):
+        ModelSpec.from_dict(
+            "claude-sonnet-4-5",
+            model_data,
+            request_rule_registry=AnthropicRequestRuleRegistry(),
+        )
+
+    model_data["request_rules"] = [
+        {
+            "handler": "drop_parameter",
+            "arguments": {"path": "top_p", "default": 1.0},
+        }
+    ]
+    with pytest.raises(ValueError, match="unsupported request parameter path"):
+        ModelSpec.from_dict(
+            "gemini-2.5-flash",
+            model_data,
+            request_rule_registry=GoogleRequestRuleRegistry(),
+        )
+
+
+@pytest.mark.unit
+def test_sampling_rule_schema_is_shared_by_openai_and_anthropic():
+    assert AnthropicRequestRuleRegistry.droppable_parameter_defaults == {
+        "top_p": 1.0
+    }
+    assert OpenAIRequestRuleRegistry.droppable_parameter_defaults["top_p"] == 1.0
+    assert SamplingRequestRuleRegistry.DROP_PARAMETER == (
+        RequestRuleRegistry.DROP_PARAMETER
+    )
+
+
+@pytest.mark.unit
+def test_request_rules_need_a_provider_schema_when_present():
+    model_data = _model_data()
+    model_data["request_rules"] = [
+        {
+            "handler": "drop_parameter",
+            "arguments": {"path": "top_p", "default": 1.0},
+        }
+    ]
+
+    with pytest.raises(ValueError, match="without a provider schema"):
+        ModelSpec.from_dict("model-with-rules", model_data)
 
 
 @pytest.mark.unit
@@ -360,7 +608,7 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
         assert (DEFAULT_REGISTRY_PATH.parent / relative_path).is_file()
 
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-    assert registry.schema_version == 10
+    assert registry.schema_version == 11
     for provider in registry.providers.values():
         for model in provider.models.values():
             assert model.limits.context_window_tokens > 0
@@ -370,6 +618,80 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
                 assert model.reasoning_capability is not None
             else:
                 assert model.reasoning_capability is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("provider", "model_name", "expected_rules"),
+    [
+        (
+            "openai",
+            "gpt-5",
+            (
+                ("select_api_variant", {"variant": "responses"}),
+                (
+                    "drop_parameter",
+                    {"path": "top_p", "default": 1.0},
+                ),
+            ),
+        ),
+        (
+            "openai",
+            "gpt-5-nano",
+            (
+                ("select_api_variant", {"variant": "responses"}),
+                (
+                    "drop_parameter",
+                    {"path": "top_p", "default": 1.0},
+                ),
+                (
+                    "drop_parameter",
+                    {"path": "temperature", "default": 1.0},
+                ),
+            ),
+        ),
+        (
+            "openai",
+            "gpt-4.1-mini",
+            (
+                (
+                    "rename_parameter",
+                    {"from": "max_tokens", "to": "max_completion_tokens"},
+                ),
+            ),
+        ),
+        (
+            "anthropic",
+            "claude-sonnet-4-5",
+            (
+                (
+                    "drop_parameter",
+                    {"path": "top_p", "default": 1.0},
+                ),
+            ),
+        ),
+        (
+            "google",
+            "gemini-2.5-flash",
+            (
+                (
+                    "drop_parameter",
+                    {"path": "generationConfig.maxOutputTokens", "default": None},
+                ),
+            ),
+        ),
+    ],
+)
+def test_default_registry_contains_current_request_rules(
+    provider,
+    model_name,
+    expected_rules,
+):
+    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
+
+    rules = registry.providers[provider].models[model_name].request_rules.rules
+
+    assert tuple((rule.handler, rule.arguments) for rule in rules) == expected_rules
 
 
 @pytest.mark.unit

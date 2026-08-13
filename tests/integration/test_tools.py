@@ -82,7 +82,7 @@ def openai_tools_mock():
                 {
                     "json": {
                         "id": "resp_1",
-                        "model": "gpt-5.2-pro",
+                        "model": "gpt-5.2",
                         "status": "completed",
                         "output": [
                             {
@@ -102,7 +102,7 @@ def openai_tools_mock():
                 {
                     "json": {
                         "id": "resp_2",
-                        "model": "gpt-5.2-pro",
+                        "model": "gpt-5.2",
                         "status": "completed",
                         "output": [
                             {
@@ -226,7 +226,7 @@ def openai_multi_tools_mock():
                 {
                     "json": {
                         "id": "resp_multi_1",
-                        "model": "gpt-5.2-pro",
+                        "model": "gpt-5.2",
                         "status": "completed",
                         "output": [
                             {
@@ -252,7 +252,7 @@ def openai_multi_tools_mock():
                 {
                     "json": {
                         "id": "resp_multi_2",
-                        "model": "gpt-5.2-pro",
+                        "model": "gpt-5.2",
                         "status": "completed",
                         "output": [
                             {
@@ -383,7 +383,7 @@ def google_multi_tools_mock():
 def test_openai_gpt5_tool_call_parsing_and_request_mapping(openai_tools_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="openai",
-        model="gpt-5.2-pro",
+        model="gpt-5.2",
         api_key="dummy_key",
     )
     messages = [
@@ -410,7 +410,7 @@ def test_openai_gpt5_tool_call_parsing_and_request_mapping(openai_tools_mock):
     first_request = openai_tools_mock.request_history[0]
     payload = first_request.json()
 
-    assert payload["model"] == "gpt-5.2-pro"
+    assert payload["model"] == "gpt-5.2"
     assert payload["input"] == [{"role": "user", "content": "What's the weather in Tel Aviv today?"}]
     assert payload["instructions"] == "You are a helpful assistant. If user asks about weather, call get_weather."
     assert payload["tool_choice"] == "auto"
@@ -435,7 +435,7 @@ def test_openai_gpt5_tool_call_parsing_and_request_mapping(openai_tools_mock):
 def test_openai_gpt5_tool_loop_with_previous_response(openai_tools_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="openai",
-        model="gpt-5.2-pro",
+        model="gpt-5.2",
         api_key="dummy_key",
     )
     messages = [
@@ -713,7 +713,7 @@ def test_google_tool_call_and_tool_result_protocol(google_tools_mock):
 def test_openai_gpt5_multi_tool_round_trip(openai_multi_tools_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="openai",
-        model="gpt-5.2-pro",
+        model="gpt-5.2",
         api_key="dummy_key",
     )
     messages = _multi_tool_messages()
@@ -932,7 +932,7 @@ async def test_openai_async_gpt5_multi_tool_round_trip():
     responses = [
         {
             "id": "async_resp_multi_1",
-            "model": "gpt-5.2-pro",
+            "model": "gpt-5.2",
             "status": "completed",
             "output": [
                 {
@@ -951,7 +951,7 @@ async def test_openai_async_gpt5_multi_tool_round_trip():
         },
         {
             "id": "async_resp_multi_2",
-            "model": "gpt-5.2-pro",
+            "model": "gpt-5.2",
             "status": "completed",
             "output": [
                 {
@@ -972,7 +972,7 @@ async def test_openai_async_gpt5_multi_tool_round_trip():
 
         adapter = UniversalLLMAPIAdapter(
             organization="openai",
-            model="gpt-5.2-pro",
+            model="gpt-5.2",
             api_key="dummy_key",
         )
         messages = _multi_tool_messages()

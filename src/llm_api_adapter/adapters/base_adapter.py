@@ -27,7 +27,12 @@ from ..errors.llm_api_error import (
     LLMAPIError,
     ToolChoiceError,
 )
-from ..llm_registry.llm_registry import LLM_REGISTRY, ModelSpec, Pricing
+from ..llm_registry.llm_registry import (
+    LLM_REGISTRY,
+    ModelSpec,
+    Pricing,
+    resolve_model_spec,
+)
 from ..llm_registry.reasoning import ReasoningResolution, resolve_reasoning_level
 from ..models.messages.chat_message import Messages
 from ..models.responses.chat_response import ChatResponse
@@ -95,8 +100,7 @@ class LLMAdapterBase(ABC):
             error_message = "api_key must be a non-empty string"
             logger.error(error_message)
             raise ValueError(error_message)
-        provider = LLM_REGISTRY.providers.get(self.company)
-        model_spec = provider.models.get(self.model) if provider else None
+        model_spec = resolve_model_spec(LLM_REGISTRY, self.company, self.model)
         self.model_spec = model_spec
         if not model_spec:
             warnings.warn(

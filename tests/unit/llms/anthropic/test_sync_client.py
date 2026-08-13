@@ -52,7 +52,7 @@ def mock_post_success():
 def test_chat_completion_success(client, mock_post_success):
     mock_post, _ = mock_post_success
     result = client.chat_completion(
-        "claude-v1", messages=[{"role": "user", "content": "Hi"}]
+        "claude-sonnet-4-5", messages=[{"role": "user", "content": "Hi"}]
     )
     assert isinstance(result, dict)
     assert "completion" in result

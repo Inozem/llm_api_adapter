@@ -59,7 +59,7 @@ def test_unsupported_organization_raises(monkeypatch):
     )
     with pytest.raises(ValueError, match="Unsupported organization: UnknownCorp"):
         UniversalLLMAPIAdapter(
-            organization="UnknownCorp", model="gpt", api_key="k"
+            organization="UnknownCorp", model="test-model", api_key="k"
         )
 
 @pytest.mark.unit

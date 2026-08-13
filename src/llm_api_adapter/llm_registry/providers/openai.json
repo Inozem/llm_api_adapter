@@ -5,6 +5,10 @@
       "reasoning_capability": {
         "allowed_values": ["none", "low", "medium", "high", "xhigh", "max"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 1050000,
         "max_output_tokens": 128000
@@ -26,6 +30,10 @@
       "reasoning_capability": {
         "allowed_values": ["none", "low", "medium", "high", "xhigh", "max"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 1050000,
         "max_output_tokens": 128000
@@ -47,6 +55,10 @@
       "reasoning_capability": {
         "allowed_values": ["none", "low", "medium", "high", "xhigh", "max"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 1050000,
         "max_output_tokens": 128000
@@ -68,6 +80,10 @@
       "reasoning_capability": {
         "allowed_values": ["none", "low", "medium", "high", "xhigh"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 1050000,
         "max_output_tokens": 128000
@@ -89,6 +105,10 @@
       "reasoning_capability": {
         "allowed_values": ["none", "low", "medium", "high", "xhigh"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 1050000,
         "max_output_tokens": 128000
@@ -110,6 +130,10 @@
       "reasoning_capability": {
         "allowed_values": ["none", "low", "medium", "high", "xhigh"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -126,6 +150,10 @@
       "reasoning_capability": {
         "allowed_values": ["none", "low", "medium", "high", "xhigh"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -142,6 +170,10 @@
       "reasoning_capability": {
         "allowed_values": ["none", "low", "medium", "high", "xhigh"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -158,6 +190,10 @@
       "reasoning_capability": {
         "allowed_values": ["none", "low", "medium", "high"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -174,6 +210,10 @@
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -190,6 +230,10 @@
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -206,6 +250,11 @@
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}},
+        {"handler": "drop_parameter", "arguments": {"path": "temperature", "default": 1.0}}
+      ],
       "limits": {
         "context_window_tokens": 400000,
         "max_output_tokens": 128000
@@ -219,6 +268,9 @@
       ]
     },
     "gpt-4.1": {
+      "request_rules": [
+        {"handler": "rename_parameter", "arguments": {"from": "max_tokens", "to": "max_completion_tokens"}}
+      ],
       "limits": {
         "context_window_tokens": 1047576,
         "max_output_tokens": 32768
@@ -232,6 +284,9 @@
       ]
     },
     "gpt-4.1-mini": {
+      "request_rules": [
+        {"handler": "rename_parameter", "arguments": {"from": "max_tokens", "to": "max_completion_tokens"}}
+      ],
       "limits": {
         "context_window_tokens": 1047576,
         "max_output_tokens": 32768
@@ -245,6 +300,9 @@
       ]
     },
     "gpt-4.1-nano": {
+      "request_rules": [
+        {"handler": "rename_parameter", "arguments": {"from": "max_tokens", "to": "max_completion_tokens"}}
+      ],
       "limits": {
         "context_window_tokens": 1047576,
         "max_output_tokens": 32768

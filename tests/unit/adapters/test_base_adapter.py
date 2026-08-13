@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from inspect import signature
 from unittest.mock import patch
+import warnings
 
 import pytest
 from pydantic import BaseModel
@@ -74,6 +75,24 @@ def make_tool(name="weather", schema=None, description="desc"):
             },
         }
     return ToolSpec(name=name, description=description, json_schema=schema)
+
+
+@pytest.mark.unit
+def test_snapshot_model_uses_its_registered_base_metadata_without_warning():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        adapter = _TestAdapter(
+            company="openai",
+            api_key="dummy_key",
+            model="gpt-5-2025-08-07",
+        )
+
+    assert caught == []
+    assert adapter.model == "gpt-5-2025-08-07"
+    assert adapter.model_spec is not None
+    assert adapter.model_spec.name == "gpt-5"
+    assert adapter.pricing is not None
+    assert adapter.is_reasoning is True
 
 
 @pytest.mark.parametrize(

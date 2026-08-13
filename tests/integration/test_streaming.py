@@ -459,11 +459,7 @@ def test_openai_responses_streams_through_universal_adapter():
         )
         done = []
 
-        with pytest.warns(
-            UserWarning,
-            match="Parameter 'top_p' is not supported for model 'gpt-5'",
-        ):
-            assert list(adapter.stream_chat([UserMessage("Hi")], on_done=done.append)) == ["Hello"]
+        assert list(adapter.stream_chat([UserMessage("Hi")], on_done=done.append)) == ["Hello"]
 
     request = mock.last_request
     assert mock_post.call_args.args[0] == "https://api.openai.com/v1/responses"
@@ -472,6 +468,7 @@ def test_openai_responses_streams_through_universal_adapter():
     assert request.headers["Content-Type"] == "application/json"
     assert request.json()["stream"] is True
     assert request.json()["input"] == [{"role": "user", "content": "Hi"}]
+    assert "top_p" not in request.json()
     assert done[0].response_id == "resp_123"
     assert done[0].usage.total_tokens == 3
 
