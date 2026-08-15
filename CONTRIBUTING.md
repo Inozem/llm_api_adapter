@@ -93,6 +93,11 @@ The required environment variables are:
 
 Async E2E checks use the latest registered model for each provider by default; providers without configured API keys are skipped. Override a provider's model only when needed with `ASYNC_E2E_OPENAI_MODEL`, `ASYNC_E2E_ANTHROPIC_MODEL`, or `ASYNC_E2E_GOOGLE_MODEL`.
 
+The sync HTTPX pilot has one paid `chat()` check per configured provider and
+also selects the latest registered model by default. Override it only when
+needed with `SYNC_HTTPX_E2E_OPENAI_MODEL`,
+`SYNC_HTTPX_E2E_ANTHROPIC_MODEL`, or `SYNC_HTTPX_E2E_GOOGLE_MODEL`.
+
 For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic unit and integration tests with coverage. Only after the staging pull request is merged does the separate [dev release workflow](.github/workflows/ci-dev-release.yml) publish the package to TestPyPI and run E2E tests that make paid calls to the configured providers. The synchronous scenarios currently exercise all registered models, while async scenarios select one latest registered model per provider. After the workflow passes, the maintainer manually installs the TestPyPI package and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
 
 ## Provider-key safety

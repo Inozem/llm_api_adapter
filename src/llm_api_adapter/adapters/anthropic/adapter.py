@@ -84,7 +84,10 @@ class AnthropicAdapter(
                 capture_reasoning=capture_reasoning,
             )
             _ = previous_response
-            client = ClaudeSyncClient(api_key=self.api_key)
+            client = ClaudeSyncClient(
+                api_key=self.api_key,
+                transport=self.transport,
+            )
             response = client.chat_completion(**params)
             chat_response = self._parse_chat_response(
                 response,
@@ -327,7 +330,10 @@ class AnthropicAdapter(
             capture_reasoning=capture_reasoning,
         )
         _ = previous_response
-        client = ClaudeSyncClient(api_key=self.api_key)
+        client = ClaudeSyncClient(
+            api_key=self.api_key,
+            transport=self.transport,
+        )
         events = client.stream(**params)
         yield from self._consume_stream(
             events,
