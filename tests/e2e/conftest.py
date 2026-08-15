@@ -36,6 +36,32 @@ API_KEY_ENV = {
     "google": os.getenv("GOOGLE_API_KEY"),
 }
 
+
+def _select_latest_e2e_models(providers, override_prefix: str):
+    """Select one registered model per provider for a bounded E2E profile."""
+    selected = []
+    for provider in providers:
+        env_name = f"{override_prefix}_{provider['name'].upper()}_MODEL"
+        override = os.getenv(env_name)
+
+        if override:
+            if override not in provider["models"]:
+                raise pytest.UsageError(
+                    f"{env_name}={override!r} is not registered for "
+                    f"{provider['name']}"
+                )
+            model = override
+        else:
+            model = _LATEST_MODEL_BY_PROVIDER.get(provider["name"])
+            if model is None or model not in provider["models"]:
+                raise pytest.UsageError(
+                    f"No latest model is registered for {provider['name']}"
+                )
+
+        selected.append((provider, model))
+    return selected
+
+
 @pytest.fixture
 def iter_provider_models(providers):
     """Returns a generator of (provider, model) pairs grouped round-robin across providers."""
@@ -163,27 +189,7 @@ def providers():
 @pytest.fixture(scope="session")
 def async_e2e_models(providers):
     """Select the latest registered model per provider for async E2E coverage."""
-    selected = []
-    for provider in providers:
-        env_name = f"ASYNC_E2E_{provider['name'].upper()}_MODEL"
-        override = os.getenv(env_name)
-
-        if override:
-            if override not in provider["models"]:
-                raise pytest.UsageError(
-                    f"{env_name}={override!r} is not registered for "
-                    f"{provider['name']}"
-                )
-            model = override
-        else:
-            model = _LATEST_MODEL_BY_PROVIDER.get(provider["name"])
-            if model is None or model not in provider["models"]:
-                raise pytest.UsageError(
-                    f"No latest model is registered for {provider['name']}"
-                )
-
-        selected.append((provider, model))
-    return selected
+    return _select_latest_e2e_models(providers, "ASYNC_E2E")
 
 
 @pytest.fixture(scope="session")
@@ -192,5 +198,21 @@ def configured_async_e2e_models(async_e2e_models):
     return [
         (provider, model)
         for provider, model in async_e2e_models
+        if provider["api_key"]
+    ]
+
+
+@pytest.fixture(scope="session")
+def sync_httpx_e2e_models(providers):
+    """Select one latest model per provider for the sync HTTPX pilot."""
+    return _select_latest_e2e_models(providers, "SYNC_HTTPX_E2E")
+
+
+@pytest.fixture(scope="session")
+def configured_sync_httpx_e2e_models(sync_httpx_e2e_models):
+    """Return sync HTTPX pilot models whose provider keys are configured."""
+    return [
+        (provider, model)
+        for provider, model in sync_httpx_e2e_models
         if provider["api_key"]
     ]
