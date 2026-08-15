@@ -21,8 +21,12 @@ from ..request_rules import (
     model_api_variant,
     model_spec_for,
 )
-from ..requests_transport import RequestsSyncTransport
-from ..transports import SSEEvent, SyncTransport, TransportRequest
+from ..transports import (
+    SSEEvent,
+    SyncTransport,
+    TransportRequest,
+    create_sync_transport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +35,15 @@ logger = logging.getLogger(__name__)
 class OpenAISyncClient:
     api_key: str
     endpoint: str = "https://api.openai.com/v1"
+    transport: str = "requests"
     _sync_transport: SyncTransport = field(
-        default_factory=RequestsSyncTransport,
         init=False,
         repr=False,
         compare=False,
     )
+
+    def __post_init__(self) -> None:
+        self._sync_transport = create_sync_transport(self.transport)
 
     def __repr__(self) -> str:
         masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"

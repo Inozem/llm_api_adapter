@@ -15,8 +15,12 @@ from ...errors.llm_api_error import (
     LLMAPITimeoutError,
 )
 from ..request_rules import apply_model_request_rules
-from ..requests_transport import RequestsSyncTransport
-from ..transports import SSEEvent, SyncTransport, TransportRequest
+from ..transports import (
+    SSEEvent,
+    SyncTransport,
+    TransportRequest,
+    create_sync_transport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +29,15 @@ class ClaudeSyncClient:
     api_key: str
     endpoint: str = "https://api.anthropic.com/v1"
     api_version: str = "2023-06-01"
+    transport: str = "requests"
     _sync_transport: SyncTransport = field(
-        default_factory=RequestsSyncTransport,
         init=False,
         repr=False,
         compare=False,
     )
+
+    def __post_init__(self) -> None:
+        self._sync_transport = create_sync_transport(self.transport)
 
     def __repr__(self) -> str:
         masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"

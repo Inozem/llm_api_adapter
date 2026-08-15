@@ -84,7 +84,10 @@ class GoogleAdapter(
             )
             _ = previous_response
             _ = parallel_tool_calls
-            client = GeminiSyncClient(self.api_key)
+            client = GeminiSyncClient(
+                self.api_key,
+                transport=self.transport,
+            )
             response = client.chat_completion(**params)
             chat_response = self._parse_chat_response(
                 response,
@@ -325,7 +328,10 @@ class GoogleAdapter(
             capture_reasoning=capture_reasoning,
         )
         _ = parallel_tool_calls
-        client = GeminiSyncClient(self.api_key)
+        client = GeminiSyncClient(
+            self.api_key,
+            transport=self.transport,
+        )
         events = client.stream(model=self.model, timeout_s=timeout_s, **payload)
         yield from self._consume_stream(
             events,

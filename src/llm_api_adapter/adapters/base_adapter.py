@@ -46,6 +46,7 @@ from ..llms.streaming import (
     StreamReasoningCollector,
     StreamUsageTracker,
 )
+from ..llms.transports import validate_sync_transport
 from ..models.tools import ToolCall, ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ class LLMAdapterBase(ABC):
     api_key: str
     model: str
     company: str
+    transport: str = "requests"
     pricing: Optional[Pricing] = None
     is_reasoning: bool = False
     is_adaptive_thinking: bool = False
@@ -93,13 +95,17 @@ class LLMAdapterBase(ABC):
 
     def __repr__(self) -> str:
         masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
-        return f"{self.__class__.__name__}(company='{self.company}', model='{self.model}', api_key='{masked}')"
+        return (
+            f"{self.__class__.__name__}(company='{self.company}', "
+            f"model='{self.model}', transport='{self.transport}', api_key='{masked}')"
+        )
 
     def __post_init__(self):
         if not self.api_key:
             error_message = "api_key must be a non-empty string"
             logger.error(error_message)
             raise ValueError(error_message)
+        self.transport = validate_sync_transport(self.transport)
         model_spec = resolve_model_spec(LLM_REGISTRY, self.company, self.model)
         self.model_spec = model_spec
         if not model_spec:

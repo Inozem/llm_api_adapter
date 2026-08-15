@@ -76,6 +76,27 @@ class JSONResponse:
 
 HTTPErrorHandler = Callable[[Any], Any]
 StreamErrorHandler = Callable[[SSEEvent], Any]
+SYNC_TRANSPORTS = ("requests", "httpx")
+
+
+def validate_sync_transport(transport: object) -> str:
+    """Validate a public synchronous transport selection."""
+    if not isinstance(transport, str) or transport not in SYNC_TRANSPORTS:
+        raise ValueError("transport must be either 'requests' or 'httpx'")
+    return transport
+
+
+def create_sync_transport(transport: object) -> "SyncTransport":
+    """Create the selected synchronous transport without importing HTTPX eagerly."""
+    selected = validate_sync_transport(transport)
+    if selected == "requests":
+        from .requests_transport import RequestsSyncTransport
+
+        return RequestsSyncTransport()
+
+    from .httpx_transport import HttpxSyncTransport
+
+    return HttpxSyncTransport()
 
 
 class SyncTransport(ABC):
@@ -246,15 +267,18 @@ __all__ = [
     "AsyncTransport",
     "HTTPErrorHandler",
     "JSONResponse",
+    "SYNC_TRANSPORTS",
     "SSEEvent",
     "SSEFrameDecoder",
     "StreamErrorHandler",
     "SyncTransport",
     "TransportRequest",
     "build_sse_event",
+    "create_sync_transport",
     "decode_sse_line",
     "is_generic_stream_error",
     "raise_default_http_error",
     "raise_default_stream_error",
     "stream_error_detail",
+    "validate_sync_transport",
 ]
