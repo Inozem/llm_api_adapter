@@ -58,6 +58,22 @@ class TransportRequest:
         return dict(self.headers)
 
 
+@dataclass(frozen=True)
+class JSONResponse:
+    """Decoded JSON with the minimal response accessor used by sync clients.
+
+    Concrete transports decode the body before closing their native response.
+    Keeping the ``.json()`` accessor preserves the existing provider-client
+    boundary while making the native HTTP response lifetime transport-owned.
+    """
+
+    payload: Any
+
+    def json(self) -> Any:
+        """Return the already decoded JSON payload."""
+        return self.payload
+
+
 HTTPErrorHandler = Callable[[Any], Any]
 StreamErrorHandler = Callable[[SSEEvent], Any]
 
@@ -71,8 +87,8 @@ class SyncTransport(ABC):
         request: TransportRequest,
         *,
         http_error_handler: Optional[HTTPErrorHandler] = None,
-    ) -> Any:
-        """POST JSON and return the decoded response body.
+    ) -> JSONResponse:
+        """POST JSON and return an accessor for the decoded response body.
 
         The implementation closes any HTTP response on success and failure.
         Provider handlers receive their native HTTP status exception so they
@@ -229,6 +245,7 @@ def raise_default_http_error(*, status_code: Optional[int], detail: str) -> None
 __all__ = [
     "AsyncTransport",
     "HTTPErrorHandler",
+    "JSONResponse",
     "SSEEvent",
     "SSEFrameDecoder",
     "StreamErrorHandler",

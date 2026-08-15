@@ -6,13 +6,11 @@ Provider clients remain responsible for interpreting the decoded payloads.
 
 from __future__ import annotations
 
-import logging
 import time
 from typing import Any, Callable, Iterator, List, Mapping, Optional
 
 import requests
 
-from ..errors.llm_api_error import LLMAPIError
 from ..models.responses.chat_response import Usage
 from ..models.responses.reasoning_event import ReasoningEvent, ReasoningEventKind
 from ..models.responses.stream_chunk import StreamChunk
@@ -21,12 +19,8 @@ from .transports import (
     SSEEvent,
     SSEFrameDecoder,
     StreamErrorHandler,
-    is_generic_stream_error as _is_generic_stream_error,
-    raise_default_http_error,
-    raise_default_stream_error as _default_stream_error_handler,
+    TransportRequest,
 )
-
-logger = logging.getLogger(__name__)
 
 
 Clock = Callable[[], float]
@@ -247,12 +241,6 @@ def iter_sse_events(response: requests.Response) -> Iterator[SSEEvent]:
         response.close()
 
 
-def _default_http_error_handler(http_err: requests.exceptions.HTTPError) -> None:
-    response = getattr(http_err, "response", None)
-    status_code = getattr(response, "status_code", None)
-    raise_default_http_error(status_code=status_code, detail=str(http_err))
-
-
 def stream_request(
     url: str,
     *,
@@ -262,48 +250,20 @@ def stream_request(
     http_error_handler: Optional[HTTPErrorHandler] = None,
     stream_error_handler: Optional[StreamErrorHandler] = None,
 ) -> Iterator[SSEEvent]:
-    """Perform a synchronous streaming POST and yield decoded SSE events.
+    """Perform a synchronous streaming POST through the default transport.
 
-    The request is made when the returned iterator is first consumed.  HTTP
-    errors are mapped through the supplied provider handler when available;
-    otherwise the shared status-code mapping is used.  Generic in-stream
-    ``error`` events use the same unified error hierarchy.
+    Kept as a compatibility wrapper while provider clients migrate to the
+    :class:`RequestsSyncTransport` implementation directly.
     """
+    from .requests_transport import RequestsSyncTransport
 
-    response: Optional[requests.Response] = None
-    parser_owns_response = False
-    try:
-        response = requests.post(
-            url,
-            headers=dict(headers or {}),
-            json=payload,
+    return RequestsSyncTransport().post_sse(
+        TransportRequest(
+            url=url,
+            headers=headers or {},
+            payload=payload,
             timeout=timeout,
-            stream=True,
-        )
-        response.raise_for_status()
-
-        parser_owns_response = True
-        for event in iter_sse_events(response):
-            if event.done:
-                return
-            if _is_generic_stream_error(event):
-                handler = stream_error_handler or _default_stream_error_handler
-                handler(event)
-                _default_stream_error_handler(event)
-            yield event
-    except LLMAPIError:
-        raise
-    except requests.exceptions.Timeout as exc:
-        logger.error("Streaming request timed out: %s", exc)
-        raise LLMAPITimeoutError(detail=str(exc)) from exc
-    except requests.exceptions.HTTPError as exc:
-        logger.error("Streaming HTTP error: %s", exc)
-        handler = http_error_handler or _default_http_error_handler
-        handler(exc)
-        _default_http_error_handler(exc)
-    except requests.exceptions.RequestException as exc:
-        logger.error("Streaming request exception: %s", exc)
-        raise LLMAPIClientError(detail=str(exc)) from exc
-    finally:
-        if response is not None and not parser_owns_response:
-            response.close()
+        ),
+        http_error_handler=http_error_handler,
+        stream_error_handler=stream_error_handler,
+    )

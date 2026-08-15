@@ -9,6 +9,7 @@ import pytest
 from src.llm_api_adapter.llms.transports import (
     AsyncTransport,
     HTTPErrorHandler,
+    JSONResponse,
     SSEEvent,
     SSEFrameDecoder,
     StreamErrorHandler,
@@ -23,9 +24,9 @@ class StubSyncTransport(SyncTransport):
         request: TransportRequest,
         *,
         http_error_handler: Optional[HTTPErrorHandler] = None,
-    ) -> Any:
+    ) -> JSONResponse:
         _ = http_error_handler
-        return request.payload
+        return JSONResponse(request.payload)
 
     def post_sse(
         self,
@@ -81,7 +82,7 @@ def test_sync_transport_contract_carries_json_and_sse_operations():
     transport = StubSyncTransport()
     request = TransportRequest(url="https://example.test", payload={"ok": True})
 
-    assert transport.post_json(request) == {"ok": True}
+    assert transport.post_json(request).json() == {"ok": True}
     assert list(transport.post_sse(request)) == [
         SSEEvent(event=None, data={"transport": "sync"})
     ]

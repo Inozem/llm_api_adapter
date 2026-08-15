@@ -1,7 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 from typing import Iterator, Mapping
 
+# Kept as a module attribute for existing white-box patch points. Requests are
+# now called by ``RequestsSyncTransport``.
 import requests
 
 from ...errors.llm_api_error import (
@@ -12,7 +14,8 @@ from ...errors.llm_api_error import (
     LLMAPITimeoutError,
 )
 from ..request_rules import apply_model_request_rules
-from ..streaming import SSEEvent, stream_request
+from ..requests_transport import RequestsSyncTransport
+from ..transports import SSEEvent, SyncTransport, TransportRequest
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +23,12 @@ logger = logging.getLogger(__name__)
 class GeminiSyncClient:
     api_key: str
     endpoint: str = "https://generativelanguage.googleapis.com/v1beta"
+    _sync_transport: SyncTransport = field(
+        default_factory=RequestsSyncTransport,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __repr__(self) -> str:
         masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
@@ -54,30 +63,26 @@ class GeminiSyncClient:
         return payload
 
     def _send_request(self, url: str, payload: dict, timeout_s: float | None = None):
-        try:
-            response = requests.post(
-                url, headers=self._headers(), json=payload,  timeout=timeout_s,
-            )
-            response.raise_for_status()
-        except requests.exceptions.Timeout as e:
-            logger.error(f"Request timeout: {e}")
-            raise LLMAPITimeoutError(detail=str(e))
-        except requests.exceptions.HTTPError as http_err:
-            logger.error(f"HTTP error occurred: {http_err}")
-            self._handle_http_error(http_err)
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request exception: {e}")
-            raise LLMAPIClientError(detail=str(e))
-        return response
+        return self._sync_transport.post_json(
+            TransportRequest(
+                url=url,
+                headers=self._headers(),
+                payload=payload,
+                timeout=timeout_s,
+            ),
+            http_error_handler=self._handle_http_error,
+        )
 
     def _stream_request(
         self, url: str, payload: dict, timeout_s: float | None = None
     ) -> Iterator[SSEEvent]:
-        events = stream_request(
-            url,
-            headers=self._headers(),
-            payload=payload,
-            timeout=timeout_s,
+        events = self._sync_transport.post_sse(
+            TransportRequest(
+                url=url,
+                headers=self._headers(),
+                payload=payload,
+                timeout=timeout_s,
+            ),
             http_error_handler=self._handle_http_error,
             stream_error_handler=self._handle_stream_error,
         )
