@@ -99,18 +99,25 @@ class CategoricalReasoningCapability:
 
 @dataclass(frozen=True)
 class NumericReasoningCapability:
-    """Provider token-budget bounds for a model with numeric reasoning control."""
+    """Provider token-budget bounds and whether thinking can be disabled."""
 
     min_budget_tokens: int
     max_budget_tokens: int
+    can_disable_thinking: bool = False
 
     @classmethod
     def from_dict(cls, data: Any) -> "NumericReasoningCapability":
-        expected_fields = {"min_budget_tokens", "max_budget_tokens"}
-        if not isinstance(data, dict) or set(data) != expected_fields:
+        required_fields = {"min_budget_tokens", "max_budget_tokens"}
+        allowed_fields = required_fields | {
+            "can_disable_thinking",
+        }
+        if not isinstance(data, dict) or not required_fields.issubset(data) or (
+            set(data) - allowed_fields
+        ):
             raise ValueError(
-                "numeric reasoning_capability must contain only "
-                "min_budget_tokens and max_budget_tokens"
+                "numeric reasoning_capability must contain "
+                "min_budget_tokens, max_budget_tokens, and optional "
+                "can_disable_thinking"
             )
 
         min_budget_tokens = _non_negative_int(
@@ -126,9 +133,15 @@ class NumericReasoningCapability:
                 "reasoning_capability.min_budget_tokens must not exceed "
                 "max_budget_tokens"
             )
+        can_disable_thinking = data.get("can_disable_thinking", False)
+        if not isinstance(can_disable_thinking, bool):
+            raise ValueError(
+                "reasoning_capability.can_disable_thinking must be a boolean"
+            )
         return cls(
             min_budget_tokens=min_budget_tokens,
             max_budget_tokens=max_budget_tokens,
+            can_disable_thinking=can_disable_thinking,
         )
 
 

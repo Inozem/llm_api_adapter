@@ -20,6 +20,7 @@ Supports Python 3.10–3.14.
 - [Model-specific request compatibility](#model-specific-request-compatibility)
 - [Streaming](#streaming)
 - [Async API](#async-api)
+- [Optional HTTPX Sync Transport](#optional-httpx-sync-transport)
 - [Handling Errors](#handling-errors)
 - [Configuration and Management](#configuration-and-management)
 - [Example Use Case](#example-use-case)
@@ -83,6 +84,7 @@ This table is a positioning snapshot. Provider capabilities change independently
 ## Features
 
 - **Synchronous Streaming**: Iterate normalized text with `stream_chat()` across OpenAI, Anthropic, and Google. Optionally coalesce it into bounded chunks and observe per-chunk metadata without changing the yielded `str` contract.
+- **Optional HTTPX Sync Transport**: Keep `requests` as the default synchronous transport or opt into HTTPX with `transport="httpx"`. See the [HTTPX sync pilot guide](HTTPX_SYNC_PILOT.md).
 - **Asynchronous API**: Use `achat()` and `astream_chat()` with the optional `[async]` installation for non-blocking HTTPX requests and awaitable callbacks. See the [Async API guide](ASYNC_API.md).
 - **Reasoning Observability**: Opt in to provider-emitted reasoning summaries through `capture_reasoning=True`, `ReasoningEvent`, and the `on_reasoning` callback without mixing reasoning into visible text.
 - **Provider-Neutral Messages and Responses**: Use the same typed messages, `ChatResponse`, usage, pricing, parsed output, and tool-call fields regardless of the provider.
@@ -105,6 +107,10 @@ pip install llm-api-adapter
 
 For non-blocking requests, install the optional `[async]` extra and follow the
 [Async API guide](ASYNC_API.md).
+
+To opt into HTTPX for synchronous `chat()` and `stream_chat()` calls, install
+the optional `[httpx]` extra and pass `transport="httpx"`. The default remains
+`requests`; see the [HTTPX sync pilot guide](HTTPX_SYNC_PILOT.md).
 
 **Note:** You will need to obtain API keys from each LLM provider you wish to use (OpenAI, Anthropic, Google). Refer to their respective documentation for instructions on obtaining API keys.
 
@@ -183,6 +189,11 @@ unknown OpenAI model uses Chat Completions rather than the Responses API. Use a
 listed model or request a verified registry addition when a provider adds a new
 alias or model.
 
+For `gemini-3.7-flash`, `gemini-3.6-flash`, and
+`gemini-3.5-flash-lite`, Google does not support sampling controls. The adapter
+omits `temperature` and `top_p` from these model requests; non-default values
+produce the compatibility warning described above.
+
 ### Alternative Message Format
 
 In addition to the built-in message classes, the SDK also supports the standard OpenAI-style message format for quick adoption and compatibility:
@@ -239,7 +250,9 @@ for chunk in chunk_metadata:
 
 Buffering is pull-based and has no background worker or time-based flush. If the stream fails or a caller closes the iterator early, pending text is not emitted as a successful final chunk and `on_done` is not called.
 
-`stream_chat()` uses the synchronous `requests` transport. For the matching
+`stream_chat()` uses the synchronous `requests` transport by default. To opt
+into HTTPX for both `chat()` and `stream_chat()`, see the
+[HTTPX sync pilot guide](HTTPX_SYNC_PILOT.md). For the matching
 `astream_chat()` contract and its `httpx.AsyncClient` transport, see the
 [Async API guide](ASYNC_API.md#async-streaming).
 
@@ -250,6 +263,29 @@ Provider event references: [OpenAI Responses streaming](https://platform.openai.
 The optional asynchronous client, installation command, `achat()` and
 `astream_chat()` examples, callback ordering, cancellation behavior, and
 reasoning observability are documented in the [Async API guide](ASYNC_API.md).
+
+## Optional HTTPX Sync Transport
+
+The default synchronous transport is `requests` and requires no additional
+dependency. HTTPX is available as an opt-in pilot for synchronous `chat()` and
+`stream_chat()` calls:
+
+```bash
+pip install "llm-api-adapter[httpx]"
+```
+
+```python
+adapter = UniversalLLMAPIAdapter(
+    organization="openai",
+    model="gpt-5",
+    api_key="...",
+    transport="httpx",
+)
+response = adapter.chat([UserMessage("Say hello")])
+```
+
+See the [HTTPX sync pilot guide](HTTPX_SYNC_PILOT.md) for compatibility,
+limitations, and E2E verification details.
 
 ## Handling Errors
 
@@ -315,7 +351,7 @@ The SDK allows you to easily switch between LLM providers and specify the model 
 
 - **OpenAI**: You can use models like `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
 - **Anthropic**: Available models include `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
-- **Google**: Models such as `gemini-3.5-flash`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash` can be used.
+- **Google**: Models such as `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite` can be used.
 
 Example:
 

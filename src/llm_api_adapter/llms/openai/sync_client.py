@@ -1,6 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 from typing import Iterator, Mapping
+
+# Kept as a module attribute for existing white-box patch points. Requests are
+# now called by ``RequestsSyncTransport``.
 import requests
 
 from ...errors.llm_api_error import (
@@ -18,7 +21,12 @@ from ..request_rules import (
     model_api_variant,
     model_spec_for,
 )
-from ..streaming import SSEEvent, stream_request
+from ..transports import (
+    SSEEvent,
+    SyncTransport,
+    TransportRequest,
+    create_sync_transport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +35,15 @@ logger = logging.getLogger(__name__)
 class OpenAISyncClient:
     api_key: str
     endpoint: str = "https://api.openai.com/v1"
+    transport: str = "requests"
+    _sync_transport: SyncTransport = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        self._sync_transport = create_sync_transport(self.transport)
 
     def __repr__(self) -> str:
         masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
@@ -122,30 +139,26 @@ class OpenAISyncClient:
         )
 
     def _send_request(self, url: str, payload: dict, timeout: float | None = None):
-        try:
-            response = requests.post(
-                url, headers=self._headers(), json=payload, timeout=timeout
-            )
-            response.raise_for_status()
-        except requests.exceptions.Timeout as e:
-            logger.error("Timeout error: %s", e)
-            raise LLMAPITimeoutError(detail=str(e))
-        except requests.exceptions.HTTPError as http_err:
-            logger.error("HTTP error: %s", http_err)
-            self._handle_http_error(http_err)
-        except requests.exceptions.RequestException as e:
-            logger.error("Request exception: %s", e)
-            raise LLMAPIClientError(detail=str(e))
-        return response
+        return self._sync_transport.post_json(
+            TransportRequest(
+                url=url,
+                headers=self._headers(),
+                payload=payload,
+                timeout=timeout,
+            ),
+            http_error_handler=self._handle_http_error,
+        )
 
     def _stream_request(
         self, url: str, payload: dict, timeout: float | None = None
     ) -> Iterator[SSEEvent]:
-        events = stream_request(
-            url,
-            headers=self._headers(),
-            payload=payload,
-            timeout=timeout,
+        events = self._sync_transport.post_sse(
+            TransportRequest(
+                url=url,
+                headers=self._headers(),
+                payload=payload,
+                timeout=timeout,
+            ),
             http_error_handler=self._handle_http_error,
             stream_error_handler=self._handle_stream_error,
         )

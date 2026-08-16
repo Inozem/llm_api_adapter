@@ -6,6 +6,7 @@ from .adapters.base_adapter import LLMAdapterBase
 from .adapters.anthropic_adapter import AnthropicAdapter
 from .adapters.openai_adapter import OpenAIAdapter
 from .adapters.google_adapter import GoogleAdapter
+from .llms.transports import validate_sync_transport
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +16,14 @@ class UniversalLLMAPIAdapter:
     organization: str
     model: str
     api_key: str
+    transport: str = "requests"
 
     def __repr__(self) -> str:
         masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
-        return f"UniversalLLMAPIAdapter(organization='{self.organization}', model='{self.model}', api_key='{masked}')"
+        return (
+            f"UniversalLLMAPIAdapter(organization='{self.organization}', "
+            f"model='{self.model}', transport='{self.transport}', api_key='{masked}')"
+        )
 
     def __post_init__(self) -> None:
         if not self.organization or not isinstance(self.organization, str):
@@ -27,11 +32,16 @@ class UniversalLLMAPIAdapter:
             raise ValueError("Invalid model")
         if not self.api_key or not isinstance(self.api_key, str):
             raise ValueError("Invalid API key")
-        self.adapter = self._select_adapter(self.organization, self.model,
-                                            self.api_key)
+        self.transport = validate_sync_transport(self.transport)
+        self.adapter = self._select_adapter(
+            self.organization,
+            self.model,
+            self.api_key,
+            self.transport,
+        )
 
     def _select_adapter(
-        self, organization: str, model: str, api_key: str
+        self, organization: str, model: str, api_key: str, transport: str
     ) -> LLMAdapterBase:
         """
         Selects the adapter based on the company.
@@ -43,7 +53,11 @@ class UniversalLLMAPIAdapter:
                     company_field = field
                     break
             if company_field and company_field.default == organization:
-                return adapter_class(model=model, api_key=api_key)
+                return adapter_class(
+                    model=model,
+                    api_key=api_key,
+                    transport=transport,
+                )
         error_message = f"Unsupported organization: {organization}"
         logger.error(error_message)
         raise ValueError(error_message)

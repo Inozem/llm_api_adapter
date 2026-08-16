@@ -242,6 +242,40 @@ def test_numeric_none_disables_only_when_zero_is_supported(registry):
 
 
 @pytest.mark.unit
+def test_numeric_thinking_capabilities_preserve_disable_values(registry):
+    disabled = resolve_reasoning_level(
+        _model(registry, "google", "gemini-2.5-flash-lite"),
+        "none",
+    )
+    explicit_disabled = resolve_reasoning_level(
+        _model(registry, "google", "gemini-2.5-flash-lite"),
+        0,
+    )
+
+    assert disabled == ReasoningResolution(
+        provider_value=0,
+        reason="numeric_disable",
+    )
+    assert explicit_disabled == ReasoningResolution(
+        provider_value=0,
+        reason="numeric_disable",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("provider", "model_name"),
+    [
+        ("google", "gemini-2.5-pro"),
+        ("openai", "gpt-5.6-sol"),
+    ],
+)
+def test_negative_reasoning_budget_is_rejected(registry, provider, model_name):
+    with pytest.raises(LLMReasoningLevelError, match="non-negative"):
+        resolve_reasoning_level(_model(registry, provider, model_name), -1)
+
+
+@pytest.mark.unit
 def test_numeric_integer_preserves_budget_and_clamps_only_below_minimum(registry):
     minimum_fallback = resolve_reasoning_level(
         _model(registry, "google", "gemini-2.5-pro"),

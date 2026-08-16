@@ -71,6 +71,27 @@ def test_invalid_inputs_raise_value_error():
     with pytest.raises(ValueError, match="Invalid API key"):
         UniversalLLMAPIAdapter(organization="Anthropic", model="m", api_key="")
 
+
+@pytest.mark.unit
+def test_transport_selection_is_validated_and_forwarded_to_provider_adapter():
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai",
+        model="gpt-4o",
+        api_key="test-key",
+        transport="httpx",
+    )
+
+    assert adapter.transport == "httpx"
+    assert adapter.adapter.transport == "httpx"
+
+    with pytest.raises(ValueError, match="requests.*httpx"):
+        UniversalLLMAPIAdapter(
+            organization="openai",
+            model="gpt-4o",
+            api_key="test-key",
+            transport="urllib3",
+        )
+
 @pytest.mark.unit
 def test_getattr_missing_raises_attribute_error(monkeypatch):
     @dataclass

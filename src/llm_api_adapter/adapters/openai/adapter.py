@@ -59,7 +59,10 @@ class OpenAIAdapter(_OpenAIPayloadMixin, _OpenAIStreamingMixin, LLMAdapterBase):
         normalized_tool_choice = request_context.normalized_tool_choice
 
         try:
-            client = OpenAISyncClient(api_key=self.api_key)
+            client = OpenAISyncClient(
+                api_key=self.api_key,
+                transport=self.transport,
+            )
             normalized_messages = request_context.normalized_messages
             use_responses_api = client._should_use_responses_api(self.model)
             params = self._build_chat_params(

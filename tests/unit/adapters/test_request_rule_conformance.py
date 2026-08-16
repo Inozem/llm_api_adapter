@@ -128,6 +128,28 @@ CASES = (
         ),
         id="google",
     ),
+    pytest.param(
+        RequestRuleConformanceCase(
+            name="google-gemini-3-7",
+            adapter_class=GoogleAdapter,
+            sync_client_class=GeminiSyncClient,
+            async_client_class=GeminiAsyncClient,
+            model="gemini-3.7-flash",
+            message_key="contents",
+            ignored_paths=(
+                "generationConfig.temperature",
+                "generationConfig.topP",
+            ),
+            default_kwargs={"max_tokens": 64},
+            non_default_kwargs={
+                "max_tokens": 64,
+                "temperature": 0.2,
+                "top_p": 0.2,
+            },
+            response_factory=_google_response,
+        ),
+        id="google-gemini-3-7",
+    ),
 )
 
 

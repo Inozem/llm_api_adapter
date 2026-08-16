@@ -8,22 +8,17 @@ payloads and mapping provider-specific error bodies.
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncIterator, Callable, Mapping, Optional
+from typing import Any, AsyncIterator, Optional
 
-from ..errors.llm_api_error import (
-    LLMAPIClientError,
-    LLMAPIError,
-    LLMAPIAuthorizationError,
-    LLMAPIRateLimitError,
-    LLMAPIServerError,
-    LLMAPITimeoutError,
-)
-from .streaming import (
+from ..errors.llm_api_error import LLMAPIError, LLMAPIClientError, LLMAPITimeoutError
+from .transports import (
+    HTTPErrorHandler,
     SSEEvent,
-    _build_event,
-    _decode_line,
-    _default_stream_error_handler,
-    _is_generic_stream_error,
+    SSEFrameDecoder,
+    StreamErrorHandler,
+    is_generic_stream_error as _is_generic_stream_error,
+    raise_default_http_error,
+    raise_default_stream_error as _default_stream_error_handler,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,10 +27,6 @@ ASYNC_DEPENDENCY_MESSAGE = (
     "Async HTTP transport requires the optional 'httpx' dependency. "
     "Install it with: pip install 'llm-api-adapter[async]'."
 )
-
-HTTPErrorHandler = Callable[[Any], Any]
-StreamErrorHandler = Callable[[SSEEvent], Any]
-
 
 def _require_httpx() -> Any:
     """Import HTTPX only when an async transport operation is requested."""
@@ -50,17 +41,7 @@ def _default_http_error_handler(http_error: Any) -> None:
     """Map HTTP status failures to the shared error hierarchy."""
     response = getattr(http_error, "response", None)
     status_code = getattr(response, "status_code", None)
-    detail = str(http_error)
-
-    if status_code in (401, 403):
-        raise LLMAPIAuthorizationError(detail=detail)
-    if status_code == 429:
-        raise LLMAPIRateLimitError(detail=detail)
-    if status_code in (408, 504):
-        raise LLMAPITimeoutError(detail=detail)
-    if status_code is not None and 500 <= status_code < 600:
-        raise LLMAPIServerError(detail=detail)
-    raise LLMAPIClientError(detail=detail)
+    raise_default_http_error(status_code=status_code, detail=str(http_error))
 
 
 async def _read_http_error_body(response: Optional[Any]) -> None:
@@ -118,36 +99,17 @@ async def async_request(
 
 async def aiter_sse_events(response: Any) -> AsyncIterator[SSEEvent]:
     """Decode SSE framing from an HTTPX response and close it on exit."""
-    event_name: Optional[str] = None
-    data_lines: list[str] = []
+    decoder = SSEFrameDecoder()
 
     try:
         async for raw_line in response.aiter_lines():
-            line = _decode_line(raw_line).rstrip("\r\n")
+            event = decoder.feed(raw_line)
+            if event is not None:
+                yield event
+                if event.done:
+                    return
 
-            if line == "":
-                event = _build_event(event_name, data_lines)
-                event_name = None
-                data_lines = []
-                if event is not None:
-                    yield event
-                    if event.done:
-                        return
-                continue
-
-            if line.startswith(":"):
-                continue
-
-            field, separator, value = line.partition(":")
-            if separator and value.startswith(" "):
-                value = value[1:]
-
-            if field == "event":
-                event_name = value
-            elif field == "data":
-                data_lines.append(value)
-
-        event = _build_event(event_name, data_lines)
+        event = decoder.finish()
         if event is not None:
             yield event
     finally:
