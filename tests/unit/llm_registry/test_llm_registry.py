@@ -397,6 +397,7 @@ def test_model_reasoning_capabilities_load_as_verified_contracts():
     numeric_data["reasoning_capability"] = {
         "min_budget_tokens": 128,
         "max_budget_tokens": 32_768,
+        "can_disable_thinking": True,
     }
     numeric = ModelSpec.from_dict("numeric-model", numeric_data)
 
@@ -404,6 +405,7 @@ def test_model_reasoning_capabilities_load_as_verified_contracts():
     assert numeric.reasoning_capability == NumericReasoningCapability(
         min_budget_tokens=128,
         max_budget_tokens=32_768,
+        can_disable_thinking=True,
     )
 
 
@@ -430,6 +432,14 @@ def test_non_reasoning_model_has_no_reasoning_capability():
         (
             {"min_budget_tokens": 2, "max_budget_tokens": 1},
             "must not exceed",
+        ),
+        (
+            {
+                "min_budget_tokens": 1,
+                "max_budget_tokens": 2,
+                "can_disable_thinking": 0,
+            },
+            "can_disable_thinking must be a boolean",
         ),
         (
             {"allowed_values": ["low"], "max_budget_tokens": 1},
@@ -608,7 +618,7 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
         assert (DEFAULT_REGISTRY_PATH.parent / relative_path).is_file()
 
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-    assert registry.schema_version == 11
+    assert registry.schema_version == 12
     for provider in registry.providers.values():
         for model in provider.models.values():
             assert model.limits.context_window_tokens > 0
@@ -677,6 +687,20 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
                 (
                     "drop_parameter",
                     {"path": "generationConfig.maxOutputTokens", "default": None},
+                ),
+            ),
+        ),
+        (
+            "google",
+            "gemini-3.7-flash",
+            (
+                (
+                    "drop_parameter",
+                    {"path": "generationConfig.temperature", "default": 1.0},
+                ),
+                (
+                    "drop_parameter",
+                    {"path": "generationConfig.topP", "default": 1.0},
                 ),
             ),
         ),
@@ -836,7 +860,22 @@ def test_default_registry_contains_current_request_rules(
         ),
         (
             "google",
+            "gemini-3.7-flash",
+            CategoricalReasoningCapability(("low", "medium", "high")),
+        ),
+        (
+            "google",
+            "gemini-3.6-flash",
+            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
+        ),
+        (
+            "google",
             "gemini-3.5-flash",
+            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
+        ),
+        (
+            "google",
+            "gemini-3.5-flash-lite",
             CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
         ),
         (
@@ -857,12 +896,28 @@ def test_default_registry_contains_current_request_rules(
         (
             "google",
             "gemini-2.5-pro",
-            NumericReasoningCapability(128, 32_768),
+            NumericReasoningCapability(
+                128,
+                32_768,
+            ),
         ),
         (
             "google",
             "gemini-2.5-flash",
-            NumericReasoningCapability(0, 24_576),
+            NumericReasoningCapability(
+                0,
+                24_576,
+                can_disable_thinking=True,
+            ),
+        ),
+        (
+            "google",
+            "gemini-2.5-flash-lite",
+            NumericReasoningCapability(
+                512,
+                24_576,
+                can_disable_thinking=True,
+            ),
         ),
     ],
 )
@@ -896,7 +951,11 @@ def test_default_registry_contains_verified_reasoning_capabilities(
         ("openai", "gpt-5-mini", 400_000, ((None, 0.25, 2.0),)),
         ("openai", "gpt-5-nano", 400_000, ((None, 0.05, 0.4),)),
         ("google", "gemini-3.1-pro-preview", 1_048_576, ((200_000, 2.0, 12.0), (None, 4.0, 18.0))),
+        ("google", "gemini-3.7-flash", 1_048_576, ((None, 0.75, 3.75),)),
+        ("google", "gemini-3.6-flash", 1_048_576, ((None, 0.75, 3.75),)),
+        ("google", "gemini-3.5-flash-lite", 1_048_576, ((None, 0.3, 2.5),)),
         ("google", "gemini-2.5-pro", 1_048_576, ((200_000, 1.25, 10.0), (None, 2.5, 15.0))),
+        ("google", "gemini-2.5-flash-lite", 1_048_576, ((None, 0.1, 0.4),)),
     ],
 )
 def test_default_registry_contains_verified_limits_and_pricing_tiers(

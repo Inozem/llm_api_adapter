@@ -52,6 +52,11 @@ def resolve_reasoning_level(
             message="Invalid reasoning level.",
             detail="reasoning_level must be a string or integer, not a boolean.",
         )
+    if isinstance(reasoning_level, int) and reasoning_level < 0:
+        raise LLMReasoningLevelError(
+            message="Invalid reasoning level.",
+            detail="reasoning_level must be a non-negative integer.",
+        )
 
     capability = model_spec.reasoning_capability
     if capability is None:
@@ -128,7 +133,7 @@ def _resolve_numeric(
 ) -> ReasoningResolution:
     if isinstance(reasoning_level, str):
         if reasoning_level == "none":
-            if capability.min_budget_tokens == 0:
+            if capability.can_disable_thinking:
                 return ReasoningResolution(
                     provider_value=0,
                     reason="numeric_disable",
@@ -148,6 +153,13 @@ def _resolve_numeric(
             provider_value=provider_value,
             reason="numeric_canonical_interpolation",
         )
+
+    if (
+        reasoning_level == 0
+        and capability.can_disable_thinking
+        and capability.min_budget_tokens > 0
+    ):
+        return ReasoningResolution(provider_value=0, reason="numeric_disable")
 
     if reasoning_level < capability.min_budget_tokens:
         return ReasoningResolution(

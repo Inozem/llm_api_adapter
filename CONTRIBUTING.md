@@ -124,7 +124,7 @@ source list whenever that manifest value changes.
 | --- | --- |
 | OpenAI | [Model catalog](https://developers.openai.com/api/docs/models) and [API pricing](https://developers.openai.com/api/docs/pricing) |
 | Anthropic | [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing) and [model deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations) |
-| Google | [Gemini models](https://ai.google.dev/gemini-api/docs/models) and [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) |
+| Google | [Gemini models](https://ai.google.dev/gemini-api/docs/models), [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing), and [Gemini thinking](https://ai.google.dev/gemini-api/docs/generate-content/thinking) |
 
 This verification excludes cached input, cache write/storage, batch, flex,
 priority, modality-specific, provider-hosted tool, and negotiated-volume

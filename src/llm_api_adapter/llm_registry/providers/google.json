@@ -1,6 +1,46 @@
 {
   "currency": "USD",
   "models": {
+    "gemini-3.7-flash": {
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high"]
+      },
+      "request_rules": [
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.temperature", "default": 1.0}},
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.topP", "default": 1.0}}
+      ],
+      "limits": {
+        "context_window_tokens": 1048576,
+        "max_output_tokens": 65536
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.75,
+          "output_per_1m": 3.75
+        }
+      ]
+    },
+    "gemini-3.6-flash": {
+      "reasoning_capability": {
+        "allowed_values": ["minimal", "low", "medium", "high"]
+      },
+      "request_rules": [
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.temperature", "default": 1.0}},
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.topP", "default": 1.0}}
+      ],
+      "limits": {
+        "context_window_tokens": 1048576,
+        "max_output_tokens": 65536
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.75,
+          "output_per_1m": 3.75
+        }
+      ]
+    },
     "gemini-3.5-flash": {
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
@@ -14,6 +54,26 @@
           "up_to_prompt_tokens": null,
           "input_per_1m": 1.5,
           "output_per_1m": 9.0
+        }
+      ]
+    },
+    "gemini-3.5-flash-lite": {
+      "reasoning_capability": {
+        "allowed_values": ["minimal", "low", "medium", "high"]
+      },
+      "request_rules": [
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.temperature", "default": 1.0}},
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.topP", "default": 1.0}}
+      ],
+      "limits": {
+        "context_window_tokens": 1048576,
+        "max_output_tokens": 65536
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.3,
+          "output_per_1m": 2.5
         }
       ]
     },
@@ -98,7 +158,8 @@
     "gemini-2.5-flash": {
       "reasoning_capability": {
         "min_budget_tokens": 0,
-        "max_budget_tokens": 24576
+        "max_budget_tokens": 24576,
+        "can_disable_thinking": true
       },
       "request_rules": [
         {"handler": "drop_parameter", "arguments": {"path": "generationConfig.maxOutputTokens", "default": null}}
@@ -112,6 +173,24 @@
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.3,
           "output_per_1m": 2.5
+        }
+      ]
+    },
+    "gemini-2.5-flash-lite": {
+      "reasoning_capability": {
+        "min_budget_tokens": 512,
+        "max_budget_tokens": 24576,
+        "can_disable_thinking": true
+      },
+      "limits": {
+        "context_window_tokens": 1048576,
+        "max_output_tokens": 65536
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.1,
+          "output_per_1m": 0.4
         }
       ]
     }
