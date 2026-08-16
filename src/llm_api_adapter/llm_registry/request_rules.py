@@ -152,7 +152,11 @@ class GoogleRequestRuleRegistry(RequestRuleRegistry):
             RequestRuleRegistry.DROP_PARAMETER,
         }
     )
-    droppable_parameter_defaults = {"generationConfig.maxOutputTokens": None}
+    droppable_parameter_defaults = {
+        "generationConfig.maxOutputTokens": None,
+        "generationConfig.temperature": 1.0,
+        "generationConfig.topP": 1.0,
+    }
 
 
 REQUEST_RULE_REGISTRIES: Dict[str, RequestRuleRegistry] = {
