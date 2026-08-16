@@ -30,7 +30,9 @@ def test_sync_httpx_chat_returns_contract_for_latest_provider_models(
             response = chat_with_retry(
                 adapter,
                 messages=[UserMessage("Reply with exactly: OK")],
-                max_tokens=64,
+                # Gemini 3.x may spend part of this shared output budget on
+                # default thinking before returning visible text.
+                max_tokens=512,
                 timeout_s=60,
             )
 
