@@ -80,6 +80,14 @@ def test_transport_extras_are_forwarded_and_composable():
 
 
 @pytest.mark.unit
+def test_distribution_exposes_the_provider_plugin_entry_point():
+    metadata = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '[project.entry-points."llm_api_adapter.providers"]' in metadata
+    assert 'mistral = "llm_api_adapter_mistral.plugin:PLUGIN"' in metadata
+
+
+@pytest.mark.unit
 def test_source_layout_has_no_direct_transport_implementation():
     source_root = PACKAGE_ROOT / "src" / "llm_api_adapter_mistral"
     implementation_paths = {

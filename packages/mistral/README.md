@@ -1,20 +1,16 @@
 # llm-api-adapter-mistral
 
-The independently released provider package for Mistral's official direct API.
+Official direct-API support for Mistral in
+[llm-api-adapter](https://github.com/Inozem/llm_api_adapter/).
 
-This workspace commit establishes packaging only. It deliberately contains no
-Mistral SDK dependency, direct HTTP client, transport implementation, or plugin
-entry point. Those arrive with the verified adapter implementation.
+Supported models:
 
-The package requires a compatible core release:
+- `mistral-small-2603`
+- `mistral-medium-3-5`
+- `mistral-large-2512`
 
-```text
-llm-api-adapter >=0.9.0,<1.0.0
+Install the package alongside a compatible core distribution:
+
+```bash
+pip install llm-api-adapter-mistral
 ```
-
-Extras are forwarded to the core and remain independently composable:
-
-- `async` enables the core async transport support.
-- `httpx` enables the core HTTPX sync-transport pilot.
-- A future deployment extra will remain independent, so callers can compose it
-  with a transport extra, for example `[infomaniak,async]`.
