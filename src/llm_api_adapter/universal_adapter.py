@@ -1,4 +1,4 @@
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 import logging
 from typing import Any
 
@@ -9,6 +9,13 @@ from .adapters.google_adapter import GoogleAdapter
 from .llms.transports import validate_sync_transport
 
 logger = logging.getLogger(__name__)
+
+
+BUILTIN_PROVIDER_REGISTRY = {
+    AnthropicAdapter.company: AnthropicAdapter,
+    OpenAIAdapter.company: OpenAIAdapter,
+    GoogleAdapter.company: GoogleAdapter,
+}
 
 
 @dataclass
@@ -43,21 +50,14 @@ class UniversalLLMAPIAdapter:
     def _select_adapter(
         self, organization: str, model: str, api_key: str, transport: str
     ) -> LLMAdapterBase:
-        """
-        Selects the adapter based on the company.
-        """
-        for adapter_class in LLMAdapterBase.__subclasses__():
-            company_field = None
-            for field in fields(adapter_class):
-                if field.name == 'company':
-                    company_field = field
-                    break
-            if company_field and company_field.default == organization:
-                return adapter_class(
-                    model=model,
-                    api_key=api_key,
-                    transport=transport,
-                )
+        """Select a built-in adapter by its explicitly registered key."""
+        adapter_class = BUILTIN_PROVIDER_REGISTRY.get(organization)
+        if adapter_class is not None:
+            return adapter_class(
+                model=model,
+                api_key=api_key,
+                transport=transport,
+            )
         error_message = f"Unsupported organization: {organization}"
         logger.error(error_message)
         raise ValueError(error_message)
