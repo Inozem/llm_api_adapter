@@ -41,15 +41,32 @@ def test_selects_adapter_and_delegates(monkeypatch):
     assert list(ua.stream_chat()) == ["streamed"]
 
 @pytest.mark.unit
-def test_unsupported_service_provider_raises(monkeypatch):
+def test_unknown_organization_raises(monkeypatch):
     monkeypatch.setattr(
         universal_module,
         "SERVICE_PROVIDER_REGISTRY",
         ServiceProviderRegistry(),
     )
-    with pytest.raises(ValueError, match="Unsupported service provider: UnknownCorp"):
+    with pytest.raises(ValueError, match="Unsupported organization: UnknownCorp"):
         UniversalLLMAPIAdapter(
             organization="UnknownCorp", model="test-model", api_key="k"
+        )
+
+
+@pytest.mark.unit
+def test_explicit_unknown_service_provider_raises(monkeypatch):
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry(),
+    )
+
+    with pytest.raises(ValueError, match="Unsupported service provider: openrouter"):
+        UniversalLLMAPIAdapter(
+            organization="mistral",
+            service_provider="openrouter",
+            model="test-model",
+            api_key="k",
         )
 
 @pytest.mark.unit

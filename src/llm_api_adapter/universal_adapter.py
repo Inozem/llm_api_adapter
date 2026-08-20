@@ -6,8 +6,13 @@ from .adapters.base_adapter import LLMAdapterBase
 from .adapters.anthropic_adapter import AnthropicAdapter
 from .adapters.openai_adapter import OpenAIAdapter
 from .adapters.google_adapter import GoogleAdapter
+from .errors.config_errors import ProviderNotInstalledError
 from .llms.transports import validate_sync_transport
-from .provider_registry import ProviderPluginDiscovery, ServiceProviderRegistry
+from .provider_registry import (
+    KNOWN_PROVIDER_PACKAGES,
+    ProviderPluginDiscovery,
+    ServiceProviderRegistry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +85,18 @@ class UniversalLLMAPIAdapter:
                 transport=transport,
                 service_provider=service_provider,
             )
-        error_message = f"Unsupported service provider: {service_provider}"
+        if service_provider == organization:
+            known_provider = KNOWN_PROVIDER_PACKAGES.get(organization)
+            if known_provider is not None:
+                error = ProviderNotInstalledError(
+                    organization=organization,
+                    distribution=known_provider.distribution,
+                )
+                logger.error(str(error))
+                raise error
+            error_message = f"Unsupported organization: {organization}"
+        else:
+            error_message = f"Unsupported service provider: {service_provider}"
         logger.error(error_message)
         raise ValueError(error_message)
 

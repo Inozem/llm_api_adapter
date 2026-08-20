@@ -23,6 +23,27 @@ class DuplicateServiceProviderError(ValueError):
 
 
 @dataclass(frozen=True)
+class KnownProviderPackage:
+    """An external provider package that core can describe before installation."""
+
+    organization: str
+    distribution: str
+
+    @property
+    def install_command(self) -> str:
+        """Return the exact command needed to install this provider package."""
+        return f"pip install {self.distribution}"
+
+
+KNOWN_PROVIDER_PACKAGES = {
+    "mistral": KnownProviderPackage(
+        organization="mistral",
+        distribution="llm-api-adapter-mistral",
+    ),
+}
+
+
+@dataclass(frozen=True)
 class ProviderPlugin:
     """Versioned object exposed by an external provider entry point."""
 

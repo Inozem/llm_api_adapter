@@ -10,6 +10,7 @@ import pytest
 import src.llm_api_adapter.provider_registry as registry_module
 import src.llm_api_adapter.universal_adapter as universal_module
 from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
+from src.llm_api_adapter.errors import ProviderNotInstalledError
 from src.llm_api_adapter.provider_registry import (
     DuplicateServiceProviderError,
     PROVIDER_PLUGIN_API_VERSION,
@@ -57,9 +58,9 @@ class FakeEntryPoint:
         return self._plugin
 
 
-def _test_plugin() -> ProviderPlugin:
+def _test_plugin(service_provider: str = "mistral") -> ProviderPlugin:
     def register(registry: ServiceProviderRegistry) -> None:
-        registry.register("test-provider", PluginTestAdapter)
+        registry.register(service_provider, PluginTestAdapter)
 
     return ProviderPlugin(
         api_version=PROVIDER_PLUGIN_API_VERSION,
@@ -97,31 +98,32 @@ def test_external_provider_is_discovered_only_after_its_distribution_is_availabl
 
     monkeypatch.setattr(registry_module, "entry_points", get_entry_points)
 
-    with pytest.raises(ValueError, match="Unsupported service provider: test-provider"):
+    with pytest.raises(
+        ProviderNotInstalledError,
+        match="pip install llm-api-adapter-mistral",
+    ):
         UniversalLLMAPIAdapter(
             organization="mistral",
-            service_provider="test-provider",
             model="test-model",
             api_key="test-key",
         )
 
     entry_point = FakeEntryPoint(
-        name="test-provider",
-        value="test_provider.plugin:PLUGIN",
+        name="mistral",
+        value="llm_api_adapter_mistral.plugin:PLUGIN",
         plugin=_test_plugin(),
     )
     installed_entry_points.append(entry_point)
 
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
-        service_provider="test-provider",
         model="test-model",
         api_key="test-key",
     )
 
     assert isinstance(adapter.adapter, PluginTestAdapter)
     assert adapter.adapter.company == "mistral"
-    assert adapter.adapter.service_provider == "test-provider"
+    assert adapter.adapter.service_provider == "mistral"
     assert adapter.adapter.transport == "requests"
     assert entry_point.load_calls == 1
 
