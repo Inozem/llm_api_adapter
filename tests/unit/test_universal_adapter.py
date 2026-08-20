@@ -6,6 +6,7 @@ import src.llm_api_adapter.universal_adapter as universal_module
 from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
 from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
 from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
+from src.llm_api_adapter.provider_registry import ServiceProviderRegistry
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 @pytest.mark.unit
@@ -27,8 +28,8 @@ def test_selects_adapter_and_delegates(monkeypatch):
 
     monkeypatch.setattr(
         universal_module,
-        "BUILTIN_PROVIDER_REGISTRY",
-        {"anthropic": FakeAdapter},
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({"anthropic": FakeAdapter}),
     )
     ua = UniversalLLMAPIAdapter(
         organization="anthropic", model="claude-sonnet-4-5", api_key="sk-test"
@@ -40,13 +41,13 @@ def test_selects_adapter_and_delegates(monkeypatch):
     assert list(ua.stream_chat()) == ["streamed"]
 
 @pytest.mark.unit
-def test_unsupported_organization_raises(monkeypatch):
+def test_unsupported_service_provider_raises(monkeypatch):
     monkeypatch.setattr(
         universal_module,
-        "BUILTIN_PROVIDER_REGISTRY",
-        {},
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry(),
     )
-    with pytest.raises(ValueError, match="Unsupported organization: UnknownCorp"):
+    with pytest.raises(ValueError, match="Unsupported service provider: UnknownCorp"):
         UniversalLLMAPIAdapter(
             organization="UnknownCorp", model="test-model", api_key="k"
         )
@@ -59,6 +60,13 @@ def test_invalid_inputs_raise_value_error():
         UniversalLLMAPIAdapter(organization="Anthropic", model="", api_key="k")
     with pytest.raises(ValueError, match="Invalid API key"):
         UniversalLLMAPIAdapter(organization="Anthropic", model="m", api_key="")
+    with pytest.raises(ValueError, match="Invalid service provider"):
+        UniversalLLMAPIAdapter(
+            organization="Anthropic",
+            service_provider="",
+            model="m",
+            api_key="k",
+        )
 
 
 @pytest.mark.unit
@@ -91,6 +99,7 @@ def test_explicit_builtin_registry_selects_each_provider(
 
     assert isinstance(adapter.adapter, adapter_class)
     assert adapter.transport == adapter.adapter.transport == "requests"
+    assert adapter.service_provider == adapter.adapter.service_provider == organization
 
 
 @pytest.mark.unit
@@ -113,6 +122,42 @@ def test_transport_selection_is_validated_and_forwarded_to_provider_adapter():
             transport="urllib3",
         )
 
+
+@pytest.mark.unit
+def test_service_provider_selects_the_adapter_and_organization_is_forwarded(
+    monkeypatch,
+):
+    @dataclass
+    class HostedMistralAdapter:
+        company: str
+        model: str
+        api_key: str
+        transport: str
+        service_provider: str
+
+        def chat(self, *args, **kwargs):
+            return {"response": "ok"}
+
+        def stream_chat(self, *args, **kwargs):
+            yield "streamed"
+
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({"openrouter": HostedMistralAdapter}),
+    )
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        service_provider="openrouter",
+        model="mistral-large",
+        api_key="test-key",
+    )
+
+    assert isinstance(adapter.adapter, HostedMistralAdapter)
+    assert adapter.adapter.company == "mistral"
+    assert adapter.adapter.service_provider == "openrouter"
+
 @pytest.mark.unit
 def test_getattr_missing_raises_attribute_error(monkeypatch):
     @dataclass
@@ -129,8 +174,8 @@ def test_getattr_missing_raises_attribute_error(monkeypatch):
         
     monkeypatch.setattr(
         universal_module,
-        "BUILTIN_PROVIDER_REGISTRY",
-        {"anthropic": FakeAdapter},
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({"anthropic": FakeAdapter}),
     )
     ua = UniversalLLMAPIAdapter(
         organization="anthropic", model="claude-sonnet-4-5", api_key="k"
