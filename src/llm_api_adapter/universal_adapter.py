@@ -7,6 +7,7 @@ from .adapters.anthropic_adapter import AnthropicAdapter
 from .adapters.openai_adapter import OpenAIAdapter
 from .adapters.google_adapter import GoogleAdapter
 from .errors.config_errors import ProviderNotInstalledError
+from .llm_registry.llm_registry import LLM_REGISTRY
 from .llms.transports import validate_sync_transport
 from .provider_registry import (
     KNOWN_PROVIDER_PACKAGES,
@@ -75,7 +76,10 @@ class UniversalLLMAPIAdapter:
         """Select a built-in or lazily registered service-provider factory."""
         adapter_factory = SERVICE_PROVIDER_REGISTRY.get(service_provider)
         if adapter_factory is None:
-            PROVIDER_PLUGIN_DISCOVERY.discover(SERVICE_PROVIDER_REGISTRY)
+            PROVIDER_PLUGIN_DISCOVERY.discover(
+                SERVICE_PROVIDER_REGISTRY,
+                model_registry=LLM_REGISTRY,
+            )
             adapter_factory = SERVICE_PROVIDER_REGISTRY.get(service_provider)
         if adapter_factory is not None:
             return adapter_factory(

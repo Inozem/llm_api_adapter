@@ -8,6 +8,7 @@ from importlib.metadata import entry_points
 import logging
 from typing import Any
 
+from .llm_registry.llm_registry import ProviderModelMetadata, RegistrySpec
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class ProviderPlugin:
 
     api_version: int
     register: ProviderPluginRegister
+    model_metadata: ProviderModelMetadata | None = None
 
 
 @dataclass(frozen=True)
@@ -116,7 +118,11 @@ class ProviderPluginDiscovery:
         """Return diagnostics for plugins that failed to load or register."""
         return tuple(self._failures)
 
-    def discover(self, registry: ServiceProviderRegistry) -> None:
+    def discover(
+        self,
+        registry: ServiceProviderRegistry,
+        model_registry: RegistrySpec | None = None,
+    ) -> None:
         """Load installed provider plugins without letting one break core usage."""
         try:
             provider_entry_points = entry_points(
@@ -141,7 +147,7 @@ class ProviderPluginDiscovery:
 
             try:
                 plugin = provider_entry_point.load()
-                self._register_plugin(plugin, registry)
+                self._register_plugin(plugin, registry, model_registry)
             except Exception as error:
                 self._record_failure(
                     entry_point_name=provider_entry_point.name,
@@ -153,6 +159,7 @@ class ProviderPluginDiscovery:
         self,
         plugin: object,
         registry: ServiceProviderRegistry,
+        model_registry: RegistrySpec | None,
     ) -> None:
         if not isinstance(plugin, ProviderPlugin):
             raise TypeError(
@@ -165,6 +172,12 @@ class ProviderPluginDiscovery:
             )
         if not callable(plugin.register):
             raise TypeError("Provider plugin register must be callable")
+        if plugin.model_metadata is not None:
+            if model_registry is None:
+                raise ValueError(
+                    "Provider model metadata requires a model registry"
+                )
+            model_registry.register_provider_metadata(plugin.model_metadata)
         plugin.register(registry)
 
     def _record_failure(

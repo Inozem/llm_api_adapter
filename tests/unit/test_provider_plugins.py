@@ -7,10 +7,17 @@ from typing import Any
 
 import pytest
 
+import src.llm_api_adapter.adapters.base_adapter as base_adapter_module
 import src.llm_api_adapter.provider_registry as registry_module
 import src.llm_api_adapter.universal_adapter as universal_module
 from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
+from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
 from src.llm_api_adapter.errors import ProviderNotInstalledError
+from src.llm_api_adapter.llm_registry.llm_registry import (
+    ProviderModelMetadata,
+    RegistrySpec,
+    resolve_model_spec,
+)
 from src.llm_api_adapter.provider_registry import (
     DuplicateServiceProviderError,
     PROVIDER_PLUGIN_API_VERSION,
@@ -23,12 +30,10 @@ from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 @dataclass
-class PluginTestAdapter:
-    company: str
-    model: str
-    api_key: str
-    transport: str
-    service_provider: str
+class PluginTestAdapter(LLMAdapterBase):
+    company: str = "mistral"
+    model: str = ""
+    api_key: str = ""
 
     def chat(self, *args: Any, **kwargs: Any) -> dict[str, str]:
         return {"response": "ok"}
@@ -58,13 +63,41 @@ class FakeEntryPoint:
         return self._plugin
 
 
-def _test_plugin(service_provider: str = "mistral") -> ProviderPlugin:
+def _mistral_model_metadata() -> ProviderModelMetadata:
+    return ProviderModelMetadata(
+        organization="mistral",
+        provider_data={
+            "currency": "USD",
+            "models": {
+                "test-model": {
+                    "limits": {
+                        "context_window_tokens": 128_000,
+                        "max_output_tokens": 16_384,
+                    },
+                    "pricing_tiers": [
+                        {
+                            "up_to_prompt_tokens": None,
+                            "input_per_1m": 1.0,
+                            "output_per_1m": 2.0,
+                        }
+                    ],
+                }
+            },
+        },
+    )
+
+
+def _test_plugin(
+    service_provider: str = "mistral",
+    model_metadata: ProviderModelMetadata | None = None,
+) -> ProviderPlugin:
     def register(registry: ServiceProviderRegistry) -> None:
         registry.register(service_provider, PluginTestAdapter)
 
     return ProviderPlugin(
         api_version=PROVIDER_PLUGIN_API_VERSION,
         register=register,
+        model_metadata=model_metadata,
     )
 
 
@@ -72,6 +105,7 @@ def _test_plugin(service_provider: str = "mistral") -> ProviderPlugin:
 def isolated_plugin_runtime(monkeypatch):
     registry = ServiceProviderRegistry({"anthropic": AnthropicAdapter})
     discovery = ProviderPluginDiscovery()
+    model_registry = RegistrySpec()
     monkeypatch.setattr(
         universal_module,
         "SERVICE_PROVIDER_REGISTRY",
@@ -82,7 +116,9 @@ def isolated_plugin_runtime(monkeypatch):
         "PROVIDER_PLUGIN_DISCOVERY",
         discovery,
     )
-    return registry, discovery
+    monkeypatch.setattr(universal_module, "LLM_REGISTRY", model_registry)
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", model_registry)
+    return registry, discovery, model_registry
 
 
 @pytest.mark.unit
@@ -111,7 +147,7 @@ def test_external_provider_is_discovered_only_after_its_distribution_is_availabl
     entry_point = FakeEntryPoint(
         name="mistral",
         value="llm_api_adapter_mistral.plugin:PLUGIN",
-        plugin=_test_plugin(),
+        plugin=_test_plugin(model_metadata=_mistral_model_metadata()),
     )
     installed_entry_points.append(entry_point)
 
@@ -125,6 +161,13 @@ def test_external_provider_is_discovered_only_after_its_distribution_is_availabl
     assert adapter.adapter.company == "mistral"
     assert adapter.adapter.service_provider == "mistral"
     assert adapter.adapter.transport == "requests"
+    assert adapter.adapter.model_spec is not None
+    assert adapter.adapter.pricing is not None
+    assert resolve_model_spec(
+        isolated_plugin_runtime[2],
+        "mistral",
+        "test-model",
+    ) is adapter.adapter.model_spec
     assert entry_point.load_calls == 1
 
 
@@ -169,7 +212,7 @@ def test_plugin_failures_are_recorded_without_breaking_registered_providers(
     monkeypatch,
     isolated_plugin_runtime,
 ):
-    registry, discovery = isolated_plugin_runtime
+    registry, discovery, _ = isolated_plugin_runtime
     broken_entry_point = FakeEntryPoint(
         name="broken-provider",
         value="broken.plugin:PLUGIN",
@@ -212,7 +255,7 @@ def test_incompatible_plugin_contract_is_reported_as_a_diagnostic(
     monkeypatch,
     isolated_plugin_runtime,
 ):
-    registry, discovery = isolated_plugin_runtime
+    registry, discovery, _ = isolated_plugin_runtime
     entry_point = FakeEntryPoint(
         name="legacy-provider",
         value="legacy.plugin:PLUGIN",
@@ -232,3 +275,32 @@ def test_incompatible_plugin_contract_is_reported_as_a_diagnostic(
     assert registry.get("legacy-provider") is None
     assert discovery.failures[0].error_type == "ValueError"
     assert "Unsupported provider plugin API version" in discovery.failures[0].message
+
+
+@pytest.mark.unit
+def test_invalid_plugin_model_metadata_is_reported_before_service_registration(
+    monkeypatch,
+    isolated_plugin_runtime,
+):
+    registry, discovery, model_registry = isolated_plugin_runtime
+    invalid_metadata = ProviderModelMetadata(
+        organization="mistral",
+        provider_data={"models": {"test-model": {}}},
+    )
+    entry_point = FakeEntryPoint(
+        name="mistral",
+        value="llm_api_adapter_mistral.plugin:PLUGIN",
+        plugin=_test_plugin(model_metadata=invalid_metadata),
+    )
+    monkeypatch.setattr(
+        registry_module,
+        "entry_points",
+        lambda *, group: (entry_point,),
+    )
+
+    discovery.discover(registry, model_registry=model_registry)
+
+    assert registry.get("mistral") is None
+    assert resolve_model_spec(model_registry, "mistral", "test-model") is None
+    assert discovery.failures[0].error_type == "ValueError"
+    assert "Invalid provider metadata for 'mistral'" in discovery.failures[0].message
