@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -17,9 +18,10 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE)):
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
+import llm_api_adapter_mistral.adapter as mistral_adapter_module
 from llm_api_adapter.errors.llm_api_error import LLMAPITokenLimitError
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
-from llm_api_adapter.llms.transports import JSONResponse
+from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -28,13 +30,25 @@ from llm_api_adapter_mistral.plugin import PLUGIN
 
 
 class FakeSyncTransport:
-    def __init__(self, response: dict) -> None:
+    def __init__(self, response: dict, events=()) -> None:
         self.response = response
+        self.events = list(events)
         self.requests = []
+        self.stream_requests = []
 
     def post_json(self, request, *, http_error_handler=None):
         self.requests.append(request)
         return JSONResponse(self.response)
+
+    def post_sse(
+        self,
+        request,
+        *,
+        http_error_handler=None,
+        stream_error_handler=None,
+    ):
+        self.stream_requests.append(request)
+        return iter(self.events)
 
 
 @pytest.fixture
@@ -253,6 +267,267 @@ def test_mistral_uses_official_json_schema_payload_shape(mistral_runtime):
                 "additionalProperties": False,
             },
         },
+    }
+
+
+@pytest.mark.unit
+def test_mistral_streams_text_tools_reasoning_and_usage(mistral_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-small-2603",
+        api_key="mistral-test-key",
+    )
+    transport = FakeSyncTransport(
+        {},
+        events=[
+            SSEEvent(
+                event=None,
+                data={
+                    "id": "cmpl-mistral-stream-1",
+                    "created": 1_700_000_001,
+                    "model": "mistral-small-2603",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "content": [
+                                    {
+                                        "type": "thinking",
+                                        "thinking": [
+                                            {"type": "text", "text": "Plan answer."}
+                                        ],
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+            ),
+            SSEEvent(
+                event=None,
+                data={
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "content": [{"type": "text", "text": "Bon"}],
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_weather",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_weather",
+                                            "arguments": '{"city":',
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+            ),
+            SSEEvent(
+                event=None,
+                data={
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "content": "jour",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {"arguments": '"Paris"}'},
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 5,
+                        "completion_tokens": 6,
+                        "total_tokens": 11,
+                    },
+                },
+            ),
+        ],
+    )
+    adapter.adapter._sync_transport = transport
+    deltas = []
+    chunks = []
+    reasoning = []
+    tools = []
+    completed = []
+
+    streamed = list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "Say hello."}],
+            buffer_chars=3,
+            capture_reasoning=True,
+            on_delta=deltas.append,
+            on_chunk=chunks.append,
+            on_reasoning=reasoning.append,
+            on_tool_call=tools.append,
+            on_done=completed.append,
+        )
+    )
+
+    assert streamed == ["Bon", "jou", "r"]
+    assert deltas == streamed
+    assert [chunk.text for chunk in chunks] == streamed
+    assert chunks[1].usage is not None
+    assert chunks[1].usage.total_tokens == 11
+    assert [event.text for event in reasoning] == ["Plan answer."]
+    assert len(tools) == 1
+    assert tools[0].name == "get_weather"
+    assert tools[0].arguments == {"city": "Paris"}
+    assert len(completed) == 1
+    response = completed[0]
+    assert response.content == "Bonjour"
+    assert response.response_id == "cmpl-mistral-stream-1"
+    assert response.usage is not None
+    assert response.usage.total_tokens == 11
+    assert response.cost_total == pytest.approx(0.00000435)
+
+    stream_request = transport.stream_requests[0]
+    assert stream_request.timeout is None
+    assert stream_request.payload["stream"] is True
+    assert stream_request.payload["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.unit
+def test_mistral_async_chat_and_stream_use_shared_async_transport(
+    mistral_runtime,
+    monkeypatch,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-small-2603",
+        api_key="mistral-test-key",
+    )
+    request_calls = []
+    stream_calls = []
+
+    async def fake_async_request(url, **kwargs):
+        request_calls.append((url, kwargs))
+        return {
+            "id": "cmpl-mistral-async-1",
+            "model": "mistral-small-2603",
+            "choices": [{"message": {"content": "Async hello"}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+        }
+
+    def fake_async_stream_request(url, **kwargs):
+        stream_calls.append((url, kwargs))
+
+        async def events():
+            yield SSEEvent(
+                event=None,
+                data={
+                    "id": "cmpl-mistral-async-stream-1",
+                    "model": "mistral-small-2603",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "Async "},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+            )
+            yield SSEEvent(
+                event=None,
+                data={
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "stream"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 2,
+                        "completion_tokens": 4,
+                        "total_tokens": 6,
+                    },
+                },
+            )
+
+        return events()
+
+    monkeypatch.setattr(
+        mistral_adapter_module,
+        "async_request",
+        fake_async_request,
+    )
+    monkeypatch.setattr(
+        mistral_adapter_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+
+    async def run_requests():
+        response = await adapter.achat(
+            [{"role": "user", "content": "Say hello."}],
+            timeout_s=7.5,
+        )
+        deltas = []
+        completed = []
+
+        async def on_delta(text):
+            deltas.append(text)
+
+        async def on_done(chat_response):
+            completed.append(chat_response)
+
+        streamed = [
+            text
+            async for text in adapter.astream_chat(
+                [{"role": "user", "content": "Stream hello."}],
+                timeout_s=8.5,
+                on_delta=on_delta,
+                on_done=on_done,
+            )
+        ]
+        return response, streamed, deltas, completed
+
+    response, streamed, deltas, completed = asyncio.run(run_requests())
+
+    assert response.content == "Async hello"
+    assert streamed == ["Async ", "stream"]
+    assert deltas == streamed
+    assert completed[0].content == "Async stream"
+    assert completed[0].usage is not None
+    assert completed[0].usage.total_tokens == 6
+    assert request_calls == [
+        (
+            "https://api.mistral.ai/v1/chat/completions",
+            {
+                "headers": {
+                    "Authorization": "Bearer mistral-test-key",
+                    "Content-Type": "application/json",
+                },
+                "payload": {
+                    "model": "mistral-small-2603",
+                    "messages": [{"role": "user", "content": "Say hello."}],
+                    "temperature": 1.0,
+                    "top_p": 1.0,
+                    "reasoning_effort": "none",
+                },
+                "timeout": 7.5,
+                "http_error_handler": adapter.adapter._handle_http_error,
+            },
+        )
+    ]
+    assert stream_calls[0][0] == "https://api.mistral.ai/v1/chat/completions"
+    assert stream_calls[0][1]["timeout"] == 8.5
+    assert stream_calls[0][1]["payload"]["stream"] is True
+    assert stream_calls[0][1]["payload"]["stream_options"] == {
+        "include_usage": True
     }
 
 
