@@ -5,12 +5,16 @@ on:
     branches: ["dev"]
     paths:
       - ".github/workflows/ci-mistral-e2e.yml"
-      - "packages/mistral/pyproject.toml"
-      - "packages/mistral/src/**"
-      - "packages/mistral/tests/**"
+      - "packages/mistral/**"
       - "pyproject.toml"
       - "requirements.txt"
-      - "src/llm_api_adapter/**"
+      - "src/llm_api_adapter/adapters/base_adapter.py"
+      - "src/llm_api_adapter/errors/**"
+      - "src/llm_api_adapter/llm_registry/llm_registry.py"
+      - "src/llm_api_adapter/llms/**"
+      - "src/llm_api_adapter/models/**"
+      - "src/llm_api_adapter/provider_registry.py"
+      - "src/llm_api_adapter/universal_adapter.py"
       - "tests/e2e/conftest.py"
       - "tests/e2e/test_mistral.py"
       - "tests/requirements-test.txt"
@@ -19,12 +23,16 @@ on:
     branches: ["dev"]
     paths:
       - ".github/workflows/ci-mistral-e2e.yml"
-      - "packages/mistral/pyproject.toml"
-      - "packages/mistral/src/**"
-      - "packages/mistral/tests/**"
+      - "packages/mistral/**"
       - "pyproject.toml"
       - "requirements.txt"
-      - "src/llm_api_adapter/**"
+      - "src/llm_api_adapter/adapters/base_adapter.py"
+      - "src/llm_api_adapter/errors/**"
+      - "src/llm_api_adapter/llm_registry/llm_registry.py"
+      - "src/llm_api_adapter/llms/**"
+      - "src/llm_api_adapter/models/**"
+      - "src/llm_api_adapter/provider_registry.py"
+      - "src/llm_api_adapter/universal_adapter.py"
       - "tests/e2e/conftest.py"
       - "tests/e2e/test_mistral.py"
       - "tests/requirements-test.txt"
@@ -54,6 +62,9 @@ jobs:
           pip install -r tests/requirements-test.txt
           pip install -e ".[async]"
           pip install -e "packages/mistral[async]"
+
+      - name: Run Mistral deterministic tests
+        run: pytest -v packages/mistral/tests
 
       - name: Run Mistral E2E tests
         run: pytest -v -m e2e_mistral
