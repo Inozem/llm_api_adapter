@@ -23,9 +23,10 @@ _TRANSIENT_ERRORS = (
     SourceLLMAPIServerError,
     SourceLLMAPIRateLimitError,
 )
+_BUILTIN_E2E_PROVIDER_NAMES = ("openai", "anthropic", "google")
 _LATEST_MODEL_BY_PROVIDER = {
-    provider_name: next(iter(provider_spec.models), None)
-    for provider_name, provider_spec in LLM_REGISTRY.providers.items()
+    provider_name: next(iter(LLM_REGISTRY.providers[provider_name].models), None)
+    for provider_name in _BUILTIN_E2E_PROVIDER_NAMES
 }
 
 load_dotenv()
@@ -172,8 +173,10 @@ def pdf_bytes() -> bytes:
 
 @pytest.fixture(scope="session")
 def providers():
+    """Return only the providers built into the core package."""
     providers_with_models = []
-    for provider_name, provider_spec in LLM_REGISTRY.providers.items():
+    for provider_name in _BUILTIN_E2E_PROVIDER_NAMES:
+        provider_spec = LLM_REGISTRY.providers[provider_name]
         api_key = API_KEY_ENV.get(provider_name)
         registry_models = list(provider_spec.models.keys())
         providers_with_models.append(

@@ -4,6 +4,10 @@ from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.models.messages.file_parts import ImagePart
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
+
+pytestmark = pytest.mark.e2e_builtin
+
+
 _PROMPT = "What do you see in this image? One sentence."
 
 

@@ -11,6 +11,9 @@ from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
+pytestmark = pytest.mark.e2e_builtin
+
+
 FRUIT_POPULARITY = {
     "strawberry": 73,
     "banana": 41,

@@ -17,6 +17,9 @@ from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
+pytestmark = pytest.mark.e2e_builtin
+
+
 pytest.importorskip("httpx")
 
 

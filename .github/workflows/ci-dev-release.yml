@@ -92,4 +92,4 @@ jobs:
           exit 1
 
       - name: Run E2E tests
-        run: pytest -v -m e2e
+        run: pytest -v -m e2e_builtin

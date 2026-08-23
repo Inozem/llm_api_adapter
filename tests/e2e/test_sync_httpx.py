@@ -6,6 +6,9 @@ from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
+pytestmark = pytest.mark.e2e_builtin
+
+
 pytest.importorskip("httpx")
 
 

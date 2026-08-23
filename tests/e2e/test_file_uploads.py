@@ -5,6 +5,9 @@ from llm_api_adapter.models.messages.file_parts import DocumentPart
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
+pytestmark = pytest.mark.e2e_builtin
+
+
 _PROMPT = "Summarize this document in one sentence."
 
 
