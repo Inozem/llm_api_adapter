@@ -6,11 +6,13 @@ on:
     paths-ignore:
       - "packages/**"
       - ".github/workflows/ci-mistral-e2e.yml"
+      - ".github/workflows/ci-mistral.yml"
   pull_request:
     branches: ["dev"]
     paths-ignore:
       - "packages/**"
       - ".github/workflows/ci-mistral-e2e.yml"
+      - ".github/workflows/ci-mistral.yml"
 
 permissions:
   contents: read
