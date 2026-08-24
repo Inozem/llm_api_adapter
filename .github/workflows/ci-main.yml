@@ -5,8 +5,15 @@ on:
     branches: ["main"]
     tags:
       - "v*"
+      - "mistral-v*"
+    paths-ignore:
+      - "packages/**"
+      - ".github/workflows/ci-mistral.yml"
   pull_request:
     branches: ["main"]
+    paths-ignore:
+      - "packages/**"
+      - ".github/workflows/ci-mistral.yml"
 
 permissions:
   contents: read
@@ -14,6 +21,7 @@ permissions:
 jobs:
   test:
     name: Test (main, Python ${{ matrix.python-version }})
+    if: ${{ !startsWith(github.ref, 'refs/tags/mistral-v') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -40,19 +48,47 @@ jobs:
   test-gate:
     name: Test (main)
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, test-mistral]
     if: ${{ always() }}
 
     steps:
       - name: Verify Python matrix
         run: |
-          if [ "${{ needs.test.result }}" != "success" ]; then
+          if [ "${{ needs.test.result }}" != "success" ] && [ "${{ needs.test.result }}" != "skipped" ]; then
             echo "One or more deterministic matrix jobs failed."
             exit 1
           fi
 
-  publish-pypi:
-    name: Publish to PyPI (tagged release)
+          if [ "${{ needs.test-mistral.result }}" != "success" ] && [ "${{ needs.test-mistral.result }}" != "skipped" ]; then
+            echo "Mistral deterministic tests failed."
+            exit 1
+          fi
+
+  test-mistral:
+    name: Test Mistral package (main)
+    if: ${{ startsWith(github.ref, 'refs/tags/mistral-v') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install core, Mistral plugin, and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/requirements-test.txt
+          pip install -e ".[async]"
+          pip install -e "packages/organizations/mistral[async]"
+
+      - name: Run Mistral deterministic tests
+        run: pytest -v packages/organizations/mistral/tests
+
+  publish-core-pypi:
+    name: Publish core to PyPI
     runs-on: ubuntu-latest
     needs: test-gate
     if: startsWith(github.ref, 'refs/tags/v')
@@ -71,8 +107,35 @@ jobs:
           pip install build
           python -m build
 
-      - name: Publish to PyPI
+      - name: Publish core to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
+          verbose: true
+
+  publish-mistral-pypi:
+    name: Publish Mistral package to PyPI
+    runs-on: ubuntu-latest
+    needs: test-gate
+    if: startsWith(github.ref, 'refs/tags/mistral-v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Build Mistral distribution
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build packages/organizations/mistral
+
+      - name: Publish Mistral package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: packages/organizations/mistral/dist/
           verbose: true

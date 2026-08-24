@@ -9,6 +9,11 @@ from .llm_api_error import (
     LLMAPIUsageLimitError,
     JSONSchemaError,
 )
+from .config_errors import (
+    LLMConfigError,
+    LLMReasoningLevelError,
+    ProviderNotInstalledError,
+)
 
 __all__ = [
     "LLMAPIError",
@@ -20,4 +25,7 @@ __all__ = [
     "LLMAPITimeoutError",
     "LLMAPIUsageLimitError",
     "JSONSchemaError",
+    "LLMConfigError",
+    "LLMReasoningLevelError",
+    "ProviderNotInstalledError",
 ]

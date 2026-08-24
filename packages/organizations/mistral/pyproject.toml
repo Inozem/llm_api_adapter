@@ -3,14 +3,14 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "llm-api-adapter"
-version = "0.9.0"
-description = "Lightweight, pluggable adapter for multiple LLM APIs (OpenAI, Anthropic, Google)"
+name = "llm-api-adapter-mistral"
+version = "0.1.0"
+description = "Official Mistral API provider package for llm-api-adapter"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [{name = "Sergey Inozemtsev"}]
-keywords = ["llm", "adapter", "lightweight", "api"]
+keywords = ["llm", "mistral", "adapter", "api"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
@@ -22,12 +22,14 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
 ]
-dependencies = ["requests>=2.32"]
+dependencies = ["llm-api-adapter>=0.9.0,<1.0.0"]
 
 [project.optional-dependencies]
-async = ["httpx>=0.28"]
-httpx = ["httpx>=0.28"]
-mistral = ["llm-api-adapter-mistral>=0.1.0,<0.2.0"]
+async = ["llm-api-adapter[async]>=0.9.0,<1.0.0"]
+httpx = ["llm-api-adapter[httpx]>=0.9.0,<1.0.0"]
+
+[project.entry-points."llm_api_adapter.providers"]
+mistral = "llm_api_adapter_mistral.plugin:PLUGIN"
 
 [project.urls]
 Repository = "https://github.com/Inozem/llm_api_adapter/"
@@ -37,11 +39,11 @@ Repository = "https://github.com/Inozem/llm_api_adapter/"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["llm_api_adapter*"]
+include = ["llm_api_adapter_mistral*"]
 exclude = ["tests*", "*/tests*"]
 
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.package-data]
-"llm_api_adapter.llm_registry" = ["*.json", "providers/*.json"]
+"llm_api_adapter_mistral" = ["py.typed", "registry/providers/*.json"]

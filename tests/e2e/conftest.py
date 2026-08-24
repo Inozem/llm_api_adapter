@@ -1,4 +1,6 @@
 import asyncio
+from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 import os
 import time
 from itertools import zip_longest
@@ -23,10 +25,46 @@ _TRANSIENT_ERRORS = (
     SourceLLMAPIServerError,
     SourceLLMAPIRateLimitError,
 )
-_LATEST_MODEL_BY_PROVIDER = {
-    provider_name: next(iter(provider_spec.models), None)
-    for provider_name, provider_spec in LLM_REGISTRY.providers.items()
-}
+
+
+@dataclass(frozen=True)
+class E2EProviderProfile:
+    """The providers selected for one independently runnable E2E lane."""
+
+    name: str
+    provider_names: tuple[str, ...]
+
+
+class E2EProvider(dict):
+    """Provider test data that never renders an API key in pytest output."""
+
+    def __repr__(self) -> str:
+        safe_data = dict(self)
+        if safe_data.get("api_key"):
+            safe_data["api_key"] = "***"
+        return dict.__repr__(safe_data)
+
+
+_BUILTIN_E2E_PROFILE = E2EProviderProfile(
+    name="builtin",
+    provider_names=("openai", "anthropic", "google"),
+)
+_MISTRAL_E2E_PROFILE = E2EProviderProfile(
+    name="mistral",
+    provider_names=("mistral",),
+)
+_E2E_PROFILE_PARAMS = (
+    pytest.param(
+        _BUILTIN_E2E_PROFILE,
+        id="builtin",
+        marks=pytest.mark.e2e_builtin,
+    ),
+    pytest.param(
+        _MISTRAL_E2E_PROFILE,
+        id="mistral",
+        marks=pytest.mark.e2e_mistral,
+    ),
+)
 
 load_dotenv()
 
@@ -34,6 +72,7 @@ API_KEY_ENV = {
     "openai": os.getenv("OPENAI_API_KEY"),
     "anthropic": os.getenv("ANTHROPIC_API_KEY"),
     "google": os.getenv("GOOGLE_API_KEY"),
+    "mistral": os.getenv("MISTRAL_API_KEY"),
 }
 
 
@@ -52,7 +91,7 @@ def _select_latest_e2e_models(providers, override_prefix: str):
                 )
             model = override
         else:
-            model = _LATEST_MODEL_BY_PROVIDER.get(provider["name"])
+            model = provider["latest_model"]
             if model is None or model not in provider["models"]:
                 raise pytest.UsageError(
                     f"No latest model is registered for {provider['name']}"
@@ -170,18 +209,43 @@ def pdf_bytes() -> bytes:
     return (_FIXTURES_DIR / "test_document.pdf").read_bytes()
 
 
+@pytest.fixture(scope="session", params=_E2E_PROFILE_PARAMS)
+def e2e_provider_profile(request) -> E2EProviderProfile:
+    """Select one independently runnable provider E2E lane."""
+    return request.param
+
+
 @pytest.fixture(scope="session")
-def providers():
+def providers(e2e_provider_profile: E2EProviderProfile):
+    """Return the providers selected for the current E2E lane."""
+    if e2e_provider_profile.name == "mistral":
+        try:
+            version("llm-api-adapter-mistral")
+        except PackageNotFoundError:
+            pytest.skip("llm-api-adapter-mistral is not installed")
+        if not API_KEY_ENV["mistral"]:
+            pytest.skip("MISTRAL_API_KEY is not configured")
+
     providers_with_models = []
-    for provider_name, provider_spec in LLM_REGISTRY.providers.items():
+    for provider_name in e2e_provider_profile.provider_names:
+        if provider_name == "mistral":
+            registry_models = [
+                os.getenv("MISTRAL_E2E_MODEL", "mistral-large-2512")
+            ]
+        else:
+            provider_spec = LLM_REGISTRY.providers[provider_name]
+            registry_models = list(provider_spec.models.keys())
+
         api_key = API_KEY_ENV.get(provider_name)
-        registry_models = list(provider_spec.models.keys())
         providers_with_models.append(
-            {
-                "name": provider_name,
-                "api_key": api_key,
-                "models": registry_models,
-            }
+            E2EProvider(
+                {
+                    "name": provider_name,
+                    "api_key": api_key,
+                    "models": registry_models,
+                    "latest_model": registry_models[0] if registry_models else None,
+                }
+            )
         )
     return providers_with_models
 

@@ -3,7 +3,7 @@ from datetime import date
 import json
 from pathlib import Path
 import re
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .request_rules import (
     RequestRuleRegistry,
@@ -271,11 +271,15 @@ class ModelSpec:
     def from_dict(
         cls,
         name: str,
-        data: Dict[str, Any],
+        data: Mapping[str, Any],
         *,
         currency: str = "USD",
         request_rule_registry: Optional[RequestRuleRegistry] = None,
     ) -> "ModelSpec":
+        if not isinstance(name, str) or not name:
+            raise ValueError("model name must be a non-empty string")
+        if not isinstance(data, Mapping):
+            raise ValueError(f"Model '{name}' metadata must be an object")
         if "pricing" in data:
             raise ValueError(
                 f"Model '{name}' uses legacy pricing; use pricing_tiers instead"
@@ -290,7 +294,11 @@ class ModelSpec:
             if "reasoning_capability" in data
             else None
         )
-        is_adaptive_thinking = bool(data.get("is_adaptive_thinking", False))
+        is_adaptive_thinking = data.get("is_adaptive_thinking", False)
+        if not isinstance(is_adaptive_thinking, bool):
+            raise ValueError(
+                f"Model '{name}' is_adaptive_thinking must be a boolean"
+            )
         raw_request_rules = data.get("request_rules", [])
         if request_rule_registry is None:
             if not isinstance(raw_request_rules, list):
@@ -338,11 +346,39 @@ class ProviderSpec:
     models: Dict[str, ModelSpec] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, name: str, data: Dict[str, Any]) -> "ProviderSpec":
+    def from_dict(
+        cls,
+        name: str,
+        data: Mapping[str, Any],
+        *,
+        request_rule_registry: Optional[RequestRuleRegistry] = None,
+    ) -> "ProviderSpec":
+        if not isinstance(name, str) or not name:
+            raise ValueError("provider name must be a non-empty string")
+        if not isinstance(data, Mapping):
+            raise ValueError(f"Provider '{name}' metadata must be an object")
         currency = data.get("currency", "USD")
         if not isinstance(currency, str) or not currency:
             raise ValueError(f"Provider '{name}' has an invalid currency")
-        request_rule_registry = request_rule_registry_for_provider(name)
+        if request_rule_registry is None:
+            request_rule_registry = request_rule_registry_for_provider(name)
+        elif request_rule_registry.provider_name != name:
+            raise ValueError(
+                "request rule schema provider must match provider metadata: "
+                f"{name}"
+            )
+        raw_models = data.get("models")
+        if not isinstance(raw_models, Mapping) or not raw_models:
+            raise ValueError(
+                f"Provider '{name}' must define a non-empty models object"
+            )
+        if any(
+            not isinstance(model_name, str) or not model_name
+            for model_name in raw_models
+        ):
+            raise ValueError(
+                f"Provider '{name}' model names must be non-empty strings"
+            )
         models = {
             model_name: ModelSpec.from_dict(
                 model_name,
@@ -350,9 +386,18 @@ class ProviderSpec:
                 currency=currency,
                 request_rule_registry=request_rule_registry,
             )
-            for model_name, model_spec in (data.get("models") or {}).items()
+            for model_name, model_spec in raw_models.items()
         }
         return cls(name=name, currency=currency, models=models)
+
+
+@dataclass(frozen=True)
+class ProviderModelMetadata:
+    """Validated model catalogue supplied by one external provider plugin."""
+
+    organization: str
+    provider_data: Mapping[str, Any]
+    request_rule_registry: Optional[RequestRuleRegistry] = None
 
 
 @dataclass(frozen=True, init=False)
@@ -412,6 +457,42 @@ class RegistrySpec:
         if not isinstance(provider_data, dict):
             raise ValueError(f"Provider registry data for '{provider_name}' must be an object")
         return provider_data
+
+    def register_provider_metadata(
+        self,
+        metadata: ProviderModelMetadata,
+    ) -> bool:
+        """Validate and atomically register one external provider catalogue."""
+        if not isinstance(metadata, ProviderModelMetadata):
+            raise TypeError("metadata must be a ProviderModelMetadata instance")
+        if not isinstance(metadata.organization, str) or not metadata.organization:
+            raise ValueError("provider metadata organization must be a non-empty string")
+
+        try:
+            provider = ProviderSpec.from_dict(
+                metadata.organization,
+                metadata.provider_data,
+                request_rule_registry=metadata.request_rule_registry,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Invalid provider metadata for '{metadata.organization}': {error}"
+            ) from error
+
+        existing_provider = self.providers.get(metadata.organization)
+        if existing_provider is None:
+            object.__setattr__(
+                self,
+                "providers",
+                {**self.providers, metadata.organization: provider},
+            )
+            return True
+        if existing_provider == provider:
+            return False
+        raise ValueError(
+            "Provider metadata already registered: "
+            f"{metadata.organization}"
+        )
 
 
 def _is_valid_snapshot_date(value: str, *, compact: bool) -> bool:

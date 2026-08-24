@@ -16,8 +16,6 @@ def test_document_bytes_returns_non_empty_response(
     chat_with_retry,
 ):
     for p, model in iter_provider_models():
-        if p["name"] not in {"anthropic", "google"}:
-            continue
         if not p["api_key"]:
             continue
 

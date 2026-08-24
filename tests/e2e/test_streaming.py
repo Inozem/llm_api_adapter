@@ -3,6 +3,7 @@ import pytest
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
+
 @pytest.mark.e2e
 def test_stream_chat_returns_text_and_finalized_response(
     subtests,

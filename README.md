@@ -6,7 +6,9 @@
 
 ## Overview
 
-**llm-api-adapter** is a minimal, typed multi-provider adapter for OpenAI, Anthropic, and Google. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching providers means changing two arguments.
+**llm-api-adapter** is a minimal, typed adapter for four organizations: OpenAI, Anthropic, Google, and Mistral. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching organizations means changing two arguments.
+
+**Note:** Mistral is installed separately with `llm-api-adapter[mistral]`.
 
 Supports Python 3.10–3.14.
 
@@ -51,7 +53,7 @@ Supports Python 3.10–3.14.
 | Unified error hierarchy   | ✓ | OpenAI-compatible | framework-specific | ✗ |
 | Sync streaming            | ✓ text-first | ✓ | ✓ | ✓ |
 | Async API                 | ✓ optional | ✓ | ✓ | ✓ |
-| Number of providers       | 3 | 100+ | 50+ | 1 |
+| Number of organizations   | 4 | 100+ | 50+ | 1 |
 
 * `reasoning_level` is one application-level parameter, but the available levels, native mapping, and emitted reasoning content remain model/provider-dependent.
 
@@ -104,6 +106,16 @@ To install the SDK, you can use pip:
 ```bash
 pip install llm-api-adapter
 ```
+
+To use Mistral, install its optional organization package:
+
+```bash
+pip install "llm-api-adapter[mistral]"
+```
+
+The [Mistral package README](packages/organizations/mistral/README.md) lists
+its supported models and Mistral-specific behaviour. Installing
+`llm-api-adapter-mistral` directly remains supported.
 
 For non-blocking requests, install the optional `[async]` extra and follow the
 [Async API guide](ASYNC_API.md).

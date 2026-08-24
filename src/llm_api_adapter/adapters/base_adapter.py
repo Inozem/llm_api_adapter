@@ -91,6 +91,7 @@ class LLMAdapterBase(ABC):
     pricing: Optional[Pricing] = None
     is_reasoning: bool = False
     is_adaptive_thinking: bool = False
+    service_provider: Optional[str] = None
     model_spec: Optional[ModelSpec] = field(default=None, init=False, repr=False)
 
     def __repr__(self) -> str:
@@ -103,6 +104,15 @@ class LLMAdapterBase(ABC):
     def __post_init__(self):
         if not self.api_key:
             error_message = "api_key must be a non-empty string"
+            logger.error(error_message)
+            raise ValueError(error_message)
+        if self.service_provider is None:
+            self.service_provider = self.company
+        elif (
+            not isinstance(self.service_provider, str)
+            or not self.service_provider
+        ):
+            error_message = "service_provider must be a non-empty string"
             logger.error(error_message)
             raise ValueError(error_message)
         self.transport = validate_sync_transport(self.transport)
