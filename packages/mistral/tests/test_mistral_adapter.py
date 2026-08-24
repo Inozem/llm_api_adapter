@@ -22,6 +22,7 @@ import llm_api_adapter_mistral.adapter as mistral_adapter_module
 from llm_api_adapter.errors.llm_api_error import LLMAPITokenLimitError
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
+from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -157,6 +158,32 @@ def test_universal_chat_builds_direct_mistral_payload_and_finalizes_pricing(
         "top_p": 0.8,
         "reasoning_effort": "none",
     }
+
+
+@pytest.mark.unit
+def test_mistral_accepts_previous_response_without_serializing_it(
+    mistral_runtime,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-small-2603",
+        api_key="mistral-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "model": "mistral-small-2603",
+            "choices": [{"message": {"content": "Bonjour"}}],
+        }
+    )
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat(
+        [{"role": "user", "content": "Hello"}],
+        previous_response=ChatResponse(response_id="cmpl-previous"),
+    )
+
+    assert response.content == "Bonjour"
+    assert "previous_response" not in transport.requests[0].payload
 
 
 @pytest.mark.unit

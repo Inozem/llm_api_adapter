@@ -352,11 +352,10 @@ class MistralAdapter(LLMAdapterBase):
         json_schema: Optional[dict],
         response_model: Optional[Any],
     ) -> tuple[Any, dict[str, Any]]:
-        if previous_response is not None:
-            raise NotImplementedError(
-                "Mistral Chat Completions has no previous_response parameter; "
-                "include the conversation history in messages instead."
-            )
+        # Mistral Chat Completions is stateless.  Conversation history is
+        # represented by ``messages``; match the Anthropic and Google adapters
+        # by accepting the common argument without serializing it.
+        _ = previous_response
         temperature = self._validate_parameter("temperature", temperature, 0, 1.5)
         top_p = self._validate_parameter("top_p", top_p, 0, 1)
         request_context = self._prepare_chat_request(
