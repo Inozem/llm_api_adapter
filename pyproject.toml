@@ -27,6 +27,7 @@ dependencies = ["requests>=2.32"]
 [project.optional-dependencies]
 async = ["httpx>=0.28"]
 httpx = ["httpx>=0.28"]
+mistral = ["llm-api-adapter-mistral>=0.1.0,<0.2.0"]
 
 [project.urls]
 Repository = "https://github.com/Inozem/llm_api_adapter/"
