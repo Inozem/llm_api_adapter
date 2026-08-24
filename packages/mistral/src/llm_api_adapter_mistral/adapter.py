@@ -48,13 +48,20 @@ from llm_api_adapter.llms.streaming import (
     StreamReasoningCollector,
     StreamUsageTracker,
 )
-from llm_api_adapter.models.messages.chat_message import Message, Messages
+from llm_api_adapter.models.messages.chat_message import (
+    Message,
+    Messages,
+    UserMessage,
+)
+from llm_api_adapter.models.messages.file_parts import DocumentPart
 from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from llm_api_adapter.models.tools import ToolCall, ToolSpec
 
 
 _MISTRAL_CHAT_COMPLETIONS_URL = "https://api.mistral.ai/v1/chat/completions"
+_MISTRAL_OCR_URL = "https://api.mistral.ai/v1/ocr"
+_MISTRAL_OCR_MODEL = "mistral-ocr-latest"
 
 
 @dataclass
@@ -69,7 +76,7 @@ class _MistralStreamState(_StreamState):
 
 @dataclass(repr=False)
 class MistralAdapter(LLMAdapterBase):
-    """Call Mistral's direct Chat Completions endpoint through a core transport."""
+    """Call Mistral Chat Completions and expand PDF inputs through OCR."""
 
     company: str = "mistral"
     endpoint: str = _MISTRAL_CHAT_COMPLETIONS_URL
@@ -97,8 +104,9 @@ class MistralAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Generate one response through ``POST /v1/chat/completions``."""
+        prepared_messages = self._prepare_document_messages(messages, timeout_s)
         request_context, payload = self._prepare_request_payload(
-            messages,
+            prepared_messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -146,8 +154,12 @@ class MistralAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Generate one response without blocking the event loop."""
-        request_context, payload = self._prepare_request_payload(
+        prepared_messages = await self._prepare_document_messages_async(
             messages,
+            timeout_s,
+        )
+        request_context, payload = self._prepare_request_payload(
+            prepared_messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -201,8 +213,9 @@ class MistralAdapter(LLMAdapterBase):
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
         """Stream normalized visible deltas from Mistral's SSE endpoint."""
+        prepared_messages = self._prepare_document_messages(messages, timeout_s)
         request_context, payload = self._prepare_request_payload(
-            messages,
+            prepared_messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -303,8 +316,12 @@ class MistralAdapter(LLMAdapterBase):
         capture_reasoning: bool,
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
-        request_context, payload = self._prepare_request_payload(
+        prepared_messages = await self._prepare_document_messages_async(
             messages,
+            timeout_s,
+        )
+        request_context, payload = self._prepare_request_payload(
+            prepared_messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -377,6 +394,137 @@ class MistralAdapter(LLMAdapterBase):
             json_schema=request_context.effective_schema,
         )
 
+    def _prepare_document_messages(
+        self,
+        messages: List[Message] | Messages,
+        timeout_s: Optional[float],
+    ) -> Messages:
+        """Replace PDF inputs with their Mistral OCR Markdown output."""
+        normalized_messages = self._normalize_messages(messages)
+        documents = self._document_parts(normalized_messages)
+        if not documents:
+            return normalized_messages
+        markdowns = [
+            self._extract_ocr_markdown(
+                self._post_ocr_payload(
+                    self._build_ocr_payload(document),
+                    timeout_s,
+                )
+            )
+            for document in documents
+        ]
+        return self._replace_documents(normalized_messages, markdowns)
+
+    async def _prepare_document_messages_async(
+        self,
+        messages: List[Message] | Messages,
+        timeout_s: Optional[float],
+    ) -> Messages:
+        """Asynchronously replace PDF inputs with OCR Markdown output."""
+        normalized_messages = self._normalize_messages(messages)
+        documents = self._document_parts(normalized_messages)
+        if not documents:
+            return normalized_messages
+        markdowns = [
+            self._extract_ocr_markdown(
+                await self._apost_ocr_payload(
+                    self._build_ocr_payload(document),
+                    timeout_s,
+                )
+            )
+            for document in documents
+        ]
+        return self._replace_documents(normalized_messages, markdowns)
+
+    @staticmethod
+    def _document_parts(messages: Messages) -> list[DocumentPart]:
+        return [
+            file
+            for message in messages.items
+            if isinstance(message, UserMessage) and message.files
+            for file in message.files
+            if isinstance(file, DocumentPart)
+        ]
+
+    @staticmethod
+    def _replace_documents(
+        messages: Messages,
+        markdowns: list[str],
+    ) -> Messages:
+        markdown_iterator = iter(markdowns)
+        processed_messages: list[Message] = []
+        for message in messages.items:
+            if not isinstance(message, UserMessage) or not message.files:
+                processed_messages.append(message)
+                continue
+            document_markdowns = [
+                next(markdown_iterator)
+                for file in message.files
+                if isinstance(file, DocumentPart)
+            ]
+            if not document_markdowns:
+                processed_messages.append(message)
+                continue
+            files = [
+                file
+                for file in message.files
+                if not isinstance(file, DocumentPart)
+            ]
+            processed_messages.append(
+                UserMessage(
+                    content=MistralAdapter._append_document_markdown(
+                        message.content,
+                        document_markdowns,
+                    ),
+                    files=files or None,
+                )
+            )
+        return Messages(processed_messages)
+
+    @staticmethod
+    def _append_document_markdown(
+        content: str,
+        markdowns: list[str],
+    ) -> str:
+        documents = [
+            f"<document index=\"{index}\">\n{markdown}\n</document>"
+            for index, markdown in enumerate(markdowns, start=1)
+        ]
+        return "\n\n".join([content, *documents])
+
+    @staticmethod
+    def _build_ocr_payload(document: DocumentPart) -> dict[str, Any]:
+        document_url = (
+            document.url if document._is_url() else document._to_data_uri()
+        )
+        return {
+            "model": _MISTRAL_OCR_MODEL,
+            "document": {
+                "type": "document_url",
+                "document_url": document_url,
+            },
+        }
+
+    @staticmethod
+    def _extract_ocr_markdown(response: Mapping[str, Any]) -> str:
+        pages = response.get("pages")
+        if not isinstance(pages, list):
+            raise LLMAPIClientError(
+                detail="Mistral OCR response does not contain document pages"
+            )
+        markdowns = [
+            page["markdown"]
+            for page in pages
+            if isinstance(page, Mapping)
+            and isinstance(page.get("markdown"), str)
+            and page["markdown"].strip()
+        ]
+        if not markdowns:
+            raise LLMAPIClientError(
+                detail="Mistral OCR response contains no document text"
+            )
+        return "\n\n---\n\n".join(markdowns)
+
     def _new_stream_state(
         self,
         *,
@@ -412,6 +560,24 @@ class MistralAdapter(LLMAdapterBase):
         )
         if not isinstance(response_data, dict):
             raise LLMAPIClientError(detail="Mistral returned a non-object response")
+        return response_data
+
+    async def _apost_ocr_payload(
+        self,
+        payload: dict[str, Any],
+        timeout_s: Optional[float],
+    ) -> dict[str, Any]:
+        response_data = await async_request(
+            _MISTRAL_OCR_URL,
+            headers=self._headers(),
+            payload=payload,
+            timeout=timeout_s,
+            http_error_handler=self._handle_http_error,
+        )
+        if not isinstance(response_data, dict):
+            raise LLMAPIClientError(
+                detail="Mistral OCR returned a non-object response"
+            )
         return response_data
 
     def _stream_payload(
@@ -683,7 +849,7 @@ class MistralAdapter(LLMAdapterBase):
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": messages.to_openai(),
+            "messages": self._to_mistral_messages(messages),
             "max_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
@@ -702,6 +868,27 @@ class MistralAdapter(LLMAdapterBase):
                 },
             }
         return {key: value for key, value in payload.items() if value is not None}
+
+    @staticmethod
+    def _to_mistral_messages(messages: Messages) -> list[dict[str, Any]]:
+        """Convert the shared OpenAI-like message shape to Mistral's variant."""
+        serialized_messages = messages.to_openai()
+        for message in serialized_messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "image_url":
+                    continue
+                image_url = part.get("image_url")
+                if isinstance(image_url, Mapping):
+                    url = image_url.get("url")
+                    if not isinstance(url, str):
+                        raise ValueError(
+                            "Mistral image_url must contain a string URL"
+                        )
+                    part["image_url"] = url
+        return serialized_messages
 
     def _resolve_reasoning_effort(
         self,
@@ -756,6 +943,27 @@ class MistralAdapter(LLMAdapterBase):
         response_data = response.json()
         if not isinstance(response_data, dict):
             raise LLMAPIClientError(detail="Mistral returned a non-object response")
+        return response_data
+
+    def _post_ocr_payload(
+        self,
+        payload: dict[str, Any],
+        timeout_s: Optional[float],
+    ) -> dict[str, Any]:
+        response: JSONResponse = self._sync_transport.post_json(
+            TransportRequest(
+                url=_MISTRAL_OCR_URL,
+                headers=self._headers(),
+                payload=payload,
+                timeout=timeout_s,
+            ),
+            http_error_handler=self._handle_http_error,
+        )
+        response_data = response.json()
+        if not isinstance(response_data, dict):
+            raise LLMAPIClientError(
+                detail="Mistral OCR returned a non-object response"
+            )
         return response_data
 
     def _handle_stream_error(self, event: SSEEvent) -> None:

@@ -22,6 +22,8 @@ import llm_api_adapter_mistral.adapter as mistral_adapter_module
 from llm_api_adapter.errors.llm_api_error import LLMAPITokenLimitError
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
+from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.provider_registry import ServiceProviderRegistry
@@ -31,15 +33,17 @@ from llm_api_adapter_mistral.plugin import PLUGIN
 
 
 class FakeSyncTransport:
-    def __init__(self, response: dict, events=()) -> None:
+    def __init__(self, response: dict, events=(), responses=None) -> None:
         self.response = response
+        self.responses = list(responses or [])
         self.events = list(events)
         self.requests = []
         self.stream_requests = []
 
     def post_json(self, request, *, http_error_handler=None):
         self.requests.append(request)
-        return JSONResponse(self.response)
+        response = self.responses.pop(0) if self.responses else self.response
+        return JSONResponse(response)
 
     def post_sse(
         self,
@@ -184,6 +188,123 @@ def test_mistral_accepts_previous_response_without_serializing_it(
 
     assert response.content == "Bonjour"
     assert "previous_response" not in transport.requests[0].payload
+
+
+@pytest.mark.unit
+def test_mistral_serializes_image_bytes_and_urls_in_vision_format(
+    mistral_runtime,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "model": "mistral-large-2512",
+            "choices": [{"message": {"content": "A blue square."}}],
+        }
+    )
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat(
+        [
+            UserMessage(
+                "Describe these images.",
+                files=[
+                    ImagePart(data=b"png", media_type="image/png"),
+                    ImagePart(url="https://example.com/image.jpg"),
+                ],
+            )
+        ]
+    )
+
+    assert response.content == "A blue square."
+    assert transport.requests[0].payload["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe these images."},
+                {
+                    "type": "image_url",
+                    "image_url": "data:image/png;base64,cG5n",
+                },
+                {
+                    "type": "image_url",
+                    "image_url": "https://example.com/image.jpg",
+                },
+            ],
+        }
+    ]
+
+
+@pytest.mark.unit
+def test_mistral_processes_document_bytes_and_urls_through_ocr(
+    mistral_runtime,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+    transport = FakeSyncTransport(
+        {},
+        responses=[
+            {"model": "mistral-ocr-latest", "pages": [{"markdown": "# One"}]},
+            {
+                "model": "mistral-ocr-latest",
+                "pages": [{"markdown": "# Two"}, {"markdown": "More"}],
+            },
+            {
+                "model": "mistral-large-2512",
+                "choices": [{"message": {"content": "A summary."}}],
+            },
+        ],
+    )
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat(
+        [
+            UserMessage(
+                "Summarize these documents.",
+                files=[
+                    DocumentPart(data=b"%PDF", media_type="application/pdf"),
+                    DocumentPart(url="https://example.com/two.pdf"),
+                ],
+            )
+        ]
+    )
+
+    assert response.content == "A summary."
+    assert [request.url for request in transport.requests] == [
+        "https://api.mistral.ai/v1/ocr",
+        "https://api.mistral.ai/v1/ocr",
+        "https://api.mistral.ai/v1/chat/completions",
+    ]
+    assert transport.requests[0].payload == {
+        "model": "mistral-ocr-latest",
+        "document": {
+            "type": "document_url",
+            "document_url": "data:application/pdf;base64,JVBERg==",
+        },
+    }
+    assert transport.requests[1].payload == {
+        "model": "mistral-ocr-latest",
+        "document": {
+            "type": "document_url",
+            "document_url": "https://example.com/two.pdf",
+        },
+    }
+    assert transport.requests[2].payload["messages"] == [
+        {
+            "role": "user",
+            "content": (
+                "Summarize these documents.\n\n"
+                "<document index=\"1\">\n# One\n</document>\n\n"
+                "<document index=\"2\">\n# Two\n\n---\n\nMore\n</document>"
+            ),
+        }
+    ]
 
 
 @pytest.mark.unit
@@ -556,6 +677,63 @@ def test_mistral_async_chat_and_stream_use_shared_async_transport(
     assert stream_calls[0][1]["payload"]["stream_options"] == {
         "include_usage": True
     }
+
+
+@pytest.mark.unit
+def test_mistral_async_chat_processes_document_through_ocr(
+    mistral_runtime,
+    monkeypatch,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+    request_calls = []
+
+    async def fake_async_request(url, **kwargs):
+        request_calls.append((url, kwargs))
+        if url == "https://api.mistral.ai/v1/ocr":
+            return {
+                "model": "mistral-ocr-latest",
+                "pages": [{"markdown": "# Async document"}],
+            }
+        return {
+            "model": "mistral-large-2512",
+            "choices": [{"message": {"content": "Async summary."}}],
+        }
+
+    monkeypatch.setattr(
+        mistral_adapter_module,
+        "async_request",
+        fake_async_request,
+    )
+
+    response = asyncio.run(
+        adapter.achat(
+            [
+                UserMessage(
+                    "Summarize this document.",
+                    files=[
+                        DocumentPart(
+                            data=b"%PDF",
+                            media_type="application/pdf",
+                        )
+                    ],
+                )
+            ]
+        )
+    )
+
+    assert response.content == "Async summary."
+    assert [url for url, _ in request_calls] == [
+        "https://api.mistral.ai/v1/ocr",
+        "https://api.mistral.ai/v1/chat/completions",
+    ]
+    assert request_calls[1][1]["payload"]["messages"][0]["content"] == (
+        "Summarize this document.\n\n"
+        "<document index=\"1\">\n# Async document\n</document>"
+    )
 
 
 @pytest.mark.unit
