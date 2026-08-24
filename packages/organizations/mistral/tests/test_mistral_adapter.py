@@ -19,6 +19,7 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE)):
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 import llm_api_adapter_mistral.adapter as mistral_adapter_module
+import llm_api_adapter_mistral.clients.async_client as mistral_async_client_module
 from llm_api_adapter.errors.llm_api_error import LLMAPITokenLimitError
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
@@ -608,12 +609,12 @@ def test_mistral_async_chat_and_stream_use_shared_async_transport(
         return events()
 
     monkeypatch.setattr(
-        mistral_adapter_module,
+        mistral_async_client_module,
         "async_request",
         fake_async_request,
     )
     monkeypatch.setattr(
-        mistral_adapter_module,
+        mistral_async_client_module,
         "async_stream_request",
         fake_async_stream_request,
     )
@@ -704,7 +705,7 @@ def test_mistral_async_chat_processes_document_through_ocr(
         }
 
     monkeypatch.setattr(
-        mistral_adapter_module,
+        mistral_async_client_module,
         "async_request",
         fake_async_request,
     )

@@ -10,7 +10,7 @@ from llm_api_adapter.llm_registry.llm_registry import ProviderModelMetadata
 
 
 def _load_provider_data() -> dict[str, Any]:
-    resource = files(__package__).joinpath("llm_registry/providers/mistral.json")
+    resource = files(__package__).joinpath("providers/mistral.json")
     with resource.open("r", encoding="utf-8") as source:
         provider_data = json.load(source)
     if not isinstance(provider_data, dict):

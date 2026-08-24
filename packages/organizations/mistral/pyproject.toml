@@ -46,4 +46,4 @@ exclude = ["tests*", "*/tests*"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-"llm_api_adapter_mistral" = ["py.typed", "llm_registry/providers/*.json"]
+"llm_api_adapter_mistral" = ["py.typed", "registry/providers/*.json"]
