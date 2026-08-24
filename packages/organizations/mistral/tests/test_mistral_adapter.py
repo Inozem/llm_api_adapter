@@ -10,7 +10,7 @@ import pytest
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-CORE_SOURCE = PACKAGE_ROOT.parents[1] / "src"
+CORE_SOURCE = PACKAGE_ROOT.parents[2] / "src"
 PACKAGE_SOURCE = PACKAGE_ROOT / "src"
 for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE)):
     if source not in sys.path:

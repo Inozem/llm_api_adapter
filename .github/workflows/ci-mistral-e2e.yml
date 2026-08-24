@@ -5,7 +5,7 @@ on:
     branches: ["dev"]
     paths:
       - ".github/workflows/ci-mistral-e2e.yml"
-      - "packages/mistral/**"
+      - "packages/organizations/mistral/**"
       - "pyproject.toml"
       - "requirements.txt"
       - "src/llm_api_adapter/adapters/base_adapter.py"
@@ -22,7 +22,7 @@ on:
     branches: ["dev"]
     paths:
       - ".github/workflows/ci-mistral-e2e.yml"
-      - "packages/mistral/**"
+      - "packages/organizations/mistral/**"
       - "pyproject.toml"
       - "requirements.txt"
       - "src/llm_api_adapter/adapters/base_adapter.py"
@@ -59,10 +59,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r tests/requirements-test.txt
           pip install -e ".[async]"
-          pip install -e "packages/mistral[async]"
+          pip install -e "packages/organizations/mistral[async]"
 
       - name: Run Mistral deterministic tests
-        run: pytest -v packages/mistral/tests
+        run: pytest -v packages/organizations/mistral/tests
 
       - name: Run Mistral E2E tests
         run: pytest -v -m e2e_mistral
