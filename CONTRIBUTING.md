@@ -99,7 +99,7 @@ generated tokens so models that think by default still have room for visible
 text. Override a provider model only when needed with `SYNC_HTTPX_E2E_OPENAI_MODEL`,
 `SYNC_HTTPX_E2E_ANTHROPIC_MODEL`, or `SYNC_HTTPX_E2E_GOOGLE_MODEL`.
 
-For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage, while [the Mistral workflow](.github/workflows/ci-mistral.yml) runs only Mistral's deterministic tests when that package or code it uses changes.
+For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage, while [the Mistral workflow](.github/workflows/ci-mistral.yml) runs Mistral's unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
 
 Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change publishes the core package and runs both the built-in and Mistral E2E lanes. A Mistral package change publishes only `llm-api-adapter-mistral` and runs the Mistral lane. That lane installs the exact TestPyPI versions through `llm-api-adapter[mistral]`, then verifies plugin discovery before making a provider call. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
 
@@ -163,6 +163,8 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
 
    ```bash
    python tests/tests_runner.py
+   python -m pytest -v -m unit packages/organizations/mistral/tests
+   python -m pytest -v -m integration packages/organizations/mistral/tests
    ```
 
    The dev workflow collects coverage separately while running its unit and integration jobs.

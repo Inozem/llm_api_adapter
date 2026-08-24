@@ -75,7 +75,7 @@ def mistral_runtime(monkeypatch):
     return model_registry
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_plugin_registers_verified_models_and_universal_adapter(mistral_runtime):
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
@@ -97,7 +97,7 @@ def test_plugin_registers_verified_models_and_universal_adapter(mistral_runtime)
     ) is not None
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_universal_chat_builds_direct_mistral_payload_and_finalizes_pricing(
     mistral_runtime,
 ):
@@ -165,7 +165,7 @@ def test_universal_chat_builds_direct_mistral_payload_and_finalizes_pricing(
     }
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_mistral_accepts_previous_response_without_serializing_it(
     mistral_runtime,
 ):
@@ -191,7 +191,7 @@ def test_mistral_accepts_previous_response_without_serializing_it(
     assert "previous_response" not in transport.requests[0].payload
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_mistral_serializes_image_bytes_and_urls_in_vision_format(
     mistral_runtime,
 ):
@@ -239,7 +239,7 @@ def test_mistral_serializes_image_bytes_and_urls_in_vision_format(
     ]
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_mistral_processes_document_bytes_and_urls_through_ocr(
     mistral_runtime,
 ):
@@ -308,7 +308,7 @@ def test_mistral_processes_document_bytes_and_urls_through_ocr(
     ]
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_mistral_normalizes_tool_calls_and_thinking(
     mistral_runtime,
 ):
@@ -380,7 +380,7 @@ def test_mistral_normalizes_tool_calls_and_thinking(
     }
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_mistral_uses_official_json_schema_payload_shape(mistral_runtime):
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
@@ -419,7 +419,7 @@ def test_mistral_uses_official_json_schema_payload_shape(mistral_runtime):
     }
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_mistral_streams_text_tools_reasoning_and_usage(mistral_runtime):
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
@@ -548,7 +548,7 @@ def test_mistral_streams_text_tools_reasoning_and_usage(mistral_runtime):
     assert stream_request.payload["stream_options"] == {"include_usage": True}
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_mistral_async_chat_and_stream_use_shared_async_transport(
     mistral_runtime,
     monkeypatch,
@@ -680,7 +680,7 @@ def test_mistral_async_chat_and_stream_use_shared_async_transport(
     }
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_mistral_async_chat_processes_document_through_ocr(
     mistral_runtime,
     monkeypatch,
@@ -737,7 +737,7 @@ def test_mistral_async_chat_processes_document_through_ocr(
     )
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_mistral_maps_context_errors_to_shared_error_hierarchy():
     with pytest.raises(LLMAPITokenLimitError):
         MistralAdapter._raise_mapped_error(
