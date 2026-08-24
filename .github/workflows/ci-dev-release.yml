@@ -138,6 +138,16 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
+      - name: Require built-in API keys
+        shell: bash
+        run: |
+          for key_name in OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY; do
+            if [ -z "${!key_name}" ]; then
+              echo "::error::${key_name} is not configured."
+              exit 1
+            fi
+          done
+
       - name: Install test runner and dependencies
         run: |
           python -m pip install --upgrade pip
@@ -188,6 +198,14 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
+
+      - name: Require Mistral API key
+        shell: bash
+        run: |
+          test -n "$MISTRAL_API_KEY" || {
+            echo "::error::MISTRAL_API_KEY is not configured."
+            exit 1
+          }
 
       - name: Install test runner and candidate packages from TestPyPI
         shell: bash
