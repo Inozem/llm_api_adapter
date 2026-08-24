@@ -11,9 +11,6 @@ from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
-pytestmark = pytest.mark.e2e_builtin
-
-
 FRUIT_POPULARITY = {
     "strawberry": 73,
     "banana": 41,
@@ -113,9 +110,9 @@ def test_basic_auto_tool_loop_with_previous_response(subtests, iter_provider_mod
             final = chat_with_retry(
                 adapter,
                 messages=messages,
-                previous_response=first,
                 max_tokens=512,
                 timeout_s=60,
+                previous_response=first,
             )
 
             assert isinstance(final.content, str)

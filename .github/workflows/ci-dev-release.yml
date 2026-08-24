@@ -9,7 +9,6 @@ on:
     types: [closed]
     paths-ignore:
       - "packages/**"
-      - "tests/e2e/test_mistral.py"
       - ".github/workflows/ci-mistral-e2e.yml"
 
 permissions:

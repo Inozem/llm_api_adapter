@@ -5,9 +5,6 @@ from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
-pytestmark = pytest.mark.e2e_builtin
-
-
 @pytest.mark.e2e
 def test_chat_auth_error_invalid_api_key(providers):
     """

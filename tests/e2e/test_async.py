@@ -17,9 +17,6 @@ from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
-pytestmark = pytest.mark.e2e_builtin
-
-
 pytest.importorskip("httpx")
 
 
@@ -214,9 +211,9 @@ async def test_async_tools_round_trip_with_previous_response(
             final = await async_chat_with_retry(
                 adapter,
                 messages=messages,
-                previous_response=first,
                 max_tokens=512,
                 timeout_s=60,
+                previous_response=first,
             )
             assert final.content and final.content.strip()
             assert not final.tool_calls
@@ -248,9 +245,6 @@ async def test_async_image_and_document_inputs_return_text(
                 timeout_s=60,
             )
             assert image_response.content and image_response.content.strip()
-
-        if provider["name"] not in {"anthropic", "google"}:
-            continue
 
         with subtests.test(provider=provider["name"], model=model, input="pdf"):
             document_response = await async_chat_with_retry(

@@ -6,9 +6,6 @@ from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
-pytestmark = pytest.mark.e2e_builtin
-
-
 @pytest.mark.e2e
 def test_chat_accepts_basic_params_and_returns_contract(subtests, iter_provider_models, chat_with_retry):
     for p, model in iter_provider_models():

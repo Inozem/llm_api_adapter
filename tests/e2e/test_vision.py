@@ -5,14 +5,16 @@ from llm_api_adapter.models.messages.file_parts import ImagePart
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
-pytestmark = pytest.mark.e2e_builtin
-
-
 _PROMPT = "What do you see in this image? One sentence."
 
 
 @pytest.mark.e2e
-def test_vision_bytes_returns_non_empty_response(subtests, iter_provider_models, vision_image_bytes, chat_with_retry):
+def test_vision_bytes_returns_non_empty_response(
+    subtests,
+    iter_provider_models,
+    vision_image_bytes,
+    chat_with_retry,
+):
     for p, model in iter_provider_models():
         with subtests.test(provider=p["name"], model=model):
             adapter = UniversalLLMAPIAdapter(

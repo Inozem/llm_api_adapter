@@ -5,9 +5,6 @@ from llm_api_adapter.models.messages.file_parts import DocumentPart
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
-pytestmark = pytest.mark.e2e_builtin
-
-
 _PROMPT = "Summarize this document in one sentence."
 
 
@@ -19,8 +16,6 @@ def test_document_bytes_returns_non_empty_response(
     chat_with_retry,
 ):
     for p, model in iter_provider_models():
-        if p["name"] not in {"anthropic", "google"}:
-            continue
         if not p["api_key"]:
             continue
 
