@@ -153,7 +153,7 @@ def test_unverified_model_warns_and_leaves_pricing_none(monkeypatch):
     monkeypatch.setattr(
         base_module,
         "LLM_REGISTRY",
-        SimpleNamespace(providers={}),
+        SimpleNamespace(organizations={}),
         raising=False,
     )
     with pytest.warns(UserWarning):
@@ -173,7 +173,7 @@ def test_pricing_copied_from_registry(monkeypatch):
         ],
         currency="USD",
     )
-    provider = SimpleNamespace(
+    organization = SimpleNamespace(
         models={
             "m-pro": SimpleNamespace(
                 pricing_tiers=base_pricing,
@@ -184,7 +184,7 @@ def test_pricing_copied_from_registry(monkeypatch):
     monkeypatch.setattr(
         base_module,
         "LLM_REGISTRY",
-        SimpleNamespace(providers={"acme": provider}),
+        SimpleNamespace(organizations={"acme": organization}),
         raising=False,
     )
     adapter_instance = _TestAdapter(company="acme", api_key="k", model="m-pro")
@@ -238,13 +238,13 @@ def test_finalize_chat_response_resolves_pricing_tier_from_usage(
 
 @pytest.mark.unit
 def test_post_init_sets_reasoning_flag_from_registry(monkeypatch):
-    provider = SimpleNamespace(
+    organization = SimpleNamespace(
         models={"m-reason": SimpleNamespace(pricing=None, is_reasoning=True, is_adaptive_thinking=False)}
     )
     monkeypatch.setattr(
         base_module,
         "LLM_REGISTRY",
-        SimpleNamespace(providers={"acme": provider}),
+        SimpleNamespace(organizations={"acme": organization}),
         raising=False,
     )
     adapter_instance = _TestAdapter(company="acme", api_key="k", model="m-reason")
@@ -253,13 +253,13 @@ def test_post_init_sets_reasoning_flag_from_registry(monkeypatch):
 
 @pytest.mark.unit
 def test_post_init_sets_adaptive_thinking_flag_from_registry(monkeypatch):
-    provider = SimpleNamespace(
+    organization = SimpleNamespace(
         models={"m-adaptive": SimpleNamespace(pricing=None, is_reasoning=True, is_adaptive_thinking=True)}
     )
     monkeypatch.setattr(
         base_module,
         "LLM_REGISTRY",
-        SimpleNamespace(providers={"acme": provider}),
+        SimpleNamespace(organizations={"acme": organization}),
         raising=False,
     )
     adapter_instance = _TestAdapter(company="acme", api_key="k", model="m-adaptive")

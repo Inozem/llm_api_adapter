@@ -1,9 +1,9 @@
 {
   "schema_version": 12,
   "effective_date": "2026-08-16",
-  "provider_files": {
-    "openai": "providers/openai.json",
-    "anthropic": "providers/anthropic.json",
-    "google": "providers/google.json"
+  "organization_files": {
+    "openai": "organizations/openai.json",
+    "anthropic": "organizations/anthropic.json",
+    "google": "organizations/google.json"
   }
 }

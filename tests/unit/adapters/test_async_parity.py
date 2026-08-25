@@ -41,9 +41,9 @@ LOOKUP_TOOL = ToolSpec(
 
 
 @dataclass(frozen=True)
-class ProviderCase:
+class OrganizationCase:
     name: str
-    provider: str
+    organization: str
     adapter_cls: Type[Any]
     sync_client_cls: Type[Any]
     async_client_cls: Type[Any]
@@ -245,9 +245,9 @@ async def _google_stream() -> AsyncIterator[SSEEvent]:
 
 PROVIDERS = (
     pytest.param(
-        ProviderCase(
+        OrganizationCase(
             name="openai",
-            provider="openai",
+            organization="openai",
             adapter_cls=OpenAIAdapter,
             sync_client_cls=OpenAISyncClient,
             async_client_cls=OpenAIAsyncClient,
@@ -264,9 +264,9 @@ PROVIDERS = (
         id="openai",
     ),
     pytest.param(
-        ProviderCase(
+        OrganizationCase(
             name="anthropic-numeric",
-            provider="anthropic",
+            organization="anthropic",
             adapter_cls=AnthropicAdapter,
             sync_client_cls=ClaudeSyncClient,
             async_client_cls=ClaudeAsyncClient,
@@ -283,9 +283,9 @@ PROVIDERS = (
         id="anthropic-numeric",
     ),
     pytest.param(
-        ProviderCase(
+        OrganizationCase(
             name="anthropic-adaptive",
-            provider="anthropic",
+            organization="anthropic",
             adapter_cls=AnthropicAdapter,
             sync_client_cls=ClaudeSyncClient,
             async_client_cls=ClaudeAsyncClient,
@@ -302,9 +302,9 @@ PROVIDERS = (
         id="anthropic-adaptive",
     ),
     pytest.param(
-        ProviderCase(
+        OrganizationCase(
             name="google-numeric",
-            provider="google",
+            organization="google",
             adapter_cls=GoogleAdapter,
             sync_client_cls=GeminiSyncClient,
             async_client_cls=GeminiAsyncClient,
@@ -324,9 +324,9 @@ PROVIDERS = (
         id="google-numeric",
     ),
     pytest.param(
-        ProviderCase(
+        OrganizationCase(
             name="google-categorical",
-            provider="google",
+            organization="google",
             adapter_cls=GoogleAdapter,
             sync_client_cls=GeminiSyncClient,
             async_client_cls=GeminiAsyncClient,
@@ -348,7 +348,7 @@ PROVIDERS = (
 )
 
 
-def _make_adapter(case: ProviderCase):
+def _make_adapter(case: OrganizationCase):
     adapter = case.adapter_cls(api_key="test_api_key", model=case.model)
     adapter.pricing = Pricing.from_dict(
         [
@@ -368,7 +368,7 @@ def _make_adapter(case: ProviderCase):
     return adapter
 
 
-def _chat_kwargs(case: ProviderCase) -> Dict[str, Any]:
+def _chat_kwargs(case: OrganizationCase) -> Dict[str, Any]:
     return {
         "messages": [UserMessage("hi")],
         "max_tokens": case.max_tokens,
@@ -378,10 +378,10 @@ def _chat_kwargs(case: ProviderCase) -> Dict[str, Any]:
     }
 
 
-def _reasoning_payload(case: ProviderCase, payload: Dict[str, Any]) -> Dict[str, Any]:
-    if case.provider == "google":
+def _reasoning_payload(case: OrganizationCase, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if case.organization == "google":
         return payload["generationConfig"]["thinkingConfig"]
-    if case.provider == "openai":
+    if case.organization == "openai":
         return {"reasoning_effort": payload["reasoning_effort"]}
     return {
         key: payload[key]
@@ -545,7 +545,7 @@ def test_sync_stream_uses_the_same_reasoning_payload(case, monkeypatch):
     adapter = _make_adapter(case)
     consumer_name = (
         "_consume_responses_stream"
-        if case.provider == "openai"
+        if case.organization == "openai"
         else "_consume_stream"
     )
     monkeypatch.setattr(adapter, consumer_name, lambda *args, **kwargs: iter(()))

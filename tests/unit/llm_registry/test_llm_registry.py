@@ -12,8 +12,8 @@ from src.llm_api_adapter.llm_registry.llm_registry import (
     NumericReasoningCapability,
     Pricing,
     PricingTier,
-    ProviderModelMetadata,
-    ProviderSpec,
+    OrganizationModelMetadata,
+    OrganizationSpec,
     RegistrySpec,
     LLM_REGISTRY,
     resolve_model_spec,
@@ -141,7 +141,7 @@ def test_pricing_tier_for_prompt_tokens_uses_inclusive_boundaries():
 
 
 @pytest.mark.unit
-def test_model_and_provider_from_dict():
+def test_model_and_organization_from_dict():
     model_data = _model_data()
 
     model = ModelSpec.from_dict("gpt-5", model_data)
@@ -159,22 +159,22 @@ def test_model_and_provider_from_dict():
         ),
     )
 
-    provider = ProviderSpec.from_dict(
+    organization = OrganizationSpec.from_dict(
         "prov",
         {"currency": "EUR", "models": {"gpt-5": model_data}},
     )
 
-    assert provider.name == "prov"
-    assert provider.currency == "EUR"
-    assert "gpt-5" in provider.models
-    assert isinstance(provider.models["gpt-5"], ModelSpec)
-    assert provider.models["gpt-5"].pricing_tiers.currency == "EUR"
+    assert organization.name == "prov"
+    assert organization.currency == "EUR"
+    assert "gpt-5" in organization.models
+    assert isinstance(organization.models["gpt-5"], ModelSpec)
+    assert organization.models["gpt-5"].pricing_tiers.currency == "EUR"
 
 
 @pytest.mark.unit
-def test_plugin_provider_metadata_uses_the_existing_validation_and_lifecycle():
+def test_plugin_organization_metadata_uses_the_existing_validation_and_lifecycle():
     class MistralRequestRuleRegistry(RequestRuleRegistry):
-        provider_name = "mistral"
+        organization_name = "mistral"
         supported_handlers = frozenset({RequestRuleRegistry.DROP_PARAMETER})
         droppable_parameter_defaults = {"temperature": 1.0}
 
@@ -185,9 +185,9 @@ def test_plugin_provider_metadata_uses_the_existing_validation_and_lifecycle():
             "arguments": {"path": "temperature", "default": 1.0},
         }
     ]
-    metadata = ProviderModelMetadata(
+    metadata = OrganizationModelMetadata(
         organization="mistral",
-        provider_data={
+        organization_data={
             "currency": "EUR",
             "models": {"mistral-small": model_data},
         },
@@ -195,8 +195,8 @@ def test_plugin_provider_metadata_uses_the_existing_validation_and_lifecycle():
     )
     registry = RegistrySpec()
 
-    assert registry.register_provider_metadata(metadata) is True
-    assert registry.register_provider_metadata(metadata) is False
+    assert registry.register_organization_metadata(metadata) is True
+    assert registry.register_organization_metadata(metadata) is False
 
     model = resolve_model_spec(registry, "mistral", "mistral-small")
     assert model is not None
@@ -205,31 +205,31 @@ def test_plugin_provider_metadata_uses_the_existing_validation_and_lifecycle():
 
 
 @pytest.mark.unit
-def test_invalid_plugin_provider_metadata_does_not_mutate_the_registry():
+def test_invalid_plugin_organization_metadata_does_not_mutate_the_registry():
     registry = RegistrySpec()
-    providers_before = registry.providers
-    invalid_metadata = ProviderModelMetadata(
+    organizations_before = registry.organizations
+    invalid_metadata = OrganizationModelMetadata(
         organization="mistral",
-        provider_data={"models": {"mistral-small": {}}},
+        organization_data={"models": {"mistral-small": {}}},
     )
 
-    with pytest.raises(ValueError, match="Invalid provider metadata for 'mistral'"):
-        registry.register_provider_metadata(invalid_metadata)
+    with pytest.raises(ValueError, match="Invalid organization metadata for 'mistral'"):
+        registry.register_organization_metadata(invalid_metadata)
 
-    assert registry.providers is providers_before
-    assert "mistral" not in registry.providers
+    assert registry.organizations is organizations_before
+    assert "mistral" not in registry.organizations
 
 
 @pytest.mark.unit
-def test_conflicting_plugin_provider_metadata_is_rejected():
+def test_conflicting_plugin_organization_metadata_is_rejected():
     registry = RegistrySpec()
-    metadata = ProviderModelMetadata(
+    metadata = OrganizationModelMetadata(
         organization="mistral",
-        provider_data={"models": {"mistral-small": _model_data()}},
+        organization_data={"models": {"mistral-small": _model_data()}},
     )
-    changed_metadata = ProviderModelMetadata(
+    changed_metadata = OrganizationModelMetadata(
         organization="mistral",
-        provider_data={
+        organization_data={
             "models": {
                 "mistral-small": _model_data(
                     tiers=[
@@ -244,9 +244,9 @@ def test_conflicting_plugin_provider_metadata_is_rejected():
         },
     )
 
-    assert registry.register_provider_metadata(metadata) is True
-    with pytest.raises(ValueError, match="Provider metadata already registered"):
-        registry.register_provider_metadata(changed_metadata)
+    assert registry.register_organization_metadata(metadata) is True
+    with pytest.raises(ValueError, match="Organization metadata already registered"):
+        registry.register_organization_metadata(changed_metadata)
 
 
 @pytest.mark.unit
@@ -404,7 +404,7 @@ def test_conflicting_request_rule_order_is_rejected(request_rules, message):
 
 
 @pytest.mark.unit
-def test_request_rule_schemas_are_scoped_to_their_provider():
+def test_request_rule_schemas_are_scoped_to_their_organization():
     model_data = _model_data()
     model_data["request_rules"] = [
         {
@@ -413,7 +413,7 @@ def test_request_rule_schemas_are_scoped_to_their_provider():
         }
     ]
 
-    with pytest.raises(ValueError, match="not supported for provider 'anthropic'"):
+    with pytest.raises(ValueError, match="not supported for organization 'anthropic'"):
         ModelSpec.from_dict(
             "claude-sonnet-4-5",
             model_data,
@@ -556,18 +556,18 @@ def test_legacy_reasoning_flag_and_orphaned_adaptive_flag_are_rejected():
 
 @pytest.mark.unit
 def test_registry_reads_json_and_module_loads_llm_registry(tmp_path):
-    providers_dir = tmp_path / "providers"
-    providers_dir.mkdir()
-    provider_path = providers_dir / "example_provider.json"
-    provider_path.write_text(
+    organizations_dir = tmp_path / "organizations"
+    organizations_dir.mkdir()
+    organization_path = organizations_dir / "example_organization.json"
+    organization_path.write_text(
         json.dumps({"models": {"example-model": _model_data()}}),
         encoding="utf-8",
     )
     manifest = {
         "schema_version": 42,
         "effective_date": "2030-01-01",
-        "provider_files": {
-            "example_provider": "providers/example_provider.json",
+        "organization_files": {
+            "example_organization": "organizations/example_organization.json",
         },
     }
     json_path = tmp_path / "llm_registry.json"
@@ -577,7 +577,7 @@ def test_registry_reads_json_and_module_loads_llm_registry(tmp_path):
 
     assert registry.schema_version == 42
     assert registry.effective_date == "2030-01-01"
-    model = registry.providers["example_provider"].models["example-model"]
+    model = registry.organizations["example_organization"].models["example-model"]
     assert model.limits.context_window_tokens == 128_000
     assert model.limits.max_output_tokens == 16_384
     assert model.pricing_tiers.tiers[0].in_per_token == pytest.approx(0.001)
@@ -585,20 +585,20 @@ def test_registry_reads_json_and_module_loads_llm_registry(tmp_path):
 
 
 @pytest.mark.unit
-def test_registry_rejects_missing_provider_file(tmp_path):
+def test_registry_rejects_missing_organization_file(tmp_path):
     json_path = tmp_path / "llm_registry.json"
     json_path.write_text(
         json.dumps(
             {
                 "schema_version": 42,
                 "effective_date": "2030-01-01",
-                "provider_files": {"missing": "providers/missing.json"},
+                "organization_files": {"missing": "organizations/missing.json"},
             }
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="Provider registry file is missing"):
+    with pytest.raises(ValueError, match="Organization registry file is missing"):
         RegistrySpec(path=str(json_path))
 
 
@@ -692,14 +692,14 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
     assert DEFAULT_REGISTRY_PATH.is_file()
 
     manifest = json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
-    assert set(manifest["provider_files"]) == {"openai", "anthropic", "google"}
-    for relative_path in manifest["provider_files"].values():
+    assert set(manifest["organization_files"]) == {"openai", "anthropic", "google"}
+    for relative_path in manifest["organization_files"].values():
         assert (DEFAULT_REGISTRY_PATH.parent / relative_path).is_file()
 
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
     assert registry.schema_version == 12
-    for provider in registry.providers.values():
-        for model in provider.models.values():
+    for organization in registry.organizations.values():
+        for model in organization.models.values():
             assert model.limits.context_window_tokens > 0
             assert model.limits.max_output_tokens > 0
             assert model.pricing_tiers.tiers[-1].up_to_prompt_tokens is None
@@ -792,7 +792,7 @@ def test_default_registry_contains_current_request_rules(
 ):
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
 
-    rules = registry.providers[provider].models[model_name].request_rules.rules
+    rules = registry.organizations[provider].models[model_name].request_rules.rules
 
     assert tuple((rule.handler, rule.arguments) for rule in rules) == expected_rules
 
@@ -1008,7 +1008,7 @@ def test_default_registry_contains_verified_reasoning_capabilities(
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
 
     assert (
-        registry.providers[provider].models[model_name].reasoning_capability
+        registry.organizations[provider].models[model_name].reasoning_capability
         == expected_capability
     )
 
@@ -1044,7 +1044,7 @@ def test_default_registry_contains_verified_limits_and_pricing_tiers(
     expected_tiers,
 ):
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-    model = registry.providers[provider].models[model_name]
+    model = registry.organizations[provider].models[model_name]
 
     assert model.limits.context_window_tokens == context_window_tokens
     assert len(model.pricing_tiers.tiers) == len(expected_tiers)
@@ -1062,13 +1062,13 @@ def test_default_registry_contains_verified_limits_and_pricing_tiers(
 def test_default_registry_excludes_retired_claude_opus_4_1():
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
 
-    assert "claude-opus-4-1" not in registry.providers["anthropic"].models
+    assert "claude-opus-4-1" not in registry.organizations["anthropic"].models
 
 
 @pytest.mark.unit
 def test_sonnet_5_temporary_pricing_is_updated_after_promotion():
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-    sonnet_5 = registry.providers["anthropic"].models["claude-sonnet-5"]
+    sonnet_5 = registry.organizations["anthropic"].models["claude-sonnet-5"]
     if date.today() < SONNET_5_STANDARD_PRICING_DATE:
         expected_input, expected_output = 2.0, 10.0
     else:

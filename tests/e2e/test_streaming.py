@@ -7,21 +7,21 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 @pytest.mark.e2e
 def test_stream_chat_returns_text_and_finalized_response(
     subtests,
-    iter_provider_models,
+    iter_organization_models,
     stream_with_retry,
 ):
     configured_models = 0
 
-    for provider, model in iter_provider_models():
-        if not provider["api_key"]:
+    for organization, model in iter_organization_models():
+        if not organization["api_key"]:
             continue
         configured_models += 1
 
-        with subtests.test(provider=provider["name"], model=model):
+        with subtests.test(organization=organization["name"], model=model):
             adapter = UniversalLLMAPIAdapter(
-                organization=provider["name"],
+                organization=organization["name"],
                 model=model,
-                api_key=provider["api_key"],
+                api_key=organization["api_key"],
             )
             completed_responses = []
             observed_chunks = []
@@ -71,4 +71,4 @@ def test_stream_chat_returns_text_and_finalized_response(
             assert isinstance(response.finish_reason, str) and response.finish_reason
 
     if configured_models == 0:
-        pytest.skip("No provider API keys are configured")
+        pytest.skip("No organization API keys are configured")

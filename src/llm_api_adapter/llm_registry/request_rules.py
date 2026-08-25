@@ -1,4 +1,4 @@
-"""Provider-scoped schemas for registry-backed request rule metadata.
+"""Organization-scoped schemas for registry-backed request rule metadata.
 
 The registry JSON selects only known handler IDs and validated data. It never
 imports code, evaluates expressions, or carries arbitrary callback payloads.
@@ -18,7 +18,7 @@ _MISSING = object()
 
 
 class RequestRuleRegistry:
-    """Base schema shared by provider-specific request rule registries."""
+    """Base schema shared by organization-specific request rule registries."""
 
     SELECT_API_VARIANT: ClassVar[str] = "select_api_variant"
     RENAME_PARAMETER: ClassVar[str] = "rename_parameter"
@@ -37,7 +37,7 @@ class RequestRuleRegistry:
         DROP_PARAMETER: 2,
     }
 
-    provider_name: ClassVar[str] = "base"
+    organization_name: ClassVar[str] = "base"
     supported_handlers: ClassVar[frozenset[str]] = frozenset()
     supported_api_variants: ClassVar[frozenset[str]] = frozenset()
     supported_parameter_renames: ClassVar[frozenset[tuple[str, str]]] = (
@@ -46,13 +46,13 @@ class RequestRuleRegistry:
     droppable_parameter_defaults: ClassVar[Dict[str, Any]] = {}
 
     def validate_arguments(self, handler: str, arguments: Dict[str, Any]) -> None:
-        """Validate one rule against this provider's supported payload fields."""
+        """Validate one rule against this organization's supported payload fields."""
         if handler not in self.HANDLERS:
             raise ValueError(f"unknown request rule handler: {handler!r}")
         if handler not in self.supported_handlers:
             raise ValueError(
-                f"request rule handler {handler!r} is not supported for provider "
-                f"{self.provider_name!r}"
+                f"request rule handler {handler!r} is not supported for organization "
+                f"{self.organization_name!r}"
             )
 
         if handler == self.SELECT_API_VARIANT:
@@ -122,7 +122,7 @@ class SamplingRequestRuleRegistry(RequestRuleRegistry):
 
 
 class OpenAIRequestRuleRegistry(SamplingRequestRuleRegistry):
-    provider_name = "openai"
+    organization_name = "openai"
     supported_handlers = SamplingRequestRuleRegistry.supported_handlers | frozenset(
         {
             RequestRuleRegistry.SELECT_API_VARIANT,
@@ -142,11 +142,11 @@ class OpenAIRequestRuleRegistry(SamplingRequestRuleRegistry):
 
 
 class AnthropicRequestRuleRegistry(SamplingRequestRuleRegistry):
-    provider_name = "anthropic"
+    organization_name = "anthropic"
 
 
 class GoogleRequestRuleRegistry(RequestRuleRegistry):
-    provider_name = "google"
+    organization_name = "google"
     supported_handlers = frozenset(
         {
             RequestRuleRegistry.DROP_PARAMETER,
@@ -159,7 +159,7 @@ class GoogleRequestRuleRegistry(RequestRuleRegistry):
     }
 
 
-REQUEST_RULE_REGISTRIES: Dict[str, RequestRuleRegistry] = {
+ORGANIZATION_REQUEST_RULE_REGISTRIES: Dict[str, RequestRuleRegistry] = {
     "openai": OpenAIRequestRuleRegistry(),
     "anthropic": AnthropicRequestRuleRegistry(),
     "google": GoogleRequestRuleRegistry(),
@@ -343,11 +343,11 @@ def _warn_ignored_parameter(path: str, model: str) -> None:
     logger.warning(message)
 
 
-def request_rule_registry_for_provider(
-    provider_name: str,
+def request_rule_registry_for_organization(
+    organization_name: str,
 ) -> Optional[RequestRuleRegistry]:
-    """Return a provider's closed rule schema, if the provider defines one."""
-    return REQUEST_RULE_REGISTRIES.get(provider_name)
+    """Return an organization's closed rule schema, if it defines one."""
+    return ORGANIZATION_REQUEST_RULE_REGISTRIES.get(organization_name)
 
 
 __all__ = [
@@ -356,11 +356,11 @@ __all__ = [
     "GoogleRequestRuleRegistry",
     "OpenAIRequestRuleRegistry",
     "REQUEST_RULE_HANDLERS",
-    "REQUEST_RULE_REGISTRIES",
+    "ORGANIZATION_REQUEST_RULE_REGISTRIES",
     "RequestRule",
     "RequestRuleRegistry",
     "RequestRules",
     "SamplingRequestRuleRegistry",
     "apply_request_rules",
-    "request_rule_registry_for_provider",
+    "request_rule_registry_for_organization",
 ]

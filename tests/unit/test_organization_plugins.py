@@ -1,4 +1,4 @@
-"""Deterministic tests for the lazy external-provider plugin contract."""
+"""Deterministic tests for the lazy external-organization plugin contract."""
 
 from __future__ import annotations
 
@@ -8,22 +8,24 @@ from typing import Any
 import pytest
 
 import src.llm_api_adapter.adapters.base_adapter as base_adapter_module
-import src.llm_api_adapter.provider_registry as registry_module
+import src.llm_api_adapter.organization_registry as registry_module
 import src.llm_api_adapter.universal_adapter as universal_module
 from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
 from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
-from src.llm_api_adapter.errors import ProviderNotInstalledError
+from src.llm_api_adapter.errors import OrganizationNotInstalledError
 from src.llm_api_adapter.llm_registry.llm_registry import (
-    ProviderModelMetadata,
+    OrganizationModelMetadata,
     RegistrySpec,
     resolve_model_spec,
 )
-from src.llm_api_adapter.provider_registry import (
+from src.llm_api_adapter.organization_registry import (
+    ORGANIZATION_PLUGIN_API_VERSION,
+    ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP,
+    OrganizationPlugin,
+    OrganizationPluginDiscovery,
+)
+from src.llm_api_adapter.service_provider_registry import (
     DuplicateServiceProviderError,
-    PROVIDER_PLUGIN_API_VERSION,
-    PROVIDER_PLUGIN_ENTRY_POINT_GROUP,
-    ProviderPlugin,
-    ProviderPluginDiscovery,
     ServiceProviderRegistry,
 )
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -63,10 +65,10 @@ class FakeEntryPoint:
         return self._plugin
 
 
-def _mistral_model_metadata() -> ProviderModelMetadata:
-    return ProviderModelMetadata(
+def _mistral_model_metadata() -> OrganizationModelMetadata:
+    return OrganizationModelMetadata(
         organization="mistral",
-        provider_data={
+        organization_data={
             "currency": "USD",
             "models": {
                 "test-model": {
@@ -88,14 +90,14 @@ def _mistral_model_metadata() -> ProviderModelMetadata:
 
 
 def _test_plugin(
-    service_provider: str = "mistral",
-    model_metadata: ProviderModelMetadata | None = None,
-) -> ProviderPlugin:
+    organization: str = "mistral",
+    model_metadata: OrganizationModelMetadata | None = None,
+) -> OrganizationPlugin:
     def register(registry: ServiceProviderRegistry) -> None:
-        registry.register(service_provider, PluginTestAdapter)
+        registry.register(organization, PluginTestAdapter)
 
-    return ProviderPlugin(
-        api_version=PROVIDER_PLUGIN_API_VERSION,
+    return OrganizationPlugin(
+        api_version=ORGANIZATION_PLUGIN_API_VERSION,
         register=register,
         model_metadata=model_metadata,
     )
@@ -104,16 +106,12 @@ def _test_plugin(
 @pytest.fixture
 def isolated_plugin_runtime(monkeypatch):
     registry = ServiceProviderRegistry({"anthropic": AnthropicAdapter})
-    discovery = ProviderPluginDiscovery()
+    discovery = OrganizationPluginDiscovery()
     model_registry = RegistrySpec()
+    monkeypatch.setattr(universal_module, "SERVICE_PROVIDER_REGISTRY", registry)
     monkeypatch.setattr(
         universal_module,
-        "SERVICE_PROVIDER_REGISTRY",
-        registry,
-    )
-    monkeypatch.setattr(
-        universal_module,
-        "PROVIDER_PLUGIN_DISCOVERY",
+        "ORGANIZATION_PLUGIN_DISCOVERY",
         discovery,
     )
     monkeypatch.setattr(universal_module, "LLM_REGISTRY", model_registry)
@@ -122,20 +120,20 @@ def isolated_plugin_runtime(monkeypatch):
 
 
 @pytest.mark.unit
-def test_external_provider_is_discovered_only_after_its_distribution_is_available(
+def test_external_organization_is_discovered_after_its_distribution_is_available(
     monkeypatch,
     isolated_plugin_runtime,
 ):
     installed_entry_points: list[FakeEntryPoint] = []
 
     def get_entry_points(*, group: str):
-        assert group == PROVIDER_PLUGIN_ENTRY_POINT_GROUP
+        assert group == ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP
         return tuple(installed_entry_points)
 
     monkeypatch.setattr(registry_module, "entry_points", get_entry_points)
 
     with pytest.raises(
-        ProviderNotInstalledError,
+        OrganizationNotInstalledError,
         match="pip install llm-api-adapter-mistral",
     ):
         UniversalLLMAPIAdapter(
@@ -172,9 +170,12 @@ def test_external_provider_is_discovered_only_after_its_distribution_is_availabl
 
 
 @pytest.mark.unit
-def test_builtin_provider_does_not_load_external_plugins(monkeypatch, isolated_plugin_runtime):
+def test_builtin_organization_does_not_load_external_plugins(
+    monkeypatch,
+    isolated_plugin_runtime,
+):
     entry_point = FakeEntryPoint(
-        name="broken-provider",
+        name="broken-organization",
         value="broken.plugin:PLUGIN",
         error=RuntimeError("plugin should remain unloaded"),
     )
@@ -198,32 +199,32 @@ def test_builtin_provider_does_not_load_external_plugins(monkeypatch, isolated_p
 def test_plugin_registration_is_idempotent_and_rejects_duplicates():
     registry = ServiceProviderRegistry()
 
-    assert registry.register("test-provider", PluginTestAdapter) is True
-    assert registry.register("test-provider", PluginTestAdapter) is False
+    assert registry.register("test-service", PluginTestAdapter) is True
+    assert registry.register("test-service", PluginTestAdapter) is False
     with pytest.raises(
         DuplicateServiceProviderError,
-        match="already registered: test-provider",
+        match="already registered: test-service",
     ):
-        registry.register("test-provider", lambda **_: PluginTestAdapter)
+        registry.register("test-service", lambda **_: PluginTestAdapter)
 
 
 @pytest.mark.unit
-def test_plugin_failures_are_recorded_without_breaking_registered_providers(
+def test_plugin_failures_are_recorded_without_breaking_registered_organizations(
     monkeypatch,
     isolated_plugin_runtime,
 ):
     registry, discovery, _ = isolated_plugin_runtime
     broken_entry_point = FakeEntryPoint(
-        name="broken-provider",
+        name="broken-organization",
         value="broken.plugin:PLUGIN",
         error=RuntimeError("broken plugin"),
     )
     duplicate_entry_point = FakeEntryPoint(
-        name="duplicate-provider",
+        name="duplicate-organization",
         value="duplicate.plugin:PLUGIN",
-        plugin=ProviderPlugin(
-            api_version=PROVIDER_PLUGIN_API_VERSION,
-            register=lambda providers: providers.register(
+        plugin=OrganizationPlugin(
+            api_version=ORGANIZATION_PLUGIN_API_VERSION,
+            register=lambda organizations: organizations.register(
                 "anthropic",
                 PluginTestAdapter,
             ),
@@ -240,8 +241,8 @@ def test_plugin_failures_are_recorded_without_breaking_registered_providers(
 
     assert registry.get("anthropic") is AnthropicAdapter
     assert [failure.entry_point_name for failure in discovery.failures] == [
-        "broken-provider",
-        "duplicate-provider",
+        "broken-organization",
+        "duplicate-organization",
     ]
     assert [failure.error_type for failure in discovery.failures] == [
         "RuntimeError",
@@ -257,11 +258,11 @@ def test_incompatible_plugin_contract_is_reported_as_a_diagnostic(
 ):
     registry, discovery, _ = isolated_plugin_runtime
     entry_point = FakeEntryPoint(
-        name="legacy-provider",
+        name="legacy-organization",
         value="legacy.plugin:PLUGIN",
-        plugin=ProviderPlugin(
-            api_version=PROVIDER_PLUGIN_API_VERSION + 1,
-            register=lambda providers: None,
+        plugin=OrganizationPlugin(
+            api_version=ORGANIZATION_PLUGIN_API_VERSION + 1,
+            register=lambda organizations: None,
         ),
     )
     monkeypatch.setattr(
@@ -272,20 +273,20 @@ def test_incompatible_plugin_contract_is_reported_as_a_diagnostic(
 
     discovery.discover(registry)
 
-    assert registry.get("legacy-provider") is None
+    assert registry.get("legacy-organization") is None
     assert discovery.failures[0].error_type == "ValueError"
-    assert "Unsupported provider plugin API version" in discovery.failures[0].message
+    assert "Unsupported organization plugin API version" in discovery.failures[0].message
 
 
 @pytest.mark.unit
-def test_invalid_plugin_model_metadata_is_reported_before_service_registration(
+def test_invalid_plugin_model_metadata_is_reported_before_organization_registration(
     monkeypatch,
     isolated_plugin_runtime,
 ):
     registry, discovery, model_registry = isolated_plugin_runtime
-    invalid_metadata = ProviderModelMetadata(
+    invalid_metadata = OrganizationModelMetadata(
         organization="mistral",
-        provider_data={"models": {"test-model": {}}},
+        organization_data={"models": {"test-model": {}}},
     )
     entry_point = FakeEntryPoint(
         name="mistral",
@@ -303,4 +304,4 @@ def test_invalid_plugin_model_metadata_is_reported_before_service_registration(
     assert registry.get("mistral") is None
     assert resolve_model_spec(model_registry, "mistral", "test-model") is None
     assert discovery.failures[0].error_type == "ValueError"
-    assert "Invalid provider metadata for 'mistral'" in discovery.failures[0].message
+    assert "Invalid organization metadata for 'mistral'" in discovery.failures[0].message
