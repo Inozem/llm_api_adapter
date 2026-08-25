@@ -12,7 +12,7 @@ from .llm_api_error import (
 from .config_errors import (
     LLMConfigError,
     LLMReasoningLevelError,
-    ProviderNotInstalledError,
+    OrganizationNotInstalledError,
 )
 
 __all__ = [
@@ -27,5 +27,5 @@ __all__ = [
     "JSONSchemaError",
     "LLMConfigError",
     "LLMReasoningLevelError",
-    "ProviderNotInstalledError",
+    "OrganizationNotInstalledError",
 ]

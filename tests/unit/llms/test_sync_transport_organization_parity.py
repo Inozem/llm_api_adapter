@@ -37,7 +37,7 @@ class RequestTrace:
 
 
 @dataclass(frozen=True)
-class ProviderCase:
+class OrganizationCase:
     name: str
     client_class: type
     organization: str
@@ -55,8 +55,8 @@ class ProviderCase:
 _USER_MESSAGES = [{"role": "user", "content": "Hi"}]
 _GOOGLE_CONTENTS = [{"role": "user", "parts": [{"text": "Hi"}]}]
 
-PROVIDER_CASES = (
-    ProviderCase(
+ORGANIZATION_CASES = (
+    OrganizationCase(
         name="openai",
         client_class=OpenAISyncClient,
         organization="openai",
@@ -108,7 +108,7 @@ PROVIDER_CASES = (
             "",
         ],
     ),
-    ProviderCase(
+    OrganizationCase(
         name="anthropic",
         client_class=ClaudeSyncClient,
         organization="anthropic",
@@ -204,7 +204,7 @@ PROVIDER_CASES = (
             "",
         ],
     ),
-    ProviderCase(
+    OrganizationCase(
         name="google",
         client_class=GeminiSyncClient,
         organization="google",
@@ -433,9 +433,9 @@ def _assert_lifecycle(capture: _Capture) -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("case", PROVIDER_CASES, ids=lambda case: case.name)
+@pytest.mark.parametrize("case", ORGANIZATION_CASES, ids=lambda case: case.name)
 def test_sync_json_provider_requests_are_identical_for_both_transports(
-    case: ProviderCase,
+    case: OrganizationCase,
 ):
     captures = {}
     for transport in ("requests", "httpx"):
@@ -458,9 +458,9 @@ def test_sync_json_provider_requests_are_identical_for_both_transports(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("case", PROVIDER_CASES, ids=lambda case: case.name)
+@pytest.mark.parametrize("case", ORGANIZATION_CASES, ids=lambda case: case.name)
 def test_sync_http_error_mapping_is_identical_for_both_transports(
-    case: ProviderCase,
+    case: OrganizationCase,
 ):
     captures = {}
     for transport in ("requests", "httpx"):
@@ -487,9 +487,9 @@ def test_sync_http_error_mapping_is_identical_for_both_transports(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("case", PROVIDER_CASES, ids=lambda case: case.name)
+@pytest.mark.parametrize("case", ORGANIZATION_CASES, ids=lambda case: case.name)
 def test_sync_sse_framing_and_cleanup_are_identical_for_both_transports(
-    case: ProviderCase,
+    case: OrganizationCase,
 ):
     captures = {}
     for transport in ("requests", "httpx"):
@@ -512,9 +512,9 @@ def test_sync_sse_framing_and_cleanup_are_identical_for_both_transports(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("case", PROVIDER_CASES, ids=lambda case: case.name)
+@pytest.mark.parametrize("case", ORGANIZATION_CASES, ids=lambda case: case.name)
 def test_sync_sse_error_mapping_is_identical_for_both_transports(
-    case: ProviderCase,
+    case: OrganizationCase,
 ):
     captures = {}
     for transport in ("requests", "httpx"):
@@ -537,9 +537,9 @@ def test_sync_sse_error_mapping_is_identical_for_both_transports(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("case", PROVIDER_CASES, ids=lambda case: case.name)
+@pytest.mark.parametrize("case", ORGANIZATION_CASES, ids=lambda case: case.name)
 def test_sync_transport_preserves_public_stream_callback_order(
-    case: ProviderCase,
+    case: OrganizationCase,
 ):
     captures = {}
     for transport in ("requests", "httpx"):

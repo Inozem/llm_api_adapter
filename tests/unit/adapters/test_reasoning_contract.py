@@ -138,7 +138,7 @@ def _google_events(*, include_reasoning=True):
     ])
 
 
-PROVIDER_CASES = [
+ORGANIZATION_CASES = [
     pytest.param(
         lambda: OpenAIAdapter(api_key="test_api_key", model="gpt-5"),
         OpenAISyncClient,
@@ -173,7 +173,7 @@ PROVIDER_CASES = [
 @pytest.mark.parametrize("capture_reasoning", [True, False])
 @pytest.mark.parametrize(
     "adapter_factory, client_class, event_factory, stream_kwargs, expected_reasoning",
-    PROVIDER_CASES,
+    ORGANIZATION_CASES,
 )
 def test_stream_reasoning_contract_is_provider_neutral(
     capture_reasoning,
@@ -225,7 +225,7 @@ def test_stream_reasoning_contract_is_provider_neutral(
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "adapter_factory, client_class, event_factory, stream_kwargs, expected_reasoning",
-    PROVIDER_CASES,
+    ORGANIZATION_CASES,
 )
 def test_stream_reasoning_contract_accepts_absent_provider_data(
     adapter_factory,

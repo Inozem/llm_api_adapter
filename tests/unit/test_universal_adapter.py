@@ -6,8 +6,9 @@ import src.llm_api_adapter.universal_adapter as universal_module
 from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
 from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
 from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
-from src.llm_api_adapter.provider_registry import ServiceProviderRegistry
+from src.llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
 
 @pytest.mark.unit
 def test_selects_adapter_and_delegates(monkeypatch):
@@ -31,14 +32,18 @@ def test_selects_adapter_and_delegates(monkeypatch):
         "SERVICE_PROVIDER_REGISTRY",
         ServiceProviderRegistry({"anthropic": FakeAdapter}),
     )
-    ua = UniversalLLMAPIAdapter(
-        organization="anthropic", model="claude-sonnet-4-5", api_key="sk-test"
+    adapter = UniversalLLMAPIAdapter(
+        organization="anthropic",
+        model="claude-sonnet-4-5",
+        api_key="sk-test",
     )
-    assert isinstance(ua.adapter, FakeAdapter)
-    assert ua.adapter.model == "claude-sonnet-4-5"
-    assert ua.adapter.api_key == "sk-test"
-    assert ua.greet("Alice") == "hello Alice from anthropic"
-    assert list(ua.stream_chat()) == ["streamed"]
+
+    assert isinstance(adapter.adapter, FakeAdapter)
+    assert adapter.adapter.model == "claude-sonnet-4-5"
+    assert adapter.adapter.api_key == "sk-test"
+    assert adapter.greet("Alice") == "hello Alice from anthropic"
+    assert list(adapter.stream_chat()) == ["streamed"]
+
 
 @pytest.mark.unit
 def test_unknown_organization_raises(monkeypatch):
@@ -47,9 +52,12 @@ def test_unknown_organization_raises(monkeypatch):
         "SERVICE_PROVIDER_REGISTRY",
         ServiceProviderRegistry(),
     )
+
     with pytest.raises(ValueError, match="Unsupported organization: UnknownCorp"):
         UniversalLLMAPIAdapter(
-            organization="UnknownCorp", model="test-model", api_key="k"
+            organization="UnknownCorp",
+            model="test-model",
+            api_key="k",
         )
 
 
@@ -68,6 +76,7 @@ def test_explicit_unknown_service_provider_raises(monkeypatch):
             model="test-model",
             api_key="k",
         )
+
 
 @pytest.mark.unit
 def test_invalid_inputs_raise_value_error():
@@ -95,7 +104,7 @@ def test_invalid_inputs_raise_value_error():
         ("google", "gemini-2.5-flash", GoogleAdapter),
     ],
 )
-def test_explicit_builtin_registry_selects_each_provider(
+def test_builtin_organization_registry_selects_each_adapter(
     monkeypatch,
     organization,
     model,
@@ -116,11 +125,12 @@ def test_explicit_builtin_registry_selects_each_provider(
 
     assert isinstance(adapter.adapter, adapter_class)
     assert adapter.transport == adapter.adapter.transport == "requests"
+    assert adapter.adapter.company == organization
     assert adapter.service_provider == adapter.adapter.service_provider == organization
 
 
 @pytest.mark.unit
-def test_transport_selection_is_validated_and_forwarded_to_provider_adapter():
+def test_transport_selection_is_validated_and_forwarded_to_organization_adapter():
     adapter = UniversalLLMAPIAdapter(
         organization="openai",
         model="gpt-4o",
@@ -175,6 +185,7 @@ def test_service_provider_selects_the_adapter_and_organization_is_forwarded(
     assert adapter.adapter.company == "mistral"
     assert adapter.adapter.service_provider == "openrouter"
 
+
 @pytest.mark.unit
 def test_getattr_missing_raises_attribute_error(monkeypatch):
     @dataclass
@@ -188,14 +199,16 @@ def test_getattr_missing_raises_attribute_error(monkeypatch):
 
         def stream_chat(self, *args, **kwargs):
             yield "streamed"
-        
+
     monkeypatch.setattr(
         universal_module,
         "SERVICE_PROVIDER_REGISTRY",
         ServiceProviderRegistry({"anthropic": FakeAdapter}),
     )
-    ua = UniversalLLMAPIAdapter(
-        organization="anthropic", model="claude-sonnet-4-5", api_key="k"
+    adapter = UniversalLLMAPIAdapter(
+        organization="anthropic",
+        model="claude-sonnet-4-5",
+        api_key="k",
     )
     with pytest.raises(AttributeError):
-        ua.nonexistent_method()
+        adapter.nonexistent_method()

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "llm-api-adapter-mistral"
 version = "0.1.0"
-description = "Official Mistral API provider package for llm-api-adapter"
+description = "Official Mistral API package for llm-api-adapter"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
@@ -28,7 +28,7 @@ dependencies = ["llm-api-adapter>=0.9.0,<1.0.0"]
 async = ["llm-api-adapter[async]>=0.9.0,<1.0.0"]
 httpx = ["llm-api-adapter[httpx]>=0.9.0,<1.0.0"]
 
-[project.entry-points."llm_api_adapter.providers"]
+[project.entry-points."llm_api_adapter.organizations"]
 mistral = "llm_api_adapter_mistral.plugin:PLUGIN"
 
 [project.urls]
@@ -46,4 +46,4 @@ exclude = ["tests*", "*/tests*"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-"llm_api_adapter_mistral" = ["py.typed", "registry/providers/*.json"]
+"llm_api_adapter_mistral" = ["py.typed", "registry/organizations/*.json"]

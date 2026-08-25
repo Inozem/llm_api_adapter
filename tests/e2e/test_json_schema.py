@@ -16,8 +16,8 @@ SIMPLE_SCHEMA = {
 
 
 @pytest.mark.e2e
-def test_json_schema_returns_parsed_json_for_all_providers(subtests, iter_provider_models, chat_with_retry):
-    for p, model in iter_provider_models():
+def test_json_schema_returns_parsed_json_for_all_organizations(subtests, iter_organization_models, chat_with_retry):
+    for p, model in iter_organization_models():
         with subtests.test(provider=p["name"], model=model):
             adapter = UniversalLLMAPIAdapter(
                 organization=p["name"],

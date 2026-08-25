@@ -33,7 +33,7 @@ def run_tool(name, args):
 
 
 @pytest.mark.e2e
-def test_basic_auto_tool_loop_with_previous_response(subtests, iter_provider_models, chat_with_retry):
+def test_basic_auto_tool_loop_with_previous_response(subtests, iter_organization_models, chat_with_retry):
     tools = [
         ToolSpec(
             name="get_fruit_popularity",
@@ -53,7 +53,7 @@ def test_basic_auto_tool_loop_with_previous_response(subtests, iter_provider_mod
         )
     ]
 
-    for p, model in iter_provider_models():
+    for p, model in iter_organization_models():
         with subtests.test(provider=p["name"], model=model):
             adapter = UniversalLLMAPIAdapter(
                 organization=p["name"],

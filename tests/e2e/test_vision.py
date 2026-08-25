@@ -11,11 +11,11 @@ _PROMPT = "What do you see in this image? One sentence."
 @pytest.mark.e2e
 def test_vision_bytes_returns_non_empty_response(
     subtests,
-    iter_provider_models,
+    iter_organization_models,
     vision_image_bytes,
     chat_with_retry,
 ):
-    for p, model in iter_provider_models():
+    for p, model in iter_organization_models():
         with subtests.test(provider=p["name"], model=model):
             adapter = UniversalLLMAPIAdapter(
                 organization=p["name"], model=model, api_key=p["api_key"]

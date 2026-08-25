@@ -27,7 +27,7 @@ from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools import ToolSpec
-from llm_api_adapter.provider_registry import ServiceProviderRegistry
+from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from llm_api_adapter_mistral.adapter import MistralAdapter
 from llm_api_adapter_mistral.plugin import PLUGIN
@@ -61,15 +61,15 @@ class FakeSyncTransport:
 def mistral_runtime(monkeypatch):
     model_registry = RegistrySpec()
     assert PLUGIN.model_metadata is not None
-    assert model_registry.register_provider_metadata(PLUGIN.model_metadata) is True
+    assert model_registry.register_organization_metadata(PLUGIN.model_metadata) is True
 
-    service_registry = ServiceProviderRegistry()
-    PLUGIN.register(service_registry)
+    service_provider_registry = ServiceProviderRegistry()
+    PLUGIN.register(service_provider_registry)
     monkeypatch.setattr(universal_module, "LLM_REGISTRY", model_registry)
     monkeypatch.setattr(
         universal_module,
         "SERVICE_PROVIDER_REGISTRY",
-        service_registry,
+        service_provider_registry,
     )
     monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", model_registry)
     return model_registry

@@ -6,14 +6,14 @@ from .adapters.base_adapter import LLMAdapterBase
 from .adapters.anthropic_adapter import AnthropicAdapter
 from .adapters.openai_adapter import OpenAIAdapter
 from .adapters.google_adapter import GoogleAdapter
-from .errors.config_errors import ProviderNotInstalledError
+from .errors.config_errors import OrganizationNotInstalledError
 from .llm_registry.llm_registry import LLM_REGISTRY
 from .llms.transports import validate_sync_transport
-from .provider_registry import (
-    KNOWN_PROVIDER_PACKAGES,
-    ProviderPluginDiscovery,
-    ServiceProviderRegistry,
+from .organization_registry import (
+    KNOWN_ORGANIZATION_PACKAGES,
+    OrganizationPluginDiscovery,
 )
+from .service_provider_registry import ServiceProviderRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ SERVICE_PROVIDER_REGISTRY = ServiceProviderRegistry({
     OpenAIAdapter.company: OpenAIAdapter,
     GoogleAdapter.company: GoogleAdapter,
 })
-PROVIDER_PLUGIN_DISCOVERY = ProviderPluginDiscovery()
+ORGANIZATION_PLUGIN_DISCOVERY = OrganizationPluginDiscovery()
 
 
 @dataclass
@@ -76,7 +76,7 @@ class UniversalLLMAPIAdapter:
         """Select a built-in or lazily registered service-provider factory."""
         adapter_factory = SERVICE_PROVIDER_REGISTRY.get(service_provider)
         if adapter_factory is None:
-            PROVIDER_PLUGIN_DISCOVERY.discover(
+            ORGANIZATION_PLUGIN_DISCOVERY.discover(
                 SERVICE_PROVIDER_REGISTRY,
                 model_registry=LLM_REGISTRY,
             )
@@ -90,11 +90,11 @@ class UniversalLLMAPIAdapter:
                 service_provider=service_provider,
             )
         if service_provider == organization:
-            known_provider = KNOWN_PROVIDER_PACKAGES.get(organization)
-            if known_provider is not None:
-                error = ProviderNotInstalledError(
+            known_organization = KNOWN_ORGANIZATION_PACKAGES.get(organization)
+            if known_organization is not None:
+                error = OrganizationNotInstalledError(
                     organization=organization,
-                    distribution=known_provider.distribution,
+                    distribution=known_organization.distribution,
                 )
                 logger.error(str(error))
                 raise error

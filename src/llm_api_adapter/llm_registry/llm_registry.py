@@ -8,7 +8,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 from .request_rules import (
     RequestRuleRegistry,
     RequestRules,
-    request_rule_registry_for_provider,
+    request_rule_registry_for_organization,
 )
 
 DEFAULT_REGISTRY_PATH = Path(__file__).with_name("llm_registry.json")
@@ -340,7 +340,7 @@ class ModelSpec:
 
 
 @dataclass(frozen=True)
-class ProviderSpec:
+class OrganizationSpec:
     name: str
     currency: str = "USD"
     models: Dict[str, ModelSpec] = field(default_factory=dict)
@@ -352,32 +352,32 @@ class ProviderSpec:
         data: Mapping[str, Any],
         *,
         request_rule_registry: Optional[RequestRuleRegistry] = None,
-    ) -> "ProviderSpec":
+    ) -> "OrganizationSpec":
         if not isinstance(name, str) or not name:
-            raise ValueError("provider name must be a non-empty string")
+            raise ValueError("organization name must be a non-empty string")
         if not isinstance(data, Mapping):
-            raise ValueError(f"Provider '{name}' metadata must be an object")
+            raise ValueError(f"Organization '{name}' metadata must be an object")
         currency = data.get("currency", "USD")
         if not isinstance(currency, str) or not currency:
-            raise ValueError(f"Provider '{name}' has an invalid currency")
+            raise ValueError(f"Organization '{name}' has an invalid currency")
         if request_rule_registry is None:
-            request_rule_registry = request_rule_registry_for_provider(name)
-        elif request_rule_registry.provider_name != name:
+            request_rule_registry = request_rule_registry_for_organization(name)
+        elif request_rule_registry.organization_name != name:
             raise ValueError(
-                "request rule schema provider must match provider metadata: "
+                "request rule schema organization must match organization metadata: "
                 f"{name}"
             )
         raw_models = data.get("models")
         if not isinstance(raw_models, Mapping) or not raw_models:
             raise ValueError(
-                f"Provider '{name}' must define a non-empty models object"
+                f"Organization '{name}' must define a non-empty models object"
             )
         if any(
             not isinstance(model_name, str) or not model_name
             for model_name in raw_models
         ):
             raise ValueError(
-                f"Provider '{name}' model names must be non-empty strings"
+                f"Organization '{name}' model names must be non-empty strings"
             )
         models = {
             model_name: ModelSpec.from_dict(
@@ -392,11 +392,11 @@ class ProviderSpec:
 
 
 @dataclass(frozen=True)
-class ProviderModelMetadata:
-    """Validated model catalogue supplied by one external provider plugin."""
+class OrganizationModelMetadata:
+    """Validated model catalogue supplied by one external organization plugin."""
 
     organization: str
-    provider_data: Mapping[str, Any]
+    organization_data: Mapping[str, Any]
     request_rule_registry: Optional[RequestRuleRegistry] = None
 
 
@@ -404,99 +404,99 @@ class ProviderModelMetadata:
 class RegistrySpec:
     schema_version: int
     effective_date: str
-    providers: Dict[str, ProviderSpec]
+    organizations: Dict[str, OrganizationSpec]
 
     def __init__(self, path: str | Path = DEFAULT_REGISTRY_PATH) -> None:
         manifest_path = Path(path)
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        provider_files = data.get("provider_files")
-        if not isinstance(provider_files, dict) or not provider_files:
-            raise ValueError("registry manifest must define a non-empty provider_files object")
+        organization_files = data.get("organization_files")
+        if not isinstance(organization_files, dict) or not organization_files:
+            raise ValueError("registry manifest must define a non-empty organization_files object")
 
-        providers = {
-            provider_name: ProviderSpec.from_dict(
-                provider_name,
-                self._load_provider_data(
+        organizations = {
+            organization_name: OrganizationSpec.from_dict(
+                organization_name,
+                self._load_organization_data(
                     manifest_path,
-                    provider_name,
-                    provider_file,
+                    organization_name,
+                    organization_file,
                 ),
             )
-            for provider_name, provider_file in provider_files.items()
+            for organization_name, organization_file in organization_files.items()
         }
         object.__setattr__(self, "schema_version", int(data["schema_version"]))
         object.__setattr__(self, "effective_date", str(data["effective_date"]))
-        object.__setattr__(self, "providers", providers)
+        object.__setattr__(self, "organizations", organizations)
 
     @staticmethod
-    def _load_provider_data(
+    def _load_organization_data(
         manifest_path: Path,
-        provider_name: str,
-        provider_file: Any,
+        organization_name: str,
+        organization_file: Any,
     ) -> Dict[str, Any]:
-        if not isinstance(provider_name, str) or not provider_name:
-            raise ValueError("provider_files keys must be non-empty strings")
-        if not isinstance(provider_file, str) or not provider_file:
+        if not isinstance(organization_name, str) or not organization_name:
+            raise ValueError("organization_files keys must be non-empty strings")
+        if not isinstance(organization_file, str) or not organization_file:
             raise ValueError(
-                f"Provider '{provider_name}' must reference a non-empty relative path"
+                f"Organization '{organization_name}' must reference a non-empty relative path"
             )
 
-        provider_path = Path(provider_file)
-        if provider_path.is_absolute():
+        organization_path = Path(organization_file)
+        if organization_path.is_absolute():
             raise ValueError(
-                f"Provider '{provider_name}' must use a relative registry path"
+                f"Organization '{organization_name}' must use a relative registry path"
             )
-        provider_path = manifest_path.parent / provider_path
+        organization_path = manifest_path.parent / organization_path
         try:
-            provider_data = json.loads(provider_path.read_text(encoding="utf-8"))
+            organization_data = json.loads(organization_path.read_text(encoding="utf-8"))
         except FileNotFoundError as error:
             raise ValueError(
-                f"Provider registry file is missing for '{provider_name}': {provider_path}"
+                f"Organization registry file is missing for '{organization_name}': {organization_path}"
             ) from error
 
-        if not isinstance(provider_data, dict):
-            raise ValueError(f"Provider registry data for '{provider_name}' must be an object")
-        return provider_data
+        if not isinstance(organization_data, dict):
+            raise ValueError(f"Organization registry data for '{organization_name}' must be an object")
+        return organization_data
 
-    def register_provider_metadata(
+    def register_organization_metadata(
         self,
-        metadata: ProviderModelMetadata,
+        metadata: OrganizationModelMetadata,
     ) -> bool:
-        """Validate and atomically register one external provider catalogue."""
-        if not isinstance(metadata, ProviderModelMetadata):
-            raise TypeError("metadata must be a ProviderModelMetadata instance")
+        """Validate and atomically register one external organization catalogue."""
+        if not isinstance(metadata, OrganizationModelMetadata):
+            raise TypeError("metadata must be an OrganizationModelMetadata instance")
         if not isinstance(metadata.organization, str) or not metadata.organization:
-            raise ValueError("provider metadata organization must be a non-empty string")
+            raise ValueError("organization metadata organization must be a non-empty string")
 
         try:
-            provider = ProviderSpec.from_dict(
+            organization = OrganizationSpec.from_dict(
                 metadata.organization,
-                metadata.provider_data,
+                metadata.organization_data,
                 request_rule_registry=metadata.request_rule_registry,
             )
         except (TypeError, ValueError) as error:
             raise ValueError(
-                f"Invalid provider metadata for '{metadata.organization}': {error}"
+                f"Invalid organization metadata for '{metadata.organization}': {error}"
             ) from error
 
-        existing_provider = self.providers.get(metadata.organization)
-        if existing_provider is None:
+        existing_organization = self.organizations.get(metadata.organization)
+        if existing_organization is None:
             object.__setattr__(
                 self,
-                "providers",
-                {**self.providers, metadata.organization: provider},
+                "organizations",
+                {**self.organizations, metadata.organization: organization},
             )
             return True
-        if existing_provider == provider:
+        if existing_organization == organization:
             return False
         raise ValueError(
-            "Provider metadata already registered: "
+            "Organization metadata already registered: "
             f"{metadata.organization}"
         )
 
 
 def _is_valid_snapshot_date(value: str, *, compact: bool) -> bool:
-    """Return whether a provider snapshot suffix is a real calendar date."""
+    """Return whether an organization snapshot suffix is a real calendar date."""
     if compact:
         value = f"{value[:4]}-{value[4:6]}-{value[6:]}"
     try:
@@ -506,13 +506,13 @@ def _is_valid_snapshot_date(value: str, *, compact: bool) -> bool:
     return True
 
 
-def _snapshot_base_model_name(provider_name: str, model_name: str) -> Optional[str]:
-    """Return a supported direct-provider snapshot's unsuffixed model ID."""
-    if provider_name == "anthropic":
+def _snapshot_base_model_name(organization_name: str, model_name: str) -> Optional[str]:
+    """Return a supported direct-organization snapshot's base model ID."""
+    if organization_name == "anthropic":
         match = _ANTHROPIC_SNAPSHOT_ID.fullmatch(model_name)
         if match and _is_valid_snapshot_date(match.group(2), compact=True):
             return match.group(1)
-    elif provider_name == "openai":
+    elif organization_name == "openai":
         match = _OPENAI_SNAPSHOT_ID.fullmatch(model_name)
         if match and _is_valid_snapshot_date(match.group(2), compact=False):
             return match.group(1)
@@ -521,25 +521,25 @@ def _snapshot_base_model_name(provider_name: str, model_name: str) -> Optional[s
 
 def resolve_model_spec(
     registry: RegistrySpec,
-    provider_name: str,
+    organization_name: str,
     model_name: str,
 ) -> Optional[ModelSpec]:
-    """Resolve an exact model or a supported provider snapshot to its base spec.
+    """Resolve an exact model or a supported organization snapshot to its base spec.
 
-    The caller must continue to send ``model_name`` to the provider. This
+    The caller must continue to send ``model_name`` to the organization API. This
     resolver only supplies verified registry metadata for direct Anthropic and
     OpenAI snapshot IDs whose unsuffixed base is registered.
     """
-    provider = registry.providers.get(provider_name)
-    if not provider:
+    organization = registry.organizations.get(organization_name)
+    if not organization:
         return None
 
-    model_spec = provider.models.get(model_name)
+    model_spec = organization.models.get(model_name)
     if model_spec:
         return model_spec
 
-    base_model_name = _snapshot_base_model_name(provider_name, model_name)
-    return provider.models.get(base_model_name) if base_model_name else None
+    base_model_name = _snapshot_base_model_name(organization_name, model_name)
+    return organization.models.get(base_model_name) if base_model_name else None
 
 
 LLM_REGISTRY = RegistrySpec()
