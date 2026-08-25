@@ -99,7 +99,9 @@ generated tokens so models that think by default still have room for visible
 text. Override a provider model only when needed with `SYNC_HTTPX_E2E_OPENAI_MODEL`,
 `SYNC_HTTPX_E2E_ANTHROPIC_MODEL`, or `SYNC_HTTPX_E2E_GOOGLE_MODEL`.
 
-For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic unit and integration tests with coverage. Only after the staging pull request is merged does the separate [dev release workflow](.github/workflows/ci-dev-release.yml) publish the package to TestPyPI and run E2E tests that make paid calls to the configured providers. Every candidate needs a new version because TestPyPI artifacts are immutable. The workflow reads that version from `pyproject.toml`, then E2E installs it exactly, retrying twice with two-minute waits for TestPyPI propagation; it never falls back to an older package. The synchronous scenarios currently exercise all registered models, while async scenarios select one latest registered model per provider. After the workflow passes, the maintainer manually installs the TestPyPI package and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
+For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage, while the [Mistral dev workflow](.github/workflows/ci-mistral-dev.yml) and [Mistral main workflow](.github/workflows/ci-mistral-main.yml) run Mistral's unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
+
+Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change publishes the core package and runs both the built-in and Mistral E2E lanes. A Mistral package change publishes only `llm-api-adapter-mistral` and runs the Mistral lane. That lane installs the exact TestPyPI versions through `llm-api-adapter[mistral]`, then verifies plugin discovery before making a provider call. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
 
 ## Provider-key safety
 
@@ -156,27 +158,40 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
 
 ## Release flow
 
-1. Confirm the package version and release notes describe the user-visible changes.
+1. Confirm the version and release notes for every changed distribution describe the user-visible changes.
 2. Run the same deterministic unit-then-integration sequence used by the main CI workflow, without provider keys:
 
    ```bash
    python tests/tests_runner.py
+   python -m pytest -v -m unit packages/organizations/mistral/tests
+   python -m pytest -v -m integration packages/organizations/mistral/tests
    ```
 
    The dev workflow collects coverage separately while running its unit and integration jobs.
 
-3. Build and inspect the distribution:
+3. Build and inspect the core distribution and each changed organization package:
 
    ```bash
    python -m pip install build
    python -m build
+   # Run when the Mistral package changed:
+   python -m build packages/organizations/mistral
    ```
 
 4. Open or update the pull request to `main`. Wait for review and the deterministic main CI to pass.
-5. The maintainer opens and merges a staging pull request containing that exact candidate commit into protected `dev`. The dev release workflow then publishes it to TestPyPI and runs E2E tests that make paid calls to the configured providers. Only an approved repository administrator should merge this staging pull request. Provide keys through CI Secrets only, and remember that the current synchronous E2E scenarios may exercise every registered model.
-6. After the E2E job passes, the maintainer manually installs the package from TestPyPI and verifies the changed behavior, critical flows, and absence of regressions.
+5. The maintainer opens and merges a staging pull request containing that exact candidate commit into protected `dev`. The dev release workflow publishes only changed distributions to TestPyPI, then runs the E2E lanes affected by those changes. Only an approved repository administrator should merge this staging pull request. Provide keys through CI Secrets only, and remember that the current synchronous scenarios may exercise every registered model.
+6. After the E2E jobs pass, the maintainer manually installs the changed package set from TestPyPI. For Mistral, verify the public installation path:
+
+   ```bash
+   pip install --index-url https://test.pypi.org/simple/ \\
+     --extra-index-url https://pypi.org/simple \\
+     "llm-api-adapter[mistral]==<core-version>" \\
+     "llm-api-adapter-mistral==<mistral-version>"
+   ```
+
+   Then verify the changed behavior, critical flows, and absence of regressions.
 7. Merge the already verified pull request into `main`.
-8. After the pull request is merged, create the release tag so the main workflow publishes the final package.
+8. After the pull request is merged, create one final tag for each changed distribution: `v<core-version>` for the core package and `mistral-v<mistral-version>` for Mistral. The tags may point to the same commit. The main workflow publishes only the distribution selected by its tag.
 
 The post-publish E2E job is a release-candidate gate, not a general development check. Keep it out of pull-request jobs and Python-version matrices so paid provider calls remain bounded.
 

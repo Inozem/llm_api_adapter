@@ -1,0 +1,10 @@
+include README.md
+include LICENSE
+include src/llm_api_adapter_mistral/py.typed
+recursive-include src/llm_api_adapter_mistral/registry/providers *.json
+
+global-exclude *.py[cod]
+prune **/__pycache__
+prune **/.pytest_cache
+global-exclude *.egg-info
+prune **/*.egg-info

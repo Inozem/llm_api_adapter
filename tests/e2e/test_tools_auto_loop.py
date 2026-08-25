@@ -110,9 +110,9 @@ def test_basic_auto_tool_loop_with_previous_response(subtests, iter_provider_mod
             final = chat_with_retry(
                 adapter,
                 messages=messages,
-                previous_response=first,
                 max_tokens=512,
                 timeout_s=60,
+                previous_response=first,
             )
 
             assert isinstance(final.content, str)

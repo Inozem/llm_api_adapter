@@ -1,0 +1,512 @@
+"""Provider-neutral conformance checks through the public facade.
+
+These tests deliberately exercise only ``UniversalLLMAPIAdapter``.  Provider
+clients are mocked at their network boundary so the suite freezes the common
+contract without credentials or live API calls.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Callable
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
+from pydantic import BaseModel
+
+from src.llm_api_adapter.errors.llm_api_error import LLMAPIRateLimitError
+from src.llm_api_adapter.llms.anthropic.async_client import ClaudeAsyncClient
+from src.llm_api_adapter.llms.anthropic.sync_client import ClaudeSyncClient
+from src.llm_api_adapter.llms.google.async_client import GeminiAsyncClient
+from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
+from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
+from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
+from src.llm_api_adapter.llms.streaming import SSEEvent
+from src.llm_api_adapter.models.messages.chat_message import UserMessage
+from src.llm_api_adapter.models.messages.file_parts import ImagePart
+from src.llm_api_adapter.models.responses.chat_response import Usage
+from src.llm_api_adapter.models.tools import ToolSpec
+from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+
+@dataclass(frozen=True)
+class _JSONResponse:
+    data: dict[str, Any]
+
+    def json(self) -> dict[str, Any]:
+        return self.data
+
+
+@dataclass(frozen=True)
+class ProviderConformanceCase:
+    organization: str
+    model: str
+    max_tokens: int | None
+    sync_client_class: type[Any]
+    async_client_class: type[Any]
+    message_key: str
+    response_factory: Callable[..., dict[str, Any]]
+    stream_events_factory: Callable[[], list[SSEEvent]]
+
+
+def _openai_response(
+    content: str = "ok",
+    *,
+    include_tool: bool = False,
+    include_reasoning: bool = False,
+) -> dict[str, Any]:
+    output: list[dict[str, Any]] = []
+    if include_reasoning:
+        output.append({
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": "Plan"}],
+        })
+    output.append({
+        "type": "message",
+        "content": [{"type": "output_text", "text": content}],
+    })
+    if include_tool:
+        output.append({
+            "type": "function_call",
+            "call_id": "call_123",
+            "name": "get_weather",
+            "arguments": '{"city": "Tel Aviv"}',
+        })
+    return {
+        "id": "resp_123",
+        "model": "gpt-5-nano",
+        "status": "completed",
+        "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+        "output": output,
+    }
+
+
+def _anthropic_response(
+    content: str = "ok",
+    *,
+    include_tool: bool = False,
+    include_reasoning: bool = False,
+) -> dict[str, Any]:
+    blocks: list[dict[str, Any]] = []
+    if include_reasoning:
+        blocks.append({"type": "thinking", "thinking": "Plan"})
+    blocks.append({"type": "text", "text": content})
+    if include_tool:
+        blocks.append({
+            "type": "tool_use",
+            "id": "toolu_123",
+            "name": "get_weather",
+            "input": {"city": "Tel Aviv"},
+        })
+    return {
+        "id": "msg_123",
+        "model": "claude-sonnet-4-5",
+        "stop_reason": "tool_use" if include_tool else "end_turn",
+        "content": blocks,
+        "usage": {"input_tokens": 2, "output_tokens": 3},
+    }
+
+
+def _google_response(
+    content: str = "ok",
+    *,
+    include_tool: bool = False,
+    include_reasoning: bool = False,
+) -> dict[str, Any]:
+    parts: list[dict[str, Any]] = []
+    if include_reasoning:
+        parts.append({"text": "Plan", "thought": True})
+    parts.append({"text": content})
+    if include_tool:
+        parts.append({
+            "functionCall": {
+                "name": "get_weather",
+                "args": {"city": "Tel Aviv"},
+            },
+        })
+    return {
+        "modelVersion": "gemini-2.5-flash",
+        "candidates": [{
+            "content": {"parts": parts},
+            "finishReason": "STOP",
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 2,
+            "candidatesTokenCount": 3,
+            "totalTokenCount": 5,
+        },
+    }
+
+
+def _openai_stream_events() -> list[SSEEvent]:
+    return [
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"type": "response.output_text.delta", "delta": "He"},
+        ),
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"type": "response.output_text.delta", "delta": "llo!"},
+        ),
+        SSEEvent(
+            event="response.completed",
+            data={
+                "type": "response.completed",
+                "response": _openai_response("Hello!"),
+            },
+        ),
+    ]
+
+
+def _anthropic_stream_events() -> list[SSEEvent]:
+    return [
+        SSEEvent(
+            event="message_start",
+            data={"type": "message_start", "message": {
+                "id": "msg_123",
+                "model": "claude-sonnet-4-5",
+                "content": [],
+                "usage": {"input_tokens": 2, "output_tokens": 0},
+            }},
+        ),
+        SSEEvent(
+            event="content_block_start",
+            data={
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "He"},
+            },
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "llo!"},
+            },
+        ),
+        SSEEvent(
+            event="message_delta",
+            data={
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 3},
+            },
+        ),
+        SSEEvent(event="message_stop", data={"type": "message_stop"}),
+    ]
+
+
+def _google_stream_events() -> list[SSEEvent]:
+    return [
+        SSEEvent(
+            event=None,
+            data={"candidates": [{"content": {"parts": [{"text": "He"}]}}]},
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                "candidates": [{
+                    "content": {"parts": [{"text": "llo!"}]},
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 2,
+                    "candidatesTokenCount": 3,
+                    "totalTokenCount": 5,
+                },
+            },
+        ),
+    ]
+
+
+CASES = (
+    pytest.param(
+        ProviderConformanceCase(
+            organization="openai",
+            model="gpt-5-nano",
+            max_tokens=64,
+            sync_client_class=OpenAISyncClient,
+            async_client_class=OpenAIAsyncClient,
+            message_key="input",
+            response_factory=_openai_response,
+            stream_events_factory=_openai_stream_events,
+        ),
+        id="openai",
+    ),
+    pytest.param(
+        ProviderConformanceCase(
+            organization="anthropic",
+            model="claude-sonnet-4-5",
+            max_tokens=64,
+            sync_client_class=ClaudeSyncClient,
+            async_client_class=ClaudeAsyncClient,
+            message_key="messages",
+            response_factory=_anthropic_response,
+            stream_events_factory=_anthropic_stream_events,
+        ),
+        id="anthropic",
+    ),
+    pytest.param(
+        ProviderConformanceCase(
+            organization="google",
+            model="gemini-2.5-flash",
+            max_tokens=None,
+            sync_client_class=GeminiSyncClient,
+            async_client_class=GeminiAsyncClient,
+            message_key="contents",
+            response_factory=_google_response,
+            stream_events_factory=_google_stream_events,
+        ),
+        id="google",
+    ),
+)
+
+
+class _StructuredAnswer(BaseModel):
+    answer: str
+
+
+def _facade(case: ProviderConformanceCase) -> UniversalLLMAPIAdapter:
+    return UniversalLLMAPIAdapter(
+        organization=case.organization,
+        model=case.model,
+        api_key="test-api-key",
+    )
+
+
+def _chat_kwargs(case: ProviderConformanceCase) -> dict[str, Any]:
+    return {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": case.max_tokens,
+    }
+
+
+async def _as_async_iter(events: list[SSEEvent]) -> AsyncIterator[SSEEvent]:
+    for event in events:
+        yield event
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_chat_normalizes_messages_response_usage_and_pricing(case):
+    transport = Mock(return_value=_JSONResponse(case.response_factory()))
+
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        response = _facade(case).chat(**_chat_kwargs(case))
+
+    payload = transport.call_args.args[1]
+    assert payload["model"] == case.model
+    assert payload[case.message_key]
+    assert response.content == "ok"
+    assert response.usage == Usage(input_tokens=2, output_tokens=3, total_tokens=5)
+    assert response.currency == "USD"
+    assert response.cost_total is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_achat_matches_sync_response_contract(case):
+    transport = AsyncMock(return_value=case.response_factory())
+
+    with patch.object(case.async_client_class, "_send_request", new=transport):
+        response = await _facade(case).achat(**_chat_kwargs(case))
+
+    payload = transport.await_args.args[1]
+    assert payload["model"] == case.model
+    assert payload[case.message_key]
+    assert response.content == "ok"
+    assert response.usage == Usage(input_tokens=2, output_tokens=3, total_tokens=5)
+    assert response.cost_total is not None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_preserves_tool_structured_output_file_and_reasoning_contracts(case):
+    tool = ToolSpec(name="get_weather", json_schema={"type": "object"})
+    image = ImagePart(data=b"image-bytes", media_type="image/png")
+
+    tool_transport = Mock(
+        return_value=_JSONResponse(case.response_factory(include_tool=True)),
+    )
+    with patch.object(case.sync_client_class, "_send_request", new=tool_transport):
+        tool_response = _facade(case).chat(
+            messages=[UserMessage("What is the weather?", files=[image])],
+            max_tokens=case.max_tokens,
+            tools=[tool],
+        )
+
+    payload = tool_transport.call_args.args[1]
+    assert "aW1hZ2UtYnl0ZXM=" in str(payload)
+    assert tool_response.tool_calls[0].name == "get_weather"
+    assert tool_response.tool_calls[0].arguments == {"city": "Tel Aviv"}
+
+    structured_transport = Mock(
+        return_value=_JSONResponse(case.response_factory('{"answer": "ok"}')),
+    )
+    with patch.object(case.sync_client_class, "_send_request", new=structured_transport):
+        structured_response = _facade(case).chat(
+            **_chat_kwargs(case),
+            response_model=_StructuredAnswer,
+        )
+
+    assert structured_response.parsed_json == {"answer": "ok"}
+    assert structured_response.parsed_model == _StructuredAnswer(answer="ok")
+
+    reasoning_transport = Mock(
+        return_value=_JSONResponse(case.response_factory(include_reasoning=True)),
+    )
+    with patch.object(case.sync_client_class, "_send_request", new=reasoning_transport):
+        reasoning_response = _facade(case).chat(
+            **_chat_kwargs(case),
+            capture_reasoning=True,
+        )
+
+    assert [event.text for event in reasoning_response.reasoning_events] == ["Plan"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_re_raises_normalized_provider_errors(case):
+    transport = Mock(side_effect=LLMAPIRateLimitError())
+
+    with (
+        patch.object(case.sync_client_class, "_send_request", new=transport),
+        pytest.raises(LLMAPIRateLimitError),
+    ):
+        _facade(case).chat(**_chat_kwargs(case))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_stream_finalizes_response_and_preserves_callback_order(case):
+    order: list[tuple[str, str]] = []
+
+    with patch.object(
+        case.sync_client_class,
+        "stream",
+        return_value=iter(case.stream_events_factory()),
+    ):
+        output = []
+        for text in _facade(case).stream_chat(
+            **_chat_kwargs(case),
+            buffer_chars=4,
+            on_chunk=lambda chunk: order.append(("chunk", chunk.text)),
+            on_delta=lambda text: order.append(("delta", text)),
+            on_done=lambda response: order.append(("done", response.content)),
+        ):
+            output.append(text)
+            order.append(("yield", text))
+
+    assert output == ["Hell", "o!"]
+    assert order == [
+        ("chunk", "Hell"),
+        ("delta", "Hell"),
+        ("yield", "Hell"),
+        ("chunk", "o!"),
+        ("delta", "o!"),
+        ("yield", "o!"),
+        ("done", "Hello!"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_astream_matches_stream_contract(case):
+    order: list[tuple[str, str]] = []
+
+    async def on_chunk(chunk):
+        order.append(("chunk", chunk.text))
+
+    async def on_delta(text):
+        order.append(("delta", text))
+
+    async def on_done(response):
+        order.append(("done", response.content))
+
+    with patch.object(
+        case.async_client_class,
+        "stream",
+        return_value=_as_async_iter(case.stream_events_factory()),
+    ):
+        output = []
+        async for text in _facade(case).astream_chat(
+            **_chat_kwargs(case),
+            buffer_chars=4,
+            on_chunk=on_chunk,
+            on_delta=on_delta,
+            on_done=on_done,
+        ):
+            output.append(text)
+            order.append(("yield", text))
+
+    assert output == ["Hell", "o!"]
+    assert order[-1] == ("done", "Hello!")
+    assert order[:6] == [
+        ("chunk", "Hell"),
+        ("delta", "Hell"),
+        ("yield", "Hell"),
+        ("chunk", "o!"),
+        ("delta", "o!"),
+        ("yield", "o!"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_streams_skip_finalization_when_cancelled(case):
+    sync_closed: list[bool] = []
+
+    def sync_events():
+        try:
+            yield from case.stream_events_factory()
+        finally:
+            sync_closed.append(True)
+
+    sync_done: list[Any] = []
+    with patch.object(case.sync_client_class, "stream", return_value=sync_events()):
+        stream = _facade(case).stream_chat(
+            **_chat_kwargs(case),
+            on_done=sync_done.append,
+        )
+        next(stream)
+        stream.close()
+
+    assert sync_closed == [True]
+    assert sync_done == []
+
+    async def async_events():
+        for event in case.stream_events_factory():
+            yield event
+
+    async_done: list[Any] = []
+    with patch.object(case.async_client_class, "stream", return_value=async_events()):
+        stream = _facade(case).astream_chat(
+            **_chat_kwargs(case),
+            on_done=async_done.append,
+        )
+        await anext(stream)
+        await stream.aclose()
+
+    assert async_done == []
+
+
+@pytest.mark.unit
+def test_facade_rejects_invalid_constructor_values_before_provider_selection():
+    with pytest.raises(ValueError, match="Invalid organization"):
+        UniversalLLMAPIAdapter(organization="", model="model", api_key="key")
+    with pytest.raises(ValueError, match="Invalid model"):
+        UniversalLLMAPIAdapter(organization="openai", model="", api_key="key")
+    with pytest.raises(ValueError, match="Invalid API key"):
+        UniversalLLMAPIAdapter(organization="openai", model="model", api_key="")

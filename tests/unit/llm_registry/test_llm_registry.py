@@ -12,6 +12,7 @@ from src.llm_api_adapter.llm_registry.llm_registry import (
     NumericReasoningCapability,
     Pricing,
     PricingTier,
+    ProviderModelMetadata,
     ProviderSpec,
     RegistrySpec,
     LLM_REGISTRY,
@@ -168,6 +169,84 @@ def test_model_and_provider_from_dict():
     assert "gpt-5" in provider.models
     assert isinstance(provider.models["gpt-5"], ModelSpec)
     assert provider.models["gpt-5"].pricing_tiers.currency == "EUR"
+
+
+@pytest.mark.unit
+def test_plugin_provider_metadata_uses_the_existing_validation_and_lifecycle():
+    class MistralRequestRuleRegistry(RequestRuleRegistry):
+        provider_name = "mistral"
+        supported_handlers = frozenset({RequestRuleRegistry.DROP_PARAMETER})
+        droppable_parameter_defaults = {"temperature": 1.0}
+
+    model_data = _model_data()
+    model_data["request_rules"] = [
+        {
+            "handler": "drop_parameter",
+            "arguments": {"path": "temperature", "default": 1.0},
+        }
+    ]
+    metadata = ProviderModelMetadata(
+        organization="mistral",
+        provider_data={
+            "currency": "EUR",
+            "models": {"mistral-small": model_data},
+        },
+        request_rule_registry=MistralRequestRuleRegistry(),
+    )
+    registry = RegistrySpec()
+
+    assert registry.register_provider_metadata(metadata) is True
+    assert registry.register_provider_metadata(metadata) is False
+
+    model = resolve_model_spec(registry, "mistral", "mistral-small")
+    assert model is not None
+    assert model.pricing_tiers.currency == "EUR"
+    assert model.request_rules.rules[0].handler == "drop_parameter"
+
+
+@pytest.mark.unit
+def test_invalid_plugin_provider_metadata_does_not_mutate_the_registry():
+    registry = RegistrySpec()
+    providers_before = registry.providers
+    invalid_metadata = ProviderModelMetadata(
+        organization="mistral",
+        provider_data={"models": {"mistral-small": {}}},
+    )
+
+    with pytest.raises(ValueError, match="Invalid provider metadata for 'mistral'"):
+        registry.register_provider_metadata(invalid_metadata)
+
+    assert registry.providers is providers_before
+    assert "mistral" not in registry.providers
+
+
+@pytest.mark.unit
+def test_conflicting_plugin_provider_metadata_is_rejected():
+    registry = RegistrySpec()
+    metadata = ProviderModelMetadata(
+        organization="mistral",
+        provider_data={"models": {"mistral-small": _model_data()}},
+    )
+    changed_metadata = ProviderModelMetadata(
+        organization="mistral",
+        provider_data={
+            "models": {
+                "mistral-small": _model_data(
+                    tiers=[
+                        {
+                            "up_to_prompt_tokens": None,
+                            "input_per_1m": 2_000,
+                            "output_per_1m": 2_000,
+                        }
+                    ]
+                )
+            }
+        },
+    )
+
+    assert registry.register_provider_metadata(metadata) is True
+    with pytest.raises(ValueError, match="Provider metadata already registered"):
+        registry.register_provider_metadata(changed_metadata)
 
 
 @pytest.mark.unit

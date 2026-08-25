@@ -1,0 +1,50 @@
+{
+  "currency": "USD",
+  "models": {
+    "mistral-small-2603": {
+      "reasoning_capability": {
+        "allowed_values": ["none", "high"]
+      },
+      "limits": {
+        "context_window_tokens": 256000,
+        "max_output_tokens": 256000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.15,
+          "output_per_1m": 0.6
+        }
+      ]
+    },
+    "mistral-medium-3-5": {
+      "reasoning_capability": {
+        "allowed_values": ["none", "high"]
+      },
+      "limits": {
+        "context_window_tokens": 256000,
+        "max_output_tokens": 256000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 1.5,
+          "output_per_1m": 7.5
+        }
+      ]
+    },
+    "mistral-large-2512": {
+      "limits": {
+        "context_window_tokens": 256000,
+        "max_output_tokens": 256000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.5,
+          "output_per_1m": 1.5
+        }
+      ]
+    }
+  }
+}
