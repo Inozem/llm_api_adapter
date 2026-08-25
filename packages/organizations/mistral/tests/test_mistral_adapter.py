@@ -737,7 +737,7 @@ def test_mistral_async_chat_processes_document_through_ocr(
     )
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 def test_mistral_maps_context_errors_to_shared_error_hierarchy():
     with pytest.raises(LLMAPITokenLimitError):
         MistralAdapter._raise_mapped_error(
