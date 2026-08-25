@@ -6,11 +6,11 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 @pytest.mark.e2e
-def test_chat_auth_error_invalid_api_key(providers):
+def test_chat_auth_error_invalid_api_key(organizations):
     """
     Verifies that an invalid API key is converted into a LLMAPIAuthorizationError.
     """
-    for p in providers:
+    for p in organizations:
         for model in p["models"]:
             adapter = UniversalLLMAPIAdapter(
                 organization=p["name"],
@@ -22,11 +22,11 @@ def test_chat_auth_error_invalid_api_key(providers):
             print(f"{p['name']=} {model=}: {excinfo.value}")
 
 @pytest.mark.e2e
-def test_chat_timeout_error(providers):
+def test_chat_timeout_error(organizations):
     """
     Verifies that an extremely small timeout is converted into a LLMAPITimeoutError.
     """
-    for p in providers:
+    for p in organizations:
         for model in p["models"]:
             adapter = UniversalLLMAPIAdapter(
                 organization=p["name"],

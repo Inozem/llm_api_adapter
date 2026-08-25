@@ -12,7 +12,7 @@ import pytest
 from llm_api_adapter.errors import LLMAPIRateLimitError, LLMAPIServerError
 from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY
 from llm_api_adapter.universal_adapter import (
-    PROVIDER_PLUGIN_DISCOVERY,
+    ORGANIZATION_PLUGIN_DISCOVERY,
     SERVICE_PROVIDER_REGISTRY,
 )
 
@@ -26,15 +26,15 @@ _TRANSIENT_ERRORS = (
 
 
 @dataclass(frozen=True)
-class E2EProviderProfile:
-    """The providers selected for one independently runnable E2E lane."""
+class E2EOrganizationProfile:
+    """The organizations selected for one independently runnable E2E lane."""
 
     name: str
-    provider_names: tuple[str, ...]
+    organization_names: tuple[str, ...]
 
 
-class E2EProvider(dict):
-    """Provider test data that never renders an API key in pytest output."""
+class E2EOrganization(dict):
+    """Organization test data that never renders an API key in pytest output."""
 
     def __repr__(self) -> str:
         safe_data = dict(self)
@@ -43,13 +43,13 @@ class E2EProvider(dict):
         return dict.__repr__(safe_data)
 
 
-_BUILTIN_E2E_PROFILE = E2EProviderProfile(
+_BUILTIN_E2E_PROFILE = E2EOrganizationProfile(
     name="builtin",
-    provider_names=("openai", "anthropic", "google"),
+    organization_names=("openai", "anthropic", "google"),
 )
-_MISTRAL_E2E_PROFILE = E2EProviderProfile(
+_MISTRAL_E2E_PROFILE = E2EOrganizationProfile(
     name="mistral",
-    provider_names=("mistral",),
+    organization_names=("mistral",),
 )
 _E2E_PROFILE_PARAMS = (
     pytest.param(
@@ -74,40 +74,40 @@ API_KEY_ENV = {
 }
 
 
-def _select_latest_e2e_models(providers, override_prefix: str):
-    """Select one registered model per provider for a bounded E2E profile."""
+def _select_latest_e2e_models(organizations, override_prefix: str):
+    """Select one registered model per organization for a bounded E2E profile."""
     selected = []
-    for provider in providers:
-        env_name = f"{override_prefix}_{provider['name'].upper()}_MODEL"
+    for organization in organizations:
+        env_name = f"{override_prefix}_{organization['name'].upper()}_MODEL"
         override = os.getenv(env_name)
 
         if override:
-            if override not in provider["models"]:
+            if override not in organization["models"]:
                 raise pytest.UsageError(
                     f"{env_name}={override!r} is not registered for "
-                    f"{provider['name']}"
+                    f"{organization['name']}"
                 )
             model = override
         else:
-            model = provider["latest_model"]
-            if model is None or model not in provider["models"]:
+            model = organization["latest_model"]
+            if model is None or model not in organization["models"]:
                 raise pytest.UsageError(
-                    f"No latest model is registered for {provider['name']}"
+                    f"No latest model is registered for {organization['name']}"
                 )
 
-        selected.append((provider, model))
+        selected.append((organization, model))
     return selected
 
 
 @pytest.fixture
-def iter_provider_models(providers):
-    """Returns a generator of (provider, model) pairs grouped round-robin across providers."""
+def iter_organization_models(organizations):
+    """Return (organization, model) pairs grouped round-robin by organization."""
     def _iter():
-        groups = list(zip_longest(*[p["models"] for p in providers]))
+        groups = list(zip_longest(*[o["models"] for o in organizations]))
         for group in groups:
-            for p, model in zip(providers, group):
+            for organization, model in zip(organizations, group):
                 if model is not None:
-                    yield p, model
+                    yield organization, model
     return _iter
 
 
@@ -208,76 +208,76 @@ def pdf_bytes() -> bytes:
 
 
 @pytest.fixture(scope="session", params=_E2E_PROFILE_PARAMS)
-def e2e_provider_profile(request) -> E2EProviderProfile:
-    """Select one independently runnable provider E2E lane."""
+def e2e_organization_profile(request) -> E2EOrganizationProfile:
+    """Select one independently runnable organization E2E lane."""
     return request.param
 
 
 @pytest.fixture(scope="session")
-def providers(e2e_provider_profile: E2EProviderProfile):
-    """Return the providers selected for the current E2E lane."""
-    if e2e_provider_profile.name == "mistral":
+def organizations(e2e_organization_profile: E2EOrganizationProfile):
+    """Return the organizations selected for the current E2E lane."""
+    if e2e_organization_profile.name == "mistral":
         try:
             version("llm-api-adapter-mistral")
         except PackageNotFoundError:
             pytest.skip("llm-api-adapter-mistral is not installed")
         if not API_KEY_ENV["mistral"]:
             pytest.skip("MISTRAL_API_KEY is not configured")
-        PROVIDER_PLUGIN_DISCOVERY.discover(
+        ORGANIZATION_PLUGIN_DISCOVERY.discover(
             SERVICE_PROVIDER_REGISTRY,
             model_registry=LLM_REGISTRY,
         )
 
-    providers_with_models = []
-    for provider_name in e2e_provider_profile.provider_names:
-        provider_spec = LLM_REGISTRY.providers.get(provider_name)
-        if provider_spec is None:
+    organizations_with_models = []
+    for organization_name in e2e_organization_profile.organization_names:
+        organization_spec = LLM_REGISTRY.organizations.get(organization_name)
+        if organization_spec is None:
             raise pytest.UsageError(
-                f"No models are registered for {provider_name}"
+                f"No models are registered for {organization_name}"
             )
-        registry_models = list(provider_spec.models.keys())
+        registry_models = list(organization_spec.models.keys())
 
-        api_key = API_KEY_ENV.get(provider_name)
-        providers_with_models.append(
-            E2EProvider(
+        api_key = API_KEY_ENV.get(organization_name)
+        organizations_with_models.append(
+            E2EOrganization(
                 {
-                    "name": provider_name,
+                    "name": organization_name,
                     "api_key": api_key,
                     "models": registry_models,
                     "latest_model": registry_models[0] if registry_models else None,
                 }
             )
         )
-    return providers_with_models
+    return organizations_with_models
 
 
 @pytest.fixture(scope="session")
-def async_e2e_models(providers):
-    """Select the latest registered model per provider for async E2E coverage."""
-    return _select_latest_e2e_models(providers, "ASYNC_E2E")
+def async_e2e_models(organizations):
+    """Select the latest registered model per organization for async E2E coverage."""
+    return _select_latest_e2e_models(organizations, "ASYNC_E2E")
 
 
 @pytest.fixture(scope="session")
 def configured_async_e2e_models(async_e2e_models):
     """Return the selected async E2E models whose API keys are configured."""
     return [
-        (provider, model)
-        for provider, model in async_e2e_models
-        if provider["api_key"]
+        (organization, model)
+        for organization, model in async_e2e_models
+        if organization["api_key"]
     ]
 
 
 @pytest.fixture(scope="session")
-def sync_httpx_e2e_models(providers):
-    """Select one latest model per provider for the sync HTTPX pilot."""
-    return _select_latest_e2e_models(providers, "SYNC_HTTPX_E2E")
+def sync_httpx_e2e_models(organizations):
+    """Select one latest model per organization for the sync HTTPX pilot."""
+    return _select_latest_e2e_models(organizations, "SYNC_HTTPX_E2E")
 
 
 @pytest.fixture(scope="session")
 def configured_sync_httpx_e2e_models(sync_httpx_e2e_models):
-    """Return sync HTTPX pilot models whose provider keys are configured."""
+    """Return sync HTTPX pilot models whose organization keys are configured."""
     return [
-        (provider, model)
-        for provider, model in sync_httpx_e2e_models
-        if provider["api_key"]
+        (organization, model)
+        for organization, model in sync_httpx_e2e_models
+        if organization["api_key"]
     ]

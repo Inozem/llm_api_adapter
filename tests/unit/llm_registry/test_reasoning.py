@@ -20,8 +20,8 @@ def registry():
     return RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
 
 
-def _model(registry, provider, model_name):
-    return registry.providers[provider].models[model_name]
+def _model(registry, organization, model_name):
+    return registry.organizations[organization].models[model_name]
 
 
 @pytest.mark.unit

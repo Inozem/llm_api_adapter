@@ -7,8 +7,8 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 @pytest.mark.e2e
-def test_chat_accepts_basic_params_and_returns_contract(subtests, iter_provider_models, chat_with_retry):
-    for p, model in iter_provider_models():
+def test_chat_accepts_basic_params_and_returns_contract(subtests, iter_organization_models, chat_with_retry):
+    for p, model in iter_organization_models():
         with subtests.test(provider=p["name"], model=model):
             adapter = UniversalLLMAPIAdapter(
                 organization=p["name"],
@@ -40,8 +40,8 @@ def test_chat_accepts_basic_params_and_returns_contract(subtests, iter_provider_
 
 
 @pytest.mark.e2e
-def test_chat_with_reasoning_level_returns_valid_contract(subtests, iter_provider_models, chat_with_retry):
-    for p, model in iter_provider_models():
+def test_chat_with_reasoning_level_returns_valid_contract(subtests, iter_organization_models, chat_with_retry):
+    for p, model in iter_organization_models():
         with subtests.test(provider=p["name"], model=model):
             adapter = UniversalLLMAPIAdapter(
                 organization=p["name"],

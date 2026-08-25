@@ -11,11 +11,11 @@ _PROMPT = "Summarize this document in one sentence."
 @pytest.mark.e2e
 def test_document_bytes_returns_non_empty_response(
     subtests,
-    iter_provider_models,
+    iter_organization_models,
     pdf_bytes,
     chat_with_retry,
 ):
-    for p, model in iter_provider_models():
+    for p, model in iter_organization_models():
         if not p["api_key"]:
             continue
 

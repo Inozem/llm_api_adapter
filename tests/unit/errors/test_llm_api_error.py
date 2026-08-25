@@ -20,11 +20,11 @@ def test_llm_reasoning_level_error_accepts_detail_kwarg():
 
 
 @pytest.mark.unit
-def test_provider_not_installed_error_has_an_actionable_install_command():
-    from src.llm_api_adapter.errors import ProviderNotInstalledError
+def test_organization_not_installed_error_has_an_actionable_install_command():
+    from src.llm_api_adapter.errors import OrganizationNotInstalledError
     from src.llm_api_adapter.errors.config_errors import LLMConfigError
 
-    error = ProviderNotInstalledError(
+    error = OrganizationNotInstalledError(
         organization="mistral",
         distribution="llm-api-adapter-mistral",
     )
@@ -33,7 +33,7 @@ def test_provider_not_installed_error_has_an_actionable_install_command():
     assert error.organization == "mistral"
     assert error.distribution == "llm-api-adapter-mistral"
     assert str(error) == (
-        "Provider 'mistral' is not installed. "
+        "Organization 'mistral' is not installed. "
         "Install it with: pip install llm-api-adapter-mistral"
     )
 

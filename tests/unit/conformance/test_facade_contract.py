@@ -38,7 +38,7 @@ class _JSONResponse:
 
 
 @dataclass(frozen=True)
-class ProviderConformanceCase:
+class OrganizationConformanceCase:
     organization: str
     model: str
     max_tokens: int | None
@@ -230,7 +230,7 @@ def _google_stream_events() -> list[SSEEvent]:
 
 CASES = (
     pytest.param(
-        ProviderConformanceCase(
+        OrganizationConformanceCase(
             organization="openai",
             model="gpt-5-nano",
             max_tokens=64,
@@ -243,7 +243,7 @@ CASES = (
         id="openai",
     ),
     pytest.param(
-        ProviderConformanceCase(
+        OrganizationConformanceCase(
             organization="anthropic",
             model="claude-sonnet-4-5",
             max_tokens=64,
@@ -256,7 +256,7 @@ CASES = (
         id="anthropic",
     ),
     pytest.param(
-        ProviderConformanceCase(
+        OrganizationConformanceCase(
             organization="google",
             model="gemini-2.5-flash",
             max_tokens=None,
@@ -275,7 +275,7 @@ class _StructuredAnswer(BaseModel):
     answer: str
 
 
-def _facade(case: ProviderConformanceCase) -> UniversalLLMAPIAdapter:
+def _facade(case: OrganizationConformanceCase) -> UniversalLLMAPIAdapter:
     return UniversalLLMAPIAdapter(
         organization=case.organization,
         model=case.model,
@@ -283,7 +283,7 @@ def _facade(case: ProviderConformanceCase) -> UniversalLLMAPIAdapter:
     )
 
 
-def _chat_kwargs(case: ProviderConformanceCase) -> dict[str, Any]:
+def _chat_kwargs(case: OrganizationConformanceCase) -> dict[str, Any]:
     return {
         "messages": [{"role": "user", "content": "Hello"}],
         "max_tokens": case.max_tokens,
