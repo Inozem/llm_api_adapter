@@ -8,12 +8,14 @@ on:
       - "mistral-v*"
     paths-ignore:
       - "packages/**"
-      - ".github/workflows/ci-mistral.yml"
+      - ".github/workflows/ci-mistral-dev.yml"
+      - ".github/workflows/ci-mistral-main.yml"
   pull_request:
     branches: ["main"]
     paths-ignore:
       - "packages/**"
-      - ".github/workflows/ci-mistral.yml"
+      - ".github/workflows/ci-mistral-dev.yml"
+      - ".github/workflows/ci-mistral-main.yml"
 
 permissions:
   contents: read
@@ -65,7 +67,7 @@ jobs:
           fi
 
   test-mistral:
-    name: Test Mistral package (Python ${{ matrix.python-version }})
+    name: Test Mistral package (main, Python ${{ matrix.python-version }})
     if: ${{ startsWith(github.ref, 'refs/tags/mistral-v') }}
     runs-on: ubuntu-latest
     strategy:

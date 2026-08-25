@@ -1,7 +1,7 @@
 import pytest
 
-from src.llm_api_adapter.models.messages.chat_message import UserMessage
-from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 @pytest.mark.e2e

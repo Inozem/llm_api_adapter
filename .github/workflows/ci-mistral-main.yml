@@ -1,10 +1,10 @@
-name: CI (Mistral)
+name: CI (main, Mistral)
 
 on:
   push:
-    branches: ["dev", "main"]
+    branches: ["main"]
     paths:
-      - ".github/workflows/ci-mistral.yml"
+      - ".github/workflows/ci-mistral-main.yml"
       - "packages/organizations/mistral/**"
       - "pyproject.toml"
       - "requirements.txt"
@@ -18,9 +18,9 @@ on:
       - "tests/requirements-test.txt"
       - "pytest.ini"
   pull_request:
-    branches: ["dev", "main"]
+    branches: ["main"]
     paths:
-      - ".github/workflows/ci-mistral.yml"
+      - ".github/workflows/ci-mistral-main.yml"
       - "packages/organizations/mistral/**"
       - "pyproject.toml"
       - "requirements.txt"
@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   test:
-    name: Test Mistral package (Python ${{ matrix.python-version }})
+    name: Test Mistral package (main, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -66,3 +66,17 @@ jobs:
 
       - name: Run Mistral integration tests
         run: pytest -v -m integration packages/organizations/mistral/tests
+
+  test-gate:
+    name: Test (main, Mistral)
+    runs-on: ubuntu-latest
+    needs: test
+    if: ${{ always() }}
+
+    steps:
+      - name: Verify Python matrix
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "One or more Mistral deterministic matrix jobs failed."
+            exit 1
+          fi
