@@ -3,7 +3,7 @@
   "models": {
     "mistral-small-2603": {
       "reasoning_capability": {
-        "allowed_values": ["none", "minimal", "low", "medium", "high", "xhigh"]
+        "allowed_values": ["none", "high"]
       },
       "limits": {
         "context_window_tokens": 256000,
@@ -19,7 +19,7 @@
     },
     "mistral-medium-3-5": {
       "reasoning_capability": {
-        "allowed_values": ["none", "minimal", "low", "medium", "high", "xhigh"]
+        "allowed_values": ["none", "high"]
       },
       "limits": {
         "context_window_tokens": 256000,
