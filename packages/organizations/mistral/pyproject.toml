@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-api-adapter-mistral"
-version = "0.1.0.post4"
-description = "Official Mistral API organization package for llm-api-adapter"
+version = "0.1.0"
+description = "Official Mistral API package for llm-api-adapter"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
