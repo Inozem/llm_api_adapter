@@ -11,9 +11,9 @@ import pytest
 
 from llm_api_adapter.errors import LLMAPIRateLimitError, LLMAPIServerError
 from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY
-from src.llm_api_adapter.errors import (
-    LLMAPIRateLimitError as SourceLLMAPIRateLimitError,
-    LLMAPIServerError as SourceLLMAPIServerError,
+from llm_api_adapter.universal_adapter import (
+    PROVIDER_PLUGIN_DISCOVERY,
+    SERVICE_PROVIDER_REGISTRY,
 )
 
 _FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
@@ -22,8 +22,6 @@ _MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1
 _TRANSIENT_ERRORS = (
     LLMAPIServerError,
     LLMAPIRateLimitError,
-    SourceLLMAPIServerError,
-    SourceLLMAPIRateLimitError,
 )
 
 
@@ -225,16 +223,19 @@ def providers(e2e_provider_profile: E2EProviderProfile):
             pytest.skip("llm-api-adapter-mistral is not installed")
         if not API_KEY_ENV["mistral"]:
             pytest.skip("MISTRAL_API_KEY is not configured")
+        PROVIDER_PLUGIN_DISCOVERY.discover(
+            SERVICE_PROVIDER_REGISTRY,
+            model_registry=LLM_REGISTRY,
+        )
 
     providers_with_models = []
     for provider_name in e2e_provider_profile.provider_names:
-        if provider_name == "mistral":
-            registry_models = [
-                os.getenv("MISTRAL_E2E_MODEL", "mistral-large-2512")
-            ]
-        else:
-            provider_spec = LLM_REGISTRY.providers[provider_name]
-            registry_models = list(provider_spec.models.keys())
+        provider_spec = LLM_REGISTRY.providers.get(provider_name)
+        if provider_spec is None:
+            raise pytest.UsageError(
+                f"No models are registered for {provider_name}"
+            )
+        registry_models = list(provider_spec.models.keys())
 
         api_key = API_KEY_ENV.get(provider_name)
         providers_with_models.append(
