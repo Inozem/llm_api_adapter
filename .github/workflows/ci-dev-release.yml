@@ -19,6 +19,7 @@ jobs:
     outputs:
       core: ${{ steps.filter.outputs.core }}
       mistral: ${{ steps.filter.outputs.mistral }}
+      mistral_e2e: ${{ steps.filter.outputs.mistral_e2e }}
       core_version: ${{ steps.versions.outputs.core }}
       mistral_version: ${{ steps.versions.outputs.mistral }}
 
@@ -57,6 +58,12 @@ jobs:
             echo "mistral=true" >> "$GITHUB_OUTPUT"
           else
             echo "mistral=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if grep -Eq '^(tests/e2e/|tests/fixtures/|tests/requirements-test.txt|pytest.ini|\.github/workflows/ci-dev-release.yml$)' <<< "$changed_files"; then
+            echo "mistral_e2e=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "mistral_e2e=false" >> "$GITHUB_OUTPUT"
           fi
 
   publish-core-testpypi:
@@ -176,12 +183,12 @@ jobs:
         run: pytest -v -m e2e_builtin
 
   post-publish-mistral-e2e:
-    name: Mistral E2E tests (post-publish)
+    name: Mistral E2E tests (release candidate)
     needs: [changes, publish-core-testpypi, publish-mistral-testpypi]
     if: >-
       ${{
         always() &&
-        (needs.changes.outputs.core == 'true' || needs.changes.outputs.mistral == 'true') &&
+        (needs.changes.outputs.core == 'true' || needs.changes.outputs.mistral == 'true' || needs.changes.outputs.mistral_e2e == 'true') &&
         (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped') &&
         (needs.publish-mistral-testpypi.result == 'success' || needs.publish-mistral-testpypi.result == 'skipped')
       }}
