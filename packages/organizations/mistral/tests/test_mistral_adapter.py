@@ -251,9 +251,9 @@ def test_mistral_processes_document_bytes_and_urls_through_ocr(
     transport = FakeSyncTransport(
         {},
         responses=[
-            {"model": "mistral-ocr-latest", "pages": [{"markdown": "# One"}]},
+            {"model": "mistral-ocr-4-1", "pages": [{"markdown": "# One"}]},
             {
-                "model": "mistral-ocr-latest",
+                "model": "mistral-ocr-4-1",
                 "pages": [{"markdown": "# Two"}, {"markdown": "More"}],
             },
             {
@@ -283,14 +283,14 @@ def test_mistral_processes_document_bytes_and_urls_through_ocr(
         "https://api.mistral.ai/v1/chat/completions",
     ]
     assert transport.requests[0].payload == {
-        "model": "mistral-ocr-latest",
+        "model": "mistral-ocr-4-1",
         "document": {
             "type": "document_url",
             "document_url": "data:application/pdf;base64,JVBERg==",
         },
     }
     assert transport.requests[1].payload == {
-        "model": "mistral-ocr-latest",
+        "model": "mistral-ocr-4-1",
         "document": {
             "type": "document_url",
             "document_url": "https://example.com/two.pdf",
@@ -696,7 +696,7 @@ def test_mistral_async_chat_processes_document_through_ocr(
         request_calls.append((url, kwargs))
         if url == "https://api.mistral.ai/v1/ocr":
             return {
-                "model": "mistral-ocr-latest",
+                "model": "mistral-ocr-4-1",
                 "pages": [{"markdown": "# Async document"}],
             }
         return {

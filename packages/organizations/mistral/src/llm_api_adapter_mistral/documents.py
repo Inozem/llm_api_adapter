@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from .adapter import MistralAdapter
 
 
-MISTRAL_OCR_MODEL = "mistral-ocr-latest"
+MISTRAL_OCR_MODEL = "mistral-ocr-4-1"
 
 
 def prepare_document_messages(
