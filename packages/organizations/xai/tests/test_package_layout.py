@@ -1,4 +1,4 @@
-"""Tests for the independently buildable xAI package skeleton."""
+"""Tests for the independently buildable xAI package."""
 
 from pathlib import Path
 
@@ -26,24 +26,22 @@ def test_transport_extras_are_forwarded_and_composable():
 
 
 @pytest.mark.unit
-def test_source_layout_has_no_direct_transport_implementation():
-    source_root = PACKAGE_ROOT / "src" / "llm_api_adapter_xai"
-    implementation_paths = {
-        path.relative_to(source_root).as_posix()
-        for path in source_root.rglob("*.py")
-    }
-    direct_transport_paths = {
-        path
-        for path in implementation_paths
-        if path.endswith((
-            "transport.py",
-            "transports.py",
-            "sync_client.py",
-            "async_client.py",
-            "streaming.py",
-            "async_streaming.py",
-        ))
-    }
+def test_distribution_exposes_the_organization_plugin_entry_point():
+    metadata = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert direct_transport_paths == set()
+    assert '[project.entry-points."llm_api_adapter.organizations"]' in metadata
+    assert 'xai = "llm_api_adapter_xai.plugin:PLUGIN"' in metadata
+
+
+@pytest.mark.unit
+def test_source_layout_uses_the_core_transport_contract():
+    source_root = PACKAGE_ROOT / "src" / "llm_api_adapter_xai"
+    source_files = list(source_root.rglob("*.py"))
+    source_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in source_files
+    )
+
+    assert "create_sync_transport" in source_text
+    assert "import requests" not in source_text
+    assert "import httpx" not in source_text
     assert (source_root / "py.typed").is_file()

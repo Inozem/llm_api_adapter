@@ -1,6 +1,7 @@
 include README.md
 include LICENSE
 include src/llm_api_adapter_xai/py.typed
+recursive-include src/llm_api_adapter_xai/registry/organizations *.json
 
 global-exclude *.py[cod]
 prune **/__pycache__

@@ -3,10 +3,14 @@
 The independently released organization package for xAI's official Responses
 API in [llm-api-adapter](https://github.com/Inozem/llm_api_adapter/).
 
-This workspace commit establishes packaging only. It deliberately contains no
-xAI SDK dependency, direct HTTP client, transport implementation, model
-metadata, or plugin entry point. Those arrive with the verified adapter
-implementation.
+The package currently provides synchronous text chat through `POST
+/v1/responses`. It uses the core transport contract rather than the xAI SDK or
+a package-local HTTP implementation.
+
+Streaming, asynchronous calls, application tools, response continuation,
+structured output, reasoning controls, and file inputs arrive in subsequent
+implementation commits. Unsupported options fail explicitly rather than being
+silently ignored.
 
 The package requires a compatible core release:
 
