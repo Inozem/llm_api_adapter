@@ -8,15 +8,17 @@ payloads and mapping provider-specific error bodies.
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Mapping, Optional
 
 from ..errors.llm_api_error import LLMAPIError, LLMAPIClientError, LLMAPITimeoutError
 from .transports import (
     HTTPErrorHandler,
+    MultipartForm,
     SSEEvent,
     SSEFrameDecoder,
     StreamErrorHandler,
     is_generic_stream_error as _is_generic_stream_error,
+    multipart_headers,
     raise_default_http_error,
     raise_default_stream_error as _default_stream_error_handler,
 )
@@ -88,6 +90,55 @@ async def async_request(
         _default_http_error_handler(exc)
     except httpx.RequestError as exc:
         logger.error("Async request exception: %s", exc)
+        raise LLMAPIClientError(detail=str(exc)) from exc
+    finally:
+        try:
+            if response is not None:
+                await response.aclose()
+        finally:
+            await client.aclose()
+
+
+async def async_multipart_request(
+    url: str,
+    *,
+    headers: Optional[Mapping[str, str]] = None,
+    form: MultipartForm,
+    timeout: Optional[float] = None,
+    http_error_handler: Optional[HTTPErrorHandler] = None,
+) -> Any:
+    """Perform an asynchronous multipart POST and return decoded JSON.
+
+    The shared multipart form keeps field and file ownership with the provider
+    client while HTTPX owns boundary construction and resource cleanup.
+    """
+    httpx = _require_httpx()
+    client = httpx.AsyncClient()
+    response: Optional[Any] = None
+
+    try:
+        response = await client.post(
+            url,
+            headers=multipart_headers(headers or {}),
+            data=form.fields_list(),
+            files=form.files_list(),
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+    except LLMAPIError:
+        raise
+    except httpx.TimeoutException as exc:
+        logger.error("Async multipart request timed out: %s", exc)
+        raise LLMAPITimeoutError(detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        logger.error("Async multipart HTTP error: %s", exc)
+        await _read_http_error_body(response)
+        handler = http_error_handler or _default_http_error_handler
+        handler(exc)
+        _default_http_error_handler(exc)
+    except httpx.RequestError as exc:
+        logger.error("Async multipart request exception: %s", exc)
         raise LLMAPIClientError(detail=str(exc)) from exc
     finally:
         try:
@@ -185,6 +236,7 @@ __all__ = [
     "ASYNC_DEPENDENCY_MESSAGE",
     "SSEEvent",
     "aiter_sse_events",
+    "async_multipart_request",
     "async_request",
     "async_stream_request",
 ]

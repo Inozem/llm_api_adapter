@@ -10,11 +10,13 @@ from .streaming import iter_sse_events
 from .transports import (
     HTTPErrorHandler,
     JSONResponse,
+    MultipartForm,
     SSEEvent,
     StreamErrorHandler,
     SyncTransport,
     TransportRequest,
     is_generic_stream_error,
+    multipart_headers,
     raise_default_http_error,
     raise_default_stream_error,
 )
@@ -123,6 +125,44 @@ class HttpxSyncTransport(SyncTransport):
         finally:
             try:
                 if response is not None and not parser_owns_response:
+                    response.close()
+            finally:
+                client.close()
+
+    def post_multipart(
+        self,
+        request: TransportRequest,
+        form: MultipartForm,
+        *,
+        http_error_handler: Optional[HTTPErrorHandler] = None,
+    ) -> JSONResponse:
+        client = self._httpx.Client()
+        response: Optional[Any] = None
+
+        try:
+            response = client.post(
+                request.url,
+                headers=multipart_headers(request.headers),
+                data=form.fields_list(),
+                files=form.files_list(),
+                timeout=request.timeout,
+            )
+            response.raise_for_status()
+            return JSONResponse(response.json())
+        except LLMAPIError:
+            raise
+        except self._httpx.TimeoutException as exc:
+            logger.error("Synchronous HTTPX multipart request timed out: %s", exc)
+            raise LLMAPITimeoutError(detail=str(exc)) from exc
+        except self._httpx.HTTPStatusError as exc:
+            logger.error("Synchronous HTTPX multipart HTTP error: %s", exc)
+            self._handle_http_error(exc, http_error_handler)
+        except self._httpx.RequestError as exc:
+            logger.error("Synchronous HTTPX multipart request exception: %s", exc)
+            raise LLMAPIClientError(detail=str(exc)) from exc
+        finally:
+            try:
+                if response is not None:
                     response.close()
             finally:
                 client.close()

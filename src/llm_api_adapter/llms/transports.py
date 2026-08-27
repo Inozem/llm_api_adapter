@@ -59,6 +59,58 @@ class TransportRequest:
 
 
 @dataclass(frozen=True)
+class MultipartFile:
+    """One file field in a transport-neutral multipart form."""
+
+    field_name: str
+    filename: str
+    content: bytes
+    content_type: str = "application/octet-stream"
+
+
+@dataclass(frozen=True)
+class MultipartForm:
+    """Immutable multipart fields and files owned by a provider client.
+
+    Concrete transports convert this value to their HTTP library's multipart
+    representation.  Form fields and files preserve their declared order so
+    providers with ordering-sensitive multipart endpoints remain supported.
+    """
+
+    fields: tuple[tuple[str, str], ...] = ()
+    files: tuple[MultipartFile, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "fields", tuple(self.fields))
+        object.__setattr__(self, "files", tuple(self.files))
+
+    def fields_list(self) -> list[tuple[str, str]]:
+        """Return a mutable copy suitable for an HTTP client's ``data`` input."""
+        return list(self.fields)
+
+    def files_list(self) -> list[tuple[str, tuple[str, bytes, str]]]:
+        """Return files in the tuple format shared by requests and HTTPX."""
+        return [
+            (file.field_name, (file.filename, file.content, file.content_type))
+            for file in self.files
+        ]
+
+
+def multipart_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Copy headers while leaving multipart ``Content-Type`` to the transport.
+
+    HTTP libraries generate the multipart boundary.  A provider client's
+    JSON-specific ``Content-Type`` header would prevent that boundary from
+    being declared correctly, so it is deliberately excluded here.
+    """
+    return {
+        name: value
+        for name, value in headers.items()
+        if name.lower() != "content-type"
+    }
+
+
+@dataclass(frozen=True)
 class JSONResponse:
     """Decoded JSON with the minimal response accessor used by sync clients.
 
@@ -100,7 +152,7 @@ def create_sync_transport(transport: object) -> "SyncTransport":
 
 
 class SyncTransport(ABC):
-    """Internal contract for a synchronous JSON and SSE HTTP transport."""
+    """Internal contract for synchronous JSON, multipart, and SSE HTTP."""
 
     @abstractmethod
     def post_json(
@@ -117,6 +169,21 @@ class SyncTransport(ABC):
         """
 
     @abstractmethod
+    def post_multipart(
+        self,
+        request: TransportRequest,
+        form: MultipartForm,
+        *,
+        http_error_handler: Optional[HTTPErrorHandler] = None,
+    ) -> JSONResponse:
+        """POST multipart form data and return the decoded JSON response.
+
+        The transport owns multipart boundary construction and HTTP resource
+        closure. Provider clients retain ownership of URLs, fields, headers,
+        and provider-specific HTTP error mapping.
+        """
+
+    @abstractmethod
     def post_sse(
         self,
         request: TransportRequest,
@@ -128,7 +195,7 @@ class SyncTransport(ABC):
 
 
 class AsyncTransport(ABC):
-    """Internal contract for an asynchronous JSON and SSE HTTP transport."""
+    """Internal contract for asynchronous JSON, multipart, and SSE HTTP."""
 
     @abstractmethod
     async def post_json(
@@ -138,6 +205,16 @@ class AsyncTransport(ABC):
         http_error_handler: Optional[HTTPErrorHandler] = None,
     ) -> Any:
         """POST JSON asynchronously and close resources on every exit path."""
+
+    @abstractmethod
+    async def post_multipart(
+        self,
+        request: TransportRequest,
+        form: MultipartForm,
+        *,
+        http_error_handler: Optional[HTTPErrorHandler] = None,
+    ) -> Any:
+        """POST multipart form data asynchronously and close all resources."""
 
     @abstractmethod
     def post_sse(
@@ -267,6 +344,8 @@ __all__ = [
     "AsyncTransport",
     "HTTPErrorHandler",
     "JSONResponse",
+    "MultipartFile",
+    "MultipartForm",
     "SYNC_TRANSPORTS",
     "SSEEvent",
     "SSEFrameDecoder",
@@ -277,6 +356,7 @@ __all__ = [
     "create_sync_transport",
     "decode_sse_line",
     "is_generic_stream_error",
+    "multipart_headers",
     "raise_default_http_error",
     "raise_default_stream_error",
     "stream_error_detail",
