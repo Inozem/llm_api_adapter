@@ -292,11 +292,14 @@ class XAIAdapter(LLMAdapterBase):
         response_model: Optional[Any],
         capture_reasoning: bool,
     ) -> dict[str, Any]:
+        # ``previous_response`` is an optional provider-specific optimization.
+        # xAI server-side continuation is intentionally not exposed by this
+        # package, so retain the shared API shape and use the supplied messages.
+        del previous_response
         self._reject_unsupported_options(
             tools=tools,
             tool_choice=tool_choice,
             parallel_tool_calls=parallel_tool_calls,
-            previous_response=previous_response,
             json_schema=json_schema,
             response_model=response_model,
             reasoning_level=reasoning_level,
@@ -382,7 +385,6 @@ class XAIAdapter(LLMAdapterBase):
         tools: Optional[List[ToolSpec]],
         tool_choice: Any,
         parallel_tool_calls: Optional[bool],
-        previous_response: Optional[ChatResponse],
         json_schema: Optional[dict],
         response_model: Optional[Any],
         reasoning_level: Optional[str | int],
@@ -392,7 +394,6 @@ class XAIAdapter(LLMAdapterBase):
             "tools": tools is not None,
             "tool_choice": tool_choice is not None,
             "parallel_tool_calls": parallel_tool_calls is not None,
-            "previous_response": previous_response is not None,
             "json_schema": json_schema is not None,
             "response_model": response_model is not None,
             "reasoning_level": reasoning_level is not None,

@@ -284,11 +284,28 @@ def test_universal_chat_maps_text_to_responses_api_and_normalizes_output(
 
 
 @pytest.mark.unit
+def test_chat_ignores_previous_response_without_sending_continuation_id(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    transport = FakeSyncTransport(_response(model="grok-4.6"))
+    adapter._client._sync_transport = transport
+
+    response = adapter.chat(
+        messages=[UserMessage("Hello")],
+        previous_response=object(),
+    )
+
+    assert response.content == "Hello from xAI."
+    assert transport.requests[0].payload == {
+        "model": "grok-4.6",
+        "input": [{"role": "user", "content": "Hello"}],
+        "temperature": 1.0,
+        "top_p": 1.0,
+    }
+
+
+@pytest.mark.unit
 def test_chat_rejects_options_reserved_for_later_xai_capabilities(xai_runtime):
     adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
-
-    with pytest.raises(ValueError, match="previous_response"):
-        adapter.chat(messages=[UserMessage("Hello")], previous_response=object())
 
     with pytest.raises(ValueError, match="reasoning_level"):
         adapter.chat(messages=[UserMessage("Hello")], reasoning_level="high")
