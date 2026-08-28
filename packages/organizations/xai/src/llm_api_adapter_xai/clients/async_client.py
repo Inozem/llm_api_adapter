@@ -6,10 +6,14 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator, Mapping
 
 from llm_api_adapter.errors.llm_api_error import LLMAPIClientError
-from llm_api_adapter.llms.async_streaming import async_request, async_stream_request
-from llm_api_adapter.llms.transports import SSEEvent
+from llm_api_adapter.llms.async_streaming import (
+    async_multipart_request,
+    async_request,
+    async_stream_request,
+)
+from llm_api_adapter.llms.transports import MultipartFile, MultipartForm, SSEEvent
 
-from .sync_client import XAIResponsesSyncClient, _XAI_RESPONSES_URL
+from .sync_client import XAIResponsesSyncClient, _XAI_FILES_URL, _XAI_RESPONSES_URL
 
 
 @dataclass(repr=False)
@@ -61,6 +65,41 @@ class XAIResponsesAsyncClient:
             http_error_handler=self._handle_http_error,
             stream_error_handler=self._handle_stream_error,
         )
+
+    async def upload_file(
+        self,
+        *,
+        content: bytes,
+        filename: str,
+        content_type: str,
+        expires_after: int,
+        timeout: float | None = None,
+    ) -> str:
+        """Upload one adapter-owned attachment and return its xAI file ID."""
+        payload = await async_multipart_request(
+            _XAI_FILES_URL,
+            headers=self._headers(),
+            form=MultipartForm(
+                # xAI requires ``expires_after`` to precede the ``file`` part.
+                fields=(("expires_after", str(expires_after)),),
+                files=(
+                    MultipartFile(
+                        field_name="file",
+                        filename=filename,
+                        content=content,
+                        content_type=content_type,
+                    ),
+                ),
+            ),
+            timeout=timeout,
+            http_error_handler=self._handle_http_error,
+        )
+        file_id = payload.get("id") if isinstance(payload, dict) else None
+        if not isinstance(file_id, str) or not file_id:
+            raise LLMAPIClientError(
+                detail="xAI Files API returned a response without a file id",
+            )
+        return file_id
 
     def _headers(self) -> dict[str, str]:
         return {

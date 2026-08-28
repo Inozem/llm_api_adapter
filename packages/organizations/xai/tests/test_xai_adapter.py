@@ -32,6 +32,7 @@ from llm_api_adapter.errors.llm_api_error import (
 from llm_api_adapter.llm_registry.llm_registry import OrganizationSpec, RegistrySpec
 from llm_api_adapter.llms.transports import (
     JSONResponse,
+    MultipartFile,
     MultipartForm,
     SSEEvent,
     SyncTransport,
@@ -43,6 +44,7 @@ from llm_api_adapter.models.messages.chat_message import (
     ToolMessage,
     UserMessage,
 )
+from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -62,6 +64,10 @@ class StructuredAnswer(BaseModel):
 class FakeSyncTransport(SyncTransport):
     payload: Any
     requests: list[TransportRequest] = field(default_factory=list)
+    multipart_requests: list[tuple[TransportRequest, MultipartForm]] = field(
+        default_factory=list,
+    )
+    multipart_payloads: list[Any] = field(default_factory=list)
     stream_events: list[SSEEvent] = field(default_factory=list)
 
     def post_json(
@@ -80,7 +86,13 @@ class FakeSyncTransport(SyncTransport):
         *,
         http_error_handler=None,
     ) -> JSONResponse:
-        raise AssertionError("xAI text chat must not upload multipart data")
+        self.multipart_requests.append((request, form))
+        if not self.multipart_payloads:
+            raise AssertionError("xAI test did not provide a multipart response")
+        payload = self.multipart_payloads.pop(0)
+        if isinstance(payload, Exception):
+            raise payload
+        return JSONResponse(payload)
 
     def post_sse(
         self,
@@ -335,6 +347,140 @@ def test_chat_ignores_previous_response_without_sending_continuation_id(xai_runt
         "temperature": 1.0,
         "top_p": 1.0,
     }
+
+
+@pytest.mark.unit
+def test_chat_serializes_images_and_pdf_url_without_uploading_or_ocr(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    transport = FakeSyncTransport(_response(model="grok-4.6"))
+    adapter._client._sync_transport = transport
+
+    response = adapter.chat(
+        messages=[
+            UserMessage(
+                "Describe the image and summarize the report.",
+                files=[
+                    ImagePart(url="https://example.com/photo.png"),
+                    ImagePart(data=b"\x89PNG", media_type="image/png"),
+                    DocumentPart(url="https://example.com/report.pdf"),
+                ],
+            ),
+        ],
+    )
+
+    assert response.content == "Hello from xAI."
+    assert transport.multipart_requests == []
+    assert transport.requests[0].url == "https://api.x.ai/v1/responses"
+    assert transport.requests[0].payload["input"] == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "Describe the image and summarize the report.",
+                },
+                {
+                    "type": "input_image",
+                    "image_url": "https://example.com/photo.png",
+                },
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,iVBORw==",
+                },
+                {
+                    "type": "input_file",
+                    "file_url": "https://example.com/report.pdf",
+                },
+            ],
+        },
+    ]
+
+
+@pytest.mark.unit
+def test_chat_uploads_pdf_bytes_with_a_bounded_adapter_owned_lifecycle(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    transport = FakeSyncTransport(
+        _response(model="grok-4.6"),
+        multipart_payloads=[{"id": "file_adapter_owned"}],
+    )
+    adapter._client._sync_transport = transport
+
+    response = adapter.chat(
+        messages=[
+            UserMessage(
+                "Summarize the report.",
+                files=[
+                    DocumentPart(
+                        data=b"%PDF-1.7",
+                        media_type="application/pdf",
+                    ),
+                ],
+            ),
+        ],
+        timeout_s=3.0,
+    )
+
+    assert response.content == "Hello from xAI."
+    assert transport.multipart_requests == [
+        (
+            TransportRequest(
+                url="https://api.x.ai/v1/files",
+                headers={
+                    "Authorization": "Bearer test-key",
+                    "Content-Type": "application/json",
+                },
+                timeout=3.0,
+            ),
+            MultipartForm(
+                fields=(("expires_after", "86400"),),
+                files=(
+                    MultipartFile(
+                        field_name="file",
+                        filename="document.pdf",
+                        content=b"%PDF-1.7",
+                        content_type="application/pdf",
+                    ),
+                ),
+            ),
+        ),
+    ]
+    assert transport.requests[0].payload["input"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Summarize the report."},
+                {"type": "input_file", "file_id": "file_adapter_owned"},
+            ],
+        },
+    ]
+
+
+@pytest.mark.unit
+def test_chat_stops_before_responses_when_pdf_upload_fails(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    transport = FakeSyncTransport(
+        _response(model="grok-4.6"),
+        multipart_payloads=[LLMAPIClientError(detail="PDF upload failed")],
+    )
+    adapter._client._sync_transport = transport
+
+    with pytest.raises(LLMAPIClientError, match="PDF upload failed"):
+        adapter.chat(
+            messages=[
+                UserMessage(
+                    "Summarize the report.",
+                    files=[
+                        DocumentPart(
+                            data=b"%PDF-1.7",
+                            media_type="application/pdf",
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    assert len(transport.multipart_requests) == 1
+    assert transport.requests == []
 
 
 @pytest.mark.unit
@@ -662,6 +808,41 @@ def test_stream_chat_maps_responses_sse_to_shared_lifecycle(xai_runtime):
 
 
 @pytest.mark.unit
+def test_stream_chat_uploads_pdf_before_starting_the_responses_stream(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    transport = FakeSyncTransport(
+        _response(model="grok-4.6"),
+        multipart_payloads=[{"id": "file_stream_owned"}],
+        stream_events=_stream_events(model="grok-4.6"),
+    )
+    adapter._client._sync_transport = transport
+
+    assert list(
+        adapter.stream_chat(
+            messages=[
+                UserMessage(
+                    "Summarize the report.",
+                    files=[
+                        DocumentPart(
+                            data=b"%PDF-1.7",
+                            media_type="application/pdf",
+                        ),
+                    ],
+                ),
+            ],
+        )
+    ) == ["Hello ", "from xAI."]
+
+    assert transport.multipart_requests[0][1].fields == (
+        ("expires_after", "86400"),
+    )
+    assert transport.requests[0].payload["input"][0]["content"][-1] == {
+        "type": "input_file",
+        "file_id": "file_stream_owned",
+    }
+
+
+@pytest.mark.unit
 def test_stream_captures_reasoning_and_uses_final_exact_cost(xai_runtime):
     adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
     events = _stream_events(model="grok-4.6")
@@ -835,6 +1016,103 @@ def test_async_chat_applies_structured_output_and_reasoning(xai_runtime, monkeyp
 
 
 @pytest.mark.unit
+def test_async_chat_uploads_pdf_bytes_before_creating_the_response(
+    xai_runtime,
+    monkeypatch,
+):
+    requests: list[dict[str, Any]] = []
+    uploads: list[dict[str, Any]] = []
+
+    async def fake_async_multipart_request(
+        url: str,
+        *,
+        headers: dict[str, str],
+        form: MultipartForm,
+        timeout: float | None,
+        http_error_handler,
+    ) -> dict[str, Any]:
+        uploads.append(
+            {
+                "url": url,
+                "headers": headers,
+                "form": form,
+                "timeout": timeout,
+            },
+        )
+        return {"id": "file_async_owned"}
+
+    async def fake_async_request(
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float | None,
+        http_error_handler,
+    ) -> dict[str, Any]:
+        requests.append(
+            {
+                "url": url,
+                "headers": headers,
+                "payload": payload,
+                "timeout": timeout,
+            },
+        )
+        return _response(model="grok-4.6")
+
+    monkeypatch.setattr(
+        xai_async_client_module,
+        "async_multipart_request",
+        fake_async_multipart_request,
+    )
+    monkeypatch.setattr(xai_async_client_module, "async_request", fake_async_request)
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+
+    response = asyncio.run(
+        adapter.achat(
+            messages=[
+                UserMessage(
+                    "Summarize the report.",
+                    files=[
+                        DocumentPart(
+                            data=b"%PDF-1.7",
+                            media_type="application/pdf",
+                        ),
+                    ],
+                ),
+            ],
+            timeout_s=3.0,
+        ),
+    )
+
+    assert response.content == "Hello from xAI."
+    assert uploads == [
+        {
+            "url": "https://api.x.ai/v1/files",
+            "headers": {
+                "Authorization": "Bearer test-key",
+                "Content-Type": "application/json",
+            },
+            "form": MultipartForm(
+                fields=(("expires_after", "86400"),),
+                files=(
+                    MultipartFile(
+                        field_name="file",
+                        filename="document.pdf",
+                        content=b"%PDF-1.7",
+                        content_type="application/pdf",
+                    ),
+                ),
+            ),
+            "timeout": 3.0,
+        },
+    ]
+    assert requests[0]["payload"]["input"][0]["content"][-1] == {
+        "type": "input_file",
+        "file_id": "file_async_owned",
+    }
+
+
+@pytest.mark.unit
 def test_async_chat_and_stream_match_sync_contract(xai_runtime, monkeypatch):
     requests: list[dict[str, Any]] = []
 
@@ -974,6 +1252,86 @@ def test_async_chat_and_stream_match_sync_contract(xai_runtime, monkeypatch):
             "timeout": 3.0,
         },
     ]
+
+
+@pytest.mark.unit
+def test_async_stream_uploads_pdf_before_starting_the_responses_stream(
+    xai_runtime,
+    monkeypatch,
+):
+    uploads: list[MultipartForm] = []
+    stream_payloads: list[dict[str, Any]] = []
+
+    async def fake_async_multipart_request(
+        url: str,
+        *,
+        headers: dict[str, str],
+        form: MultipartForm,
+        timeout: float | None,
+        http_error_handler,
+    ) -> dict[str, Any]:
+        assert url == "https://api.x.ai/v1/files"
+        assert headers["Authorization"] == "Bearer test-key"
+        assert timeout is None
+        uploads.append(form)
+        return {"id": "file_async_stream_owned"}
+
+    def fake_async_stream_request(
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float | None,
+        http_error_handler,
+        stream_error_handler,
+    ):
+        assert url == "https://api.x.ai/v1/responses"
+        assert headers["Authorization"] == "Bearer test-key"
+        assert timeout is None
+        stream_payloads.append(payload)
+
+        async def events():
+            for event in _stream_events(model="grok-4.6"):
+                yield event
+
+        return events()
+
+    monkeypatch.setattr(
+        xai_async_client_module,
+        "async_multipart_request",
+        fake_async_multipart_request,
+    )
+    monkeypatch.setattr(
+        xai_async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+
+    async def consume_stream() -> list[str]:
+        return [
+            text
+            async for text in adapter.astream_chat(
+                messages=[
+                    UserMessage(
+                        "Summarize the report.",
+                        files=[
+                            DocumentPart(
+                                data=b"%PDF-1.7",
+                                media_type="application/pdf",
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        ]
+
+    assert asyncio.run(consume_stream()) == ["Hello ", "from xAI."]
+    assert uploads[0].fields == (("expires_after", "86400"),)
+    assert stream_payloads[0]["input"][0]["content"][-1] == {
+        "type": "input_file",
+        "file_id": "file_async_stream_owned",
+    }
 
 
 @pytest.mark.unit

@@ -39,10 +39,14 @@ print(response.content)
 - Application function tools and multi-turn tool results.
 - JSON Schema and Pydantic structured output.
 - Model-aware reasoning levels and opt-in captured reasoning events.
+- Image URLs and image bytes.
+- PDF URLs and PDF bytes; byte-backed PDFs are uploaded to xAI for 24 hours.
 - Normalized usage, exact xAI request cost when returned, errors, and streaming callbacks.
 
 `previous_response` is accepted for compatibility and uses the message history you
-provide; xAI file input is not available yet.
+provide. PDF attachments use xAI document search; this may make the request
+agentic and add provider tool charges to its exact reported cost. The adapter
+does not run OCR or modify files supplied by URL.
 
 See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
 for the shared API contract and examples.

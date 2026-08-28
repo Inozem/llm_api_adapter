@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from dataclasses import dataclass, field
@@ -34,6 +36,7 @@ from llm_api_adapter.models.messages.chat_message import (
     Prompt,
     UserMessage,
 )
+from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools import ToolSpec
 
@@ -41,11 +44,16 @@ from .clients import XAIResponsesAsyncClient, XAIResponsesSyncClient
 from .streaming import XAIResponsesStreamParser, XAIResponsesStreamState
 
 
+_XAI_ADAPTER_FILE_TTL_SECONDS = 86_400
+
+
 @dataclass(frozen=True)
 class _PreparedResponsesRequest:
     """Provider parameters plus common finalization context for one request."""
 
     parameters: dict[str, Any]
+    normalized_messages: Messages
+    document_uploads: tuple[DocumentPart, ...]
     effective_schema: Optional[dict]
     response_model: Optional[Any]
     capture_reasoning: bool
@@ -109,10 +117,17 @@ class XAIAdapter(LLMAdapterBase):
             capture_reasoning=capture_reasoning,
         )
         try:
+            parameters = self._materialize_responses_parameters(
+                prepared,
+                self._upload_document_parts(
+                    prepared.document_uploads,
+                    timeout_s,
+                ),
+            )
             response = self._client.create(
                 model=self.model,
                 timeout=timeout_s,
-                **prepared.parameters,
+                **parameters,
             )
             return self._finalize_xai_chat_response(
                 response,
@@ -159,10 +174,17 @@ class XAIAdapter(LLMAdapterBase):
             capture_reasoning=capture_reasoning,
         )
         try:
+            parameters = self._materialize_responses_parameters(
+                prepared,
+                await self._aupload_document_parts(
+                    prepared.document_uploads,
+                    timeout_s,
+                ),
+            )
             response = await self._async_client.create(
                 model=self.model,
                 timeout=timeout_s,
-                **prepared.parameters,
+                **parameters,
             )
             return self._finalize_xai_chat_response(
                 response,
@@ -218,10 +240,14 @@ class XAIAdapter(LLMAdapterBase):
             buffer_chars=buffer_chars,
             capture_reasoning=prepared.capture_reasoning,
         )
+        parameters = self._materialize_responses_parameters(
+            prepared,
+            self._upload_document_parts(prepared.document_uploads, timeout_s),
+        )
         events = self._client.stream(
             model=self.model,
             timeout=timeout_s,
-            **prepared.parameters,
+            **parameters,
         )
         yield from self._run_sync_stream(
             events,
@@ -280,10 +306,17 @@ class XAIAdapter(LLMAdapterBase):
             buffer_chars=buffer_chars,
             capture_reasoning=prepared.capture_reasoning,
         )
+        parameters = self._materialize_responses_parameters(
+            prepared,
+            await self._aupload_document_parts(
+                prepared.document_uploads,
+                timeout_s,
+            ),
+        )
         events = self._async_client.stream(
             model=self.model,
             timeout=timeout_s,
-            **prepared.parameters,
+            **parameters,
         )
         async for text in self._run_async_stream(
             events,
@@ -330,10 +363,8 @@ class XAIAdapter(LLMAdapterBase):
             response_model,
         )
         normalized_messages = request_context.normalized_messages
-        self._reject_file_messages(normalized_messages)
 
         parameters: dict[str, Any] = {
-            "input": self._to_xai_responses_input(normalized_messages),
             "max_output_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
@@ -368,6 +399,8 @@ class XAIAdapter(LLMAdapterBase):
             parameters={
                 key: value for key, value in parameters.items() if value is not None
             },
+            normalized_messages=normalized_messages,
+            document_uploads=self._document_uploads(normalized_messages),
             effective_schema=request_context.effective_schema,
             response_model=response_model,
             capture_reasoning=capture_reasoning,
@@ -643,11 +676,74 @@ class XAIAdapter(LLMAdapterBase):
         chat_response.cost_output = None
         chat_response.cost_total = cost_in_usd_ticks / 10_000_000_000
 
+    def _materialize_responses_parameters(
+        self,
+        prepared: _PreparedResponsesRequest,
+        uploaded_document_ids: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """Add request-specific file IDs after uploading private PDF bytes."""
+        parameters = dict(prepared.parameters)
+        parameters["input"] = self._to_xai_responses_input(
+            prepared.normalized_messages,
+            uploaded_document_ids=uploaded_document_ids,
+        )
+        return parameters
+
+    def _upload_document_parts(
+        self,
+        documents: tuple[DocumentPart, ...],
+        timeout_s: Optional[float],
+    ) -> tuple[str, ...]:
+        """Upload byte-backed PDFs with a bounded xAI-owned lifecycle."""
+        return tuple(
+            self._client.upload_file(
+                content=self._document_upload_content(document),
+                filename="document.pdf",
+                content_type="application/pdf",
+                expires_after=_XAI_ADAPTER_FILE_TTL_SECONDS,
+                timeout=timeout_s,
+            )
+            for document in documents
+        )
+
+    async def _aupload_document_parts(
+        self,
+        documents: tuple[DocumentPart, ...],
+        timeout_s: Optional[float],
+    ) -> tuple[str, ...]:
+        """Async counterpart of :meth:`_upload_document_parts`."""
+        uploaded_ids: list[str] = []
+        for document in documents:
+            uploaded_ids.append(
+                await self._async_client.upload_file(
+                    content=self._document_upload_content(document),
+                    filename="document.pdf",
+                    content_type="application/pdf",
+                    expires_after=_XAI_ADAPTER_FILE_TTL_SECONDS,
+                    timeout=timeout_s,
+                )
+            )
+        return tuple(uploaded_ids)
+
     @staticmethod
-    def _reject_file_messages(messages: Messages) -> None:
-        for message in messages.items:
-            if isinstance(message, UserMessage) and message.files:
-                raise ValueError("xAI file input is not available yet")
+    def _document_uploads(messages: Messages) -> tuple[DocumentPart, ...]:
+        """Return PDFs that need an xAI upload rather than a public URL."""
+        return tuple(
+            part
+            for message in messages.items
+            if isinstance(message, UserMessage) and message.files
+            for part in message.files
+            if isinstance(part, DocumentPart) and not part._is_url()
+        )
+
+    @staticmethod
+    def _document_upload_content(document: DocumentPart) -> bytes:
+        if document.data is not None:
+            return document.data
+        try:
+            return base64.b64decode(document._get_b64_data(), validate=True)
+        except (ValueError, IndexError, binascii.Error) as error:
+            raise ValueError("xAI PDF data must be valid base64") from error
 
     @staticmethod
     def _map_tools(tools: Optional[List[ToolSpec]]) -> Optional[list[dict[str, Any]]]:
@@ -681,9 +777,14 @@ class XAIAdapter(LLMAdapterBase):
         return {"type": "function", "function": {"name": tool_choice}}
 
     @staticmethod
-    def _to_xai_responses_input(messages: Messages) -> list[dict[str, Any]]:
+    def _to_xai_responses_input(
+        messages: Messages,
+        *,
+        uploaded_document_ids: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
         """Serialize a full tool round-trip without Responses server state."""
         input_items: list[dict[str, Any]] = []
+        document_ids = iter(uploaded_document_ids)
         for message in messages.items:
             if isinstance(message, Prompt):
                 continue
@@ -707,10 +808,45 @@ class XAIAdapter(LLMAdapterBase):
                                 ensure_ascii=False,
                             ),
                         }
-                    )
+                )
+                continue
+            if isinstance(message, UserMessage) and message.files:
+                content: list[dict[str, Any]] = [
+                    {"type": "input_text", "text": message.content},
+                ]
+                for part in message.files:
+                    if isinstance(part, ImagePart):
+                        image_url = part.url if part._is_url() else part._to_data_uri()
+                        content.append(
+                            {"type": "input_image", "image_url": image_url},
+                        )
+                    elif isinstance(part, DocumentPart):
+                        if part._is_url():
+                            content.append(
+                                {"type": "input_file", "file_url": part.url},
+                            )
+                        else:
+                            try:
+                                file_id = next(document_ids)
+                            except StopIteration as error:
+                                raise ValueError(
+                                    "xAI document upload did not return a file id",
+                                ) from error
+                            content.append(
+                                {"type": "input_file", "file_id": file_id},
+                            )
+                    else:
+                        raise ValueError(
+                            f"xAI does not support {type(part).__name__} file input",
+                        )
+                input_items.append({"role": "user", "content": content})
                 continue
             input_items.extend(message.to_openai_responses_input())
-        return input_items
+        try:
+            next(document_ids)
+        except StopIteration:
+            return input_items
+        raise ValueError("xAI received unused uploaded document file ids")
 
     @staticmethod
     def _parse_response(

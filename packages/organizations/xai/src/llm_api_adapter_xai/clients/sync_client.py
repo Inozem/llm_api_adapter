@@ -17,6 +17,8 @@ from llm_api_adapter.errors.llm_api_error import (
 )
 from llm_api_adapter.llms.transports import (
     JSONResponse,
+    MultipartFile,
+    MultipartForm,
     SSEEvent,
     SyncTransport,
     TransportRequest,
@@ -25,6 +27,7 @@ from llm_api_adapter.llms.transports import (
 
 
 _XAI_RESPONSES_URL = "https://api.x.ai/v1/responses"
+_XAI_FILES_URL = "https://api.x.ai/v1/files"
 
 
 @dataclass(repr=False)
@@ -86,6 +89,44 @@ class XAIResponsesSyncClient:
             http_error_handler=self._handle_http_error,
             stream_error_handler=self._handle_stream_error,
         )
+
+    def upload_file(
+        self,
+        *,
+        content: bytes,
+        filename: str,
+        content_type: str,
+        expires_after: int,
+        timeout: float | None = None,
+    ) -> str:
+        """Upload one adapter-owned attachment and return its xAI file ID."""
+        response: JSONResponse = self._sync_transport.post_multipart(
+            TransportRequest(
+                url=_XAI_FILES_URL,
+                headers=self._headers(),
+                timeout=timeout,
+            ),
+            MultipartForm(
+                # xAI requires ``expires_after`` to precede the ``file`` part.
+                fields=(("expires_after", str(expires_after)),),
+                files=(
+                    MultipartFile(
+                        field_name="file",
+                        filename=filename,
+                        content=content,
+                        content_type=content_type,
+                    ),
+                ),
+            ),
+            http_error_handler=self._handle_http_error,
+        )
+        payload = response.json()
+        file_id = payload.get("id") if isinstance(payload, dict) else None
+        if not isinstance(file_id, str) or not file_id:
+            raise LLMAPIClientError(
+                detail="xAI Files API returned a response without a file id",
+            )
+        return file_id
 
     def _headers(self) -> dict[str, str]:
         return {
