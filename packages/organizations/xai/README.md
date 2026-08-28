@@ -36,10 +36,13 @@ print(response.content)
 
 - Synchronous and asynchronous text chat.
 - Synchronous and asynchronous streaming.
-- Normalized usage, cost, errors, and streaming callbacks.
+- Application function tools and multi-turn tool results.
+- JSON Schema and Pydantic structured output.
+- Model-aware reasoning levels and opt-in captured reasoning events.
+- Normalized usage, exact xAI request cost when returned, errors, and streaming callbacks.
 
-Tools, response continuation, structured output, reasoning controls, and file
-input are not available yet.
+`previous_response` is accepted for compatibility and uses the message history you
+provide; xAI file input is not available yet.
 
 See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
 for the shared API contract and examples.

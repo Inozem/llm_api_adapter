@@ -75,7 +75,12 @@ class XAIResponsesSyncClient:
             TransportRequest(
                 url=self.endpoint,
                 headers=self._headers(),
-                payload={"model": model, **parameters, "stream": True},
+                payload={
+                    "model": model,
+                    **parameters,
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                },
                 timeout=timeout,
             ),
             http_error_handler=self._handle_http_error,

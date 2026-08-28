@@ -6,7 +6,11 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional
 
 from llm_api_adapter.adapters.base_adapter import _StreamState
-from llm_api_adapter.llms.streaming import StreamChunkBuffer, StreamUsageTracker
+from llm_api_adapter.llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+    StreamUsageTracker,
+)
 from llm_api_adapter.llms.transports import SSEEvent
 from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 
@@ -20,6 +24,7 @@ class XAIResponsesStreamState(_StreamState):
     text_parts: list[str] = field(default_factory=list)
     output_items: Dict[int, dict[str, Any]] = field(default_factory=dict)
     usage: Optional[dict[str, Any]] = None
+    reported_cost_in_usd_ticks: Optional[int] = None
     next_output_index: int = 0
 
 
@@ -27,13 +32,19 @@ class XAIResponsesStreamParser:
     """Parse xAI Responses events without owning callbacks or generators."""
 
     @staticmethod
-    def new_state(*, buffer_chars: Optional[int]) -> XAIResponsesStreamState:
+    def new_state(
+        *,
+        buffer_chars: Optional[int],
+        capture_reasoning: bool = False,
+    ) -> XAIResponsesStreamState:
         """Create a state that uses the shared chunk and usage primitives."""
         return XAIResponsesStreamState(
             chunk_buffer=StreamChunkBuffer(buffer_chars),
             usage_tracker=StreamUsageTracker(),
-            reasoning_collector=None,
-            reasoning_response=None,
+            reasoning_collector=(
+                StreamReasoningCollector() if capture_reasoning else None
+            ),
+            reasoning_response=ChatResponse() if capture_reasoning else None,
         )
 
     @classmethod
@@ -52,6 +63,9 @@ class XAIResponsesStreamParser:
         raw_usage = cls._event_usage(payload, response_data)
         if isinstance(raw_usage, Mapping):
             state.usage = dict(raw_usage)
+            cost_in_usd_ticks = cls._cost_in_usd_ticks(raw_usage)
+            if cost_in_usd_ticks is not None:
+                state.reported_cost_in_usd_ticks = cost_in_usd_ticks
         state.usage_tracker.record(
             state.chunk_buffer,
             cls._normalize_usage(raw_usage),
@@ -80,10 +94,14 @@ class XAIResponsesStreamParser:
         state: XAIResponsesStreamState,
         *,
         model: str,
+        capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Build the shared response type from a completed or partial stream."""
         response = state.final_response or cls._build_response(state, model=model)
-        return ChatResponse.from_openai_responses_response(response)
+        return ChatResponse.from_openai_responses_response(
+            response,
+            capture_reasoning=capture_reasoning,
+        )
 
     @staticmethod
     def _event_usage(payload: Mapping[str, Any], response_data: Any) -> Any:
@@ -114,6 +132,13 @@ class XAIResponsesStreamParser:
             output_tokens=output_tokens or 0,
             total_tokens=total_tokens or 0,
         )
+
+    @staticmethod
+    def _cost_in_usd_ticks(raw_usage: Mapping[str, Any]) -> Optional[int]:
+        value = raw_usage.get("cost_in_usd_ticks")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return None
 
     @staticmethod
     def _token_count(value: Any) -> Optional[int]:

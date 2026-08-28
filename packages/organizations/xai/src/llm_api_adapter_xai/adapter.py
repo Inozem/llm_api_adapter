@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Iterator, List, Optional
 
@@ -21,6 +22,7 @@ from llm_api_adapter.adapters.base_adapter import (
 )
 from llm_api_adapter.errors.llm_api_error import (
     InvalidToolSchemaError,
+    JSONSchemaError,
     LLMAPIClientError,
     LLMAPIError,
 )
@@ -37,6 +39,16 @@ from llm_api_adapter.models.tools import ToolSpec
 
 from .clients import XAIResponsesAsyncClient, XAIResponsesSyncClient
 from .streaming import XAIResponsesStreamParser, XAIResponsesStreamState
+
+
+@dataclass(frozen=True)
+class _PreparedResponsesRequest:
+    """Provider parameters plus common finalization context for one request."""
+
+    parameters: dict[str, Any]
+    effective_schema: Optional[dict]
+    response_model: Optional[Any]
+    capture_reasoning: bool
 
 
 @dataclass(repr=False)
@@ -82,7 +94,7 @@ class XAIAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Generate one text response through ``POST /v1/responses``."""
-        parameters = self._prepare_responses_parameters(
+        prepared = self._prepare_responses_parameters(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -100,12 +112,13 @@ class XAIAdapter(LLMAdapterBase):
             response = self._client.create(
                 model=self.model,
                 timeout=timeout_s,
-                **parameters,
+                **prepared.parameters,
             )
-            return self._finalize_chat_response(
-                self._parse_response(response),
-                effective_schema=None,
-                response_model=None,
+            return self._finalize_xai_chat_response(
+                response,
+                effective_schema=prepared.effective_schema,
+                response_model=prepared.response_model,
+                capture_reasoning=prepared.capture_reasoning,
             )
         except LLMAPIError as error:
             self.handle_error(error)
@@ -131,7 +144,7 @@ class XAIAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Generate one text response through the core async transport helper."""
-        parameters = self._prepare_responses_parameters(
+        prepared = self._prepare_responses_parameters(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -149,12 +162,13 @@ class XAIAdapter(LLMAdapterBase):
             response = await self._async_client.create(
                 model=self.model,
                 timeout=timeout_s,
-                **parameters,
+                **prepared.parameters,
             )
-            return self._finalize_chat_response(
-                self._parse_response(response),
-                effective_schema=None,
-                response_model=None,
+            return self._finalize_xai_chat_response(
+                response,
+                effective_schema=prepared.effective_schema,
+                response_model=prepared.response_model,
+                capture_reasoning=prepared.capture_reasoning,
             )
         except LLMAPIError as error:
             self.handle_error(error)
@@ -186,7 +200,7 @@ class XAIAdapter(LLMAdapterBase):
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
         """Stream visible Responses text through the shared sync lifecycle."""
-        parameters = self._prepare_responses_parameters(
+        prepared = self._prepare_responses_parameters(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -200,24 +214,27 @@ class XAIAdapter(LLMAdapterBase):
             response_model=response_model,
             capture_reasoning=capture_reasoning,
         )
-        state = XAIResponsesStreamParser.new_state(buffer_chars=buffer_chars)
+        state = XAIResponsesStreamParser.new_state(
+            buffer_chars=buffer_chars,
+            capture_reasoning=prepared.capture_reasoning,
+        )
         events = self._client.stream(
             model=self.model,
             timeout=timeout_s,
-            **parameters,
+            **prepared.parameters,
         )
         yield from self._run_sync_stream(
             events,
             state,
             consume_event=self._consume_stream_event,
             finalize_response=self._finalize_stream,
-            effective_schema=None,
-            response_model=None,
+            effective_schema=prepared.effective_schema,
+            response_model=prepared.response_model,
             on_delta=on_delta,
             on_tool_call=on_tool_call,
             on_done=on_done,
             on_chunk=on_chunk,
-            capture_reasoning=False,
+            capture_reasoning=prepared.capture_reasoning,
             on_reasoning=on_reasoning,
         )
 
@@ -245,7 +262,7 @@ class XAIAdapter(LLMAdapterBase):
         on_reasoning: Optional[AsyncOnReasoning] = None,
     ) -> AsyncIterator[str]:
         """Stream visible Responses text through the shared async lifecycle."""
-        parameters = self._prepare_responses_parameters(
+        prepared = self._prepare_responses_parameters(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -259,24 +276,27 @@ class XAIAdapter(LLMAdapterBase):
             response_model=response_model,
             capture_reasoning=capture_reasoning,
         )
-        state = XAIResponsesStreamParser.new_state(buffer_chars=buffer_chars)
+        state = XAIResponsesStreamParser.new_state(
+            buffer_chars=buffer_chars,
+            capture_reasoning=prepared.capture_reasoning,
+        )
         events = self._async_client.stream(
             model=self.model,
             timeout=timeout_s,
-            **parameters,
+            **prepared.parameters,
         )
         async for text in self._run_async_stream(
             events,
             state,
             consume_event=self._consume_stream_event_async,
             finalize_response=self._finalize_stream,
-            effective_schema=None,
-            response_model=None,
+            effective_schema=prepared.effective_schema,
+            response_model=prepared.response_model,
             on_delta=on_delta,
             on_tool_call=on_tool_call,
             on_done=on_done,
             on_chunk=on_chunk,
-            capture_reasoning=False,
+            capture_reasoning=prepared.capture_reasoning,
             on_reasoning=on_reasoning,
         ):
             yield text
@@ -296,24 +316,18 @@ class XAIAdapter(LLMAdapterBase):
         json_schema: Optional[dict],
         response_model: Optional[Any],
         capture_reasoning: bool,
-    ) -> dict[str, Any]:
+    ) -> _PreparedResponsesRequest:
         # ``previous_response`` is an optional provider-specific optimization.
         # xAI server-side continuation is intentionally not exposed by this
         # package, so retain the shared API shape and use the supplied messages.
         del previous_response
-        self._reject_unsupported_options(
-            json_schema=json_schema,
-            response_model=response_model,
-            reasoning_level=reasoning_level,
-            capture_reasoning=capture_reasoning,
-        )
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
         request_context = self._prepare_chat_request(
             messages,
             tools,
             tool_choice,
-            None,
-            None,
+            json_schema,
+            response_model,
         )
         normalized_messages = request_context.normalized_messages
         self._reject_file_messages(normalized_messages)
@@ -329,10 +343,35 @@ class XAIAdapter(LLMAdapterBase):
             ),
             "parallel_tool_calls": parallel_tool_calls,
         }
+        if request_context.effective_schema is not None:
+            schema = self._validate_xai_structured_schema(
+                request_context.effective_schema,
+            )
+            parameters["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "response",
+                    "schema": schema,
+                    "strict": True,
+                }
+            }
+        if reasoning_level is not None:
+            provider_value = self._resolve_reasoning_level(
+                reasoning_level,
+            ).provider_value
+            if isinstance(provider_value, str):
+                parameters["reasoning"] = {"effort": provider_value}
         instructions = normalized_messages.to_openai_responses_instructions()
         if instructions is not None:
             parameters["instructions"] = instructions
-        return {key: value for key, value in parameters.items() if value is not None}
+        return _PreparedResponsesRequest(
+            parameters={
+                key: value for key, value in parameters.items() if value is not None
+            },
+            effective_schema=request_context.effective_schema,
+            response_model=response_model,
+            capture_reasoning=capture_reasoning,
+        )
 
     def _consume_stream_event(
         self,
@@ -343,7 +382,11 @@ class XAIAdapter(LLMAdapterBase):
         on_delta: Optional[OnDelta],
         on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
-        del on_reasoning
+        self._record_xai_reasoning_event(
+            event,
+            state,
+            on_reasoning=on_reasoning,
+        )
         delta = XAIResponsesStreamParser.consume_event(event, state)
         if delta is not None:
             yield from self._emit_stream_chunks(
@@ -361,7 +404,11 @@ class XAIAdapter(LLMAdapterBase):
         on_delta: Optional[AsyncOnDelta],
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
-        del on_reasoning
+        await self._record_xai_reasoning_event_async(
+            event,
+            state,
+            on_reasoning=on_reasoning,
+        )
         delta = XAIResponsesStreamParser.consume_event(event, state)
         if delta is not None:
             async for text in self._emit_async_stream_chunks(
@@ -379,33 +426,222 @@ class XAIAdapter(LLMAdapterBase):
         effective_schema: Optional[dict],
         response_model: Optional[Any],
     ) -> ChatResponse:
-        del capture_reasoning
-        return self._finalize_stream_response(
-            XAIResponsesStreamParser.finalize(state, model=self.model),
+        chat_response = self._finalize_stream_response(
+            XAIResponsesStreamParser.finalize(
+                state,
+                model=self.model,
+                capture_reasoning=capture_reasoning,
+            ),
+            reasoning_collector=state.reasoning_collector,
             effective_schema=effective_schema,
             response_model=response_model,
         )
+        self._apply_xai_reported_cost(
+            chat_response,
+            state.reported_cost_in_usd_ticks,
+        )
+        return chat_response
+
+    def _finalize_xai_chat_response(
+        self,
+        response: dict[str, Any],
+        *,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+        capture_reasoning: bool,
+    ) -> ChatResponse:
+        """Parse, normalize and price one non-streaming xAI response."""
+        chat_response = self._finalize_chat_response(
+            self._parse_response(response, capture_reasoning=capture_reasoning),
+            effective_schema=effective_schema,
+            response_model=response_model,
+        )
+        self._apply_xai_reported_cost(
+            chat_response,
+            self._reported_cost_in_usd_ticks(response),
+        )
+        return chat_response
+
+    def _record_xai_reasoning_event(
+        self,
+        event: SSEEvent,
+        state: XAIResponsesStreamState,
+        *,
+        on_reasoning: Optional[OnReasoning],
+    ) -> None:
+        if state.reasoning_collector is None or state.reasoning_response is None:
+            return
+        reasoning = self._xai_reasoning_delta(event)
+        if reasoning is None:
+            return
+        text, kind = reasoning
+        self._record_reasoning_event(
+            state.reasoning_response,
+            state.reasoning_collector,
+            text,
+            capture_reasoning=True,
+            kind=kind,
+            on_reasoning=on_reasoning,
+        )
+
+    async def _record_xai_reasoning_event_async(
+        self,
+        event: SSEEvent,
+        state: XAIResponsesStreamState,
+        *,
+        on_reasoning: Optional[AsyncOnReasoning],
+    ) -> None:
+        if state.reasoning_collector is None or state.reasoning_response is None:
+            return
+        reasoning = self._xai_reasoning_delta(event)
+        if reasoning is None:
+            return
+        text, kind = reasoning
+        await self._record_async_reasoning_event(
+            state.reasoning_response,
+            state.reasoning_collector,
+            text,
+            capture_reasoning=True,
+            kind=kind,
+            on_reasoning=on_reasoning,
+        )
 
     @staticmethod
-    def _reject_unsupported_options(
-        *,
-        json_schema: Optional[dict],
-        response_model: Optional[Any],
-        reasoning_level: Optional[str | int],
-        capture_reasoning: bool,
-    ) -> None:
-        unsupported = {
-            "json_schema": json_schema is not None,
-            "response_model": response_model is not None,
-            "reasoning_level": reasoning_level is not None,
-            "capture_reasoning": capture_reasoning,
-        }
-        selected = [name for name, present in unsupported.items() if present]
-        if selected:
-            raise ValueError(
-                "xAI text chat does not support these options yet: "
-                + ", ".join(selected),
+    def _xai_reasoning_delta(event: SSEEvent) -> Optional[tuple[str, str]]:
+        payload = event.data if isinstance(event.data, dict) else {}
+        event_type = event.event or payload.get("type")
+        if event_type not in {
+            "response.reasoning_text.delta",
+            "response.reasoning_summary_text.delta",
+        }:
+            return None
+        delta = payload.get("delta")
+        if not isinstance(delta, str) or not delta:
+            return None
+        kind = (
+            "summary"
+            if event_type == "response.reasoning_summary_text.delta"
+            else "content"
+        )
+        return delta, kind
+
+    @classmethod
+    def _validate_xai_structured_schema(cls, schema: dict) -> dict:
+        """Reject schema forms which xAI documents as a 400 response."""
+        cls._validate_xai_schema_node(schema, path="$")
+        return schema
+
+    @classmethod
+    def _validate_xai_schema_node(cls, node: Any, *, path: str) -> None:
+        if isinstance(node, bool):
+            raise JSONSchemaError(
+                detail=(
+                    f"xAI structured output rejects boolean schemas at {path}; "
+                    "use an object schema instead."
+                ),
             )
+        if not isinstance(node, dict):
+            return
+
+        if "minContains" in node or "maxContains" in node:
+            raise JSONSchemaError(
+                detail=(
+                    f"xAI structured output rejects minContains/maxContains at "
+                    f"{path}."
+                ),
+            )
+        if isinstance(node.get("items"), list):
+            raise JSONSchemaError(
+                detail=(
+                    f"xAI structured output rejects an items array at {path}; "
+                    "use prefixItems for tuple validation."
+                ),
+            )
+        for keyword in ("enum", "anyOf"):
+            value = node.get(keyword)
+            if isinstance(value, list) and not value:
+                raise JSONSchemaError(
+                    detail=(
+                        f"xAI structured output rejects an empty {keyword} at "
+                        f"{path}."
+                    ),
+                )
+        pattern = node.get("pattern")
+        if isinstance(pattern, str) and re.search(
+            r"(?<!\\)\\(?:[1-9]|[bBpP]|k<)",
+            pattern,
+        ):
+            raise JSONSchemaError(
+                detail=(
+                    f"xAI structured output does not support this regex construct "
+                    f"at {path}.pattern."
+                ),
+            )
+        cls._validate_xai_schema_mapping(
+            node.get("properties"),
+            path=f"{path}.properties",
+        )
+        cls._validate_xai_schema_mapping(node.get("$defs"), path=f"{path}.$defs")
+        cls._validate_xai_schema_mapping(
+            node.get("dependentSchemas"),
+            path=f"{path}.dependentSchemas",
+        )
+        for keyword in (
+            "items",
+            "contains",
+            "not",
+            "if",
+            "then",
+            "else",
+            "propertyNames",
+        ):
+            value = node.get(keyword)
+            if value is not None:
+                cls._validate_xai_schema_node(value, path=f"{path}.{keyword}")
+        additional_properties = node.get("additionalProperties")
+        if isinstance(additional_properties, dict):
+            cls._validate_xai_schema_node(
+                additional_properties,
+                path=f"{path}.additionalProperties",
+            )
+        for keyword in ("allOf", "anyOf", "oneOf", "prefixItems"):
+            value = node.get(keyword)
+            if isinstance(value, list):
+                for index, item in enumerate(value):
+                    cls._validate_xai_schema_node(
+                        item,
+                        path=f"{path}.{keyword}[{index}]",
+                    )
+
+    @classmethod
+    def _validate_xai_schema_mapping(cls, value: Any, *, path: str) -> None:
+        if not isinstance(value, dict):
+            return
+        for name, schema in value.items():
+            cls._validate_xai_schema_node(schema, path=f"{path}.{name}")
+
+    @staticmethod
+    def _reported_cost_in_usd_ticks(response: dict[str, Any]) -> Optional[int]:
+        usage = response.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        value = usage.get("cost_in_usd_ticks")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return None
+
+    @staticmethod
+    def _apply_xai_reported_cost(
+        chat_response: ChatResponse,
+        cost_in_usd_ticks: Optional[int],
+    ) -> None:
+        """Prefer xAI's exact per-request cost over token-rate estimation."""
+        if cost_in_usd_ticks is None:
+            return
+        chat_response.currency = "USD"
+        chat_response.cost_input = None
+        chat_response.cost_output = None
+        chat_response.cost_total = cost_in_usd_ticks / 10_000_000_000
 
     @staticmethod
     def _reject_file_messages(messages: Messages) -> None:
@@ -477,7 +713,11 @@ class XAIAdapter(LLMAdapterBase):
         return input_items
 
     @staticmethod
-    def _parse_response(response: dict[str, Any]) -> ChatResponse:
+    def _parse_response(
+        response: dict[str, Any],
+        *,
+        capture_reasoning: bool = False,
+    ) -> ChatResponse:
         if response.get("object") != "response":
             raise LLMAPIClientError(
                 detail="xAI Responses API returned an invalid response object",
@@ -486,7 +726,10 @@ class XAIAdapter(LLMAdapterBase):
             raise LLMAPIClientError(
                 detail="xAI Responses API response.output must be an array",
             )
-        return ChatResponse.from_openai_responses_response(response)
+        return ChatResponse.from_openai_responses_response(
+            response,
+            capture_reasoning=capture_reasoning,
+        )
 
 
 __all__ = ["XAIAdapter"]

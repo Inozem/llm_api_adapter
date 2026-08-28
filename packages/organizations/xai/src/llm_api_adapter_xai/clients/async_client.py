@@ -51,7 +51,12 @@ class XAIResponsesAsyncClient:
         return async_stream_request(
             self.endpoint,
             headers=self._headers(),
-            payload={"model": model, **parameters, "stream": True},
+            payload={
+                "model": model,
+                **parameters,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            },
             timeout=timeout,
             http_error_handler=self._handle_http_error,
             stream_error_handler=self._handle_stream_error,

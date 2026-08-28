@@ -9,6 +9,7 @@ import sys
 from typing import Any, Iterator, Mapping
 
 import pytest
+from pydantic import BaseModel
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CORE_SOURCE = PACKAGE_ROOT.parents[2] / "src"
@@ -21,6 +22,7 @@ import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.errors.llm_api_error import (
     InvalidToolSchemaError,
+    JSONSchemaError,
     LLMAPIAuthorizationError,
     LLMAPIClientError,
     LLMAPIRateLimitError,
@@ -50,6 +52,10 @@ import llm_api_adapter_xai.clients.async_client as xai_async_client_module
 from llm_api_adapter_xai.clients.sync_client import XAIResponsesSyncClient
 from llm_api_adapter_xai.plugin import PLUGIN, register
 from llm_api_adapter_xai.registry import MODEL_METADATA
+
+
+class StructuredAnswer(BaseModel):
+    answer: str
 
 
 @dataclass
@@ -134,6 +140,12 @@ def _function_call_response(*, model: str) -> dict[str, Any]:
             "arguments": '{"city":"Haifa"}',
         }
     ]
+    return response
+
+
+def _structured_response(*, model: str) -> dict[str, Any]:
+    response = _response(model=model)
+    response["output"][0]["content"][0]["text"] = '{"answer":"ok"}'
     return response
 
 
@@ -440,11 +452,122 @@ def test_xai_rejects_function_without_required_description(xai_runtime):
 
 
 @pytest.mark.unit
-def test_chat_rejects_options_reserved_for_later_xai_capabilities(xai_runtime):
+def test_chat_maps_structured_pydantic_output_and_reasoning(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    transport = FakeSyncTransport(_structured_response(model="grok-4.6"))
+    adapter._client._sync_transport = transport
+
+    response = adapter.chat(
+        messages=[UserMessage("Return an answer.")],
+        response_model=StructuredAnswer,
+        reasoning_level="xhigh",
+    )
+
+    expected_schema = StructuredAnswer.model_json_schema()
+    assert response.parsed_json == {"answer": "ok"}
+    assert response.parsed_model == StructuredAnswer(answer="ok")
+    assert transport.requests[0].payload["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "response",
+            "schema": expected_schema,
+            "strict": True,
+        }
+    }
+    assert transport.requests[0].payload["reasoning"] == {"effort": "xhigh"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object", "properties": {"value": True}},
+        {"type": "string", "enum": []},
+        {"type": "array", "items": [{"type": "string"}]},
+        {"type": "string", "pattern": r"\bword\b"},
+    ],
+)
+def test_chat_rejects_documented_invalid_structured_schemas(xai_runtime, schema):
     adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
 
-    with pytest.raises(ValueError, match="reasoning_level"):
-        adapter.chat(messages=[UserMessage("Hello")], reasoning_level="high")
+    with pytest.raises(
+        JSONSchemaError,
+        match="xAI structured output rejects|does not support",
+    ):
+        adapter.chat(messages=[UserMessage("Hello")], json_schema=schema)
+
+
+@pytest.mark.unit
+def test_chat_accepts_explicit_additional_properties_in_structured_schema(
+    xai_runtime,
+):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    adapter._client._sync_transport = FakeSyncTransport(
+        _structured_response(model="grok-4.6"),
+    )
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "additionalProperties": False,
+    }
+
+    response = adapter.chat(messages=[UserMessage("Hello")], json_schema=schema)
+
+    assert response.parsed_json == {"answer": "ok"}
+
+
+@pytest.mark.unit
+def test_chat_omits_reasoning_for_a_model_without_effort_control(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-build-0.1")
+    transport = FakeSyncTransport(_response(model="grok-build-0.1"))
+    adapter._client._sync_transport = transport
+
+    with pytest.warns(UserWarning, match="does not support reasoning"):
+        response = adapter.chat(
+            messages=[UserMessage("Hello")],
+            reasoning_level="high",
+        )
+
+    assert response.content == "Hello from xAI."
+    assert "reasoning" not in transport.requests[0].payload
+
+
+@pytest.mark.unit
+def test_chat_uses_grok_43_native_none_reasoning_level(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.3")
+    transport = FakeSyncTransport(_response(model="grok-4.3"))
+    adapter._client._sync_transport = transport
+
+    adapter.chat(messages=[UserMessage("Hello")], reasoning_level="none")
+
+    assert transport.requests[0].payload["reasoning"] == {"effort": "none"}
+
+
+@pytest.mark.unit
+def test_chat_warns_when_grok_45_cannot_disable_reasoning(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.5")
+    transport = FakeSyncTransport(_response(model="grok-4.5"))
+    adapter._client._sync_transport = transport
+
+    with pytest.warns(UserWarning, match="cannot disable reasoning"):
+        adapter.chat(messages=[UserMessage("Hello")], reasoning_level="none")
+
+    assert transport.requests[0].payload["reasoning"] == {"effort": "low"}
+
+
+@pytest.mark.unit
+def test_chat_prefers_exact_xai_reported_cost(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    api_response = _response(model="grok-4.6")
+    api_response["usage"]["cost_in_usd_ticks"] = 37_756_000
+    adapter._client._sync_transport = FakeSyncTransport(api_response)
+
+    response = adapter.chat(messages=[UserMessage("Hello")])
+
+    assert response.currency == "USD"
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total == pytest.approx(0.0037756)
 
 
 @pytest.mark.unit
@@ -532,9 +655,50 @@ def test_stream_chat_maps_responses_sse_to_shared_lifecycle(xai_runtime):
             "top_p": 0.8,
             "instructions": "Be concise.",
             "stream": True,
+            "stream_options": {"include_usage": True},
         },
         timeout=3.0,
     )
+
+
+@pytest.mark.unit
+def test_stream_captures_reasoning_and_uses_final_exact_cost(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    events = _stream_events(model="grok-4.6")
+    events.insert(
+        1,
+        SSEEvent(
+            event="response.reasoning_summary_text.delta",
+            data={
+                "type": "response.reasoning_summary_text.delta",
+                "delta": "Consider the constraints. ",
+            },
+        ),
+    )
+    events[-1].data["response"]["usage"]["cost_in_usd_ticks"] = 37_756_000
+    adapter._client._sync_transport = FakeSyncTransport(
+        _response(model="grok-4.6"),
+        stream_events=events,
+    )
+    reasoning_events = []
+    completed = []
+
+    assert list(
+        adapter.stream_chat(
+            messages=[UserMessage("Hello")],
+            capture_reasoning=True,
+            on_reasoning=reasoning_events.append,
+            on_done=completed.append,
+        )
+    ) == ["Hello ", "from xAI."]
+
+    assert [event.text for event in reasoning_events] == [
+        "Consider the constraints. ",
+    ]
+    assert completed[0].reasoning_events == reasoning_events
+    assert completed[0].cost_total == pytest.approx(0.0037756)
+    assert completed[0].cost_input is None
+    assert completed[0].cost_output is None
 
 
 @pytest.mark.unit
@@ -633,6 +797,41 @@ def test_stream_maps_xai_error_events(xai_runtime):
 
     with pytest.raises(LLMAPIRateLimitError, match="Slow down"):
         list(adapter.stream_chat(messages=[UserMessage("Hello")]))
+
+
+@pytest.mark.unit
+def test_async_chat_applies_structured_output_and_reasoning(xai_runtime, monkeypatch):
+    requests: list[dict[str, Any]] = []
+
+    async def fake_async_request(
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float | None,
+        http_error_handler,
+    ) -> dict[str, Any]:
+        del url, headers, timeout, http_error_handler
+        requests.append(payload)
+        return _structured_response(model="grok-4.6")
+
+    monkeypatch.setattr(xai_async_client_module, "async_request", fake_async_request)
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+
+    response = asyncio.run(
+        adapter.achat(
+            messages=[UserMessage("Return an answer.")],
+            response_model=StructuredAnswer,
+            reasoning_level="high",
+        )
+    )
+
+    assert response.parsed_json == {"answer": "ok"}
+    assert response.parsed_model == StructuredAnswer(answer="ok")
+    assert requests[0]["reasoning"] == {"effort": "high"}
+    assert requests[0]["text"]["format"]["schema"] == (
+        StructuredAnswer.model_json_schema()
+    )
 
 
 @pytest.mark.unit
@@ -770,6 +969,7 @@ def test_async_chat_and_stream_match_sync_contract(xai_runtime, monkeypatch):
                 "top_p": 0.8,
                 "instructions": "Be concise.",
                 "stream": True,
+                "stream_options": {"include_usage": True},
             },
             "timeout": 3.0,
         },
