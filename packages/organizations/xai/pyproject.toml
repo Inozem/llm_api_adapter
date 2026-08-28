@@ -22,11 +22,11 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
 ]
-dependencies = ["llm-api-adapter>=0.9.0,<1.0.0"]
+dependencies = ["llm-api-adapter>=0.9.1,<1.0.0"]
 
 [project.optional-dependencies]
-async = ["llm-api-adapter[async]>=0.9.0,<1.0.0"]
-httpx = ["llm-api-adapter[httpx]>=0.9.0,<1.0.0"]
+async = ["llm-api-adapter[async]>=0.9.1,<1.0.0"]
+httpx = ["llm-api-adapter[httpx]>=0.9.1,<1.0.0"]
 
 [project.entry-points."llm_api_adapter.organizations"]
 xai = "llm_api_adapter_xai.plugin:PLUGIN"

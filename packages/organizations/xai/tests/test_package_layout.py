@@ -14,15 +14,15 @@ def test_distribution_metadata_declares_the_core_compatibility_range():
 
     assert 'name = "llm-api-adapter-xai"' in metadata
     assert 'version = "0.1.0"' in metadata
-    assert 'llm-api-adapter>=0.9.0,<1.0.0' in metadata
+    assert 'llm-api-adapter>=0.9.1,<1.0.0' in metadata
 
 
 @pytest.mark.unit
 def test_transport_extras_are_forwarded_and_composable():
     metadata = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert 'async = ["llm-api-adapter[async]>=0.9.0,<1.0.0"]' in metadata
-    assert 'httpx = ["llm-api-adapter[httpx]>=0.9.0,<1.0.0"]' in metadata
+    assert 'async = ["llm-api-adapter[async]>=0.9.1,<1.0.0"]' in metadata
+    assert 'httpx = ["llm-api-adapter[httpx]>=0.9.1,<1.0.0"]' in metadata
 
 
 @pytest.mark.unit
