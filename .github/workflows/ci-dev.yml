@@ -8,6 +8,8 @@ on:
       - ".github/workflows/ci-mistral-e2e.yml"
       - ".github/workflows/ci-mistral-dev.yml"
       - ".github/workflows/ci-mistral-main.yml"
+      - ".github/workflows/ci-xai-dev.yml"
+      - ".github/workflows/ci-xai-main.yml"
   pull_request:
     branches: ["dev"]
     paths-ignore:
@@ -15,6 +17,8 @@ on:
       - ".github/workflows/ci-mistral-e2e.yml"
       - ".github/workflows/ci-mistral-dev.yml"
       - ".github/workflows/ci-mistral-main.yml"
+      - ".github/workflows/ci-xai-dev.yml"
+      - ".github/workflows/ci-xai-main.yml"
 
 permissions:
   contents: read
