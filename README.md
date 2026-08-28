@@ -6,9 +6,9 @@
 
 ## Overview
 
-**llm-api-adapter** is a minimal, typed adapter for four organizations: OpenAI, Anthropic, Google, and Mistral. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching organizations means changing two arguments.
+**llm-api-adapter** is a minimal, typed adapter for five organizations: OpenAI, Anthropic, Google, Mistral, and xAI. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching organizations means changing two arguments.
 
-**Note:** Mistral is installed separately with `llm-api-adapter[mistral]`.
+**Note:** Mistral and xAI are installed separately with their optional extras.
 
 Supports Python 3.10–3.14.
 
@@ -53,7 +53,7 @@ Supports Python 3.10–3.14.
 | Unified error hierarchy   | ✓ | OpenAI-compatible | framework-specific | ✗ |
 | Sync streaming            | ✓ text-first | ✓ | ✓ | ✓ |
 | Async API                 | ✓ optional | ✓ | ✓ | ✓ |
-| Number of organizations   | 4 | 100+ | 50+ | 1 |
+| Number of organizations   | 5 | 100+ | 50+ | 1 |
 
 * `reasoning_level` is one application-level parameter, but the available levels, native mapping, and emitted reasoning content remain model/provider-dependent.
 
@@ -65,9 +65,9 @@ This table is a positioning snapshot. Provider capabilities change independently
 
 **Model-aware reasoning control.** One `reasoning_level` parameter is accepted across supported providers without provider-specific kwargs. Verified model capabilities resolve the canonical level to a native effort or budget setting; exact availability and token semantics remain model-dependent.
 
-**Cost accounting, built-in.** Every response carries `cost_input`, `cost_output`, and `cost_total` in your chosen currency using the bundled model registry. No callback or external observability service is required.
+**Cost accounting, built-in.** Responses carry normalized usage and cost fields in the configured currency. When a provider reports an exact total that cannot be split safely, `cost_total` is set while `cost_input` and `cost_output` remain unset.
 
-**Predictable errors.** One explicit exception hierarchy and provider-error mapping across all three providers. `LLMAPIRateLimitError` means the same application-level condition whether you called OpenAI, Anthropic, or Google.
+**Predictable errors.** One explicit exception hierarchy and provider-error mapping across supported organizations. `LLMAPIRateLimitError` means the same application-level condition whether you called OpenAI, Anthropic, Google, Mistral, or xAI.
 
 ### Use this when
 
@@ -85,7 +85,7 @@ This table is a positioning snapshot. Provider capabilities change independently
 
 ## Features
 
-- **Synchronous Streaming**: Iterate normalized text with `stream_chat()` across OpenAI, Anthropic, and Google. Optionally coalesce it into bounded chunks and observe per-chunk metadata without changing the yielded `str` contract.
+- **Synchronous Streaming**: Iterate normalized text with `stream_chat()` across supported organizations. Optionally coalesce it into bounded chunks and observe per-chunk metadata without changing the yielded `str` contract.
 - **Optional HTTPX Sync Transport**: Keep `requests` as the default synchronous transport or opt into HTTPX with `transport="httpx"`. See the [HTTPX sync pilot guide](HTTPX_SYNC_PILOT.md).
 - **Asynchronous API**: Use `achat()` and `astream_chat()` with the optional `[async]` installation for non-blocking HTTPX requests and awaitable callbacks. See the [Async API guide](ASYNC_API.md).
 - **Reasoning Observability**: Opt in to provider-emitted reasoning summaries through `capture_reasoning=True`, `ReasoningEvent`, and the `on_reasoning` callback without mixing reasoning into visible text.
@@ -113,9 +113,16 @@ To use Mistral, install its optional organization package:
 pip install "llm-api-adapter[mistral]"
 ```
 
-The [Mistral package README](packages/organizations/mistral/README.md) lists
-its supported models and Mistral-specific behaviour. Installing
-`llm-api-adapter-mistral` directly remains supported.
+To use xAI, install its optional organization package:
+
+```bash
+pip install "llm-api-adapter[xai]"
+```
+
+The [Mistral package README](packages/organizations/mistral/README.md) and
+[xAI package README](packages/organizations/xai/README.md) list their
+supported models and organization-specific behaviour. Direct installation of
+`llm-api-adapter-mistral` or `llm-api-adapter-xai` remains supported.
 
 For non-blocking requests, install the optional `[async]` extra and follow the
 [Async API guide](ASYNC_API.md).
@@ -124,7 +131,9 @@ To opt into HTTPX for synchronous `chat()` and `stream_chat()` calls, install
 the optional `[httpx]` extra and pass `transport="httpx"`. The default remains
 `requests`; see the [HTTPX sync pilot guide](HTTPX_SYNC_PILOT.md).
 
-**Note:** You will need to obtain API keys from each LLM provider you wish to use (OpenAI, Anthropic, Google). Refer to their respective documentation for instructions on obtaining API keys.
+**Note:** You need an API key from each LLM provider you use, including
+Mistral or xAI when their optional packages are installed. Refer to the
+provider's documentation for API-key instructions.
 
 
 ## Getting Started
@@ -359,12 +368,13 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 ### Using Different Providers and Models
 
-The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, and Mistral. Mistral requires the optional `mistral` extra.
+The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, and xAI. Mistral and xAI require their corresponding optional extras.
 
 - **OpenAI**: You can use models like `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
 - **Anthropic**: Available models include `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
 - **Google**: Models such as `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite` can be used.
 - **Mistral**: Install with `pip install "llm-api-adapter[mistral]"`. Available models are `mistral-small-2603`, `mistral-medium-3-5`, and `mistral-large-2512`; see the [Mistral package README](packages/organizations/mistral/README.md) for Mistral-specific behaviour.
+- **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.3`, `grok-4.5`, `grok-4.6`, and `grok-build-0.1`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
 
 Example:
 
@@ -719,7 +729,7 @@ or `achat()` call, and can also be passed to the streaming methods.
 
 For OpenAI models that use the Responses API (o-series and newer GPT models), the adapter extracts `response_id` from the previous response and passes it to the API as `previous_response_id`. This enables stateful multi-turn conversations where the model retains context server-side, which reduces the tokens you need to send in subsequent turns.
 
-For Anthropic and Google, the parameter is accepted but ignored — context is carried entirely through the `messages` list regardless.
+For Anthropic, Google, and xAI, the parameter is accepted but ignored — context is carried entirely through the `messages` list regardless. The xAI package also does not expose its provider-specific `store` option; see its README for data-retention details.
 
 If you omit `previous_response`, the call works normally; you just won't get the stateful-session benefit on OpenAI Responses API models.
 
