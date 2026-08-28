@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from llm_api_adapter.errors.llm_api_error import (
     LLMAPIAuthorizationError,
@@ -17,6 +17,7 @@ from llm_api_adapter.errors.llm_api_error import (
 )
 from llm_api_adapter.llms.transports import (
     JSONResponse,
+    SSEEvent,
     SyncTransport,
     TransportRequest,
     create_sync_transport,
@@ -62,6 +63,25 @@ class XAIResponsesSyncClient:
             )
         return payload
 
+    def stream(
+        self,
+        *,
+        model: str,
+        timeout: float | None = None,
+        **parameters: Any,
+    ) -> Iterator[SSEEvent]:
+        """Stream one Responses API response as provider-neutral SSE events."""
+        return self._sync_transport.post_sse(
+            TransportRequest(
+                url=self.endpoint,
+                headers=self._headers(),
+                payload={"model": model, **parameters, "stream": True},
+                timeout=timeout,
+            ),
+            http_error_handler=self._handle_http_error,
+            stream_error_handler=self._handle_stream_error,
+        )
+
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.api_key}",
@@ -86,6 +106,20 @@ class XAIResponsesSyncClient:
         detail = error_data.get("message") or str(error)
         self._raise_mapped_error(
             status_code=status_code if isinstance(status_code, int) else None,
+            error_type=str(error_type) if error_type else None,
+            detail=str(detail),
+        )
+
+    def _handle_stream_error(self, event: SSEEvent) -> None:
+        """Map an xAI error event through the same public error hierarchy."""
+        payload = event.data if isinstance(event.data, Mapping) else {}
+        error_data = payload.get("error", payload)
+        if not isinstance(error_data, Mapping):
+            error_data = {}
+        error_type = error_data.get("type") or error_data.get("code")
+        detail = error_data.get("message") or "xAI Responses stream failed"
+        self._raise_mapped_error(
+            status_code=None,
             error_type=str(error_type) if error_type else None,
             detail=str(detail),
         )

@@ -42,6 +42,8 @@ def test_source_layout_uses_the_core_transport_contract():
     )
 
     assert "create_sync_transport" in source_text
+    assert "async_request" in source_text
+    assert "async_stream_request" in source_text
     assert "import requests" not in source_text
     assert "import httpx" not in source_text
     assert (source_root / "py.typed").is_file()

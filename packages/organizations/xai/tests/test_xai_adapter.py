@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 import sys
@@ -38,6 +39,7 @@ from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 from llm_api_adapter_xai.adapter import XAIAdapter
+import llm_api_adapter_xai.clients.async_client as xai_async_client_module
 from llm_api_adapter_xai.clients.sync_client import XAIResponsesSyncClient
 from llm_api_adapter_xai.plugin import PLUGIN, register
 from llm_api_adapter_xai.registry import MODEL_METADATA
@@ -47,6 +49,7 @@ from llm_api_adapter_xai.registry import MODEL_METADATA
 class FakeSyncTransport(SyncTransport):
     payload: Any
     requests: list[TransportRequest] = field(default_factory=list)
+    stream_events: list[SSEEvent] = field(default_factory=list)
 
     def post_json(
         self,
@@ -73,8 +76,20 @@ class FakeSyncTransport(SyncTransport):
         http_error_handler=None,
         stream_error_handler=None,
     ) -> Iterator[SSEEvent]:
-        raise AssertionError("xAI streaming is not part of this implementation")
-        yield SSEEvent(event=None)
+        self.requests.append(request)
+        for event in self.stream_events:
+            if (
+                stream_error_handler is not None
+                and (
+                    event.event == "error"
+                    or (
+                        isinstance(event.data, Mapping)
+                        and event.data.get("type") == "error"
+                    )
+                )
+            ):
+                stream_error_handler(event)
+            yield event
 
 
 def _response(*, model: str) -> dict[str, Any]:
@@ -98,6 +113,63 @@ def _response(*, model: str) -> dict[str, Any]:
             "total_tokens": 25,
         },
     }
+
+
+def _stream_events(
+    *,
+    model: str,
+    include_function_call: bool = False,
+) -> list[SSEEvent]:
+    response = _response(model=model)
+    response["id"] = f"stream-{model}"
+    events = [
+        SSEEvent(
+            event="response.created",
+            data={
+                "type": "response.created",
+                "response": {
+                    "id": response["id"],
+                    "model": model,
+                    "object": "response",
+                    "status": "in_progress",
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"type": "response.output_text.delta", "delta": "Hello "},
+        ),
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"type": "response.output_text.delta", "delta": "from xAI."},
+        ),
+    ]
+    if include_function_call:
+        function_call = {
+            "type": "function_call",
+            "id": "fc_456",
+            "call_id": "call_456",
+            "name": "get_weather",
+            "arguments": '{"city":"Haifa"}',
+        }
+        response["output"].append(function_call)
+        events.append(
+            SSEEvent(
+                event="response.output_item.done",
+                data={
+                    "type": "response.output_item.done",
+                    "output_index": 1,
+                    "item": function_call,
+                },
+            )
+        )
+    events.append(
+        SSEEvent(
+            event="response.completed",
+            data={"type": "response.completed", "response": response},
+        )
+    )
+    return events
 
 
 @pytest.fixture
@@ -253,3 +325,367 @@ def test_client_maps_xai_errors(
             error_type=error_type,
             detail="test failure",
         )
+
+
+@pytest.mark.unit
+def test_stream_chat_maps_responses_sse_to_shared_lifecycle(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    transport = FakeSyncTransport(
+        _response(model="grok-4.6"),
+        stream_events=_stream_events(model="grok-4.6"),
+    )
+    adapter._client._sync_transport = transport
+    callbacks: list[tuple[str, Any]] = []
+
+    chunks = list(
+        adapter.stream_chat(
+            messages=[Prompt("Be concise."), UserMessage("Hello")],
+            max_tokens=12,
+            temperature=0.5,
+            top_p=0.8,
+            timeout_s=3.0,
+            buffer_chars=6,
+            on_chunk=lambda chunk: callbacks.append(("chunk", chunk.text)),
+            on_delta=lambda text: callbacks.append(("delta", text)),
+            on_done=lambda response: callbacks.append(("done", response)),
+        )
+    )
+
+    assert chunks == ["Hello ", "from x", "AI."]
+    assert callbacks[:6] == [
+        ("chunk", "Hello "),
+        ("delta", "Hello "),
+        ("chunk", "from x"),
+        ("delta", "from x"),
+        ("chunk", "AI."),
+        ("delta", "AI."),
+    ]
+    assert callbacks[-1][0] == "done"
+    final_response = callbacks[-1][1]
+    assert final_response.content == "Hello from xAI."
+    assert final_response.response_id == "stream-grok-4.6"
+    assert final_response.cost_total == pytest.approx(0.00007)
+    assert transport.requests[-1] == TransportRequest(
+        url="https://api.x.ai/v1/responses",
+        headers={
+            "Authorization": "Bearer test-key",
+            "Content-Type": "application/json",
+        },
+        payload={
+            "model": "grok-4.6",
+            "input": [{"role": "user", "content": "Hello"}],
+            "max_output_tokens": 12,
+            "temperature": 0.5,
+            "top_p": 0.8,
+            "instructions": "Be concise.",
+            "stream": True,
+        },
+        timeout=3.0,
+    )
+
+
+@pytest.mark.unit
+def test_stream_reconstructs_complete_function_output_item(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    adapter._client._sync_transport = FakeSyncTransport(
+        _response(model="grok-4.6"),
+        stream_events=[
+            SSEEvent(
+                event="response.created",
+                data={
+                    "type": "response.created",
+                    "response": {
+                        "id": "stream-function-call",
+                        "model": "grok-4.6",
+                        "status": "in_progress",
+                    },
+                },
+            ),
+            SSEEvent(
+                event="response.output_text.delta",
+                data={"type": "response.output_text.delta", "delta": "Use "},
+            ),
+            SSEEvent(
+                event="response.output_item.done",
+                data={
+                    "type": "response.output_item.done",
+                    "output_index": 1,
+                    "item": {
+                        "type": "function_call",
+                        "id": "fc_123",
+                        "call_id": "call_123",
+                        "name": "get_weather",
+                        "arguments": '{"city":"Haifa"}',
+                    },
+                },
+            ),
+            SSEEvent(
+                event="response.output_text.delta",
+                data={"type": "response.output_text.delta", "delta": "a tool."},
+            ),
+        ],
+    )
+    tool_calls = []
+    completed = []
+
+    assert list(
+        adapter.stream_chat(
+            messages=[UserMessage("Hello")],
+            on_tool_call=tool_calls.append,
+            on_done=completed.append,
+        )
+    ) == ["Use ", "a tool."]
+    assert completed[0].content == "Use a tool."
+    assert [(call.name, call.arguments, call.call_id) for call in tool_calls] == [
+        ("get_weather", {"city": "Haifa"}, "call_123"),
+    ]
+
+
+@pytest.mark.unit
+def test_stream_early_close_skips_completion_callback(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    adapter._client._sync_transport = FakeSyncTransport(
+        _response(model="grok-4.6"),
+        stream_events=_stream_events(model="grok-4.6"),
+    )
+    completed = []
+    stream = adapter.stream_chat(
+        messages=[UserMessage("Hello")],
+        on_done=completed.append,
+    )
+
+    assert next(stream) == "Hello "
+    stream.close()
+    assert completed == []
+
+
+@pytest.mark.unit
+def test_stream_maps_xai_error_events(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    adapter._client._sync_transport = FakeSyncTransport(
+        _response(model="grok-4.6"),
+        stream_events=[
+            SSEEvent(
+                event="error",
+                data={
+                    "type": "error",
+                    "error": {
+                        "type": "rate_limit_error",
+                        "message": "Slow down",
+                    },
+                },
+            )
+        ],
+    )
+
+    with pytest.raises(LLMAPIRateLimitError, match="Slow down"):
+        list(adapter.stream_chat(messages=[UserMessage("Hello")]))
+
+
+@pytest.mark.unit
+def test_async_chat_and_stream_match_sync_contract(xai_runtime, monkeypatch):
+    requests: list[dict[str, Any]] = []
+
+    async def fake_async_request(
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float | None,
+        http_error_handler,
+    ) -> dict[str, Any]:
+        requests.append(
+            {
+                "url": url,
+                "headers": headers,
+                "payload": payload,
+                "timeout": timeout,
+            }
+        )
+        return _response(model="grok-4.6")
+
+    def fake_async_stream_request(
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float | None,
+        http_error_handler,
+        stream_error_handler,
+    ):
+        requests.append(
+            {
+                "url": url,
+                "headers": headers,
+                "payload": payload,
+                "timeout": timeout,
+            }
+        )
+
+        async def events():
+            for event in _stream_events(
+                model="grok-4.6",
+                include_function_call=True,
+            ):
+                yield event
+
+        return events()
+
+    monkeypatch.setattr(xai_async_client_module, "async_request", fake_async_request)
+    monkeypatch.setattr(
+        xai_async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+
+    async def exercise_async_contract():
+        response = await adapter.achat(
+            messages=[Prompt("Be concise."), UserMessage("Hello")],
+            max_tokens=12,
+            temperature=0.5,
+            top_p=0.8,
+            timeout_s=3.0,
+        )
+        callback_events = []
+
+        async def on_chunk(chunk):
+            callback_events.append(("chunk", chunk.text))
+
+        async def on_delta(text):
+            callback_events.append(("delta", text))
+
+        async def on_done(done_response):
+            callback_events.append(("done", done_response))
+
+        async def on_tool_call(tool_call):
+            callback_events.append(("tool", tool_call))
+
+        chunks = []
+        async for text in adapter.astream_chat(
+            messages=[Prompt("Be concise."), UserMessage("Hello")],
+            max_tokens=12,
+            temperature=0.5,
+            top_p=0.8,
+            timeout_s=3.0,
+            buffer_chars=6,
+            on_chunk=on_chunk,
+            on_delta=on_delta,
+            on_tool_call=on_tool_call,
+            on_done=on_done,
+        ):
+            chunks.append(text)
+        return response, chunks, callback_events
+
+    response, chunks, callback_events = asyncio.run(exercise_async_contract())
+
+    assert response.content == "Hello from xAI."
+    assert chunks == ["Hello ", "from x", "AI."]
+    assert callback_events[:2] == [("chunk", "Hello "), ("delta", "Hello ")]
+    assert callback_events[-1][0] == "done"
+    assert callback_events[-1][1].content == "Hello from xAI."
+    assert callback_events[-2][0] == "tool"
+    assert callback_events[-2][1].call_id == "call_456"
+    assert requests == [
+        {
+            "url": "https://api.x.ai/v1/responses",
+            "headers": {
+                "Authorization": "Bearer test-key",
+                "Content-Type": "application/json",
+            },
+            "payload": {
+                "model": "grok-4.6",
+                "input": [{"role": "user", "content": "Hello"}],
+                "max_output_tokens": 12,
+                "temperature": 0.5,
+                "top_p": 0.8,
+                "instructions": "Be concise.",
+            },
+            "timeout": 3.0,
+        },
+        {
+            "url": "https://api.x.ai/v1/responses",
+            "headers": {
+                "Authorization": "Bearer test-key",
+                "Content-Type": "application/json",
+            },
+            "payload": {
+                "model": "grok-4.6",
+                "input": [{"role": "user", "content": "Hello"}],
+                "max_output_tokens": 12,
+                "temperature": 0.5,
+                "top_p": 0.8,
+                "instructions": "Be concise.",
+                "stream": True,
+            },
+            "timeout": 3.0,
+        },
+    ]
+
+
+@pytest.mark.unit
+def test_async_stream_maps_xai_error_events(xai_runtime, monkeypatch):
+    def fake_async_stream_request(
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float | None,
+        http_error_handler,
+        stream_error_handler,
+    ):
+        del url, headers, payload, timeout, http_error_handler
+
+        async def events():
+            stream_error_handler(
+                SSEEvent(
+                    event="error",
+                    data={
+                        "type": "error",
+                        "error": {
+                            "type": "rate_limit_error",
+                            "message": "Slow down asynchronously",
+                        },
+                    },
+                )
+            )
+            yield SSEEvent(event=None, done=True)
+
+        return events()
+
+    monkeypatch.setattr(
+        xai_async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+
+    async def consume_error_stream():
+        async for _ in adapter.astream_chat(messages=[UserMessage("Hello")]):
+            pass
+
+    with pytest.raises(LLMAPIRateLimitError, match="Slow down asynchronously"):
+        asyncio.run(consume_error_stream())
+
+
+@pytest.mark.unit
+def test_async_stream_early_close_skips_completion_callback(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    completed = []
+
+    async def events():
+        for event in _stream_events(model="grok-4.6"):
+            yield event
+
+    adapter._async_client.stream = lambda **_: events()
+
+    async def close_stream_early():
+        stream = adapter.astream_chat(
+            messages=[UserMessage("Hello")],
+            on_done=lambda response: completed.append(response),
+        )
+        assert await anext(stream) == "Hello "
+        await stream.aclose()
+
+    asyncio.run(close_stream_early())
+    assert completed == []
