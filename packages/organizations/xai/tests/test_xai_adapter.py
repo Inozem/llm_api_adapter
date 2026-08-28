@@ -257,10 +257,8 @@ def test_model_metadata_validates_all_fixed_model_ids():
     organization = OrganizationSpec.from_dict("xai", MODEL_METADATA.organization_data)
 
     assert set(organization.models) == {
-        "grok-4.3",
         "grok-4.5",
         "grok-4.6",
-        "grok-build-0.1",
     }
     pricing = organization.models["grok-4.6"].pricing_tiers
     assert pricing.tier_for_prompt_tokens(199999).in_per_token == pytest.approx(
@@ -269,23 +267,12 @@ def test_model_metadata_validates_all_fixed_model_ids():
     assert pricing.tier_for_prompt_tokens(200000).out_per_token == pytest.approx(
         0.000012
     )
-    assert organization.models["grok-4.3"].reasoning_capability.allowed_values == (
-        "none",
-        "low",
-        "medium",
-        "high",
-    )
-    assert organization.models["grok-build-0.1"].reasoning_capability is None
-
-
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("model", "expected_total_cost"),
     [
-        ("grok-4.3", 0.0000375),
         ("grok-4.5", 0.00007),
         ("grok-4.6", 0.00007),
-        ("grok-build-0.1", 0.00003),
     ],
 )
 def test_universal_chat_maps_text_to_responses_api_and_normalizes_output(
@@ -666,33 +653,6 @@ def test_chat_accepts_explicit_additional_properties_in_structured_schema(
     response = adapter.chat(messages=[UserMessage("Hello")], json_schema=schema)
 
     assert response.parsed_json == {"answer": "ok"}
-
-
-@pytest.mark.unit
-def test_chat_omits_reasoning_for_a_model_without_effort_control(xai_runtime):
-    adapter = XAIAdapter(api_key="test-key", model="grok-build-0.1")
-    transport = FakeSyncTransport(_response(model="grok-build-0.1"))
-    adapter._client._sync_transport = transport
-
-    with pytest.warns(UserWarning, match="does not support reasoning"):
-        response = adapter.chat(
-            messages=[UserMessage("Hello")],
-            reasoning_level="high",
-        )
-
-    assert response.content == "Hello from xAI."
-    assert "reasoning" not in transport.requests[0].payload
-
-
-@pytest.mark.unit
-def test_chat_uses_grok_43_native_none_reasoning_level(xai_runtime):
-    adapter = XAIAdapter(api_key="test-key", model="grok-4.3")
-    transport = FakeSyncTransport(_response(model="grok-4.3"))
-    adapter._client._sync_transport = transport
-
-    adapter.chat(messages=[UserMessage("Hello")], reasoning_level="none")
-
-    assert transport.requests[0].payload["reasoning"] == {"effort": "none"}
 
 
 @pytest.mark.unit
@@ -1428,7 +1388,6 @@ class XAIConformanceCase:
 
 
 XAI_CONFORMANCE_CASES = (
-    XAIConformanceCase("grok-4.3", "none", "none"),
     XAIConformanceCase(
         "grok-4.5",
         "none",
@@ -1436,12 +1395,6 @@ XAI_CONFORMANCE_CASES = (
         "cannot disable reasoning",
     ),
     XAIConformanceCase("grok-4.6", "xhigh", "xhigh"),
-    XAIConformanceCase(
-        "grok-build-0.1",
-        "high",
-        None,
-        "does not support reasoning",
-    ),
 )
 
 

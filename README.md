@@ -374,7 +374,7 @@ The SDK allows you to easily switch between LLM providers and specify the model 
 - **Anthropic**: Available models include `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
 - **Google**: Models such as `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite` can be used.
 - **Mistral**: Install with `pip install "llm-api-adapter[mistral]"`. Available models are `mistral-small-2603`, `mistral-medium-3-5`, and `mistral-large-2512`; see the [Mistral package README](packages/organizations/mistral/README.md) for Mistral-specific behaviour.
-- **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.3`, `grok-4.5`, `grok-4.6`, and `grok-build-0.1`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
+- **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.5` and `grok-4.6`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
 
 Example:
 

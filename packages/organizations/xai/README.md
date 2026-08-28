@@ -51,14 +51,12 @@ print(response.content)
 ## Supported models and capabilities
 
 The package deliberately exposes fixed model IDs, not moving aliases:
-`grok-4.3`, `grok-4.5`, `grok-4.6`, and `grok-build-0.1`.
+`grok-4.5` and `grok-4.6`.
 
 | Capability | Supported models |
 | --- | --- |
-| Text chat, sync/async streaming, application function tools, JSON Schema/Pydantic output, and image URLs or bytes | All four |
-| `reasoning_level` | `grok-4.3`: `none`–`high`; `grok-4.5`: `low`–`high`; `grok-4.6`: `low`–`xhigh` |
-| Explicit `reasoning_level` on `grok-build-0.1` | Not verified by the package; it is omitted with a warning |
-| PDF URLs or bytes | `grok-4.5` and `grok-4.6` |
+| Text chat, sync/async streaming, application function tools, JSON Schema/Pydantic output, image URLs or bytes, and PDF URLs or bytes | Both models |
+| `reasoning_level` | `grok-4.5`: `low`–`high`; `grok-4.6`: `low`–`xhigh` |
 
 For `grok-4.5` and `grok-4.6`, xAI cannot disable reasoning: a requested
 `"none"` is mapped to the documented minimum and produces a warning.
