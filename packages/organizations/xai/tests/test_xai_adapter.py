@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import sys
 from typing import Any, Iterator, Mapping
+import warnings
 
 import pytest
 from pydantic import BaseModel
@@ -19,6 +20,7 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE)):
         sys.path.insert(0, source)
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
+import llm_api_adapter.organization_registry as organization_registry_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.errors.llm_api_error import (
     InvalidToolSchemaError,
@@ -46,6 +48,10 @@ from llm_api_adapter.models.messages.chat_message import (
 )
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.tools import ToolSpec
+from llm_api_adapter.organization_registry import (
+    ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP,
+    OrganizationPluginDiscovery,
+)
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
@@ -1400,3 +1406,314 @@ def test_async_stream_early_close_skips_completion_callback(xai_runtime):
 
     asyncio.run(close_stream_early())
     assert completed == []
+
+
+@dataclass(frozen=True)
+class _InstalledXAIEntryPoint:
+    """Minimal installed-distribution entry point used by the facade."""
+
+    name: str = "xai"
+    value: str = "llm_api_adapter_xai.plugin:PLUGIN"
+
+    def load(self):
+        return PLUGIN
+
+
+@dataclass(frozen=True)
+class XAIConformanceCase:
+    model: str
+    reasoning_level: str
+    expected_reasoning: str | None
+    warning: str | None = None
+
+
+XAI_CONFORMANCE_CASES = (
+    XAIConformanceCase("grok-4.3", "none", "none"),
+    XAIConformanceCase(
+        "grok-4.5",
+        "none",
+        "low",
+        "cannot disable reasoning",
+    ),
+    XAIConformanceCase("grok-4.6", "xhigh", "xhigh"),
+    XAIConformanceCase(
+        "grok-build-0.1",
+        "high",
+        None,
+        "does not support reasoning",
+    ),
+)
+
+
+@pytest.fixture
+def installed_xai_plugin(monkeypatch):
+    """Expose the real xAI plugin exactly as an installed entry point would."""
+    service_providers = ServiceProviderRegistry()
+    model_registry = RegistrySpec()
+
+    def installed_entry_points(*, group: str):
+        assert group == ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP
+        return [_InstalledXAIEntryPoint()]
+
+    monkeypatch.setattr(
+        organization_registry_module,
+        "entry_points",
+        installed_entry_points,
+    )
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        service_providers,
+    )
+    monkeypatch.setattr(
+        universal_module,
+        "ORGANIZATION_PLUGIN_DISCOVERY",
+        OrganizationPluginDiscovery(),
+    )
+    monkeypatch.setattr(universal_module, "LLM_REGISTRY", model_registry)
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", model_registry)
+    return model_registry
+
+
+def _xai_facade(model: str) -> UniversalLLMAPIAdapter:
+    return UniversalLLMAPIAdapter(
+        organization="xai",
+        model=model,
+        api_key="test-key",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case",
+    XAI_CONFORMANCE_CASES,
+    ids=lambda case: case.model,
+)
+def test_installed_plugin_selects_every_model_and_conforms_on_sync_async_streams(
+    installed_xai_plugin,
+    case: XAIConformanceCase,
+):
+    adapter = _xai_facade(case.model)
+    assert isinstance(adapter.adapter, XAIAdapter)
+    assert set(installed_xai_plugin.organizations["xai"].models) == {
+        item.model for item in XAI_CONFORMANCE_CASES
+    }
+
+    sync_transport = FakeSyncTransport(_response(model=case.model))
+    adapter.adapter._client._sync_transport = sync_transport
+    sync_response = adapter.chat(
+        messages=[Prompt("Be concise."), {"role": "user", "content": "Hello"}],
+        max_tokens=12,
+        temperature=0.5,
+        top_p=0.8,
+    )
+
+    assert sync_transport.requests[0].payload["input"] == [
+        {"role": "user", "content": "Hello"},
+    ]
+    assert sync_response.content == "Hello from xAI."
+    assert sync_response.usage is not None
+    assert sync_response.usage.total_tokens == 25
+    assert sync_response.cost_total is not None
+
+    async_payloads: list[dict[str, Any]] = []
+
+    async def create_async(**parameters: Any) -> dict[str, Any]:
+        async_payloads.append(parameters)
+        return _response(model=case.model)
+
+    adapter.adapter._async_client.create = create_async
+    async_response = asyncio.run(
+        adapter.achat(messages=[UserMessage("Hello")], max_tokens=12),
+    )
+    assert async_payloads[0]["input"] == [{"role": "user", "content": "Hello"}]
+    assert async_response.content == sync_response.content
+    assert async_response.usage == sync_response.usage
+    assert async_response.cost_total == sync_response.cost_total
+
+    adapter.adapter._client.stream = lambda **_: iter(_stream_events(model=case.model))
+    stream_order: list[tuple[str, str]] = []
+    sync_output = list(
+        adapter.stream_chat(
+            messages=[UserMessage("Hello")],
+            buffer_chars=6,
+            on_chunk=lambda chunk: stream_order.append(("chunk", chunk.text)),
+            on_delta=lambda text: stream_order.append(("delta", text)),
+            on_done=lambda response: stream_order.append(("done", response.content)),
+        )
+    )
+    assert sync_output == ["Hello ", "from x", "AI."]
+    assert stream_order == [
+        ("chunk", "Hello "),
+        ("delta", "Hello "),
+        ("chunk", "from x"),
+        ("delta", "from x"),
+        ("chunk", "AI."),
+        ("delta", "AI."),
+        ("done", "Hello from xAI."),
+    ]
+
+    async def stream_async():
+        for event in _stream_events(model=case.model):
+            yield event
+
+    adapter.adapter._async_client.stream = lambda **_: stream_async()
+    async_order: list[tuple[str, str]] = []
+
+    async def consume_stream() -> list[str]:
+        return [
+            text
+            async for text in adapter.astream_chat(
+                messages=[UserMessage("Hello")],
+                buffer_chars=6,
+                on_chunk=lambda chunk: async_order.append(("chunk", chunk.text)),
+                on_delta=lambda text: async_order.append(("delta", text)),
+                on_done=lambda response: async_order.append(("done", response.content)),
+            )
+        ]
+
+    assert asyncio.run(consume_stream()) == sync_output
+    assert async_order == stream_order
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case",
+    XAI_CONFORMANCE_CASES,
+    ids=lambda case: case.model,
+)
+def test_reasoning_compatibility_matrix_is_explicit_through_the_facade(
+    installed_xai_plugin,
+    case: XAIConformanceCase,
+):
+    adapter = _xai_facade(case.model)
+    transport = FakeSyncTransport(_response(model=case.model))
+    adapter.adapter._client._sync_transport = transport
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        response = adapter.chat(
+            messages=[UserMessage("Hello")],
+            reasoning_level=case.reasoning_level,
+        )
+
+    assert response.content == "Hello from xAI."
+    if case.expected_reasoning is None:
+        assert "reasoning" not in transport.requests[0].payload
+    else:
+        assert transport.requests[0].payload["reasoning"] == {
+            "effort": case.expected_reasoning,
+        }
+    if case.warning is None:
+        assert captured == []
+    else:
+        assert len(captured) == 1
+        assert case.warning in str(captured[0].message)
+
+
+@pytest.mark.unit
+def test_facade_conforms_for_tools_schema_images_and_pdf_files(
+    installed_xai_plugin,
+):
+    adapter = _xai_facade("grok-4.6")
+    tool = ToolSpec(
+        name="get_weather",
+        description="Get the weather for a city.",
+        json_schema={
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    )
+
+    first_transport = FakeSyncTransport(_function_call_response(model="grok-4.6"))
+    adapter.adapter._client._sync_transport = first_transport
+    first_response = adapter.chat(
+        messages=[UserMessage("What is the weather in Haifa?")],
+        tools=[tool],
+        tool_choice="get_weather",
+    )
+    assert first_response.tool_calls is not None
+    assert first_response.tool_calls[0].name == "get_weather"
+
+    final_transport = FakeSyncTransport(_response(model="grok-4.6"))
+    adapter.adapter._client._sync_transport = final_transport
+    final_response = adapter.chat(
+        messages=[
+            UserMessage("What is the weather in Haifa?"),
+            AIMessage(content="", tool_calls=first_response.tool_calls),
+            ToolMessage(content='{"city":"Haifa"}', tool_call_id="call_weather"),
+        ],
+        tools=[tool],
+        previous_response=first_response,
+    )
+    assert final_response.content == "Hello from xAI."
+    final_input = final_transport.requests[0].payload["input"]
+    assert final_input[1]["type"] == "function_call"
+    assert final_input[2] == {
+        "type": "function_call_output",
+        "call_id": "call_weather",
+        "output": '{"city":"Haifa"}',
+    }
+    assert "previous_response_id" not in final_transport.requests[0].payload
+
+    structured_transport = FakeSyncTransport(_structured_response(model="grok-4.6"))
+    adapter.adapter._client._sync_transport = structured_transport
+    structured_response = adapter.chat(
+        messages=[UserMessage("Answer in JSON.")],
+        response_model=StructuredAnswer,
+    )
+    assert structured_response.parsed_model == StructuredAnswer(answer="ok")
+    assert structured_transport.requests[0].payload["text"]["format"]["strict"] is True
+
+    file_transport = FakeSyncTransport(
+        _response(model="grok-4.6"),
+        multipart_payloads=[{"id": "file_adapter_owned"}],
+    )
+    adapter.adapter._client._sync_transport = file_transport
+    file_response = adapter.chat(
+        messages=[
+            UserMessage(
+                "Describe the image and summarize the PDF.",
+                files=[
+                    ImagePart(data=b"image", media_type="image/png"),
+                    DocumentPart(url="https://example.com/public.pdf"),
+                    DocumentPart(data=b"%PDF", media_type="application/pdf"),
+                ],
+            ),
+        ],
+    )
+    assert file_response.content == "Hello from xAI."
+    assert file_transport.multipart_requests[0][1].fields == (
+        ("expires_after", "86400"),
+    )
+    file_content = file_transport.requests[0].payload["input"][0]["content"]
+    assert file_content[1]["type"] == "input_image"
+    assert file_content[2] == {
+        "type": "input_file",
+        "file_url": "https://example.com/public.pdf",
+    }
+    assert file_content[3] == {"type": "input_file", "file_id": "file_adapter_owned"}
+
+    with pytest.raises(JSONSchemaError, match="xAI structured output rejects"):
+        adapter.chat(
+            messages=[UserMessage("Hello")],
+            json_schema={"type": "object", "properties": {"answer": True}},
+        )
+
+
+@pytest.mark.unit
+def test_facade_preserves_normalized_xai_errors(installed_xai_plugin):
+    adapter = _xai_facade("grok-4.6")
+
+    def fail_rate_limit(**parameters: Any) -> dict[str, Any]:
+        del parameters
+        raise LLMAPIRateLimitError(detail="Slow down")
+
+    adapter.adapter._client.create = fail_rate_limit
+    with pytest.raises(LLMAPIRateLimitError, match="Slow down"):
+        adapter.chat(messages=[UserMessage("Hello")])
+
+    adapter.adapter._client.create = lambda **_: {"object": "response"}
+    with pytest.raises(LLMAPIClientError, match="response.output"):
+        adapter.chat(messages=[UserMessage("Hello")])
