@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Iterator, List, Optional
 
@@ -18,13 +19,17 @@ from llm_api_adapter.adapters.base_adapter import (
     OnReasoning,
     OnToolCall,
 )
-from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIError
+from llm_api_adapter.errors.llm_api_error import (
+    InvalidToolSchemaError,
+    LLMAPIClientError,
+    LLMAPIError,
+)
 from llm_api_adapter.llms.transports import SSEEvent
 from llm_api_adapter.models.messages.chat_message import (
     AIMessage,
     Message,
     Messages,
-    ToolMessage,
+    Prompt,
     UserMessage,
 )
 from llm_api_adapter.models.responses.chat_response import ChatResponse
@@ -297,9 +302,6 @@ class XAIAdapter(LLMAdapterBase):
         # package, so retain the shared API shape and use the supplied messages.
         del previous_response
         self._reject_unsupported_options(
-            tools=tools,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
             json_schema=json_schema,
             response_model=response_model,
             reasoning_level=reasoning_level,
@@ -308,19 +310,24 @@ class XAIAdapter(LLMAdapterBase):
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
         request_context = self._prepare_chat_request(
             messages,
-            None,
-            None,
+            tools,
+            tool_choice,
             None,
             None,
         )
         normalized_messages = request_context.normalized_messages
-        self._reject_file_and_tool_messages(normalized_messages)
+        self._reject_file_messages(normalized_messages)
 
         parameters: dict[str, Any] = {
-            "input": normalized_messages.to_openai_responses_input(),
+            "input": self._to_xai_responses_input(normalized_messages),
             "max_output_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
+            "tools": self._map_tools(tools),
+            "tool_choice": self._map_tool_choice(
+                request_context.normalized_tool_choice,
+            ),
+            "parallel_tool_calls": parallel_tool_calls,
         }
         instructions = normalized_messages.to_openai_responses_instructions()
         if instructions is not None:
@@ -382,18 +389,12 @@ class XAIAdapter(LLMAdapterBase):
     @staticmethod
     def _reject_unsupported_options(
         *,
-        tools: Optional[List[ToolSpec]],
-        tool_choice: Any,
-        parallel_tool_calls: Optional[bool],
         json_schema: Optional[dict],
         response_model: Optional[Any],
         reasoning_level: Optional[str | int],
         capture_reasoning: bool,
     ) -> None:
         unsupported = {
-            "tools": tools is not None,
-            "tool_choice": tool_choice is not None,
-            "parallel_tool_calls": parallel_tool_calls is not None,
             "json_schema": json_schema is not None,
             "response_model": response_model is not None,
             "reasoning_level": reasoning_level is not None,
@@ -407,14 +408,73 @@ class XAIAdapter(LLMAdapterBase):
             )
 
     @staticmethod
-    def _reject_file_and_tool_messages(messages: Messages) -> None:
+    def _reject_file_messages(messages: Messages) -> None:
         for message in messages.items:
             if isinstance(message, UserMessage) and message.files:
                 raise ValueError("xAI file input is not available yet")
-            if isinstance(message, ToolMessage) or (
-                isinstance(message, AIMessage) and message.tool_calls
-            ):
-                raise ValueError("xAI tool-result messages are not available yet")
+
+    @staticmethod
+    def _map_tools(tools: Optional[List[ToolSpec]]) -> Optional[list[dict[str, Any]]]:
+        if not tools:
+            return None
+
+        mapped_tools: list[dict[str, Any]] = []
+        for tool in tools:
+            if not isinstance(tool.description, str) or not tool.description.strip():
+                raise InvalidToolSchemaError(
+                    detail=f"xAI function {tool.name!r} requires a description",
+                )
+            mapped_tools.append(
+                {
+                    "type": "function",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.json_schema,
+                }
+            )
+        return mapped_tools
+
+    @staticmethod
+    def _map_tool_choice(tool_choice: Optional[str]) -> Any:
+        if tool_choice is None:
+            return None
+        if tool_choice in {"auto", "none"}:
+            return tool_choice
+        if tool_choice == "any":
+            return "required"
+        return {"type": "function", "function": {"name": tool_choice}}
+
+    @staticmethod
+    def _to_xai_responses_input(messages: Messages) -> list[dict[str, Any]]:
+        """Serialize a full tool round-trip without Responses server state."""
+        input_items: list[dict[str, Any]] = []
+        for message in messages.items:
+            if isinstance(message, Prompt):
+                continue
+            if isinstance(message, AIMessage):
+                if message.content:
+                    input_items.append(
+                        {"role": "assistant", "content": message.content},
+                    )
+                for tool_call in message.tool_calls or []:
+                    if not tool_call.call_id:
+                        raise ValueError(
+                            "xAI function_call history requires a non-empty call_id",
+                        )
+                    input_items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tool_call.call_id,
+                            "name": tool_call.name,
+                            "arguments": json.dumps(
+                                tool_call.arguments,
+                                ensure_ascii=False,
+                            ),
+                        }
+                    )
+                continue
+            input_items.extend(message.to_openai_responses_input())
+        return input_items
 
     @staticmethod
     def _parse_response(response: dict[str, Any]) -> ChatResponse:

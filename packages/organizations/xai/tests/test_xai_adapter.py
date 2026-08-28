@@ -20,6 +20,7 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE)):
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.errors.llm_api_error import (
+    InvalidToolSchemaError,
     LLMAPIAuthorizationError,
     LLMAPIClientError,
     LLMAPIRateLimitError,
@@ -34,7 +35,13 @@ from llm_api_adapter.llms.transports import (
     SyncTransport,
     TransportRequest,
 )
-from llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
+from llm_api_adapter.models.messages.chat_message import (
+    AIMessage,
+    Prompt,
+    ToolMessage,
+    UserMessage,
+)
+from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
@@ -113,6 +120,21 @@ def _response(*, model: str) -> dict[str, Any]:
             "total_tokens": 25,
         },
     }
+
+
+def _function_call_response(*, model: str) -> dict[str, Any]:
+    response = _response(model=model)
+    response["id"] = f"tool-{model}"
+    response["output"] = [
+        {
+            "type": "function_call",
+            "id": "fc_weather",
+            "call_id": "call_weather",
+            "name": "get_weather",
+            "arguments": '{"city":"Haifa"}',
+        }
+    ]
+    return response
 
 
 def _stream_events(
@@ -301,6 +323,120 @@ def test_chat_ignores_previous_response_without_sending_continuation_id(xai_runt
         "temperature": 1.0,
         "top_p": 1.0,
     }
+
+
+@pytest.mark.unit
+def test_universal_chat_round_trips_application_tools_without_server_state(xai_runtime):
+    tool = ToolSpec(
+        name="get_weather",
+        description="Get the weather for a city.",
+        json_schema={
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="xai",
+        api_key="test-key",
+        model="grok-4.6",
+    )
+    first_transport = FakeSyncTransport(_function_call_response(model="grok-4.6"))
+    adapter.adapter._client._sync_transport = first_transport
+
+    first_response = adapter.chat(
+        messages=[UserMessage("What is the weather in Haifa?")],
+        tools=[tool],
+        tool_choice="get_weather",
+        parallel_tool_calls=False,
+    )
+
+    assert [(call.name, call.arguments, call.call_id) for call in first_response.tool_calls or []] == [
+        ("get_weather", {"city": "Haifa"}, "call_weather"),
+    ]
+    assert first_transport.requests[0].payload == {
+        "model": "grok-4.6",
+        "input": [{"role": "user", "content": "What is the weather in Haifa?"}],
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "tools": [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get the weather for a city.",
+                "parameters": tool.json_schema,
+            }
+        ],
+        "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+        "parallel_tool_calls": False,
+    }
+
+    second_transport = FakeSyncTransport(_response(model="grok-4.6"))
+    adapter.adapter._client._sync_transport = second_transport
+    final_response = adapter.chat(
+        messages=[
+            UserMessage("What is the weather in Haifa?"),
+            AIMessage(content="", tool_calls=first_response.tool_calls),
+            ToolMessage(
+                content='{"city":"Haifa","temperature":25}',
+                tool_call_id="call_weather",
+            ),
+        ],
+        tools=[tool],
+        previous_response=first_response,
+    )
+
+    assert final_response.content == "Hello from xAI."
+    second_payload = second_transport.requests[0].payload
+    assert second_payload["input"] == [
+        {"role": "user", "content": "What is the weather in Haifa?"},
+        {
+            "type": "function_call",
+            "call_id": "call_weather",
+            "name": "get_weather",
+            "arguments": '{"city": "Haifa"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_weather",
+            "output": '{"city":"Haifa","temperature":25}',
+        },
+    ]
+    assert "previous_response_id" not in second_payload
+    assert "store" not in second_payload
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("tool_choice", "expected"),
+    [
+        ("auto", "auto"),
+        ("none", "none"),
+        ("any", "required"),
+        (
+            "get_weather",
+            {"type": "function", "function": {"name": "get_weather"}},
+        ),
+    ],
+)
+def test_xai_maps_normalized_tool_choice(tool_choice, expected):
+    assert XAIAdapter._map_tool_choice(tool_choice) == expected
+
+
+@pytest.mark.unit
+def test_xai_rejects_function_without_required_description(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+
+    with pytest.raises(InvalidToolSchemaError, match="requires a description"):
+        adapter.chat(
+            messages=[UserMessage("Hello")],
+            tools=[
+                ToolSpec(
+                    name="get_weather",
+                    json_schema={"type": "object"},
+                )
+            ],
+        )
 
 
 @pytest.mark.unit
