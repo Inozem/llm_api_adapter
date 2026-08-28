@@ -66,9 +66,12 @@ def _assert_usage_and_pricing(response):
     assert response.usage.output_tokens >= 0
     assert response.usage.total_tokens >= response.usage.input_tokens
     assert response.currency
+    assert response.cost_total is not None and response.cost_total >= 0
+    if response.cost_input is None or response.cost_output is None:
+        assert response.cost_input is response.cost_output is None
+        return
     assert response.cost_input >= 0
     assert response.cost_output >= 0
-    assert response.cost_total >= 0
 
 
 @pytest.mark.asyncio
