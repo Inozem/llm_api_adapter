@@ -109,25 +109,13 @@ class XAIResponsesAsyncClient:
 
     @staticmethod
     def _handle_http_error(error: Any) -> None:
-        response = getattr(error, "response", None)
-        status_code = getattr(response, "status_code", None)
-        payload: Mapping[str, Any] = {}
-        if response is not None:
-            try:
-                candidate = response.json()
-                if isinstance(candidate, Mapping):
-                    payload = candidate
-            except Exception:
-                pass
-        error_data = payload.get("error", payload)
-        if not isinstance(error_data, Mapping):
-            error_data = {}
-        error_type = error_data.get("type") or error_data.get("code")
-        detail = error_data.get("message") or str(error)
+        status_code, error_type, detail = XAIResponsesSyncClient._http_error_details(
+            error,
+        )
         XAIResponsesSyncClient._raise_mapped_error(
-            status_code=status_code if isinstance(status_code, int) else None,
-            error_type=str(error_type) if error_type else None,
-            detail=str(detail),
+            status_code=status_code,
+            error_type=error_type,
+            detail=detail,
         )
 
     @staticmethod

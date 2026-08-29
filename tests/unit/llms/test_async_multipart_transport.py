@@ -97,21 +97,42 @@ async def test_async_multipart_posts_form_and_closes_resources():
         )
 
     assert result == {"id": "file_123"}
-    assert client.post_calls == [
-        (
-            "https://example.test/files",
-            {
-                "headers": {"Authorization": "Bearer test"},
-                "data": [("purpose", "documents")],
-                "files": [
-                    ("file", ("report.pdf", b"%PDF-test", "application/pdf"))
-                ],
-                "timeout": 3.0,
-            },
-        )
-    ]
+    assert len(client.post_calls) == 1
+    url, kwargs = client.post_calls[0]
+    assert url == "https://example.test/files"
+    assert kwargs["headers"]["authorization"] == "Bearer test"
+    assert kwargs["headers"]["content-type"].startswith("multipart/form-data;")
+    assert b'name="purpose"' in kwargs["content"]
+    assert b"documents" in kwargs["content"]
+    assert b'name="file"; filename="report.pdf"' in kwargs["content"]
+    assert b"%PDF-test" in kwargs["content"]
+    assert kwargs["timeout"] == 3.0
     assert response.aclose_calls == 1
     assert client.aclose_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_async_multipart_uses_bytes_compatible_with_an_async_client():
+    received: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        received.append(request)
+        return httpx.Response(200, json={"id": "file_123"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with patch.object(httpx, "AsyncClient", return_value=client):
+        result = await async_multipart_request(
+            "https://example.test/files",
+            headers={"Authorization": "Bearer test"},
+            form=_form(),
+        )
+
+    assert result == {"id": "file_123"}
+    assert len(received) == 1
+    assert received[0].headers["content-type"].startswith("multipart/form-data;")
+    assert b'name="purpose"' in received[0].content
+    assert b'name="file"; filename="report.pdf"' in received[0].content
 
 
 @pytest.mark.asyncio

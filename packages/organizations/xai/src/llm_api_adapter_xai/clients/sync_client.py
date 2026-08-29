@@ -135,6 +135,24 @@ class XAIResponsesSyncClient:
         }
 
     def _handle_http_error(self, error: Any) -> None:
+        status_code, error_type, detail = self._http_error_details(error)
+        self._raise_mapped_error(
+            status_code=status_code,
+            error_type=error_type,
+            detail=detail,
+        )
+
+    @staticmethod
+    def _http_error_details(
+        error: Any,
+    ) -> tuple[int | None, str | None, str]:
+        """Read both documented xAI error envelope variants.
+
+        Responses API errors may contain a nested ``error`` object, or the
+        flat ``{"code": ..., "error": "..."}`` shape returned for an invalid
+        API key. Preserve the latter message so it can be classified and shown
+        to callers.
+        """
         response = getattr(error, "response", None)
         status_code = getattr(response, "status_code", None)
         payload: Mapping[str, Any] = {}
@@ -145,15 +163,19 @@ class XAIResponsesSyncClient:
                     payload = candidate
             except Exception:
                 pass
-        error_data = payload.get("error", payload)
-        if not isinstance(error_data, Mapping):
-            error_data = {}
-        error_type = error_data.get("type") or error_data.get("code")
-        detail = error_data.get("message") or str(error)
-        self._raise_mapped_error(
-            status_code=status_code if isinstance(status_code, int) else None,
-            error_type=str(error_type) if error_type else None,
-            detail=str(detail),
+
+        error_data = payload.get("error")
+        if isinstance(error_data, Mapping):
+            error_type = error_data.get("type") or error_data.get("code")
+            detail = error_data.get("message") or error_data.get("detail")
+        else:
+            error_type = payload.get("type") or payload.get("code")
+            detail = payload.get("message") or error_data
+
+        return (
+            status_code if isinstance(status_code, int) else None,
+            str(error_type) if error_type else None,
+            str(detail) if detail else str(error),
         )
 
     def _handle_stream_error(self, event: SSEEvent) -> None:
@@ -178,12 +200,23 @@ class XAIResponsesSyncClient:
         detail: str,
     ) -> None:
         normalized_type = (error_type or "").lower()
+        normalized_detail = detail.lower()
         if status_code in {401, 403} or normalized_type in {
             "authentication_error",
             "authorization_error",
             "invalid_api_key",
             "permission_denied",
-        }:
+        } or any(
+            marker in normalized_detail
+            for marker in (
+                "api key",
+                "api_key",
+                "authentication",
+                "authorization",
+                "unauthorized",
+                "invalid credentials",
+            )
+        ):
             raise LLMAPIAuthorizationError(detail=detail)
         if status_code == 429 or normalized_type in {
             "rate_limit_error",

@@ -111,17 +111,35 @@ async def async_multipart_request(
 
     The shared multipart form keeps field and file ownership with the provider
     client while HTTPX owns boundary construction and resource cleanup.
+
+    HTTPX builds a synchronous multipart stream for ``files=``. Materialize
+    that stream before handing it to :class:`httpx.AsyncClient`; otherwise
+    HTTPX rejects it as a synchronous request stream. The adapter already owns
+    file bytes in memory, so this does not change the transport contract.
     """
     httpx = _require_httpx()
     client = httpx.AsyncClient()
     response: Optional[Any] = None
 
     try:
-        response = await client.post(
+        multipart_parts = [(name, (None, value)) for name, value in form.fields]
+        multipart_parts.extend(form.files_list())
+        multipart_request = httpx.Request(
+            "POST",
             url,
             headers=multipart_headers(headers or {}),
-            data=form.fields_list(),
-            files=form.files_list(),
+            files=multipart_parts,
+        )
+        content = multipart_request.read()
+        request_headers = {
+            name: value
+            for name, value in multipart_request.headers.items()
+            if name.lower() != "host"
+        }
+        response = await client.post(
+            url,
+            headers=request_headers,
+            content=content,
             timeout=timeout,
         )
         response.raise_for_status()

@@ -13,7 +13,7 @@ def test_distribution_metadata_declares_the_core_compatibility_range():
     metadata = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert 'name = "llm-api-adapter-xai"' in metadata
-    assert 'version = "0.1.0"' in metadata
+    assert 'version = "0.1.0.post11"' in metadata
     assert 'llm-api-adapter>=0.9.1,<1.0.0' in metadata
 
 
