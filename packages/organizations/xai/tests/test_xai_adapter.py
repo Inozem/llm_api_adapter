@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from typing import Any, Iterator, Mapping
 import warnings
 
@@ -518,7 +519,7 @@ def test_universal_chat_round_trips_application_tools_without_server_state(xai_r
                 "parameters": tool.json_schema,
             }
         ],
-        "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+        "tool_choice": {"type": "function", "name": "get_weather"},
         "parallel_tool_calls": False,
     }
 
@@ -566,7 +567,7 @@ def test_universal_chat_round_trips_application_tools_without_server_state(xai_r
         ("any", "required"),
         (
             "get_weather",
-            {"type": "function", "function": {"name": "get_weather"}},
+            {"type": "function", "name": "get_weather"},
         ),
     ],
 )
@@ -712,6 +713,31 @@ def test_client_maps_xai_errors(
             status_code=status_code,
             error_type=error_type,
             detail="test failure",
+        )
+
+
+@pytest.mark.unit
+def test_xai_preserves_flat_invalid_api_key_error_details():
+    error = SimpleNamespace(
+        response=SimpleNamespace(
+            status_code=400,
+            json=lambda: {
+                "code": "invalid-argument",
+                "error": "Incorrect API key provided.",
+            },
+        ),
+    )
+
+    assert XAIResponsesSyncClient._http_error_details(error) == (
+        400,
+        "invalid-argument",
+        "Incorrect API key provided.",
+    )
+    with pytest.raises(LLMAPIAuthorizationError, match="Incorrect API key"):
+        XAIResponsesSyncClient._raise_mapped_error(
+            status_code=400,
+            error_type="invalid-argument",
+            detail="Incorrect API key provided.",
         )
 
 

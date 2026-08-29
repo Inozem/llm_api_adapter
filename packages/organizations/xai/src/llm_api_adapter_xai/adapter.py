@@ -774,7 +774,7 @@ class XAIAdapter(LLMAdapterBase):
             return tool_choice
         if tool_choice == "any":
             return "required"
-        return {"type": "function", "function": {"name": tool_choice}}
+        return {"type": "function", "name": tool_choice}
 
     @staticmethod
     def _to_xai_responses_input(
