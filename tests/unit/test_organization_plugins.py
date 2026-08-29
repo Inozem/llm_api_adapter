@@ -65,9 +65,9 @@ class FakeEntryPoint:
         return self._plugin
 
 
-def _mistral_model_metadata() -> OrganizationModelMetadata:
+def _organization_model_metadata(organization: str) -> OrganizationModelMetadata:
     return OrganizationModelMetadata(
-        organization="mistral",
+        organization=organization,
         organization_data={
             "currency": "USD",
             "models": {
@@ -145,7 +145,9 @@ def test_external_organization_is_discovered_after_its_distribution_is_available
     entry_point = FakeEntryPoint(
         name="mistral",
         value="llm_api_adapter_mistral.plugin:PLUGIN",
-        plugin=_test_plugin(model_metadata=_mistral_model_metadata()),
+        plugin=_test_plugin(
+            model_metadata=_organization_model_metadata("mistral"),
+        ),
     )
     installed_entry_points.append(entry_point)
 
@@ -164,6 +166,57 @@ def test_external_organization_is_discovered_after_its_distribution_is_available
     assert resolve_model_spec(
         isolated_plugin_runtime[2],
         "mistral",
+        "test-model",
+    ) is adapter.adapter.model_spec
+    assert entry_point.load_calls == 1
+
+
+@pytest.mark.unit
+def test_known_xai_organization_is_installable_before_its_package_is_available(
+    monkeypatch,
+    isolated_plugin_runtime,
+):
+    installed_entry_points: list[FakeEntryPoint] = []
+
+    def get_entry_points(*, group: str):
+        assert group == ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP
+        return tuple(installed_entry_points)
+
+    monkeypatch.setattr(registry_module, "entry_points", get_entry_points)
+
+    with pytest.raises(OrganizationNotInstalledError) as raised:
+        UniversalLLMAPIAdapter(
+            organization="xai",
+            model="test-model",
+            api_key="test-key",
+        )
+
+    assert str(raised.value) == (
+        "Organization 'xai' is not installed. "
+        "Install it with: pip install llm-api-adapter-xai"
+    )
+
+    entry_point = FakeEntryPoint(
+        name="xai",
+        value="test_plugins.xai:PLUGIN",
+        plugin=_test_plugin(
+            organization="xai",
+            model_metadata=_organization_model_metadata("xai"),
+        ),
+    )
+    installed_entry_points.append(entry_point)
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="xai",
+        model="test-model",
+        api_key="test-key",
+    )
+
+    assert isinstance(adapter.adapter, PluginTestAdapter)
+    assert adapter.adapter.company == adapter.adapter.service_provider == "xai"
+    assert resolve_model_spec(
+        isolated_plugin_runtime[2],
+        "xai",
         "test-model",
     ) is adapter.adapter.model_spec
     assert entry_point.load_calls == 1

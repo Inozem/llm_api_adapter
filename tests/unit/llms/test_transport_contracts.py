@@ -10,6 +10,8 @@ from src.llm_api_adapter.llms.transports import (
     AsyncTransport,
     HTTPErrorHandler,
     JSONResponse,
+    MultipartFile,
+    MultipartForm,
     SSEEvent,
     SSEFrameDecoder,
     StreamErrorHandler,
@@ -38,6 +40,16 @@ class StubSyncTransport(SyncTransport):
         _ = request, http_error_handler, stream_error_handler
         yield SSEEvent(event=None, data={"transport": "sync"})
 
+    def post_multipart(
+        self,
+        request: TransportRequest,
+        form: MultipartForm,
+        *,
+        http_error_handler: Optional[HTTPErrorHandler] = None,
+    ) -> JSONResponse:
+        _ = form, http_error_handler
+        return JSONResponse(request.payload)
+
 
 class StubAsyncTransport(AsyncTransport):
     async def post_json(
@@ -58,6 +70,16 @@ class StubAsyncTransport(AsyncTransport):
     ) -> AsyncIterator[SSEEvent]:
         _ = request, http_error_handler, stream_error_handler
         yield SSEEvent(event=None, data={"transport": "async"})
+
+    async def post_multipart(
+        self,
+        request: TransportRequest,
+        form: MultipartForm,
+        *,
+        http_error_handler: Optional[HTTPErrorHandler] = None,
+    ) -> Any:
+        _ = form, http_error_handler
+        return request.payload
 
 
 @pytest.mark.unit
@@ -86,6 +108,10 @@ def test_sync_transport_contract_carries_json_and_sse_operations():
     assert list(transport.post_sse(request)) == [
         SSEEvent(event=None, data={"transport": "sync"})
     ]
+    assert transport.post_multipart(
+        request,
+        MultipartForm(files=(MultipartFile("file", "test.txt", b"test"),)),
+    ).json() == {"ok": True}
 
 
 @pytest.mark.asyncio
@@ -97,6 +123,31 @@ async def test_async_transport_contract_carries_json_and_sse_operations():
     assert await transport.post_json(request) == {"ok": True}
     assert [event async for event in transport.post_sse(request)] == [
         SSEEvent(event=None, data={"transport": "async"})
+    ]
+    assert await transport.post_multipart(
+        request,
+        MultipartForm(files=(MultipartFile("file", "test.txt", b"test"),)),
+    ) == {"ok": True}
+
+
+@pytest.mark.unit
+def test_multipart_form_preserves_declared_field_and_file_order():
+    form = MultipartForm(
+        fields=(("purpose", "documents"), ("tag", "first"), ("tag", "second")),
+        files=(
+            MultipartFile("file", "first.txt", b"first", "text/plain"),
+            MultipartFile("file", "second.txt", b"second", "text/plain"),
+        ),
+    )
+
+    assert form.fields_list() == [
+        ("purpose", "documents"),
+        ("tag", "first"),
+        ("tag", "second"),
+    ]
+    assert form.files_list() == [
+        ("file", ("first.txt", b"first", "text/plain")),
+        ("file", ("second.txt", b"second", "text/plain")),
     ]
 
 

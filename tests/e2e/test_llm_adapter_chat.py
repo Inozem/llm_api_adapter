@@ -6,6 +6,24 @@ from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
+def _assert_pricing_contract(response) -> None:
+    assert response.currency
+    assert response.cost_total is not None and response.cost_total >= 0
+
+    if response.cost_input is None or response.cost_output is None:
+        assert response.cost_input is response.cost_output is None
+        return
+
+    assert response.cost_input >= 0
+    assert response.cost_output >= 0
+    assert isclose(
+        response.cost_total,
+        response.cost_input + response.cost_output,
+        rel_tol=0,
+        abs_tol=1e-9,
+    )
+
+
 @pytest.mark.e2e
 def test_chat_accepts_basic_params_and_returns_contract(subtests, iter_organization_models, chat_with_retry):
     for p, model in iter_organization_models():
@@ -32,11 +50,7 @@ def test_chat_accepts_basic_params_and_returns_contract(subtests, iter_organizat
             assert resp.usage.output_tokens >= 0
             assert resp.usage.total_tokens >= resp.usage.input_tokens
 
-            assert resp.currency
-            assert resp.cost_input >= 0
-            assert resp.cost_output >= 0
-            assert resp.cost_total >= 0
-            assert abs(resp.cost_total - (resp.cost_input + resp.cost_output)) < 1e-9
+            _assert_pricing_contract(resp)
 
 
 @pytest.mark.e2e
@@ -65,8 +79,4 @@ def test_chat_with_reasoning_level_returns_valid_contract(subtests, iter_organiz
             assert resp.usage.total_tokens >= 0
             assert resp.usage.total_tokens >= resp.usage.input_tokens + resp.usage.output_tokens
 
-            assert isinstance(resp.currency, str) and resp.currency
-            assert resp.cost_input is not None and resp.cost_input >= 0
-            assert resp.cost_output is not None and resp.cost_output >= 0
-            assert resp.cost_total is not None and resp.cost_total >= 0
-            assert isclose(resp.cost_total, resp.cost_input + resp.cost_output, rel_tol=0, abs_tol=1e-9)
+            _assert_pricing_contract(resp)

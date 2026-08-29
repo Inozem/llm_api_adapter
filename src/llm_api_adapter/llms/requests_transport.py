@@ -12,11 +12,13 @@ from .streaming import iter_sse_events
 from .transports import (
     HTTPErrorHandler,
     JSONResponse,
+    MultipartForm,
     SSEEvent,
     StreamErrorHandler,
     SyncTransport,
     TransportRequest,
     is_generic_stream_error,
+    multipart_headers,
     raise_default_http_error,
     raise_default_stream_error,
 )
@@ -107,6 +109,40 @@ class RequestsSyncTransport(SyncTransport):
             raise LLMAPIClientError(detail=str(exc)) from exc
         finally:
             if response is not None and not parser_owns_response:
+                response.close()
+
+    def post_multipart(
+        self,
+        request: TransportRequest,
+        form: MultipartForm,
+        *,
+        http_error_handler: Optional[HTTPErrorHandler] = None,
+    ) -> JSONResponse:
+        response: Optional[requests.Response] = None
+
+        try:
+            response = requests.post(
+                request.url,
+                headers=multipart_headers(request.headers),
+                data=form.fields_list(),
+                files=form.files_list(),
+                timeout=request.timeout,
+            )
+            response.raise_for_status()
+            return JSONResponse(response.json())
+        except LLMAPIError:
+            raise
+        except requests.exceptions.Timeout as exc:
+            logger.error("Synchronous multipart request timed out: %s", exc)
+            raise LLMAPITimeoutError(detail=str(exc)) from exc
+        except requests.exceptions.HTTPError as exc:
+            logger.error("Synchronous multipart HTTP error: %s", exc)
+            self._handle_http_error(exc, http_error_handler)
+        except requests.exceptions.RequestException as exc:
+            logger.error("Synchronous multipart request exception: %s", exc)
+            raise LLMAPIClientError(detail=str(exc)) from exc
+        finally:
+            if response is not None:
                 response.close()
 
     @staticmethod

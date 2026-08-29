@@ -20,8 +20,11 @@ jobs:
       core: ${{ steps.filter.outputs.core }}
       mistral: ${{ steps.filter.outputs.mistral }}
       mistral_e2e: ${{ steps.filter.outputs.mistral_e2e }}
+      xai: ${{ steps.filter.outputs.xai }}
+      xai_e2e: ${{ steps.filter.outputs.xai_e2e }}
       core_version: ${{ steps.versions.outputs.core }}
       mistral_version: ${{ steps.versions.outputs.mistral }}
+      xai_version: ${{ steps.versions.outputs.xai }}
 
     steps:
       - uses: actions/checkout@v4
@@ -34,10 +37,13 @@ jobs:
         run: |
           core_version="$(grep -m1 '^version = ' pyproject.toml | cut -d '"' -f 2)"
           mistral_version="$(grep -m1 '^version = ' packages/organizations/mistral/pyproject.toml | cut -d '"' -f 2)"
+          xai_version="$(grep -m1 '^version = ' packages/organizations/xai/pyproject.toml | cut -d '"' -f 2)"
           test -n "$core_version"
           test -n "$mistral_version"
+          test -n "$xai_version"
           echo "core=$core_version" >> "$GITHUB_OUTPUT"
           echo "mistral=$mistral_version" >> "$GITHUB_OUTPUT"
+          echo "xai=$xai_version" >> "$GITHUB_OUTPUT"
 
       - name: Detect changed distributions
         id: filter
@@ -60,10 +66,22 @@ jobs:
             echo "mistral=false" >> "$GITHUB_OUTPUT"
           fi
 
+          if grep -Eq '^packages/organizations/xai/(MANIFEST.in|README.md|pyproject.toml|src/)' <<< "$changed_files"; then
+            echo "xai=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "xai=false" >> "$GITHUB_OUTPUT"
+          fi
+
           if grep -Eq '^(tests/e2e/|tests/fixtures/|tests/requirements-test.txt|pytest.ini|\.github/workflows/ci-dev-release.yml$)' <<< "$changed_files"; then
             echo "mistral_e2e=true" >> "$GITHUB_OUTPUT"
           else
             echo "mistral_e2e=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if grep -Eq '^(tests/e2e/|tests/fixtures/|tests/requirements-test.txt|pytest.ini|\.github/workflows/ci-dev-release.yml$)' <<< "$changed_files"; then
+            echo "xai_e2e=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "xai_e2e=false" >> "$GITHUB_OUTPUT"
           fi
 
   publish-core-testpypi:
@@ -119,6 +137,34 @@ jobs:
           password: ${{ secrets.TEST_PYPI_API_TOKEN }}
           repository-url: https://test.pypi.org/legacy/
           packages-dir: packages/organizations/mistral/dist/
+          verbose: true
+
+  publish-xai-testpypi:
+    name: Publish xAI package to TestPyPI
+    needs: changes
+    if: ${{ needs.changes.outputs.xai == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Build xAI distribution
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build packages/organizations/xai
+
+      - name: Publish xAI package to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: packages/organizations/xai/dist/
           verbose: true
 
   post-publish-builtin-e2e:
@@ -243,3 +289,65 @@ jobs:
 
       - name: Run Mistral E2E tests
         run: pytest -v -m e2e_mistral
+
+  post-publish-xai-e2e:
+    name: xAI E2E tests (release candidate)
+    needs: [changes, publish-core-testpypi, publish-xai-testpypi]
+    if: >-
+      ${{
+        always() &&
+        (needs.changes.outputs.core == 'true' || needs.changes.outputs.xai == 'true' || needs.changes.outputs.xai_e2e == 'true') &&
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped') &&
+        (needs.publish-xai-testpypi.result == 'success' || needs.publish-xai-testpypi.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    env:
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      CORE_CANDIDATE_VERSION: ${{ needs.changes.outputs.core_version }}
+      XAI_CANDIDATE_VERSION: ${{ needs.changes.outputs.xai_version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Require xAI API key
+        shell: bash
+        run: |
+          test -n "$XAI_API_KEY" || {
+            echo "::error::XAI_API_KEY is not configured."
+            exit 1
+          }
+
+      - name: Install test runner and candidate packages from TestPyPI
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/requirements-test.txt
+
+          for attempt in 1 2 3; do
+            if pip install --index-url https://test.pypi.org/simple/ \
+              --extra-index-url https://pypi.org/simple \
+              "llm-api-adapter[async,httpx]==${CORE_CANDIDATE_VERSION}" \
+              "llm-api-adapter-xai==${XAI_CANDIDATE_VERSION}"; then
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "Candidate packages are not available yet; retrying in 2 minutes."
+              sleep 120
+            fi
+          done
+
+          echo "Candidate packages were not available after 3 attempts."
+          exit 1
+
+      - name: Verify xAI plugin discovery
+        run: |
+          python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='xai', model='grok-4.6', api_key='test-key')"
+
+      - name: Run xAI E2E tests
+        run: pytest -v -m e2e_xai
