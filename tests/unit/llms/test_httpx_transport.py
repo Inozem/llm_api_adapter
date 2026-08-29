@@ -16,6 +16,8 @@ from src.llm_api_adapter.errors.llm_api_error import (
 from src.llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
 from src.llm_api_adapter.llms.requests_transport import RequestsSyncTransport
 from src.llm_api_adapter.llms.transports import (
+    MultipartFile,
+    MultipartForm,
     SSEEvent,
     TransportRequest,
     create_sync_transport,
@@ -117,6 +119,52 @@ def test_httpx_sync_transport_posts_json_and_closes_resources():
 
 
 @pytest.mark.unit
+def test_httpx_sync_transport_posts_multipart_and_closes_resources():
+    response = FakeResponse(body={"id": "file_123"})
+    client = FakeHttpxClient(response=response)
+    request = TransportRequest(
+        url="https://example.test/files",
+        headers={
+            "Authorization": "Bearer test",
+            "Content-Type": "application/json",
+        },
+        timeout=3.0,
+    )
+    form = MultipartForm(
+        fields=(("purpose", "documents"),),
+        files=(
+            MultipartFile(
+                "file",
+                "report.pdf",
+                b"%PDF-test",
+                "application/pdf",
+            ),
+        ),
+    )
+
+    with patch.object(httpx, "Client", return_value=client):
+        assert HttpxSyncTransport().post_multipart(request, form).json() == {
+            "id": "file_123"
+        }
+
+    assert client.post_calls == [
+        (
+            "https://example.test/files",
+            {
+                "headers": {"Authorization": "Bearer test"},
+                "data": [("purpose", "documents")],
+                "files": [
+                    ("file", ("report.pdf", b"%PDF-test", "application/pdf"))
+                ],
+                "timeout": 3.0,
+            },
+        )
+    ]
+    assert response.close_calls == 1
+    assert client.close_calls == 1
+
+
+@pytest.mark.unit
 def test_httpx_sync_transport_uses_provider_http_error_handler():
     response = FakeResponse(status_code=429)
     client = FakeHttpxClient(response=response)
@@ -136,6 +184,44 @@ def test_httpx_sync_transport_uses_provider_http_error_handler():
 
     assert observed == [response]
     assert response.close_calls == 1
+    assert client.close_calls == 1
+
+
+@pytest.mark.unit
+def test_httpx_sync_transport_uses_provider_handler_for_multipart_errors():
+    response = FakeResponse(status_code=429)
+    client = FakeHttpxClient(response=response)
+    request = TransportRequest(url="https://example.test/files")
+    form = MultipartForm(files=(MultipartFile("file", "note.txt", b"hello"),))
+    observed = []
+
+    def provider_handler(error):
+        observed.append(error.response)
+        raise LLMAPIRateLimitError(detail="provider mapping")
+
+    with patch.object(httpx, "Client", return_value=client):
+        with pytest.raises(LLMAPIRateLimitError, match="provider mapping"):
+            HttpxSyncTransport().post_multipart(
+                request,
+                form,
+                http_error_handler=provider_handler,
+            )
+
+    assert observed == [response]
+    assert response.close_calls == 1
+    assert client.close_calls == 1
+
+
+@pytest.mark.unit
+def test_httpx_sync_transport_maps_multipart_timeouts_and_closes_client():
+    client = FakeHttpxClient(post_error=httpx.TimeoutException("timed out"))
+    request = TransportRequest(url="https://example.test/files")
+    form = MultipartForm(files=(MultipartFile("file", "note.txt", b"hello"),))
+
+    with patch.object(httpx, "Client", return_value=client):
+        with pytest.raises(LLMAPITimeoutError):
+            HttpxSyncTransport().post_multipart(request, form)
+
     assert client.close_calls == 1
 
 

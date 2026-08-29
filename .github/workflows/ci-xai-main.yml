@@ -1,0 +1,95 @@
+name: CI (main, xAI)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/ci-xai-main.yml"
+      - "packages/organizations/xai/**"
+      - "pyproject.toml"
+      - "requirements.txt"
+      - "src/llm_api_adapter/organization_registry.py"
+      - "src/llm_api_adapter/service_provider_registry.py"
+      - "src/llm_api_adapter/universal_adapter.py"
+      - "src/llm_api_adapter/adapters/base_adapter.py"
+      - "src/llm_api_adapter/errors/**"
+      - "src/llm_api_adapter/llm_registry/llm_registry.py"
+      - "src/llm_api_adapter/llm_registry/reasoning.py"
+      - "src/llm_api_adapter/llm_registry/request_rules.py"
+      - "src/llm_api_adapter/llms/async_streaming.py"
+      - "src/llm_api_adapter/llms/httpx_transport.py"
+      - "src/llm_api_adapter/llms/requests_transport.py"
+      - "src/llm_api_adapter/llms/request_rules.py"
+      - "src/llm_api_adapter/llms/streaming.py"
+      - "src/llm_api_adapter/llms/transports.py"
+      - "src/llm_api_adapter/models/**"
+      - "tests/requirements-test.txt"
+      - "pytest.ini"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/ci-xai-main.yml"
+      - "packages/organizations/xai/**"
+      - "pyproject.toml"
+      - "requirements.txt"
+      - "src/llm_api_adapter/organization_registry.py"
+      - "src/llm_api_adapter/service_provider_registry.py"
+      - "src/llm_api_adapter/universal_adapter.py"
+      - "src/llm_api_adapter/adapters/base_adapter.py"
+      - "src/llm_api_adapter/errors/**"
+      - "src/llm_api_adapter/llm_registry/llm_registry.py"
+      - "src/llm_api_adapter/llm_registry/reasoning.py"
+      - "src/llm_api_adapter/llm_registry/request_rules.py"
+      - "src/llm_api_adapter/llms/async_streaming.py"
+      - "src/llm_api_adapter/llms/httpx_transport.py"
+      - "src/llm_api_adapter/llms/requests_transport.py"
+      - "src/llm_api_adapter/llms/request_rules.py"
+      - "src/llm_api_adapter/llms/streaming.py"
+      - "src/llm_api_adapter/llms/transports.py"
+      - "src/llm_api_adapter/models/**"
+      - "tests/requirements-test.txt"
+      - "pytest.ini"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test xAI package (main, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install core, xAI plugin, and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/requirements-test.txt
+          pip install -e ".[async,httpx]"
+          pip install -e "packages/organizations/xai"
+
+      - name: Run xAI deterministic tests
+        run: pytest -v -m unit packages/organizations/xai/tests
+
+  test-gate:
+    name: Test (main, xAI)
+    runs-on: ubuntu-latest
+    needs: test
+    if: ${{ always() }}
+
+    steps:
+      - name: Verify Python matrix
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "One or more xAI deterministic matrix jobs failed."
+            exit 1
+          fi

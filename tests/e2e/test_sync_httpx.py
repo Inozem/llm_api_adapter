@@ -44,6 +44,9 @@ def test_sync_httpx_chat_returns_contract_for_latest_provider_models(
             assert response.usage.output_tokens >= 0
             assert response.usage.total_tokens >= response.usage.input_tokens
             assert response.currency
-            assert response.cost_input >= 0
-            assert response.cost_output >= 0
-            assert response.cost_total >= 0
+            assert response.cost_total is not None and response.cost_total >= 0
+            if response.cost_input is None or response.cost_output is None:
+                assert response.cost_input is response.cost_output is None
+            else:
+                assert response.cost_input >= 0
+                assert response.cost_output >= 0

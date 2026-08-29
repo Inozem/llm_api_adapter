@@ -37,6 +37,10 @@ KNOWN_ORGANIZATION_PACKAGES = {
         organization="mistral",
         distribution="llm-api-adapter-mistral",
     ),
+    "xai": KnownOrganizationPackage(
+        organization="xai",
+        distribution="llm-api-adapter-xai",
+    ),
 }
 
 

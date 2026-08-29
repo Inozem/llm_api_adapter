@@ -8,15 +8,17 @@ payloads and mapping provider-specific error bodies.
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Mapping, Optional
 
 from ..errors.llm_api_error import LLMAPIError, LLMAPIClientError, LLMAPITimeoutError
 from .transports import (
     HTTPErrorHandler,
+    MultipartForm,
     SSEEvent,
     SSEFrameDecoder,
     StreamErrorHandler,
     is_generic_stream_error as _is_generic_stream_error,
+    multipart_headers,
     raise_default_http_error,
     raise_default_stream_error as _default_stream_error_handler,
 )
@@ -88,6 +90,73 @@ async def async_request(
         _default_http_error_handler(exc)
     except httpx.RequestError as exc:
         logger.error("Async request exception: %s", exc)
+        raise LLMAPIClientError(detail=str(exc)) from exc
+    finally:
+        try:
+            if response is not None:
+                await response.aclose()
+        finally:
+            await client.aclose()
+
+
+async def async_multipart_request(
+    url: str,
+    *,
+    headers: Optional[Mapping[str, str]] = None,
+    form: MultipartForm,
+    timeout: Optional[float] = None,
+    http_error_handler: Optional[HTTPErrorHandler] = None,
+) -> Any:
+    """Perform an asynchronous multipart POST and return decoded JSON.
+
+    The shared multipart form keeps field and file ownership with the provider
+    client while HTTPX owns boundary construction and resource cleanup.
+
+    HTTPX builds a synchronous multipart stream for ``files=``. Materialize
+    that stream before handing it to :class:`httpx.AsyncClient`; otherwise
+    HTTPX rejects it as a synchronous request stream. The adapter already owns
+    file bytes in memory, so this does not change the transport contract.
+    """
+    httpx = _require_httpx()
+    client = httpx.AsyncClient()
+    response: Optional[Any] = None
+
+    try:
+        multipart_parts = [(name, (None, value)) for name, value in form.fields]
+        multipart_parts.extend(form.files_list())
+        multipart_request = httpx.Request(
+            "POST",
+            url,
+            headers=multipart_headers(headers or {}),
+            files=multipart_parts,
+        )
+        content = multipart_request.read()
+        request_headers = {
+            name: value
+            for name, value in multipart_request.headers.items()
+            if name.lower() != "host"
+        }
+        response = await client.post(
+            url,
+            headers=request_headers,
+            content=content,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+    except LLMAPIError:
+        raise
+    except httpx.TimeoutException as exc:
+        logger.error("Async multipart request timed out: %s", exc)
+        raise LLMAPITimeoutError(detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        logger.error("Async multipart HTTP error: %s", exc)
+        await _read_http_error_body(response)
+        handler = http_error_handler or _default_http_error_handler
+        handler(exc)
+        _default_http_error_handler(exc)
+    except httpx.RequestError as exc:
+        logger.error("Async multipart request exception: %s", exc)
         raise LLMAPIClientError(detail=str(exc)) from exc
     finally:
         try:
@@ -185,6 +254,7 @@ __all__ = [
     "ASYNC_DEPENDENCY_MESSAGE",
     "SSEEvent",
     "aiter_sse_events",
+    "async_multipart_request",
     "async_request",
     "async_stream_request",
 ]
