@@ -27,6 +27,7 @@ from src.llm_api_adapter.llms.streaming import (
     StreamReasoningCollector,
 )
 from src.llm_api_adapter.models.tools import ToolCall, ToolSpec
+from tests.fixtures.structured_output import NestedPydanticResponse
 
 
 class DummyClient:
@@ -748,6 +749,22 @@ def test_resolve_json_schema_dict_returns_dict(adapter):
 def test_resolve_json_schema_response_model_returns_schema(adapter):
     result = adapter._resolve_json_schema(None, _Person, None)
     assert result == _Person.model_json_schema()
+
+
+@pytest.mark.unit
+def test_prepare_chat_request_keeps_source_model_and_provider_schema_separate(adapter):
+    context = adapter._prepare_chat_request(
+        [UserMessage("hi")],
+        None,
+        None,
+        None,
+        NestedPydanticResponse,
+    )
+
+    assert context.response_model is NestedPydanticResponse
+    assert "$defs" in context.source_schema
+    assert "$defs" not in context.effective_schema
+    assert context.effective_schema["properties"]["contact"]["type"] == "object"
 
 
 @pytest.mark.unit

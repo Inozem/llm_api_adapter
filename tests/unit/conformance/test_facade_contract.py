@@ -14,7 +14,10 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from pydantic import BaseModel
 
-from src.llm_api_adapter.errors.llm_api_error import LLMAPIRateLimitError
+from src.llm_api_adapter.errors.llm_api_error import (
+    JSONSchemaError,
+    LLMAPIRateLimitError,
+)
 from src.llm_api_adapter.llms.anthropic.async_client import ClaudeAsyncClient
 from src.llm_api_adapter.llms.anthropic.sync_client import ClaudeSyncClient
 from src.llm_api_adapter.llms.google.async_client import GeminiAsyncClient
@@ -445,15 +448,8 @@ def test_facade_preserves_flat_portable_schema_baseline(case):
 
 
 @pytest.mark.unit
-@pytest.mark.xfail(
-    reason=(
-        "v0.9.2 will normalize local Pydantic $defs/$ref before provider "
-        "conversion; the current adapters still pass or discard references."
-    ),
-    strict=True,
-)
 @pytest.mark.parametrize("case", CASES)
-def test_nested_pydantic_schema_is_not_yet_portable_across_builtin_adapters(case):
+def test_nested_pydantic_schema_is_portable_across_builtin_adapters(case):
     transport = Mock(
         return_value=_JSONResponse(case.response_factory(NESTED_PYDANTIC_RESPONSE_JSON)),
     )
@@ -471,6 +467,24 @@ def test_nested_pydantic_schema_is_not_yet_portable_across_builtin_adapters(case
     assert "$defs" not in schema
     assert not _contains_reference(schema)
     assert schema["properties"]["contact"]["type"] in {"object", "OBJECT"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_rejects_external_schema_references_before_sending_request(case):
+    transport = Mock()
+    schema = {
+        "type": "object",
+        "properties": {"contact": {"$ref": "https://example.com/contact.json"}},
+    }
+
+    with (
+        patch.object(case.sync_client_class, "_send_request", new=transport),
+        pytest.raises(JSONSchemaError, match=r"#?/properties/contact"),
+    ):
+        _facade(case).chat(**_chat_kwargs(case), json_schema=schema)
+
+    transport.assert_not_called()
 
 
 @pytest.mark.unit
