@@ -27,6 +27,13 @@ from src.llm_api_adapter.models.messages.file_parts import ImagePart
 from src.llm_api_adapter.models.responses.chat_response import Usage
 from src.llm_api_adapter.models.tools import ToolSpec
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from tests.fixtures.structured_output import (
+    FLAT_OBJECT_SCHEMA,
+    NESTED_PYDANTIC_RESPONSE_JSON,
+    NestedPydanticResponse,
+    PORTABLE_PROFILE_SCHEMAS,
+    STRUCTURED_OUTPUT_OUTCOMES,
+)
 
 
 @dataclass(frozen=True)
@@ -290,6 +297,28 @@ def _chat_kwargs(case: OrganizationConformanceCase) -> dict[str, Any]:
     }
 
 
+def _structured_schema_from_payload(
+    case: OrganizationConformanceCase,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the effective schema from each built-in organization's payload."""
+    if case.organization == "openai":
+        return payload["text"]["format"]["schema"]
+    if case.organization == "anthropic":
+        return payload["output_config"]["format"]["schema"]
+    if case.organization == "google":
+        return payload["generationConfig"]["responseSchema"]
+    raise AssertionError(f"No structured-output payload path for {case.organization!r}")
+
+
+def _contains_reference(node: Any) -> bool:
+    if isinstance(node, dict):
+        return "$ref" in node or any(_contains_reference(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_contains_reference(value) for value in node)
+    return False
+
+
 async def _as_async_iter(events: list[SSEEvent]) -> AsyncIterator[SSEEvent]:
     for event in events:
         yield event
@@ -372,6 +401,76 @@ def test_facade_preserves_tool_structured_output_file_and_reasoning_contracts(ca
         )
 
     assert [event.text for event in reasoning_response.reasoning_events] == ["Plan"]
+
+
+@pytest.mark.unit
+def test_portable_profile_fixture_covers_the_v092_acceptance_vocabulary():
+    assert set(PORTABLE_PROFILE_SCHEMAS) == {
+        "flat_object",
+        "nullable_required_field",
+        "enum",
+        "array",
+        "inline_nested_object",
+    }
+    assert {fixture.name for fixture in STRUCTURED_OUTPUT_OUTCOMES} == {
+        "valid_structured_result",
+        "refusal",
+        "incomplete_result",
+        "invalid_json",
+        "pydantic_validation_error",
+        "unsupported_schema",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_preserves_flat_portable_schema_baseline(case):
+    transport = Mock(
+        return_value=_JSONResponse(case.response_factory('{"answer": "ok"}')),
+    )
+
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        response = _facade(case).chat(
+            **_chat_kwargs(case),
+            json_schema=FLAT_OBJECT_SCHEMA,
+        )
+
+    schema = _structured_schema_from_payload(case, transport.call_args.args[1])
+    assert response.parsed_json == {"answer": "ok"}
+    assert schema["properties"]["answer"]["type"] in {"string", "STRING"}
+    if case.organization == "google":
+        assert "additionalProperties" not in schema
+    else:
+        assert schema["additionalProperties"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.xfail(
+    reason=(
+        "v0.9.2 will normalize local Pydantic $defs/$ref before provider "
+        "conversion; the current adapters still pass or discard references."
+    ),
+    strict=True,
+)
+@pytest.mark.parametrize("case", CASES)
+def test_nested_pydantic_schema_is_not_yet_portable_across_builtin_adapters(case):
+    transport = Mock(
+        return_value=_JSONResponse(case.response_factory(NESTED_PYDANTIC_RESPONSE_JSON)),
+    )
+
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        response = _facade(case).chat(
+            **_chat_kwargs(case),
+            response_model=NestedPydanticResponse,
+        )
+
+    schema = _structured_schema_from_payload(case, transport.call_args.args[1])
+    assert response.parsed_model == NestedPydanticResponse(
+        contact={"name": "Ada"},
+    )
+    assert "$defs" not in schema
+    assert not _contains_reference(schema)
+    assert schema["properties"]["contact"]["type"] in {"object", "OBJECT"}
 
 
 @pytest.mark.unit

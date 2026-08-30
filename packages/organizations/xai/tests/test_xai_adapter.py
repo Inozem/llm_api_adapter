@@ -53,6 +53,7 @@ from llm_api_adapter.organization_registry import (
     ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP,
     OrganizationPluginDiscovery,
 )
+from tests.fixtures.structured_output import FLAT_OBJECT_SCHEMA
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
@@ -615,6 +616,23 @@ def test_chat_maps_structured_pydantic_output_and_reasoning(xai_runtime):
         }
     }
     assert transport.requests[0].payload["reasoning"] == {"effort": "xhigh"}
+
+
+@pytest.mark.unit
+def test_chat_preserves_the_shared_flat_portable_schema(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    transport = FakeSyncTransport(_structured_response(model="grok-4.6"))
+    adapter._client._sync_transport = transport
+
+    response = adapter.chat(
+        messages=[UserMessage("Return an answer.")],
+        json_schema=FLAT_OBJECT_SCHEMA,
+    )
+
+    assert response.parsed_json == {"answer": "ok"}
+    assert transport.requests[0].payload["text"]["format"]["schema"] == (
+        FLAT_OBJECT_SCHEMA
+    )
 
 
 @pytest.mark.unit
