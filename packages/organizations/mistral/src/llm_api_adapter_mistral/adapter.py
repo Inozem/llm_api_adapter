@@ -872,6 +872,7 @@ class MistralAdapter(LLMAdapterBase):
         if content is None and not tool_calls:
             warnings.warn("Mistral returned empty content and no tool calls.", UserWarning)
 
+        finish_reason = _as_optional_str(choice.get("finish_reason"))
         return ChatResponse(
             model=_as_optional_str(response.get("model")),
             response_id=_as_optional_str(response.get("id")),
@@ -879,7 +880,10 @@ class MistralAdapter(LLMAdapterBase):
             usage=cls._parse_usage(response.get("usage")),
             content=content,
             tool_calls=tool_calls,
-            finish_reason=_as_optional_str(choice.get("finish_reason")),
+            finish_reason=finish_reason,
+            incomplete_reason=(
+                finish_reason if finish_reason == "length" else None
+            ),
             reasoning_events=reasoning_events,
         )
 

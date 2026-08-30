@@ -679,6 +679,25 @@ class LLMAdapterBase(ABC):
         response_model: Optional[Any],
     ) -> ChatResponse:
         """Apply common structured-output parsing and pricing to a response."""
+        self._prepare_structured_output_response(
+            chat_response,
+            effective_schema,
+            response_model,
+        )
+        self._apply_response_pricing(chat_response)
+        return chat_response
+
+    def _prepare_structured_output_response(
+        self,
+        chat_response: ChatResponse,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> None:
+        """Parse a completed structured result unless its terminal state forbids it."""
+        if chat_response.refusal is not None or chat_response.incomplete_reason is not None:
+            chat_response.parsed_json = None
+            chat_response.parsed_model = None
+            return
         chat_response.parsed_json = self._parse_json_response(
             chat_response.content,
             effective_schema,
@@ -687,8 +706,6 @@ class LLMAdapterBase(ABC):
             chat_response.parsed_json,
             response_model,
         )
-        self._apply_response_pricing(chat_response)
-        return chat_response
 
     def _prepare_stream_response(
         self,
@@ -698,12 +715,9 @@ class LLMAdapterBase(ABC):
     ) -> None:
         """Apply final response processing before delivering stream callbacks."""
         try:
-            chat_response.parsed_json = self._parse_json_response(
-                chat_response.content,
+            self._prepare_structured_output_response(
+                chat_response,
                 effective_schema,
-            )
-            chat_response.parsed_model = self._parse_response_model(
-                chat_response.parsed_json,
                 response_model,
             )
             self._apply_response_pricing(chat_response)

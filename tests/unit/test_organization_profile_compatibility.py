@@ -25,13 +25,15 @@ for source in (
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 from llm_api_adapter.errors.llm_api_error import JSONSchemaError
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
-from llm_api_adapter.llms.transports import JSONResponse
+from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter_mistral.adapter import MistralAdapter
 from llm_api_adapter_mistral.plugin import PLUGIN as MISTRAL_PLUGIN
 from llm_api_adapter_xai.adapter import XAIAdapter
 from llm_api_adapter_xai.plugin import PLUGIN as XAI_PLUGIN
+from llm_api_adapter_xai.streaming import XAIResponsesStreamParser
 from tests.fixtures.structured_output import (
+    FLAT_OBJECT_SCHEMA,
     NESTED_PYDANTIC_RESPONSE_JSON,
     NestedPydanticResponse,
     PORTABLE_PROFILE_SCHEMAS,
@@ -61,10 +63,21 @@ _NESTED_PYDANTIC_PROVIDER_SCHEMA = {
 class _RecordedTransport:
     response: dict[str, Any]
     requests: list[Any] = field(default_factory=list)
+    stream_events: list[SSEEvent] = field(default_factory=list)
 
     def post_json(self, request: Any, *, http_error_handler: Any = None) -> JSONResponse:
         self.requests.append(request)
         return JSONResponse(self.response)
+
+    def post_sse(
+        self,
+        request: Any,
+        *,
+        http_error_handler: Any = None,
+        stream_error_handler: Any = None,
+    ):
+        self.requests.append(request)
+        return iter(self.stream_events)
 
 
 @pytest.fixture
@@ -243,3 +256,109 @@ def test_organization_packages_enforce_the_common_profile_before_http(
         adapter.chat(messages=[UserMessage("Return JSON.")], json_schema=schema)
 
     assert transport.requests == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("organization", ("mistral", "xai"))
+def test_organization_packages_skip_structured_parsing_for_native_truncation(
+    organization,
+    organization_package_registry,
+):
+    adapter, transport = _structured_adapter(organization, '{"answer": ')
+    if organization == "mistral":
+        transport.response["choices"][0]["finish_reason"] = "length"
+        expected_reason = "length"
+    else:
+        transport.response["status"] = "incomplete"
+        transport.response["incomplete_details"] = {
+            "reason": "max_output_tokens",
+        }
+        expected_reason = "max_output_tokens"
+
+    response = adapter.chat(
+        messages=[UserMessage("Return JSON.")],
+        json_schema=FLAT_OBJECT_SCHEMA,
+    )
+
+    assert response.incomplete_reason == expected_reason
+    assert response.refusal is None
+    assert response.parsed_json is None
+    assert response.parsed_model is None
+
+
+@pytest.mark.unit
+def test_xai_package_exposes_an_explicit_responses_refusal_without_parsing(
+    organization_package_registry,
+):
+    adapter, transport = _structured_adapter("xai", "unused")
+    transport.response["output"][0]["content"] = [{
+        "type": "refusal",
+        "refusal": "I can't help with that.",
+    }]
+
+    response = adapter.chat(
+        messages=[UserMessage("Return JSON.")],
+        json_schema=FLAT_OBJECT_SCHEMA,
+    )
+
+    assert response.refusal == "I can't help with that."
+    assert response.incomplete_reason is None
+    assert response.parsed_json is None
+    assert response.parsed_model is None
+
+
+@pytest.mark.unit
+def test_xai_stream_parser_finalizes_an_incomplete_response(
+    organization_package_registry,
+):
+    state = XAIResponsesStreamParser.new_state(buffer_chars=None)
+    final_response = _xai_response('{"answer": ')
+    final_response["status"] = "incomplete"
+    final_response["incomplete_details"] = {"reason": "max_output_tokens"}
+
+    XAIResponsesStreamParser.consume_event(
+        SSEEvent(
+            event="response.incomplete",
+            data={"response": final_response},
+        ),
+        state,
+    )
+    response = XAIResponsesStreamParser.finalize(
+        state,
+        model="grok-4.6",
+    )
+
+    assert response.finish_reason == "incomplete"
+    assert response.incomplete_reason == "max_output_tokens"
+
+
+@pytest.mark.unit
+def test_mistral_stream_finalizes_a_truncated_structured_result(
+    organization_package_registry,
+):
+    adapter, transport = _structured_adapter("mistral", '{"answer": ')
+    transport.stream_events = [
+        SSEEvent(
+            event=None,
+            data={
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": '{"answer": '},
+                    "finish_reason": "length",
+                }],
+            },
+        ),
+    ]
+    completed = []
+
+    list(
+        adapter.stream_chat(
+            messages=[UserMessage("Return JSON.")],
+            json_schema=FLAT_OBJECT_SCHEMA,
+            on_done=completed.append,
+        ),
+    )
+
+    assert completed[0].finish_reason == "length"
+    assert completed[0].incomplete_reason == "length"
+    assert completed[0].parsed_json is None

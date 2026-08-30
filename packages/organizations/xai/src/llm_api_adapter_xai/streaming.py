@@ -84,7 +84,10 @@ class XAIResponsesStreamParser:
                 cls._record_output_item(payload, item, state)
             return None
 
-        if event_type == "response.completed" and isinstance(response_data, Mapping):
+        if event_type in (
+            "response.completed",
+            "response.incomplete",
+        ) and isinstance(response_data, Mapping):
             state.final_response = dict(response_data)
         return None
 

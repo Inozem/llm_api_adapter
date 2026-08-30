@@ -19,6 +19,7 @@ class Usage:
 class _ParsedResponsesOutput:
     text_parts: List[str] = field(default_factory=list)
     tool_calls: Optional[List[ToolCall]] = None
+    refusal: Optional[str] = None
     reasoning_events: List[ReasoningEvent] = field(default_factory=list)
 
 
@@ -34,6 +35,8 @@ class _ParsedGoogleContent:
     text: Optional[str] = None
     tool_calls: Optional[List[ToolCall]] = None
     finish_reason: Optional[str] = None
+    refusal: Optional[str] = None
+    incomplete_reason: Optional[str] = None
     reasoning_events: List[ReasoningEvent] = field(default_factory=list)
 
 
@@ -50,6 +53,8 @@ class ChatResponse:
     content: Optional[str] = None
     tool_calls: Optional[List[ToolCall]] = None
     finish_reason: Optional[str] = None
+    refusal: Optional[str] = None
+    incomplete_reason: Optional[str] = None
     parsed_json: Optional[dict] = None
     parsed_model: Optional[Any] = None
     reasoning_events: List[ReasoningEvent] = field(default_factory=list)
@@ -69,6 +74,11 @@ class ChatResponse:
         choice0 = (api_response.get("choices") or [None])[0] or {}
         message = choice0.get("message") or {}
         text = message.get("content")
+        finish_reason = cls._optional_string(choice0.get("finish_reason"))
+        refusal = cls._optional_string(message.get("refusal"))
+        if refusal is None and finish_reason == "content_filter":
+            refusal = finish_reason
+        incomplete_reason = finish_reason if finish_reason == "length" else None
         parsed_tool_calls: Optional[List[ToolCall]] = None
         raw_tool_calls = message.get("tool_calls")
         if isinstance(raw_tool_calls, list) and raw_tool_calls:
@@ -115,7 +125,7 @@ class ChatResponse:
                 )
             parsed_tool_calls = [ToolCall(name=name, arguments=arguments, call_id=None)]
 
-        if not parsed_tool_calls:
+        if not parsed_tool_calls and refusal is None:
             if not text or not str(text).strip():
                 warnings.warn(
                     "OpenAI returned empty content. "
@@ -130,7 +140,9 @@ class ChatResponse:
             usage=usage,
             content=text,
             tool_calls=parsed_tool_calls,
-            finish_reason=choice0.get("finish_reason"),
+            finish_reason=finish_reason,
+            refusal=refusal,
+            incomplete_reason=incomplete_reason,
         )
 
     @classmethod
@@ -155,9 +167,12 @@ class ChatResponse:
             capture_reasoning=capture_reasoning,
         )
         text = "\n".join(parsed_output.text_parts) if parsed_output.text_parts else None
+        incomplete_reason = cls._responses_incomplete_reason(api_response)
         if (
             not parsed_output.tool_calls
             and not parsed_output.reasoning_events
+            and parsed_output.refusal is None
+            and incomplete_reason is None
             and (not text or not text.strip())
         ):
             warnings.warn(
@@ -172,6 +187,8 @@ class ChatResponse:
             content=text,
             tool_calls=parsed_output.tool_calls,
             finish_reason=api_response.get("status"),
+            refusal=parsed_output.refusal,
+            incomplete_reason=incomplete_reason,
             reasoning_events=parsed_output.reasoning_events,
         )
 
@@ -191,7 +208,7 @@ class ChatResponse:
                 continue
             item_type = item.get("type")
             if item_type == "message":
-                cls._append_responses_message_text(item, parsed_output.text_parts)
+                cls._append_responses_message_content(item, parsed_output)
             elif item_type == "reasoning" and capture_reasoning:
                 cls._append_responses_reasoning_events(
                     item,
@@ -204,9 +221,9 @@ class ChatResponse:
         return parsed_output
 
     @staticmethod
-    def _append_responses_message_text(
+    def _append_responses_message_content(
         item: dict,
-        text_parts: List[str],
+        parsed_output: _ParsedResponsesOutput,
     ) -> None:
         content_items = item.get("content") or []
         if not isinstance(content_items, list):
@@ -215,11 +232,29 @@ class ChatResponse:
             if not isinstance(content_item, dict):
                 continue
             content_type = content_item.get("type")
-            if content_type not in ("output_text", "text"):
-                continue
-            text_value = content_item.get("text")
-            if isinstance(text_value, str) and text_value.strip():
-                text_parts.append(text_value)
+            if content_type in ("output_text", "text"):
+                text_value = content_item.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    parsed_output.text_parts.append(text_value)
+            elif content_type == "refusal" and parsed_output.refusal is None:
+                parsed_output.refusal = ChatResponse._optional_string(
+                    content_item.get("refusal"),
+                )
+
+    @staticmethod
+    def _optional_string(value: Any) -> Optional[str]:
+        return value if isinstance(value, str) and value else None
+
+    @classmethod
+    def _responses_incomplete_reason(cls, api_response: dict) -> Optional[str]:
+        if api_response.get("status") != "incomplete":
+            return None
+        details = api_response.get("incomplete_details")
+        if isinstance(details, dict):
+            reason = cls._optional_string(details.get("reason"))
+            if reason is not None:
+                return reason
+        return "incomplete"
 
     @staticmethod
     def _append_responses_reasoning_events(
@@ -309,15 +344,41 @@ class ChatResponse:
             api_response.get("content", []) or [],
             capture_reasoning=capture_reasoning,
         )
+        finish_reason = cls._optional_string(api_response.get("stop_reason"))
         return cls(
             model=api_response.get("model"),
             response_id=api_response.get("id"),
             usage=usage,
             content=parsed_content.text,
             tool_calls=parsed_content.tool_calls,
-            finish_reason=api_response.get("stop_reason"),
+            finish_reason=finish_reason,
+            refusal=cls._anthropic_refusal(api_response, finish_reason),
+            incomplete_reason=(
+                finish_reason
+                if finish_reason in {
+                    "max_tokens",
+                    "model_context_window_exceeded",
+                }
+                else None
+            ),
             reasoning_events=parsed_content.reasoning_events,
         )
+
+    @classmethod
+    def _anthropic_refusal(
+        cls,
+        api_response: dict,
+        finish_reason: Optional[str],
+    ) -> Optional[str]:
+        if finish_reason != "refusal":
+            return None
+        stop_details = api_response.get("stop_details")
+        if isinstance(stop_details, dict):
+            for field in ("reason", "category", "explanation"):
+                value = cls._optional_string(stop_details.get(field))
+                if value is not None:
+                    return value
+        return finish_reason
 
     @classmethod
     def _parse_anthropic_content_blocks(
@@ -391,6 +452,7 @@ class ChatResponse:
         usage = cls._parse_google_usage(api_response)
         first_candidate = (api_response.get("candidates") or [None])[0] or {}
         parsed_content = cls._parse_google_content(
+            api_response,
             first_candidate,
             capture_reasoning=capture_reasoning,
         )
@@ -400,6 +462,8 @@ class ChatResponse:
             content=parsed_content.text,
             tool_calls=parsed_content.tool_calls,
             finish_reason=parsed_content.finish_reason,
+            refusal=parsed_content.refusal,
+            incomplete_reason=parsed_content.incomplete_reason,
             reasoning_events=parsed_content.reasoning_events,
         )
 
@@ -418,15 +482,23 @@ class ChatResponse:
     @classmethod
     def _parse_google_content(
         cls,
+        api_response: dict,
         candidate: dict,
         *,
         capture_reasoning: bool,
     ) -> _ParsedGoogleContent:
         finish_reason = candidate.get("finishReason")
+        normalized_finish_reason = (
+            str(finish_reason) if finish_reason is not None else None
+        )
         parsed_content = _ParsedGoogleContent(
-            finish_reason=(
-                str(finish_reason) if finish_reason is not None else None
-            )
+            finish_reason=normalized_finish_reason,
+            refusal=cls._google_refusal(api_response, candidate, normalized_finish_reason),
+            incomplete_reason=(
+                normalized_finish_reason
+                if normalized_finish_reason in {"MAX_TOKENS", "length"}
+                else None
+            ),
         )
         content_obj = candidate.get("content") or {}
         parts = content_obj.get("parts") or []
@@ -442,6 +514,30 @@ class ChatResponse:
                 capture_reasoning=capture_reasoning,
             )
         return parsed_content
+
+    @classmethod
+    def _google_refusal(
+        cls,
+        api_response: dict,
+        candidate: dict,
+        finish_reason: Optional[str],
+    ) -> Optional[str]:
+        if finish_reason in {
+            "SAFETY",
+            "RECITATION",
+            "BLOCKLIST",
+            "PROHIBITED_CONTENT",
+            "SPII",
+            "IMAGE_SAFETY",
+            "IMAGE_PROHIBITED_CONTENT",
+            "IMAGE_RECITATION",
+            "ESCALATION",
+        }:
+            return cls._optional_string(candidate.get("finishMessage")) or finish_reason
+        prompt_feedback = api_response.get("promptFeedback")
+        if isinstance(prompt_feedback, dict):
+            return cls._optional_string(prompt_feedback.get("blockReason"))
+        return None
 
     @classmethod
     def _parse_google_part(
