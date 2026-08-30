@@ -22,6 +22,9 @@ from llm_api_adapter.adapters.base_adapter import (
     OnReasoning,
     OnToolCall,
 )
+from llm_api_adapter.adapters.structured_output import (
+    validate_core_portable_schema,
+)
 from llm_api_adapter.errors.llm_api_error import (
     InvalidToolSchemaError,
     JSONSchemaError,
@@ -378,6 +381,7 @@ class XAIAdapter(LLMAdapterBase):
             schema = self._validate_xai_structured_schema(
                 request_context.effective_schema,
             )
+            schema = validate_core_portable_schema(schema, provider="xai")
             parameters["text"] = {
                 "format": {
                     "type": "json_schema",

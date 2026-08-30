@@ -11,7 +11,7 @@ from typing import Any, Iterator, Mapping
 import warnings
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CORE_SOURCE = PACKAGE_ROOT.parents[2] / "src"
@@ -65,6 +65,8 @@ from llm_api_adapter_xai.registry import MODEL_METADATA
 
 
 class StructuredAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     answer: str
 
 
@@ -656,7 +658,7 @@ def test_chat_rejects_documented_invalid_structured_schemas(xai_runtime, schema)
 
 
 @pytest.mark.unit
-def test_chat_accepts_explicit_additional_properties_in_structured_schema(
+def test_chat_accepts_explicit_portable_structured_schema(
     xai_runtime,
 ):
     adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
@@ -666,6 +668,7 @@ def test_chat_accepts_explicit_additional_properties_in_structured_schema(
     schema = {
         "type": "object",
         "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
         "additionalProperties": False,
     }
 

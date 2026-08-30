@@ -218,3 +218,28 @@ def test_xai_rejects_its_documented_boolean_schema_before_http(
         adapter.chat(messages=[UserMessage("Return JSON.")], json_schema=schema)
 
     assert transport.requests == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("organization", ("mistral", "xai"))
+def test_organization_packages_enforce_the_common_profile_before_http(
+    organization,
+    organization_package_registry,
+):
+    adapter, transport = _structured_adapter(organization, '{"answer": "ok"}')
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+
+    with pytest.raises(
+        JSONSchemaError,
+        match=(
+            f"{organization} structured-output schema at "
+            "#/additionalProperties: Core portable profile"
+        ),
+    ):
+        adapter.chat(messages=[UserMessage("Return JSON.")], json_schema=schema)
+
+    assert transport.requests == []

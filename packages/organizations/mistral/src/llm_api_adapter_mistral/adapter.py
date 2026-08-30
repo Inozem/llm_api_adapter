@@ -21,6 +21,9 @@ from llm_api_adapter.adapters.base_adapter import (
     OnToolCall,
     _StreamState,
 )
+from llm_api_adapter.adapters.structured_output import (
+    validate_core_portable_schema,
+)
 from llm_api_adapter.errors.llm_api_error import (
     InvalidToolArgumentsError,
     LLMAPIAuthorizationError,
@@ -737,7 +740,10 @@ class MistralAdapter(LLMAdapterBase):
                 "json_schema": {
                     "name": "response",
                     "strict": True,
-                    "schema": self._enforce_strict_schema(json_schema),
+                    "schema": validate_core_portable_schema(
+                        json_schema,
+                        provider="mistral",
+                    ),
                 },
             }
         return {key: value for key, value in payload.items() if value is not None}
