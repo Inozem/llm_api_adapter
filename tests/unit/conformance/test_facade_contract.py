@@ -7,12 +7,13 @@ contract without credentials or live API calls.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from src.llm_api_adapter.errors.llm_api_error import (
     JSONSchemaError,
@@ -282,6 +283,8 @@ CASES = (
 
 
 class _StructuredAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     answer: str
 
 
@@ -320,6 +323,29 @@ def _contains_reference(node: Any) -> bool:
     if isinstance(node, list):
         return any(_contains_reference(value) for value in node)
     return False
+
+
+def _google_wire_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Apply only Google's type-value casing to a portable source schema."""
+    converted = deepcopy(schema)
+
+    def convert(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                convert(item)
+            return
+        if not isinstance(node, dict):
+            return
+        schema_type = node.get("type")
+        if isinstance(schema_type, str):
+            node["type"] = schema_type.upper()
+        elif isinstance(schema_type, list):
+            node["type"] = [value.upper() for value in schema_type]
+        for value in node.values():
+            convert(value)
+
+    convert(converted)
+    return converted
 
 
 async def _as_async_iter(events: list[SSEEvent]) -> AsyncIterator[SSEEvent]:
@@ -441,10 +467,51 @@ def test_facade_preserves_flat_portable_schema_baseline(case):
     schema = _structured_schema_from_payload(case, transport.call_args.args[1])
     assert response.parsed_json == {"answer": "ok"}
     assert schema["properties"]["answer"]["type"] in {"string", "STRING"}
-    if case.organization == "google":
-        assert "additionalProperties" not in schema
-    else:
-        assert schema["additionalProperties"] is False
+    assert schema["additionalProperties"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("fixture_name", sorted(PORTABLE_PROFILE_SCHEMAS))
+def test_core_portable_profile_has_exact_provider_payloads(case, fixture_name):
+    source_schema = PORTABLE_PROFILE_SCHEMAS[fixture_name]
+    transport = Mock(
+        return_value=_JSONResponse(case.response_factory('{"answer": "ok"}')),
+    )
+
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        _facade(case).chat(
+            **_chat_kwargs(case),
+            json_schema=source_schema,
+        )
+
+    schema = _structured_schema_from_payload(case, transport.call_args.args[1])
+    expected = (
+        _google_wire_schema(source_schema)
+        if case.organization == "google"
+        else source_schema
+    )
+    assert schema == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_rejects_nonportable_core_schema_before_sending_request(case):
+    transport = Mock()
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": [],
+        "additionalProperties": False,
+    }
+
+    with (
+        patch.object(case.sync_client_class, "_send_request", new=transport),
+        pytest.raises(JSONSchemaError, match=r"#/required"),
+    ):
+        _facade(case).chat(**_chat_kwargs(case), json_schema=schema)
+
+    transport.assert_not_called()
 
 
 @pytest.mark.unit

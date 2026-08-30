@@ -9,8 +9,12 @@ from src.llm_api_adapter.errors.llm_api_error import JSONSchemaError
 from src.llm_api_adapter.adapters.structured_output import (
     normalize_local_references,
     prepare_structured_output,
+    validate_core_portable_schema,
 )
-from tests.fixtures.structured_output import NestedPydanticResponse
+from tests.fixtures.structured_output import (
+    NestedPydanticResponse,
+    PORTABLE_PROFILE_SCHEMAS,
+)
 
 
 def _contains_reference(node: Any) -> bool:
@@ -101,6 +105,77 @@ def test_pydantic_source_schema_and_model_remain_separate_from_provider_schema()
     assert "$defs" not in prepared.provider_schema
     assert not _contains_reference(prepared.provider_schema)
     assert prepared.provider_schema["properties"]["contact"]["type"] == "object"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("provider", ("openai", "anthropic", "google"))
+@pytest.mark.parametrize("schema", PORTABLE_PROFILE_SCHEMAS.values())
+def test_core_portable_profile_accepts_the_shared_fixture_vocabulary(provider, schema):
+    original = deepcopy(schema)
+
+    prepared = validate_core_portable_schema(schema, provider=provider)
+
+    assert prepared == original
+    assert prepared is not schema
+    assert schema == original
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("schema", "expected_path", "expected_detail"),
+    [
+        (
+            {"type": "array", "items": {"type": "string"}},
+            "#",
+            "root object",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": [],
+                "additionalProperties": False,
+            },
+            "#/required",
+            "every property",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            },
+            "#/additionalProperties",
+            "additionalProperties",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "answer": {
+                        "anyOf": [{"type": "string"}, {"type": "null"}],
+                    },
+                },
+                "required": ["answer"],
+                "additionalProperties": False,
+            },
+            "#/properties/answer",
+            "does not support anyOf",
+        ),
+    ],
+)
+def test_core_portable_profile_rejects_lossy_or_unsupported_schemas(
+    schema,
+    expected_path,
+    expected_detail,
+):
+    with pytest.raises(JSONSchemaError) as error:
+        validate_core_portable_schema(schema, provider="google")
+
+    message = str(error.value)
+    assert "google structured-output schema" in message
+    assert expected_path in message
+    assert expected_detail in message
 
 
 @pytest.mark.unit

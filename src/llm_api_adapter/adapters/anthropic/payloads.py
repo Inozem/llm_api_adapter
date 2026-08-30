@@ -8,6 +8,7 @@ from ...errors.config_errors import LLMReasoningLevelError
 from ...models.messages.chat_message import Messages
 from ...models.responses.chat_response import ChatResponse
 from ...models.tools.tool_spec import ToolSpec
+from ..structured_output import validate_core_portable_schema
 
 class _AnthropicPayloadMixin:
     """Build Anthropic payloads while keeping adapter options normalized."""
@@ -110,7 +111,7 @@ class _AnthropicPayloadMixin:
             params["output_config"] = {
                 "format": {
                     "type": "json_schema",
-                    "schema": self._enforce_strict_schema(effective_schema),
+                    "schema": self._to_anthropic_structured_output_schema(effective_schema),
                 }
             }
         if reasoning_level is not None:
@@ -150,6 +151,11 @@ class _AnthropicPayloadMixin:
         if tool.description:
             payload["description"] = tool.description
         return payload
+
+    @staticmethod
+    def _to_anthropic_structured_output_schema(schema: dict) -> dict:
+        """Validate the Core profile without changing schema semantics."""
+        return validate_core_portable_schema(schema, provider="anthropic")
 
     def _to_anthropic_tool_choice(
         self,

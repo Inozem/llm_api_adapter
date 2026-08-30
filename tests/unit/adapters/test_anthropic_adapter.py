@@ -155,7 +155,12 @@ def test_chat_skips_validation_for_adaptive_thinking_model(adapter):
 
 @pytest.mark.unit
 def test_chat_passes_output_config_when_json_schema_provided(adapter):
-    schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+        "additionalProperties": False,
+    }
     fake_response = {"some": "anthropic response"}
     fake_chat_response = ChatResponse(content='{"name": "test"}')
 

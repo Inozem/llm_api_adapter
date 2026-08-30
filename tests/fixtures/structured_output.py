@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 FLAT_OBJECT_SCHEMA: Final = {
@@ -61,10 +61,14 @@ INLINE_NESTED_OBJECT_SCHEMA: Final = {
 
 
 class PortableContact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
 
 
 class NestedPydanticResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     contact: PortableContact
 
 

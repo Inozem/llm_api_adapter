@@ -13,6 +13,24 @@ _REFERENCE_METADATA_KEYS = frozenset(
     {"title", "description", "default", "examples", "$comment"},
 )
 
+_PORTABLE_SCHEMA_TYPES = frozenset(
+    {"string", "number", "integer", "boolean", "object", "array"},
+)
+_PORTABLE_SCHEMA_KEYWORDS = frozenset(
+    {
+        "$id",
+        "$schema",
+        "additionalProperties",
+        "description",
+        "enum",
+        "items",
+        "properties",
+        "required",
+        "title",
+        "type",
+    },
+)
+
 
 @dataclass(frozen=True)
 class PreparedStructuredOutput:
@@ -96,6 +114,158 @@ def normalize_local_references(schema: dict, *, provider: str) -> dict:
     if not isinstance(normalized, dict):
         raise _reference_error(provider, "#", "must resolve to an object schema")
     return normalized
+
+
+def validate_core_portable_schema(schema: dict, *, provider: str) -> dict:
+    """Validate the schema profile shared by the built-in organizations.
+
+    The Core profile is intentionally narrower than JSON Schema: it is the
+    documented intersection used by OpenAI, Anthropic, and Google.  It never
+    rewrites semantic constraints.  A caller must make strict-object and
+    required-field intent explicit rather than relying on a provider-specific
+    repair step.
+    """
+    portable_schema = deepcopy(schema)
+    _validate_core_schema_node(
+        portable_schema,
+        provider=provider,
+        path="#",
+        is_root=True,
+    )
+    return portable_schema
+
+
+def _validate_core_schema_node(
+    node: Any,
+    *,
+    provider: str,
+    path: str,
+    is_root: bool = False,
+) -> None:
+    if not isinstance(node, dict):
+        raise _core_profile_error(provider, path, "must be an object schema")
+
+    unsupported_keywords = set(node) - _PORTABLE_SCHEMA_KEYWORDS
+    if unsupported_keywords:
+        names = ", ".join(sorted(unsupported_keywords))
+        raise _core_profile_error(provider, path, f"does not support {names}")
+
+    schema_types = _portable_schema_types(node.get("type"), provider=provider, path=path)
+    if is_root and schema_types != {"object"}:
+        raise _core_profile_error(provider, path, "requires a root object schema")
+
+    if "enum" in node:
+        enum = node["enum"]
+        if not isinstance(enum, list) or not enum:
+            raise _core_profile_error(provider, _pointer_path(path, "enum"), "requires a non-empty array")
+
+    if "object" in schema_types:
+        _validate_core_object_schema(node, provider=provider, path=path)
+    elif any(key in node for key in ("properties", "required", "additionalProperties")):
+        raise _core_profile_error(
+            provider,
+            path,
+            "allows object keywords only on an object schema",
+        )
+
+    if "array" in schema_types:
+        items = node.get("items")
+        if not isinstance(items, dict):
+            raise _core_profile_error(
+                provider,
+                _pointer_path(path, "items"),
+                "requires one object item schema",
+            )
+        _validate_core_schema_node(
+            items,
+            provider=provider,
+            path=_pointer_path(path, "items"),
+        )
+    elif "items" in node:
+        raise _core_profile_error(
+            provider,
+            path,
+            "allows items only on an array schema",
+        )
+
+
+def _portable_schema_types(value: Any, *, provider: str, path: str) -> set[str]:
+    if isinstance(value, str):
+        schema_types = {value}
+    elif isinstance(value, list):
+        if len(value) != 2 or len(set(value)) != 2 or "null" not in value:
+            raise _core_profile_error(
+                provider,
+                _pointer_path(path, "type"),
+                "permits nullable fields only as [<type>, \"null\"]",
+            )
+        schema_types = set(value)
+    else:
+        raise _core_profile_error(
+            provider,
+            _pointer_path(path, "type"),
+            "requires an explicit type",
+        )
+
+    non_null_types = schema_types - {"null"}
+    if not non_null_types or not non_null_types <= _PORTABLE_SCHEMA_TYPES:
+        raise _core_profile_error(
+            provider,
+            _pointer_path(path, "type"),
+            "uses a type outside the Core portable profile",
+        )
+    return schema_types
+
+
+def _validate_core_object_schema(
+    node: dict[str, Any],
+    *,
+    provider: str,
+    path: str,
+) -> None:
+    if node.get("additionalProperties") is not False:
+        raise _core_profile_error(
+            provider,
+            _pointer_path(path, "additionalProperties"),
+            "requires additionalProperties to be false",
+        )
+
+    properties = node.get("properties")
+    if properties is None:
+        if "required" in node:
+            raise _core_profile_error(
+                provider,
+                _pointer_path(path, "required"),
+                "requires properties when required is present",
+            )
+        return
+    if not isinstance(properties, dict):
+        raise _core_profile_error(
+            provider,
+            _pointer_path(path, "properties"),
+            "must be an object",
+        )
+
+    required = node.get("required")
+    if not isinstance(required, list) or not all(isinstance(name, str) for name in required):
+        raise _core_profile_error(
+            provider,
+            _pointer_path(path, "required"),
+            "must list every property name",
+        )
+    if len(set(required)) != len(required) or set(required) != set(properties):
+        raise _core_profile_error(
+            provider,
+            _pointer_path(path, "required"),
+            "must contain every property exactly once",
+        )
+
+    for name, property_schema in properties.items():
+        _validate_core_schema_node(
+            property_schema,
+            provider=provider,
+            path=_pointer_path(_pointer_path(path, "properties"), name),
+        )
 
 
 def _schema_from_response_model(response_model: Any) -> dict:
@@ -261,4 +431,18 @@ def _reference_error(provider: str, path: str, detail: str) -> JSONSchemaError:
     )
 
 
-__all__ = ["PreparedStructuredOutput", "normalize_local_references", "prepare_structured_output"]
+def _core_profile_error(provider: str, path: str, detail: str) -> JSONSchemaError:
+    return JSONSchemaError(
+        detail=(
+            f"{provider} structured-output schema at {path}: "
+            f"Core portable profile {detail}"
+        ),
+    )
+
+
+__all__ = [
+    "PreparedStructuredOutput",
+    "normalize_local_references",
+    "prepare_structured_output",
+    "validate_core_portable_schema",
+]

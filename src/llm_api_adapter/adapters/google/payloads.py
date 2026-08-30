@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from ...models.messages.chat_message import Messages
 from ...models.responses.chat_response import ChatResponse
 from ...models.tools import ToolSpec
+from ..structured_output import validate_core_portable_schema
 
 class _GooglePayloadMixin:
     """Build Gemini payloads while keeping adapter options normalized."""
@@ -146,27 +147,35 @@ class _GooglePayloadMixin:
         parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
         return ChatResponse.from_google_response(response, **parser_kwargs)
 
-    # Fields not supported by Google's responseSchema subset of JSON Schema.
-    _GOOGLE_SCHEMA_UNSUPPORTED = frozenset(
-        {"additionalProperties", "$schema", "$id", "$ref"}
-    )
+    # These annotations do not affect the Core portable-profile meaning and
+    # are not accepted by Google's responseSchema wire representation.
+    _GOOGLE_SCHEMA_METADATA_TO_REMOVE = frozenset({"$schema", "$id"})
 
     def _to_google_schema(self, schema: dict) -> dict:
-        """Convert JSON Schema to Google's format and strip unsupported fields."""
+        """Convert a validated Core schema to Google's wire representation."""
+        return self._convert_core_schema_to_google(
+            validate_core_portable_schema(schema, provider="google"),
+        )
+
+    def _convert_core_schema_to_google(self, schema: dict) -> dict:
         schema = {
             key: value
             for key, value in schema.items()
-            if key not in self._GOOGLE_SCHEMA_UNSUPPORTED
+            if key not in self._GOOGLE_SCHEMA_METADATA_TO_REMOVE
         }
         if "type" in schema and isinstance(schema["type"], str):
             schema["type"] = schema["type"].upper()
+        elif "type" in schema and isinstance(schema["type"], list):
+            schema["type"] = [value.upper() for value in schema["type"]]
         if "properties" in schema:
             schema["properties"] = {
-                key: self._to_google_schema(value) if isinstance(value, dict) else value
+                key: self._convert_core_schema_to_google(value)
+                if isinstance(value, dict)
+                else value
                 for key, value in schema["properties"].items()
             }
         if "items" in schema and isinstance(schema["items"], dict):
-            schema["items"] = self._to_google_schema(schema["items"])
+            schema["items"] = self._convert_core_schema_to_google(schema["items"])
         return schema
 
     def _to_google_function_declaration(self, tool: ToolSpec) -> Dict[str, Any]:
