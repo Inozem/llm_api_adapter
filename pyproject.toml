@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-api-adapter"
-version = "0.9.1"
+version = "0.9.2"
 description = "Lightweight multi-provider LLM API adapter for Python — OpenAI, Anthropic, Google, Mistral, and xAI."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,8 +27,8 @@ dependencies = ["requests>=2.32"]
 [project.optional-dependencies]
 async = ["httpx>=0.28"]
 httpx = ["httpx>=0.28"]
-mistral = ["llm-api-adapter-mistral>=0.1.0,<0.2.0"]
-xai = ["llm-api-adapter-xai>=0.1.0,<0.2.0"]
+mistral = ["llm-api-adapter-mistral>=0.1.1,<0.2.0"]
+xai = ["llm-api-adapter-xai>=0.1.1,<0.2.0"]
 
 [project.urls]
 Repository = "https://github.com/Inozem/llm_api_adapter/"
