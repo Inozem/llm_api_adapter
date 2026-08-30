@@ -61,10 +61,30 @@ The package deliberately exposes fixed model IDs, not moving aliases:
 For `grok-4.5` and `grok-4.6`, xAI cannot disable reasoning: a requested
 `"none"` is mapped to the documented minimum and produces a warning.
 
-The JSON Schema subset is limited by xAI. The adapter rejects unsupported
-schemas before sending a request. See xAI's
+## Structured-output portability
+
+This package requires `llm-api-adapter>=0.9.2,<1.0.0` and enforces the same
+Core portable JSON Schema profile as OpenAI, Anthropic, Google, and Mistral.
+The profile guarantees that every object is strict, every property is required,
+optional values are nullable, and only
+direct, non-recursive local `#/$defs/...` references are resolved before the
+request.
+
+xAI's documented immediate schema failures are an additive local overlay, not
+a replacement for the Core boundary. The adapter rejects boolean property
+schemas, empty `enum` or `anyOf`, `minContains`/`maxContains`, tuple `items`
+arrays, and unsupported regular expressions before the request. See xAI's
 [structured-output documentation](https://docs.x.ai/developers/model-capabilities/text/structured-outputs)
-for the supported schema vocabulary.
+for xAI-specific details.
+
+Use `json_schema` for parsed JSON only. Use a Pydantic `response_model` when
+the final result must also be locally validated and returned as
+`ChatResponse.parsed_model`; each nested Pydantic model must use
+`ConfigDict(extra="forbid")`. Refusal and incomplete terminal responses set
+`ChatResponse.refusal` or `ChatResponse.incomplete_reason` and leave parsed
+fields unset. Invalid completed JSON or failed Pydantic validation raises
+`JSONSchemaError`. The complete portable vocabulary and examples are in the
+main [Structured Output guide](https://github.com/Inozem/llm_api_adapter/#structured-output).
 
 ## Conversations, files, and costs
 
