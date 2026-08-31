@@ -876,14 +876,14 @@ and `parsed_model` remains `None` in those cases as well.
 | **OpenAI** (standard) | Native `response_format.type=json_schema` with `strict=true` |
 | **OpenAI** (Responses API / o-series) | Native `text.format.type=json_schema` with `strict=true` |
 | **Anthropic** | Native `output_config.format.type=json_schema` |
-| **Google** | `generationConfig.responseMimeType="application/json"` + `responseSchema` |
+| **Google** | `generationConfig.responseMimeType="application/json"` + `responseJsonSchema` |
 | **Mistral** | Native `response_format.type=json_schema` with `strict=true` (optional organization package) |
 | **xAI** | Responses `text.format.type=json_schema` with `strict=true` plus xAI's additive local overlay (optional organization package) |
 
 The same **portable** schema can be reused across these organizations without
-provider-specific request code. Google drops only `$id` and `$schema`, which
-are non-semantic metadata that its endpoint does not accept; no transformer
-silently drops a semantic constraint.
+provider-specific request code. Google sends the portable JSON Schema through
+`responseJsonSchema` and drops only `$id` and `$schema`, which are
+non-semantic metadata; no transformer silently drops a semantic constraint.
 
 ### Refusal, incomplete, and invalid results
 

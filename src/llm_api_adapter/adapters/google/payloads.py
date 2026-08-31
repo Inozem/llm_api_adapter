@@ -108,7 +108,9 @@ class _GooglePayloadMixin:
         }
         if effective_schema is not None:
             generation_config["responseMimeType"] = "application/json"
-            generation_config["responseSchema"] = self._to_google_schema(effective_schema)
+            generation_config["responseJsonSchema"] = self._to_google_schema(
+                effective_schema,
+            )
         thinking_config = self._build_thinking_config(
             reasoning_level=reasoning_level,
             capture_reasoning=capture_reasoning,
@@ -147,12 +149,12 @@ class _GooglePayloadMixin:
         parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
         return ChatResponse.from_google_response(response, **parser_kwargs)
 
-    # These annotations do not affect the Core portable-profile meaning and
-    # are not accepted by Google's responseSchema wire representation.
+    # These annotations do not affect the Core portable-profile meaning, so
+    # the Google wire schema deliberately omits them.
     _GOOGLE_SCHEMA_METADATA_TO_REMOVE = frozenset({"$schema", "$id"})
 
     def _to_google_schema(self, schema: dict) -> dict:
-        """Convert a validated Core schema to Google's wire representation."""
+        """Convert a validated Core schema to Google's JSON Schema wire form."""
         return self._convert_core_schema_to_google(
             validate_core_portable_schema(schema, provider="google"),
         )
@@ -163,10 +165,6 @@ class _GooglePayloadMixin:
             for key, value in schema.items()
             if key not in self._GOOGLE_SCHEMA_METADATA_TO_REMOVE
         }
-        if "type" in schema and isinstance(schema["type"], str):
-            schema["type"] = schema["type"].upper()
-        elif "type" in schema and isinstance(schema["type"], list):
-            schema["type"] = [value.upper() for value in schema["type"]]
         if "properties" in schema:
             schema["properties"] = {
                 key: self._convert_core_schema_to_google(value)

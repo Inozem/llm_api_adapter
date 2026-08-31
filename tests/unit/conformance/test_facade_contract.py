@@ -313,7 +313,7 @@ def _structured_schema_from_payload(
     if case.organization == "anthropic":
         return payload["output_config"]["format"]["schema"]
     if case.organization == "google":
-        return payload["generationConfig"]["responseSchema"]
+        return payload["generationConfig"]["responseJsonSchema"]
     raise AssertionError(f"No structured-output payload path for {case.organization!r}")
 
 
@@ -326,26 +326,8 @@ def _contains_reference(node: Any) -> bool:
 
 
 def _google_wire_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Apply only Google's type-value casing to a portable source schema."""
-    converted = deepcopy(schema)
-
-    def convert(node: Any) -> None:
-        if isinstance(node, list):
-            for item in node:
-                convert(item)
-            return
-        if not isinstance(node, dict):
-            return
-        schema_type = node.get("type")
-        if isinstance(schema_type, str):
-            node["type"] = schema_type.upper()
-        elif isinstance(schema_type, list):
-            node["type"] = [value.upper() for value in schema_type]
-        for value in node.values():
-            convert(value)
-
-    convert(converted)
-    return converted
+    """Google responseJsonSchema uses the portable JSON Schema vocabulary."""
+    return deepcopy(schema)
 
 
 async def _as_async_iter(events: list[SSEEvent]) -> AsyncIterator[SSEEvent]:
