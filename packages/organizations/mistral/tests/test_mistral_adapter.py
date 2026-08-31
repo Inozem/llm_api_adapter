@@ -10,9 +10,10 @@ import pytest
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-CORE_SOURCE = PACKAGE_ROOT.parents[2] / "src"
+REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
+CORE_SOURCE = REPOSITORY_ROOT / "src"
 PACKAGE_SOURCE = PACKAGE_ROOT / "src"
-for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE)):
+for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
     if source not in sys.path:
         sys.path.insert(0, source)
 
@@ -31,6 +32,7 @@ from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from llm_api_adapter_mistral.adapter import MistralAdapter
 from llm_api_adapter_mistral.plugin import PLUGIN
+from tests.fixtures.structured_output import FLAT_OBJECT_SCHEMA
 
 
 class FakeSyncTransport:
@@ -394,14 +396,9 @@ def test_mistral_uses_official_json_schema_payload_shape(mistral_runtime):
         }
     )
     adapter.adapter._sync_transport = transport
-    schema = {
-        "type": "object",
-        "properties": {"answer": {"type": "string"}},
-    }
-
     response = adapter.chat(
         [{"role": "user", "content": "Reply as JSON."}],
-        json_schema=schema,
+        json_schema=FLAT_OBJECT_SCHEMA,
     )
 
     assert response.parsed_json == {"answer": "Bonjour"}
@@ -410,11 +407,12 @@ def test_mistral_uses_official_json_schema_payload_shape(mistral_runtime):
         "json_schema": {
             "name": "response",
             "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {"answer": {"type": "string"}},
-                "additionalProperties": False,
-            },
+                "schema": {
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"],
+                    "additionalProperties": False,
+                },
         },
     }
 

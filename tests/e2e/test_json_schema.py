@@ -1,52 +1,59 @@
+"""Live structured-output smoke test for every registered model."""
+
 import pytest
 
-from llm_api_adapter.errors import JSONSchemaError
 from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
-SIMPLE_SCHEMA = {
+_EXPECTED_JSON = {"contact": {"name": "Ada"}}
+_PORTABLE_NESTED_OBJECT_SCHEMA = {
     "type": "object",
     "properties": {
-        "name": {"type": "string"},
-        "age": {"type": "integer"},
+        "contact": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
     },
-    "required": ["name", "age"],
+    "required": ["contact"],
+    "additionalProperties": False,
 }
 
 
 @pytest.mark.e2e
-def test_json_schema_returns_parsed_json_for_all_organizations(subtests, iter_organization_models, chat_with_retry):
-    for p, model in iter_organization_models():
-        with subtests.test(provider=p["name"], model=model):
+def test_json_schema_returns_structured_output_for_every_configured_model(
+    subtests,
+    iter_organization_models,
+    chat_with_retry,
+):
+    """Make one portable structured-output request for every configured model."""
+    configured_models = 0
+    for organization, model in iter_organization_models():
+        if not organization["api_key"]:
+            continue
+        configured_models += 1
+
+        with subtests.test(organization=organization["name"], model=model):
             adapter = UniversalLLMAPIAdapter(
-                organization=p["name"],
+                organization=organization["name"],
                 model=model,
-                api_key=p["api_key"],
+                api_key=organization["api_key"],
+            )
+            response = chat_with_retry(
+                adapter,
+                messages=[
+                    UserMessage('Return exactly {"contact":{"name":"Ada"}}.')
+                ],
+                max_tokens=512,
+                json_schema=_PORTABLE_NESTED_OBJECT_SCHEMA,
+                timeout_s=60,
             )
 
-            try:
-                resp = chat_with_retry(
-                    adapter,
-                    messages=[
-                        UserMessage(
-                            'Return a JSON object with fields "name" (string) '
-                            'and "age" (integer). Use name="Alice" and age=30.'
-                        )
-                    ],
-                    max_tokens=500,
-                    json_schema=SIMPLE_SCHEMA,
-                    timeout_s=60,
-                )
-            except JSONSchemaError as e:
-                pytest.skip(f"Model returned non-JSON despite json_schema mode: {e}")
+            assert response.refusal is None
+            assert response.incomplete_reason is None
+            assert response.parsed_json == _EXPECTED_JSON
 
-            if resp.content is None:
-                pytest.skip("Model returned no content — likely exhausted token budget in reasoning")
-
-            assert resp.parsed_json is not None
-            assert isinstance(resp.parsed_json, dict)
-            assert "name" in resp.parsed_json
-            assert "age" in resp.parsed_json
-            assert isinstance(resp.parsed_json["name"], str)
-            assert isinstance(resp.parsed_json["age"], int)
+    if not configured_models:
+        pytest.skip("No provider API keys are configured")

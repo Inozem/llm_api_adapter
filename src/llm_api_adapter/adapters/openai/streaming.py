@@ -211,7 +211,10 @@ class _OpenAIStreamingMixin:
                 event_type,
                 state,
             )
-        elif event_type == "response.completed" and isinstance(response_data, Mapping):
+        elif event_type in (
+            "response.completed",
+            "response.incomplete",
+        ) and isinstance(response_data, Mapping):
             state.final_response = dict(response_data)
 
     async def _handle_responses_reasoning_delta_async(
@@ -327,7 +330,10 @@ class _OpenAIStreamingMixin:
                 event_type,
                 state,
             )
-        elif event_type == "response.completed" and isinstance(response_data, Mapping):
+        elif event_type in (
+            "response.completed",
+            "response.incomplete",
+        ) and isinstance(response_data, Mapping):
             state.final_response = dict(response_data)
 
     def _handle_responses_reasoning_delta(
@@ -457,6 +463,7 @@ class _OpenAIStreamingMixin:
         on_chunk: Optional[AsyncOnChunk],
     ) -> AsyncIterator[str]:
         text_parts: List[str] = []
+        refusal_parts: List[str] = []
         tool_calls: Dict[int, Dict[str, Any]] = {}
         legacy_response: Dict[str, Any] = {"model": self.model, "choices": []}
         finish_reason: Optional[str] = None
@@ -480,6 +487,7 @@ class _OpenAIStreamingMixin:
                 text, choice_finish_reason = self._consume_legacy_stream_choice(
                     choice,
                     text_parts,
+                    refusal_parts,
                     tool_calls,
                 )
                 if text is not None:
@@ -494,6 +502,7 @@ class _OpenAIStreamingMixin:
         chat_response = self._build_legacy_stream_response(
             legacy_response,
             text_parts,
+            refusal_parts,
             tool_calls,
             finish_reason,
         )
@@ -524,6 +533,7 @@ class _OpenAIStreamingMixin:
         on_chunk: Optional[OnChunk],
     ) -> Iterator[str]:
         text_parts: List[str] = []
+        refusal_parts: List[str] = []
         tool_calls: Dict[int, Dict[str, Any]] = {}
         legacy_response: Dict[str, Any] = {"model": self.model, "choices": []}
         finish_reason: Optional[str] = None
@@ -547,6 +557,7 @@ class _OpenAIStreamingMixin:
                 text, choice_finish_reason = self._consume_legacy_stream_choice(
                     choice,
                     text_parts,
+                    refusal_parts,
                     tool_calls,
                 )
                 if text is not None:
@@ -560,6 +571,7 @@ class _OpenAIStreamingMixin:
         chat_response = self._build_legacy_stream_response(
             legacy_response,
             text_parts,
+            refusal_parts,
             tool_calls,
             finish_reason,
         )
@@ -628,6 +640,7 @@ class _OpenAIStreamingMixin:
         self,
         choice: Any,
         text_parts: List[str],
+        refusal_parts: List[str],
         tool_calls: Dict[int, Dict[str, Any]],
     ) -> tuple[Optional[str], Optional[str]]:
         if not isinstance(choice, Mapping) or choice.get("index", 0) != 0:
@@ -640,6 +653,10 @@ class _OpenAIStreamingMixin:
         text = content if isinstance(content, str) and content else None
         if text is not None:
             text_parts.append(text)
+
+        refusal = delta.get("refusal")
+        if isinstance(refusal, str) and refusal:
+            refusal_parts.append(refusal)
 
         raw_tool_calls = delta.get("tool_calls")
         if isinstance(raw_tool_calls, list):
@@ -679,10 +696,13 @@ class _OpenAIStreamingMixin:
     def _build_legacy_stream_response(
         legacy_response: Dict[str, Any],
         text_parts: List[str],
+        refusal_parts: List[str],
         tool_calls: Dict[int, Dict[str, Any]],
         finish_reason: Optional[str],
     ) -> ChatResponse:
         message: Dict[str, Any] = {"content": "".join(text_parts) or None}
+        if refusal_parts:
+            message["refusal"] = "".join(refusal_parts)
         if tool_calls:
             message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
         legacy_response["choices"] = [{"message": message, "finish_reason": finish_reason}]

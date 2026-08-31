@@ -31,6 +31,7 @@ class _GoogleStreamState(_StreamState):
     text_parts: List[str] = field(default_factory=list)
     function_parts: List[Dict[str, Any]] = field(default_factory=list)
     finish_reason: Optional[str] = None
+    finish_message: Optional[str] = None
     usage_metadata: Dict[str, Any] = field(default_factory=dict)
     response_metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -101,6 +102,8 @@ class _GoogleStreamingMixin:
             return
         if candidate.get("finishReason") is not None:
             state.finish_reason = str(candidate["finishReason"])
+        if isinstance(candidate.get("finishMessage"), str):
+            state.finish_message = candidate["finishMessage"]
         content = candidate.get("content")
         parts = content.get("parts") if isinstance(content, Mapping) else []
         if not isinstance(parts, list):
@@ -201,6 +204,8 @@ class _GoogleStreamingMixin:
             return
         if candidate.get("finishReason") is not None:
             state.finish_reason = str(candidate["finishReason"])
+        if isinstance(candidate.get("finishMessage"), str):
+            state.finish_message = candidate["finishMessage"]
         content = candidate.get("content")
         parts = content.get("parts") if isinstance(content, Mapping) else []
         if not isinstance(parts, list):
@@ -297,6 +302,8 @@ class _GoogleStreamingMixin:
         final_candidate: Dict[str, Any] = {"content": {"parts": final_parts}}
         if state.finish_reason is not None:
             final_candidate["finishReason"] = state.finish_reason
+        if state.finish_message is not None:
+            final_candidate["finishMessage"] = state.finish_message
         final_response: Dict[str, Any] = {
             **state.response_metadata,
             "candidates": [final_candidate],

@@ -7,14 +7,18 @@ contract without credentials or live API calls.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from src.llm_api_adapter.errors.llm_api_error import LLMAPIRateLimitError
+from src.llm_api_adapter.errors.llm_api_error import (
+    JSONSchemaError,
+    LLMAPIRateLimitError,
+)
 from src.llm_api_adapter.llms.anthropic.async_client import ClaudeAsyncClient
 from src.llm_api_adapter.llms.anthropic.sync_client import ClaudeSyncClient
 from src.llm_api_adapter.llms.google.async_client import GeminiAsyncClient
@@ -27,6 +31,13 @@ from src.llm_api_adapter.models.messages.file_parts import ImagePart
 from src.llm_api_adapter.models.responses.chat_response import Usage
 from src.llm_api_adapter.models.tools import ToolSpec
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from tests.fixtures.structured_output import (
+    FLAT_OBJECT_SCHEMA,
+    NESTED_PYDANTIC_RESPONSE_JSON,
+    NestedPydanticResponse,
+    PORTABLE_PROFILE_SCHEMAS,
+    STRUCTURED_OUTPUT_OUTCOMES,
+)
 
 
 @dataclass(frozen=True)
@@ -272,6 +283,8 @@ CASES = (
 
 
 class _StructuredAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     answer: str
 
 
@@ -290,9 +303,331 @@ def _chat_kwargs(case: OrganizationConformanceCase) -> dict[str, Any]:
     }
 
 
+def _structured_schema_from_payload(
+    case: OrganizationConformanceCase,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the effective schema from each built-in organization's payload."""
+    if case.organization == "openai":
+        return payload["text"]["format"]["schema"]
+    if case.organization == "anthropic":
+        return payload["output_config"]["format"]["schema"]
+    if case.organization == "google":
+        return payload["generationConfig"]["responseJsonSchema"]
+    raise AssertionError(f"No structured-output payload path for {case.organization!r}")
+
+
+def _contains_reference(node: Any) -> bool:
+    if isinstance(node, dict):
+        return "$ref" in node or any(_contains_reference(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_contains_reference(value) for value in node)
+    return False
+
+
+def _google_wire_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Google responseJsonSchema uses the portable JSON Schema vocabulary."""
+    return deepcopy(schema)
+
+
 async def _as_async_iter(events: list[SSEEvent]) -> AsyncIterator[SSEEvent]:
     for event in events:
         yield event
+
+
+_TERMINAL_OUTCOME_FIXTURES = tuple(
+    outcome
+    for outcome in STRUCTURED_OUTPUT_OUTCOMES
+    if outcome.name != "unsupported_schema"
+)
+
+
+def _terminal_outcome_response(
+    case: OrganizationConformanceCase,
+    outcome_name: str,
+    content: str | None,
+) -> dict[str, Any]:
+    """Return the native terminal shape for one structured-output outcome."""
+    if case.organization == "openai":
+        if outcome_name == "refusal":
+            return {
+                "id": "resp_refusal",
+                "model": case.model,
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "content": [{
+                        "type": "refusal",
+                        "refusal": "I can't help with that.",
+                    }],
+                }],
+            }
+        if outcome_name == "incomplete_result":
+            return {
+                "id": "resp_incomplete",
+                "model": case.model,
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [],
+            }
+        return _openai_response(content or "")
+
+    if case.organization == "anthropic":
+        if outcome_name == "refusal":
+            return {
+                "id": "msg_refusal",
+                "model": case.model,
+                "stop_reason": "refusal",
+                "stop_details": {"reason": "safety"},
+                "content": [],
+                "usage": {"input_tokens": 2, "output_tokens": 0},
+            }
+        if outcome_name == "incomplete_result":
+            return {
+                "id": "msg_incomplete",
+                "model": case.model,
+                "stop_reason": "max_tokens",
+                "content": [{"type": "text", "text": '{"answer": '}],
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+            }
+        return _anthropic_response(content or "")
+
+    if case.organization == "google":
+        if outcome_name == "refusal":
+            return {
+                "modelVersion": case.model,
+                "candidates": [{
+                    "content": {"parts": []},
+                    "finishReason": "SAFETY",
+                    "finishMessage": "Blocked by safety policy.",
+                }],
+            }
+        if outcome_name == "incomplete_result":
+            return {
+                "modelVersion": case.model,
+                "candidates": [{
+                    "content": {"parts": [{"text": '{"answer": '}]},
+                    "finishReason": "MAX_TOKENS",
+                }],
+            }
+        return _google_response(content or "")
+
+    raise AssertionError(f"No terminal-outcome fixture for {case.organization!r}")
+
+
+def _terminal_outcome_stream_events(
+    case: OrganizationConformanceCase,
+    outcome_name: str,
+    content: str | None,
+) -> list[SSEEvent]:
+    response = _terminal_outcome_response(case, outcome_name, content)
+    if case.organization == "openai":
+        return [
+            SSEEvent(
+                event=(
+                    "response.incomplete"
+                    if response["status"] == "incomplete"
+                    else "response.completed"
+                ),
+                data={"response": response},
+            ),
+        ]
+
+    if case.organization == "anthropic":
+        events = [
+            SSEEvent(
+                event="message_start",
+                data={
+                    "message": {
+                        "id": response["id"],
+                        "model": response["model"],
+                        "content": [],
+                        "usage": {"input_tokens": 2, "output_tokens": 0},
+                    },
+                },
+            ),
+        ]
+        if response["content"]:
+            events.extend([
+                SSEEvent(
+                    event="content_block_start",
+                    data={
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                ),
+                SSEEvent(
+                    event="content_block_delta",
+                    data={
+                        "index": 0,
+                        "delta": {
+                            "type": "text_delta",
+                            "text": response["content"][0]["text"],
+                        },
+                    },
+                ),
+                SSEEvent(event="content_block_stop", data={"index": 0}),
+            ])
+        delta: dict[str, Any] = {"stop_reason": response["stop_reason"]}
+        if "stop_details" in response:
+            delta["stop_details"] = response["stop_details"]
+        events.extend([
+            SSEEvent(
+                event="message_delta",
+                data={"delta": delta, "usage": {"output_tokens": 3}},
+            ),
+            SSEEvent(event="message_stop", data={}),
+        ])
+        return events
+
+    if case.organization == "google":
+        return [SSEEvent(event=None, data=response)]
+
+    raise AssertionError(f"No terminal stream fixture for {case.organization!r}")
+
+
+def _structured_outcome_kwargs(
+    case: OrganizationConformanceCase,
+    outcome_name: str,
+) -> dict[str, Any]:
+    kwargs = _chat_kwargs(case)
+    if outcome_name == "pydantic_validation_error":
+        kwargs["response_model"] = NestedPydanticResponse
+    elif outcome_name in {"refusal", "incomplete_result"}:
+        kwargs["response_model"] = _StructuredAnswer
+    else:
+        kwargs["json_schema"] = FLAT_OBJECT_SCHEMA
+    return kwargs
+
+
+def _assert_structured_terminal_outcome(
+    response: Any,
+    case: OrganizationConformanceCase,
+    outcome_name: str,
+) -> None:
+    if outcome_name == "valid_structured_result":
+        assert response.parsed_json == {"answer": "ok"}
+        return
+    if outcome_name == "refusal":
+        expected_refusals = {
+            "openai": "I can't help with that.",
+            "anthropic": "safety",
+            "google": "Blocked by safety policy.",
+        }
+        assert response.refusal == expected_refusals[case.organization]
+        assert response.incomplete_reason is None
+    elif outcome_name == "incomplete_result":
+        expected_reasons = {
+            "openai": "max_output_tokens",
+            "anthropic": "max_tokens",
+            "google": "MAX_TOKENS",
+        }
+        assert response.incomplete_reason == expected_reasons[case.organization]
+        assert response.refusal is None
+    else:
+        raise AssertionError(f"Unexpected terminal outcome {outcome_name!r}")
+    assert response.parsed_json is None
+    assert response.parsed_model is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("outcome", _TERMINAL_OUTCOME_FIXTURES)
+def test_facade_structured_terminal_outcomes_are_consistent_in_sync_chat(
+    case,
+    outcome,
+):
+    transport = Mock(
+        return_value=_JSONResponse(
+            _terminal_outcome_response(case, outcome.name, outcome.content),
+        ),
+    )
+    kwargs = _structured_outcome_kwargs(case, outcome.name)
+
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        if outcome.name in {"invalid_json", "pydantic_validation_error"}:
+            with pytest.raises(JSONSchemaError):
+                _facade(case).chat(**kwargs)
+            return
+        response = _facade(case).chat(**kwargs)
+
+    _assert_structured_terminal_outcome(response, case, outcome.name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("outcome", _TERMINAL_OUTCOME_FIXTURES)
+async def test_facade_structured_terminal_outcomes_are_consistent_in_async_chat(
+    case,
+    outcome,
+):
+    transport = AsyncMock(
+        return_value=_terminal_outcome_response(case, outcome.name, outcome.content),
+    )
+    kwargs = _structured_outcome_kwargs(case, outcome.name)
+
+    with patch.object(case.async_client_class, "_send_request", new=transport):
+        if outcome.name in {"invalid_json", "pydantic_validation_error"}:
+            with pytest.raises(JSONSchemaError):
+                await _facade(case).achat(**kwargs)
+            return
+        response = await _facade(case).achat(**kwargs)
+
+    _assert_structured_terminal_outcome(response, case, outcome.name)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("outcome", _TERMINAL_OUTCOME_FIXTURES)
+def test_facade_structured_terminal_outcomes_are_consistent_in_sync_streams(
+    case,
+    outcome,
+):
+    events = _terminal_outcome_stream_events(case, outcome.name, outcome.content)
+    completed = []
+    kwargs = _structured_outcome_kwargs(case, outcome.name)
+    kwargs["on_done"] = completed.append
+
+    with patch.object(case.sync_client_class, "stream", return_value=iter(events)):
+        if outcome.name in {"invalid_json", "pydantic_validation_error"}:
+            with pytest.raises(JSONSchemaError):
+                list(_facade(case).stream_chat(**kwargs))
+            return
+        list(_facade(case).stream_chat(**kwargs))
+
+    assert len(completed) == 1
+    _assert_structured_terminal_outcome(completed[0], case, outcome.name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("outcome", _TERMINAL_OUTCOME_FIXTURES)
+async def test_facade_structured_terminal_outcomes_are_consistent_in_async_streams(
+    case,
+    outcome,
+):
+    events = _terminal_outcome_stream_events(case, outcome.name, outcome.content)
+    completed = []
+    kwargs = _structured_outcome_kwargs(case, outcome.name)
+    kwargs["on_done"] = completed.append
+
+    with patch.object(
+        case.async_client_class,
+        "stream",
+        return_value=_as_async_iter(events),
+    ):
+        if outcome.name in {"invalid_json", "pydantic_validation_error"}:
+            with pytest.raises(JSONSchemaError):
+                async for _ in _facade(case).astream_chat(**kwargs):
+                    pass
+            return
+        async for _ in _facade(case).astream_chat(**kwargs):
+            pass
+
+    assert len(completed) == 1
+    _assert_structured_terminal_outcome(completed[0], case, outcome.name)
 
 
 @pytest.mark.unit
@@ -372,6 +707,128 @@ def test_facade_preserves_tool_structured_output_file_and_reasoning_contracts(ca
         )
 
     assert [event.text for event in reasoning_response.reasoning_events] == ["Plan"]
+
+
+@pytest.mark.unit
+def test_portable_profile_fixture_covers_the_v092_acceptance_vocabulary():
+    assert set(PORTABLE_PROFILE_SCHEMAS) == {
+        "flat_object",
+        "nullable_required_field",
+        "enum",
+        "array",
+        "inline_nested_object",
+    }
+    assert {fixture.name for fixture in STRUCTURED_OUTPUT_OUTCOMES} == {
+        "valid_structured_result",
+        "refusal",
+        "incomplete_result",
+        "invalid_json",
+        "pydantic_validation_error",
+        "unsupported_schema",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_preserves_flat_portable_schema_baseline(case):
+    transport = Mock(
+        return_value=_JSONResponse(case.response_factory('{"answer": "ok"}')),
+    )
+
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        response = _facade(case).chat(
+            **_chat_kwargs(case),
+            json_schema=FLAT_OBJECT_SCHEMA,
+        )
+
+    schema = _structured_schema_from_payload(case, transport.call_args.args[1])
+    assert response.parsed_json == {"answer": "ok"}
+    assert schema["properties"]["answer"]["type"] in {"string", "STRING"}
+    assert schema["additionalProperties"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("fixture_name", sorted(PORTABLE_PROFILE_SCHEMAS))
+def test_core_portable_profile_has_exact_provider_payloads(case, fixture_name):
+    source_schema = PORTABLE_PROFILE_SCHEMAS[fixture_name]
+    transport = Mock(
+        return_value=_JSONResponse(case.response_factory('{"answer": "ok"}')),
+    )
+
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        _facade(case).chat(
+            **_chat_kwargs(case),
+            json_schema=source_schema,
+        )
+
+    schema = _structured_schema_from_payload(case, transport.call_args.args[1])
+    expected = (
+        _google_wire_schema(source_schema)
+        if case.organization == "google"
+        else source_schema
+    )
+    assert schema == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_rejects_nonportable_core_schema_before_sending_request(case):
+    transport = Mock()
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": [],
+        "additionalProperties": False,
+    }
+
+    with (
+        patch.object(case.sync_client_class, "_send_request", new=transport),
+        pytest.raises(JSONSchemaError, match=r"#/required"),
+    ):
+        _facade(case).chat(**_chat_kwargs(case), json_schema=schema)
+
+    transport.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_nested_pydantic_schema_is_portable_across_builtin_adapters(case):
+    transport = Mock(
+        return_value=_JSONResponse(case.response_factory(NESTED_PYDANTIC_RESPONSE_JSON)),
+    )
+
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        response = _facade(case).chat(
+            **_chat_kwargs(case),
+            response_model=NestedPydanticResponse,
+        )
+
+    schema = _structured_schema_from_payload(case, transport.call_args.args[1])
+    assert response.parsed_model == NestedPydanticResponse(
+        contact={"name": "Ada"},
+    )
+    assert "$defs" not in schema
+    assert not _contains_reference(schema)
+    assert schema["properties"]["contact"]["type"] in {"object", "OBJECT"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_rejects_external_schema_references_before_sending_request(case):
+    transport = Mock()
+    schema = {
+        "type": "object",
+        "properties": {"contact": {"$ref": "https://example.com/contact.json"}},
+    }
+
+    with (
+        patch.object(case.sync_client_class, "_send_request", new=transport),
+        pytest.raises(JSONSchemaError, match=r"#?/properties/contact"),
+    ):
+        _facade(case).chat(**_chat_kwargs(case), json_schema=schema)
+
+    transport.assert_not_called()
 
 
 @pytest.mark.unit
