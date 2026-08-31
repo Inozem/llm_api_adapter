@@ -182,7 +182,8 @@ def test_chat_passes_json_schema_in_generation_config(adapter):
     kwargs = mock_client.call_args[1]
     gen_cfg = kwargs["generationConfig"]
     assert gen_cfg["responseMimeType"] == "application/json"
-    assert "responseSchema" in gen_cfg
+    assert "responseSchema" not in gen_cfg
+    assert "responseJsonSchema" in gen_cfg
     assert result.parsed_json == {"name": "test"}
 
 
@@ -198,8 +199,8 @@ def test_to_google_schema_preserves_semantics_and_removes_metadata(adapter):
     result = adapter._to_google_schema(schema)
     assert result["additionalProperties"] is False
     assert "$schema" not in result
-    assert result["type"] == "OBJECT"
-    assert result["properties"]["name"]["type"] == "STRING"
+    assert result["type"] == "object"
+    assert result["properties"]["name"]["type"] == "string"
 
 
 @pytest.mark.unit
@@ -217,6 +218,7 @@ def test_chat_omits_json_schema_fields_when_not_provided(adapter):
     gen_cfg = kwargs["generationConfig"]
     assert "responseMimeType" not in gen_cfg
     assert "responseSchema" not in gen_cfg
+    assert "responseJsonSchema" not in gen_cfg
 
 
 @pytest.mark.unit

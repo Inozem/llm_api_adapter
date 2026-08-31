@@ -315,32 +315,15 @@ def _schema_from_payload(
     if organization == "anthropic":
         return payload["output_config"]["format"]["schema"]
     if organization == "google":
-        return payload["generationConfig"]["responseSchema"]
+        return payload["generationConfig"]["responseJsonSchema"]
     if organization == "mistral":
         return payload["response_format"]["json_schema"]["schema"]
     raise AssertionError(f"No schema path for {organization!r}")
 
 
 def _google_wire_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    converted = deepcopy(schema)
-
-    def convert(node: Any) -> None:
-        if isinstance(node, list):
-            for item in node:
-                convert(item)
-            return
-        if not isinstance(node, dict):
-            return
-        schema_type = node.get("type")
-        if isinstance(schema_type, str):
-            node["type"] = schema_type.upper()
-        elif isinstance(schema_type, list):
-            node["type"] = [value.upper() for value in schema_type]
-        for value in node.values():
-            convert(value)
-
-    convert(converted)
-    return converted
+    """Google responseJsonSchema uses the portable JSON Schema vocabulary."""
+    return deepcopy(schema)
 
 
 def _assert_native_format(

@@ -249,11 +249,12 @@ def test_google_sends_response_mime_type_and_schema(google_json_mock):
     payload = google_json_mock.request_history[0].json()
     gen_cfg = payload["generationConfig"]
     assert gen_cfg["responseMimeType"] == "application/json"
-    assert "responseSchema" in gen_cfg
-    assert gen_cfg["responseSchema"]["type"] == "OBJECT"
-    assert "name" in gen_cfg["responseSchema"]["properties"]
-    assert "age" in gen_cfg["responseSchema"]["properties"]
-    assert gen_cfg["responseSchema"]["additionalProperties"] is False
+    assert "responseSchema" not in gen_cfg
+    assert "responseJsonSchema" in gen_cfg
+    assert gen_cfg["responseJsonSchema"]["type"] == "object"
+    assert "name" in gen_cfg["responseJsonSchema"]["properties"]
+    assert "age" in gen_cfg["responseJsonSchema"]["properties"]
+    assert gen_cfg["responseJsonSchema"]["additionalProperties"] is False
 
     assert resp.content == JSON_CONTENT
     assert resp.parsed_json == {"name": "Alice", "age": 30}
@@ -270,8 +271,8 @@ def test_google_sends_schema_and_returns_parsed_model_for_response_model(google_
     payload = google_json_mock.request_history[0].json()
     gen_cfg = payload["generationConfig"]
     assert gen_cfg["responseMimeType"] == "application/json"
-    assert "name" in gen_cfg["responseSchema"]["properties"]
-    assert "age" in gen_cfg["responseSchema"]["properties"]
+    assert "name" in gen_cfg["responseJsonSchema"]["properties"]
+    assert "age" in gen_cfg["responseJsonSchema"]["properties"]
 
     assert resp.parsed_json == {"name": "Alice", "age": 30}
     assert isinstance(resp.parsed_model, Person)
