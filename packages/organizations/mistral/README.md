@@ -49,6 +49,25 @@ print(response.content)
 See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
 for the shared API contract and examples.
 
+## Structured-output portability
+
+This package requires `llm-api-adapter>=0.9.2,<1.0.0` and enforces the same
+Core portable JSON Schema profile as OpenAI, Anthropic, Google, and xAI. The
+profile guarantees that every object is strict, every property is required,
+optional values are nullable, and only direct,
+non-recursive local `#/$defs/...` references are resolved before the request.
+
+Use `json_schema` for parsed JSON only. Use a Pydantic `response_model` when
+the final result must also be locally validated and returned as
+`ChatResponse.parsed_model`; each nested Pydantic model must use
+`ConfigDict(extra="forbid")`. Refusal and incomplete terminal responses set
+`ChatResponse.refusal` or `ChatResponse.incomplete_reason` and leave parsed
+fields unset. Invalid completed JSON or failed Pydantic validation raises
+`JSONSchemaError`.
+
+The complete schema vocabulary and examples are in the main
+[Structured Output guide](https://github.com/Inozem/llm_api_adapter/#structured-output).
+
 ## Supported models
 
 - `mistral-small-2603`

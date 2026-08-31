@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from ...models.messages.chat_message import Messages
 from ...models.responses.chat_response import ChatResponse
 from ...models.tools import ToolSpec
+from ..structured_output import validate_core_portable_schema
 
 class _OpenAIPayloadMixin:
     """Build provider payloads while keeping adapter-level options normalized."""
@@ -92,7 +93,7 @@ class _OpenAIPayloadMixin:
                     "type": "json_schema",
                     "name": "response",
                     "strict": True,
-                    "schema": self._enforce_strict_schema(effective_schema),
+                    "schema": self._to_openai_structured_output_schema(effective_schema),
                 }
             }
         return params
@@ -120,7 +121,7 @@ class _OpenAIPayloadMixin:
                 "json_schema": {
                     "name": "response",
                     "strict": True,
-                    "schema": self._enforce_strict_schema(effective_schema),
+                    "schema": self._to_openai_structured_output_schema(effective_schema),
                 },
             }
         return params
@@ -182,7 +183,7 @@ class _OpenAIPayloadMixin:
                         "type": "json_schema",
                         "name": "response",
                         "strict": True,
-                        "schema": self._enforce_strict_schema(effective_schema),
+                        "schema": self._to_openai_structured_output_schema(effective_schema),
                     }
                 }
             if capture_reasoning:
@@ -200,7 +201,7 @@ class _OpenAIPayloadMixin:
                     "json_schema": {
                         "name": "response",
                         "strict": True,
-                        "schema": self._enforce_strict_schema(effective_schema),
+                        "schema": self._to_openai_structured_output_schema(effective_schema),
                     },
                 }
         return {key: value for key, value in params.items() if value is not None}
@@ -226,6 +227,11 @@ class _OpenAIPayloadMixin:
                 }
             )
         return mapped
+
+    @staticmethod
+    def _to_openai_structured_output_schema(schema: dict) -> dict:
+        """Validate the Core profile without changing schema semantics."""
+        return validate_core_portable_schema(schema, provider="openai")
 
     def _map_tool_choice_to_openai(self, tool_choice: Optional[str]) -> Any:
         if tool_choice is None:

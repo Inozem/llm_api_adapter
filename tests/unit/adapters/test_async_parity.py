@@ -27,6 +27,7 @@ RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {"answer": {"type": "string"}},
     "required": ["answer"],
+    "additionalProperties": False,
 }
 
 LOOKUP_TOOL = ToolSpec(

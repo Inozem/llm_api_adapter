@@ -11,12 +11,13 @@ from typing import Any, Iterator, Mapping
 import warnings
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-CORE_SOURCE = PACKAGE_ROOT.parents[2] / "src"
+REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
+CORE_SOURCE = REPOSITORY_ROOT / "src"
 PACKAGE_SOURCE = PACKAGE_ROOT / "src"
-for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE)):
+for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
     if source not in sys.path:
         sys.path.insert(0, source)
 
@@ -53,6 +54,7 @@ from llm_api_adapter.organization_registry import (
     ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP,
     OrganizationPluginDiscovery,
 )
+from tests.fixtures.structured_output import FLAT_OBJECT_SCHEMA
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
@@ -64,6 +66,8 @@ from llm_api_adapter_xai.registry import MODEL_METADATA
 
 
 class StructuredAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     answer: str
 
 
@@ -618,6 +622,23 @@ def test_chat_maps_structured_pydantic_output_and_reasoning(xai_runtime):
 
 
 @pytest.mark.unit
+def test_chat_preserves_the_shared_flat_portable_schema(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    transport = FakeSyncTransport(_structured_response(model="grok-4.6"))
+    adapter._client._sync_transport = transport
+
+    response = adapter.chat(
+        messages=[UserMessage("Return an answer.")],
+        json_schema=FLAT_OBJECT_SCHEMA,
+    )
+
+    assert response.parsed_json == {"answer": "ok"}
+    assert transport.requests[0].payload["text"]["format"]["schema"] == (
+        FLAT_OBJECT_SCHEMA
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "schema",
     [
@@ -638,7 +659,7 @@ def test_chat_rejects_documented_invalid_structured_schemas(xai_runtime, schema)
 
 
 @pytest.mark.unit
-def test_chat_accepts_explicit_additional_properties_in_structured_schema(
+def test_chat_accepts_explicit_portable_structured_schema(
     xai_runtime,
 ):
     adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
@@ -648,6 +669,7 @@ def test_chat_accepts_explicit_additional_properties_in_structured_schema(
     schema = {
         "type": "object",
         "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
         "additionalProperties": False,
     }
 

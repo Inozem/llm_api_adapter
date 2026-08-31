@@ -553,7 +553,12 @@ def test_map_tool_choice_to_openai_responses_passthrough_non_string(adapter):
 
 @pytest.mark.unit
 def test_chat_responses_api_passes_json_schema_in_text_param(adapter):
-    schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+        "additionalProperties": False,
+    }
     fake_response = {"id": "resp_123"}
     fake_chat_response = ChatResponse(content='{"name": "test"}')
 
@@ -578,7 +583,12 @@ def test_chat_responses_api_passes_json_schema_in_text_param(adapter):
 
 @pytest.mark.unit
 def test_chat_legacy_api_passes_json_schema_in_response_format(legacy_adapter):
-    schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+        "additionalProperties": False,
+    }
     fake_response = {"id": "chatcmpl_123"}
     fake_chat_response = ChatResponse(content='{"name": "test"}')
 

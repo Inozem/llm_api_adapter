@@ -93,8 +93,8 @@ This table is a positioning snapshot. Provider capabilities change independently
 - **Vision Input**: Send images alongside text via `ImagePart` — URL or raw bytes, all providers handled automatically.
 - **PDF Documents**: Send PDF URLs or bytes via `DocumentPart`; provider-specific file/document payloads are generated automatically.
 - **Tool / Function Calling**: Provider-agnostic tool definitions and normalized tool calls in `ChatResponse.tool_calls`.
-- **Strict JSON Mode**: Pass one JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` — provider-specific schema formats and restrictions are handled automatically.
-- **Pydantic Integration**: Pass a Pydantic model as `response_model` and get a typed instance back in `ChatResponse.parsed_model` — no manual schema writing required.
+- **Portable Structured Output**: Pass a documented portable JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` across all supported organizations.
+- **Pydantic Integration**: Pass a portable Pydantic model as `response_model` and get a typed instance back in `ChatResponse.parsed_model` — no manual schema writing required.
 - **Request Timeouts**: Per-request timeout control via `timeout_s`; raises `LLMAPITimeoutError` on expiry.
 - **Flexible Configuration**: `temperature`, `max_tokens`, `top_p`, and other parameters are translated to a verified provider payload; known unsupported fields are omitted predictably.
 - **Pricing Registry**: Model prices stored in a bundled JSON registry with per-model input/output rates; overridable per instance.
@@ -338,7 +338,7 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 - **ToolChoiceError**: Raised when `tool_choice` is invalid or references an unknown tool.
 
-- **JSONSchemaError**: Raised when `json_schema` or `response_model` is used incorrectly (combined with each other or with `tools`), when `response_model` is not a Pydantic `BaseModel` subclass, when Pydantic is not installed, or when the model response is not valid JSON.
+- **JSONSchemaError**: Raised for incompatible structured-output arguments, a non-portable or non-recursive schema, an invalid Pydantic response model, invalid JSON, or failed Pydantic response validation.
 
 ### Config Errors
 
@@ -471,9 +471,11 @@ The `ChatResponse` object returned by `chat` includes:
 7. **cost\_output**: Cost of output tokens.
 8. **cost\_total**: Total combined cost.
 9. **content**: The generated text response.
-10. **finish\_reason**: Reason why generation stopped (e.g., `"stop"`, `"length"`).
-11. **parsed\_json**: Parsed JSON object when `json_schema` or `response_model` was provided, otherwise `None`.
-12. **parsed\_model**: Typed Pydantic instance when `response_model` was provided, otherwise `None`.
+10. **finish\_reason**: Provider-native reason why generation stopped (for example, `"stop"` or `"length"`).
+11. **refusal**: Provider-normalized refusal detail, or `None` when the response was not a refusal.
+12. **incomplete\_reason**: Provider-normalized incomplete-generation reason, or `None` when generation completed.
+13. **parsed\_json**: Parsed JSON object for a valid completed structured result, otherwise `None`.
+14. **parsed\_model**: Typed Pydantic instance for a valid completed `response_model` result, otherwise `None`.
 
 ## Timeout Support
 
@@ -735,23 +737,58 @@ If you omit `previous_response`, the call works normally; you just won't get the
 
 ## Structured Output
 
-The SDK supports two ways to get structured output from `chat()`, `achat()`,
-`stream_chat()`, and `astream_chat()`: a raw `json_schema` dict, or a Pydantic
-model via `response_model`. Both use the same application-level contract
-across supported providers; provider-specific availability and schema
-restrictions are handled by the adapter. For streaming methods, parsed fields
-are available on the finalized `ChatResponse` passed to `on_done`.
+The SDK supports structured output from `chat()`, `achat()`, `stream_chat()`,
+and `astream_chat()` through a raw `json_schema` dict or a Pydantic model passed
+as `response_model`. The documented Core portable profile below is guaranteed
+across OpenAI, Anthropic, Google, Mistral, and xAI. Its explicit boundaries
+define the schema vocabulary that remains portable between organizations.
+
+For streaming methods, parsed fields and terminal structured-output state are
+available on the finalized `ChatResponse` passed to `on_done`.
+
+### Core portable JSON Schema profile
+
+The profile is the provider-neutral intersection enforced before an HTTP
+request. A portable schema has:
+
+- an object as its root;
+- only `string`, `number`, `integer`, `boolean`, `object`, and `array` types;
+  nullable fields are expressed only as `[<one type>, "null"]`;
+- `additionalProperties: false` on every object, and a `required` list that
+  contains every object property exactly once; use a nullable property instead
+  of an optional one;
+- a single object schema in `items` for every array;
+- a non-empty `enum` when `enum` is used; and
+- only the profile's structural and metadata keywords: `type`, `properties`,
+  `required`, `additionalProperties`, `items`, `enum`, `title`, `description`,
+  `$id`, and `$schema`.
+
+Direct local references of the form `#/$defs/<name>` (including
+Pydantic-generated references) are inlined locally before this profile is
+checked. External, unresolved, recursive, or
+semantically combined `$ref` values are rejected with `JSONSchemaError` before
+a provider request. Other JSON Schema composition, validation, and conditional
+keywords are intentionally outside the portable profile.
+
+OpenAI, Anthropic, and Google enforce this Core profile. The Mistral and xAI
+organization packages require core `>=0.9.2,<1.0.0` and enforce the same
+boundary; xAI additionally rejects the documented xAI-only invalid constructs
+before sending its request.
 
 ### Pydantic Integration (`response_model`)
 
-Pass a Pydantic `BaseModel` subclass as `response_model` — the adapter extracts the JSON Schema automatically and returns a typed instance in `ChatResponse.parsed_model`.
+Pass a Pydantic `BaseModel` subclass as `response_model` — the adapter extracts
+the JSON Schema automatically and returns a typed instance in
+`ChatResponse.parsed_model`.
 
 ```python
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 class Person(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     age: int
 
@@ -774,16 +811,16 @@ print(response.parsed_model)  # Person(name='Alice', age=30)
 print(response.parsed_json)   # {"name": "Alice", "age": 30}
 ```
 
-> **Note:** Pydantic is not a required dependency of this package. Install it separately: `pip install pydantic`.
+> **Note:** Pydantic is not a required dependency of this package. Install it separately: `pip install pydantic`. Every nested Pydantic model must also use `ConfigDict(extra="forbid")` so its generated object schema satisfies the portable profile.
 
 `response_model` cannot be combined with `json_schema` or `tools` — passing both raises `JSONSchemaError`.
 
 ### Raw JSON Schema (`json_schema`)
 
-The SDK also supports structured JSON output via a `json_schema` parameter in
-`chat()`, `achat()`, `stream_chat()`, and `astream_chat()`. Pass any JSON
-Schema object — the adapter normalizes it for each provider automatically and
-returns the parsed result in `ChatResponse.parsed_json`.
+The SDK also supports portable structured JSON output via a `json_schema`
+parameter in `chat()`, `achat()`, `stream_chat()`, and `astream_chat()`. The
+adapter preserves the schema's semantics: it validates the profile rather than
+silently adding required fields or changing `additionalProperties`.
 
 ```python
 from llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
@@ -796,6 +833,7 @@ schema = {
         "age": {"type": "integer"},
     },
     "required": ["name", "age"],
+    "additionalProperties": False,
 }
 
 adapter = UniversalLLMAPIAdapter(
@@ -821,11 +859,15 @@ print(response.parsed_json)  # {"name": "Alice", "age": 30}
 
 - Accepts a `dict` containing a JSON Schema object.
 - Cannot be combined with `tools` or `response_model` — passing both raises `JSONSchemaError`.
-- If the model returns a response that is not valid JSON, `JSONSchemaError` is raised.
+- Must satisfy the Core portable profile; unsupported, external, or recursive references raise `JSONSchemaError` before the request.
+- Raw schemas are parsed as JSON only. The SDK does not run a local JSON Schema validator against the response.
+- If a completed, non-refusal response is not valid JSON, `JSONSchemaError` is raised.
 
 ### `parsed_json` field
 
-`ChatResponse.parsed_json` contains the parsed `dict` when `json_schema` or `response_model` was provided, or `None` otherwise.
+`ChatResponse.parsed_json` contains the parsed `dict` for a valid completed
+structured result. It remains `None` for a refusal or incomplete generation,
+and `parsed_model` remains `None` in those cases as well.
 
 ### Provider behavior
 
@@ -835,8 +877,35 @@ print(response.parsed_json)  # {"name": "Alice", "age": 30}
 | **OpenAI** (Responses API / o-series) | Native `text.format.type=json_schema` with `strict=true` |
 | **Anthropic** | Native `output_config.format.type=json_schema` |
 | **Google** | `generationConfig.responseMimeType="application/json"` + `responseSchema` |
+| **Mistral** | Native `response_format.type=json_schema` with `strict=true` (optional organization package) |
+| **xAI** | Responses `text.format.type=json_schema` with `strict=true` plus xAI's additive local overlay (optional organization package) |
 
-The adapter automatically handles provider-specific schema constraints, so the same schema can be reused across supported providers without provider-specific request code.
+The same **portable** schema can be reused across these organizations without
+provider-specific request code. Google drops only `$id` and `$schema`, which
+are non-semantic metadata that its endpoint does not accept; no transformer
+silently drops a semantic constraint.
+
+### Refusal, incomplete, and invalid results
+
+A provider refusal is exposed as `response.refusal`; an incomplete generation
+is exposed as `response.incomplete_reason`. Neither is parsed or Pydantic
+validated, so both parsed fields remain `None`. A completed non-refusal result
+that is invalid JSON, or fails `response_model.model_validate()`, raises
+`JSONSchemaError`. Check the terminal fields before using structured output:
+
+```python
+response = adapter.chat(
+    messages=[UserMessage("Give me the data.")],
+    json_schema=schema,
+    max_tokens=200,
+)
+if response.refusal is not None:
+    handle_refusal(response.refusal)
+elif response.incomplete_reason is not None:
+    handle_incomplete(response.incomplete_reason)
+else:
+    data = response.parsed_json
+```
 
 ### Error handling
 

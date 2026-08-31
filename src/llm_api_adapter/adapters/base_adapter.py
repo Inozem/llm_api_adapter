@@ -41,6 +41,7 @@ from ..models.responses.reasoning_event import (
     ReasoningEventKind,
 )
 from ..models.responses.stream_chunk import StreamChunk
+from .structured_output import prepare_structured_output
 from ..llms.streaming import (
     StreamChunkBuffer,
     StreamReasoningCollector,
@@ -57,7 +58,9 @@ TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 @dataclass(frozen=True)
 class _ChatRequestContext:
     normalized_messages: Messages
+    source_schema: Optional[dict]
     effective_schema: Optional[dict]
+    response_model: Optional[Any]
     normalized_tool_choice: Optional[str]
 
 
@@ -295,10 +298,11 @@ class LLMAdapterBase(ABC):
     ) -> _ChatRequestContext:
         """Validate and normalize provider-neutral chat inputs."""
         self._validate_tools(tools)
-        effective_schema = self._resolve_json_schema(
+        structured_output = prepare_structured_output(
             json_schema,
             response_model,
             tools,
+            provider=self.company,
         )
         normalized_tool_choice = self._normalize_tool_choice(
             tool_choice,
@@ -307,7 +311,9 @@ class LLMAdapterBase(ABC):
         normalized_messages = self._normalize_messages(messages)
         return _ChatRequestContext(
             normalized_messages=normalized_messages,
-            effective_schema=effective_schema,
+            source_schema=structured_output.source_schema,
+            effective_schema=structured_output.provider_schema,
+            response_model=structured_output.response_model,
             normalized_tool_choice=normalized_tool_choice,
         )
 
@@ -471,26 +477,13 @@ class LLMAdapterBase(ABC):
         response_model: Optional[Any],
         tools: Optional[List[ToolSpec]],
     ) -> Optional[dict]:
-        if json_schema is not None and response_model is not None:
-            raise JSONSchemaError(detail="json_schema and response_model cannot be used together")
-        if response_model is not None and tools is not None:
-            raise JSONSchemaError(detail="response_model and tools cannot be used together")
-        if json_schema is not None and tools is not None:
-            raise JSONSchemaError(detail="json_schema and tools cannot be used together")
-        if response_model is not None:
-            try:
-                return response_model.model_json_schema()
-            except AttributeError:
-                try:
-                    import pydantic  # noqa
-                except ImportError:
-                    raise JSONSchemaError(
-                        detail="pydantic is required for response_model; install it with: pip install pydantic"
-                    )
-                raise JSONSchemaError(detail="response_model must be a Pydantic BaseModel subclass")
-        if json_schema is not None and not isinstance(json_schema, dict):
-            raise JSONSchemaError(detail="json_schema must be a dict")
-        return json_schema
+        """Compatibility wrapper for the provider-ready schema preparation path."""
+        return prepare_structured_output(
+            json_schema,
+            response_model,
+            tools,
+            provider=self.company,
+        ).provider_schema
 
     def _strip_json_fences(self, content: str) -> str:
         text = content.strip()
@@ -686,6 +679,25 @@ class LLMAdapterBase(ABC):
         response_model: Optional[Any],
     ) -> ChatResponse:
         """Apply common structured-output parsing and pricing to a response."""
+        self._prepare_structured_output_response(
+            chat_response,
+            effective_schema,
+            response_model,
+        )
+        self._apply_response_pricing(chat_response)
+        return chat_response
+
+    def _prepare_structured_output_response(
+        self,
+        chat_response: ChatResponse,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> None:
+        """Parse a completed structured result unless its terminal state forbids it."""
+        if chat_response.refusal is not None or chat_response.incomplete_reason is not None:
+            chat_response.parsed_json = None
+            chat_response.parsed_model = None
+            return
         chat_response.parsed_json = self._parse_json_response(
             chat_response.content,
             effective_schema,
@@ -694,8 +706,6 @@ class LLMAdapterBase(ABC):
             chat_response.parsed_json,
             response_model,
         )
-        self._apply_response_pricing(chat_response)
-        return chat_response
 
     def _prepare_stream_response(
         self,
@@ -705,12 +715,9 @@ class LLMAdapterBase(ABC):
     ) -> None:
         """Apply final response processing before delivering stream callbacks."""
         try:
-            chat_response.parsed_json = self._parse_json_response(
-                chat_response.content,
+            self._prepare_structured_output_response(
+                chat_response,
                 effective_schema,
-            )
-            chat_response.parsed_model = self._parse_response_model(
-                chat_response.parsed_json,
                 response_model,
             )
             self._apply_response_pricing(chat_response)

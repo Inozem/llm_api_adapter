@@ -6,7 +6,7 @@ import pytest
 import respx
 import requests
 import requests_mock
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from src.llm_api_adapter.errors.llm_api_error import (
     JSONSchemaError,
@@ -34,10 +34,13 @@ STRUCTURED_SCHEMA = {
     "type": "object",
     "properties": {"answer": {"type": "string"}},
     "required": ["answer"],
+    "additionalProperties": False,
 }
 
 
 class StreamAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     answer: str
 
 

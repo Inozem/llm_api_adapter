@@ -1,6 +1,6 @@
 import pytest
 import requests_mock as requests_mock_module
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -15,10 +15,13 @@ SCHEMA = {
         "age": {"type": "integer"},
     },
     "required": ["name", "age"],
+    "additionalProperties": False,
 }
 
 
 class Person(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     age: int
 
@@ -136,7 +139,7 @@ def test_openai_responses_api_sends_schema_and_returns_parsed_model(openai_respo
     payload = openai_responses_json_mock.request_history[0].json()
     fmt = payload["text"]["format"]
     assert fmt["type"] == "json_schema"
-    assert fmt["schema"] == {**Person.model_json_schema(), "additionalProperties": False}
+    assert fmt["schema"] == Person.model_json_schema()
 
     assert resp.parsed_json == {"name": "Alice", "age": 30}
     assert isinstance(resp.parsed_model, Person)
@@ -179,7 +182,7 @@ def test_openai_legacy_api_sends_schema_and_returns_parsed_model(openai_legacy_j
 
     payload = openai_legacy_json_mock.request_history[0].json()
     js = payload["response_format"]["json_schema"]
-    assert js["schema"] == {**Person.model_json_schema(), "additionalProperties": False}
+    assert js["schema"] == Person.model_json_schema()
 
     assert resp.parsed_json == {"name": "Alice", "age": 30}
     assert isinstance(resp.parsed_model, Person)
@@ -250,7 +253,7 @@ def test_google_sends_response_mime_type_and_schema(google_json_mock):
     assert gen_cfg["responseSchema"]["type"] == "OBJECT"
     assert "name" in gen_cfg["responseSchema"]["properties"]
     assert "age" in gen_cfg["responseSchema"]["properties"]
-    assert "additionalProperties" not in gen_cfg["responseSchema"]
+    assert gen_cfg["responseSchema"]["additionalProperties"] is False
 
     assert resp.content == JSON_CONTENT
     assert resp.parsed_json == {"name": "Alice", "age": 30}

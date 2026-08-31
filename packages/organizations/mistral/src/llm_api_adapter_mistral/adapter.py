@@ -21,6 +21,9 @@ from llm_api_adapter.adapters.base_adapter import (
     OnToolCall,
     _StreamState,
 )
+from llm_api_adapter.adapters.structured_output import (
+    validate_core_portable_schema,
+)
 from llm_api_adapter.errors.llm_api_error import (
     InvalidToolArgumentsError,
     LLMAPIAuthorizationError,
@@ -737,7 +740,10 @@ class MistralAdapter(LLMAdapterBase):
                 "json_schema": {
                     "name": "response",
                     "strict": True,
-                    "schema": self._enforce_strict_schema(json_schema),
+                    "schema": validate_core_portable_schema(
+                        json_schema,
+                        provider="mistral",
+                    ),
                 },
             }
         return {key: value for key, value in payload.items() if value is not None}
@@ -866,6 +872,7 @@ class MistralAdapter(LLMAdapterBase):
         if content is None and not tool_calls:
             warnings.warn("Mistral returned empty content and no tool calls.", UserWarning)
 
+        finish_reason = _as_optional_str(choice.get("finish_reason"))
         return ChatResponse(
             model=_as_optional_str(response.get("model")),
             response_id=_as_optional_str(response.get("id")),
@@ -873,7 +880,10 @@ class MistralAdapter(LLMAdapterBase):
             usage=cls._parse_usage(response.get("usage")),
             content=content,
             tool_calls=tool_calls,
-            finish_reason=_as_optional_str(choice.get("finish_reason")),
+            finish_reason=finish_reason,
+            incomplete_reason=(
+                finish_reason if finish_reason == "length" else None
+            ),
             reasoning_events=reasoning_events,
         )
 
