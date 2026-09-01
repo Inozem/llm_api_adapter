@@ -77,7 +77,51 @@ The complete schema vocabulary and examples are in the main
 ## PDF input
 
 `DocumentPart` supports PDF URLs and bytes. Before the chat request, the
-adapter sends each PDF to Mistral OCR 4.1 (`mistral-ocr-4-1`) and supplies the resulting Markdown to
-the selected chat model. This creates a separate OCR API request, subject to
-Mistral's OCR limits and pricing; `ChatResponse` usage and cost cover only the
-chat completion.
+selected Mistral chat model cannot consume `DocumentPart` directly. The package
+therefore sends each PDF to Mistral OCR 4.1 (`mistral-ocr-4-1`) and supplies the
+resulting Markdown to the selected chat model. This creates a separate OCR API
+request. The adapter reads `usage_info.pages_processed` from each OCR response
+and records an `ocr` page line in `ChatResponse.cost_breakdown` at the
+registered standard rate.
+
+```python
+from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.models.messages.file_parts import DocumentPart
+
+# `adapter` is configured as shown in Quick start.
+response = adapter.chat(
+    messages=[
+        UserMessage(
+            "Compare these reports.",
+            files=[
+                DocumentPart(url="https://example.com/report-a.pdf"),
+                DocumentPart(url="https://example.com/report-b.pdf"),
+            ],
+        )
+    ]
+)
+
+print(response.content)
+ocr_line_items = [
+    item
+    for item in response.cost_breakdown or ()
+    if item.operation == "ocr"
+]
+if ocr_line_items:
+    for document_number, item in enumerate(ocr_line_items, start=1):
+        print(f"PDF {document_number}: {item.cost} {item.currency}")
+    ocr_cost = sum(item.cost for item in ocr_line_items)
+    print(f"All PDFs: {ocr_cost} {ocr_line_items[0].currency}")
+```
+
+Each PDF produces an `ocr` line item. `ocr_cost` is the OCR-only estimate for
+all PDFs; `response.cost_total`, when available, includes both the selected
+chat model's token cost and OCR cost.
+
+`ChatResponse.usage`, `cost_input`, and `cost_output` remain the selected chat
+model's token values. `cost_total` combines those token costs and OCR lines
+only when every OCR response has a valid page count and the OCR meter is
+available. Otherwise known OCR lines remain visible but `cost_total` is
+`None`; page counts are never inferred from Markdown or document bytes. These
+are standard-rate estimates, not an invoice, and apply consistently to sync,
+async, and streaming calls.
