@@ -1,10 +1,17 @@
+from dataclasses import FrozenInstanceError, asdict
+import json
+
 import pytest
 
 from src.llm_api_adapter.errors.llm_api_error import (
     InvalidToolArgumentsError,
     LLMAPIError,
 )
-from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
+from src.llm_api_adapter.models.responses.chat_response import (
+    ChatResponse,
+    CostLineItem,
+    Usage,
+)
 from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from src.llm_api_adapter.models.tools import ToolCall
 
@@ -889,6 +896,178 @@ def test_apply_pricing_sets_costs():
     assert response.cost_input == 0.1
     assert response.cost_output == 0.1
     assert response.cost_total == 0.2
+    assert response.cost_breakdown is None
+
+
+@pytest.mark.unit
+def test_cost_line_item_is_immutable_and_serializes_its_computed_cost():
+    item = CostLineItem(
+        operation="ocr",
+        model="mistral-ocr-4-1",
+        unit="page",
+        quantity=2,
+        rate=0.004,
+        currency="USD",
+    )
+
+    assert item == CostLineItem(
+        operation="ocr",
+        model="mistral-ocr-4-1",
+        unit="page",
+        quantity=2.0,
+        rate=0.004,
+        currency="USD",
+    )
+    assert asdict(item) == {
+        "operation": "ocr",
+        "model": "mistral-ocr-4-1",
+        "unit": "page",
+        "quantity": 2.0,
+        "rate": 0.004,
+        "currency": "USD",
+        "cost": 0.008,
+    }
+    assert json.loads(json.dumps(asdict(item))) == asdict(item)
+    response = ChatResponse(cost_breakdown=[item])
+    assert response == ChatResponse(cost_breakdown=[item])
+    assert asdict(response)["cost_breakdown"] == [asdict(item)]
+    with pytest.raises(FrozenInstanceError):
+        item.quantity = 3
+
+
+@pytest.mark.unit
+def test_apply_cost_breakdown_preserves_token_costs_and_sums_known_components():
+    response = ChatResponse(
+        usage=Usage(input_tokens=100, output_tokens=50, total_tokens=150)
+    )
+    response.apply_pricing(
+        price_input_per_token=0.001,
+        price_output_per_token=0.002,
+        currency="USD",
+    )
+    ocr = CostLineItem(
+        operation="ocr",
+        model="mistral-ocr-4-1",
+        unit="page",
+        quantity=2,
+        rate=0.004,
+        currency="USD",
+    )
+
+    response.apply_cost_breakdown([ocr])
+
+    assert response.cost_input == 0.1
+    assert response.cost_output == 0.1
+    assert response.cost_breakdown == [ocr]
+    assert response.cost_total == pytest.approx(0.208)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("cost_breakdown", "accounting_complete", "expected_total"),
+    [
+        (
+            [
+                CostLineItem(
+                    operation="ocr",
+                    model="mistral-ocr-4-1",
+                    unit="page",
+                    quantity=2,
+                    rate=0,
+                    currency="USD",
+                )
+            ],
+            True,
+            0.2,
+        ),
+        (
+            [
+                CostLineItem(
+                    operation="ocr",
+                    model="mistral-ocr-4-1",
+                    unit="page",
+                    quantity=2,
+                    rate=0.004,
+                    currency=None,
+                )
+            ],
+            True,
+            None,
+        ),
+        (
+            [
+                CostLineItem(
+                    operation="ocr",
+                    model="mistral-ocr-4-1",
+                    unit="page",
+                    quantity=2,
+                    rate=0.004,
+                    currency="EUR",
+                )
+            ],
+            True,
+            None,
+        ),
+        (
+            [
+                CostLineItem(
+                    operation="ocr",
+                    model="mistral-ocr-4-1",
+                    unit="page",
+                    quantity=2,
+                    rate=0.004,
+                    currency="USD",
+                )
+            ],
+            False,
+            None,
+        ),
+    ],
+)
+def test_apply_cost_breakdown_marks_incomplete_or_currency_mismatched_totals_unavailable(
+    cost_breakdown,
+    accounting_complete,
+    expected_total,
+):
+    response = ChatResponse(
+        usage=Usage(input_tokens=100, output_tokens=50, total_tokens=150)
+    )
+    response.apply_pricing(
+        price_input_per_token=0.001,
+        price_output_per_token=0.002,
+        currency="USD",
+    )
+
+    response.apply_cost_breakdown(
+        cost_breakdown,
+        accounting_complete=accounting_complete,
+    )
+
+    if expected_total is None:
+        assert response.cost_total is None
+    else:
+        assert response.cost_total == pytest.approx(expected_total)
+
+
+@pytest.mark.unit
+def test_apply_cost_breakdown_keeps_total_unset_without_chat_usage():
+    response = ChatResponse()
+    ocr = CostLineItem(
+        operation="ocr",
+        model="mistral-ocr-4-1",
+        unit="page",
+        quantity=1,
+        rate=0.004,
+        currency="USD",
+    )
+
+    response.apply_cost_breakdown([ocr])
+
+    assert response.currency is None
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_breakdown == [ocr]
+    assert response.cost_total is None
 
 
 @pytest.mark.unit
