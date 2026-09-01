@@ -254,6 +254,51 @@ class Pricing:
 
 
 @dataclass(frozen=True)
+class MeteredOperationSpec:
+    """Verified non-token price for one organization operation."""
+
+    name: str
+    model: str
+    unit: str
+    rate: float
+    currency: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        name: str,
+        data: Any,
+        *,
+        currency: str,
+    ) -> "MeteredOperationSpec":
+        if not isinstance(name, str) or not name:
+            raise ValueError("metered operation name must be a non-empty string")
+        if not isinstance(data, Mapping):
+            raise ValueError(f"metered operation '{name}' must be an object")
+        if set(data) != {"model", "unit", "rate"}:
+            raise ValueError(
+                "metered operation must contain only model, unit, and rate"
+            )
+
+        model = data["model"]
+        if not isinstance(model, str) or not model:
+            raise ValueError("metered operation model must be a non-empty string")
+        unit = data["unit"]
+        if not isinstance(unit, str) or not unit:
+            raise ValueError("metered operation unit must be a non-empty string")
+        if not isinstance(currency, str) or not currency:
+            raise ValueError("metered operation currency must be a non-empty string")
+
+        return cls(
+            name=name,
+            model=model,
+            unit=unit,
+            rate=_non_negative_rate(data["rate"], "metered operation rate"),
+            currency=currency,
+        )
+
+
+@dataclass(frozen=True)
 class ModelSpec:
     name: str
     limits: ModelLimits
@@ -344,6 +389,7 @@ class OrganizationSpec:
     name: str
     currency: str = "USD"
     models: Dict[str, ModelSpec] = field(default_factory=dict)
+    metered_operations: Dict[str, MeteredOperationSpec] = field(default_factory=dict)
 
     @classmethod
     def from_dict(
@@ -388,7 +434,25 @@ class OrganizationSpec:
             )
             for model_name, model_spec in raw_models.items()
         }
-        return cls(name=name, currency=currency, models=models)
+        raw_metered_operations = data.get("metered_operations", {})
+        if not isinstance(raw_metered_operations, Mapping):
+            raise ValueError(
+                f"Organization '{name}' metered_operations must be an object"
+            )
+        metered_operations = {
+            operation_name: MeteredOperationSpec.from_dict(
+                operation_name,
+                operation_spec,
+                currency=currency,
+            )
+            for operation_name, operation_spec in raw_metered_operations.items()
+        }
+        return cls(
+            name=name,
+            currency=currency,
+            models=models,
+            metered_operations=metered_operations,
+        )
 
 
 @dataclass(frozen=True)
@@ -540,6 +604,16 @@ def resolve_model_spec(
 
     base_model_name = _snapshot_base_model_name(organization_name, model_name)
     return organization.models.get(base_model_name) if base_model_name else None
+
+
+def resolve_metered_operation_spec(
+    registry: RegistrySpec,
+    organization_name: str,
+    operation_name: str,
+) -> Optional[MeteredOperationSpec]:
+    """Resolve a named non-token meter from registered organization metadata."""
+    organization = registry.organizations.get(organization_name)
+    return organization.metered_operations.get(operation_name) if organization else None
 
 
 LLM_REGISTRY = RegistrySpec()

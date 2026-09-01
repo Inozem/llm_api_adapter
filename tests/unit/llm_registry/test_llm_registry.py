@@ -16,6 +16,7 @@ from src.llm_api_adapter.llm_registry.llm_registry import (
     OrganizationSpec,
     RegistrySpec,
     LLM_REGISTRY,
+    resolve_metered_operation_spec,
     resolve_model_spec,
 )
 from src.llm_api_adapter.llm_registry.request_rules import (
@@ -341,6 +342,7 @@ def test_plugin_organization_metadata_uses_the_existing_validation_and_lifecycle
         organization_data={
             "currency": "EUR",
             "models": {"mistral-small": model_data},
+            "metered_operations": {"ocr": _metered_operation_data()},
         },
         request_rule_registry=MistralRequestRuleRegistry(),
     )
@@ -353,6 +355,12 @@ def test_plugin_organization_metadata_uses_the_existing_validation_and_lifecycle
     assert model is not None
     assert model.pricing_tiers.currency == "EUR"
     assert model.request_rules.rules[0].handler == "drop_parameter"
+    meter = resolve_metered_operation_spec(registry, "mistral", "ocr")
+    assert meter is not None
+    assert meter.model == "mistral-ocr-4-1"
+    assert meter.rate == 0.004
+    assert meter.currency == "EUR"
+    assert resolve_metered_operation_spec(registry, "mistral", "missing") is None
 
 
 @pytest.mark.unit
@@ -848,7 +856,7 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
         assert (DEFAULT_REGISTRY_PATH.parent / relative_path).is_file()
 
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-    assert registry.schema_version == 12
+    assert registry.schema_version == 13
     for organization in registry.organizations.values():
         for model in organization.models.values():
             assert model.limits.context_window_tokens > 0

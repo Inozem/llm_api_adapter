@@ -22,7 +22,11 @@ import llm_api_adapter.universal_adapter as universal_module
 import llm_api_adapter_mistral.adapter as mistral_adapter_module
 import llm_api_adapter_mistral.clients.async_client as mistral_async_client_module
 from llm_api_adapter.errors.llm_api_error import LLMAPITokenLimitError
-from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
+from llm_api_adapter.llm_registry.llm_registry import (
+    RegistrySpec,
+    resolve_metered_operation_spec,
+    resolve_model_spec,
+)
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
@@ -97,6 +101,14 @@ def test_plugin_registers_verified_models_and_universal_adapter(mistral_runtime)
         "mistral",
         "mistral-large-2512",
     ) is not None
+    meter = resolve_metered_operation_spec(mistral_runtime, "mistral", "ocr")
+    assert meter is not None
+    assert (meter.model, meter.unit, meter.rate, meter.currency) == (
+        "mistral-ocr-4-1",
+        "page",
+        0.004,
+        "USD",
+    )
 
 
 @pytest.mark.integration
