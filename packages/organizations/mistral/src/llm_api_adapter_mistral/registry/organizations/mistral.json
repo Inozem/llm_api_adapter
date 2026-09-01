@@ -46,5 +46,12 @@
         }
       ]
     }
+  },
+  "metered_operations": {
+    "ocr": {
+      "model": "mistral-ocr-4-1",
+      "unit": "page",
+      "rate": 0.004
+    }
   }
 }

@@ -65,7 +65,7 @@ This table is a positioning snapshot. Provider capabilities change independently
 
 **Model-aware reasoning control.** One `reasoning_level` parameter is accepted across supported providers without provider-specific kwargs. Verified model capabilities resolve the canonical level to a native effort or budget setting; exact availability and token semantics remain model-dependent.
 
-**Cost accounting, built-in.** Responses carry normalized usage and cost fields in the configured currency. When a provider reports an exact total that cannot be split safely, `cost_total` is set while `cost_input` and `cost_output` remain unset.
+**Cost accounting, built-in.** Responses carry normalized usage and cost fields in the configured currency. When a provider reports an exact total that cannot be split safely, `cost_total` is set while `cost_input` and `cost_output` remain unset. Organization packages report separately metered, non-token charges as `CostLineItem` values in `cost_breakdown`.
 
 **Predictable errors.** One explicit exception hierarchy and provider-error mapping across supported organizations. `LLMAPIRateLimitError` means the same application-level condition whether you called OpenAI, Anthropic, Google, Mistral, or xAI.
 
@@ -123,6 +123,21 @@ The [Mistral package README](packages/organizations/mistral/README.md) and
 [xAI package README](packages/organizations/xai/README.md) list their
 supported models and organization-specific behaviour. Direct installation of
 `llm-api-adapter-mistral` or `llm-api-adapter-xai` remains supported.
+
+**Core baseline and organization packages.** An organization enters Core when
+its supported models and adapter implement the complete provider-neutral
+baseline: typed multi-turn messages and roles; sync/async chat and streaming;
+image and PDF input; tools; portable structured output; common sampling,
+output-limit, and timeout parameters; and normalized `ChatResponse`, errors,
+usage, and token pricing. The shared conformance suite verifies this contract.
+
+Optional organization packages own their adapters, registries, and
+provider-specific preprocessing. Mistral PDF input is one such extension: the
+package calls Mistral OCR before chat because OCR is not part of the selected
+chat model, then passes the resulting Markdown to it. That page-based OCR
+charge is a `CostLineItem`, not a token cost. See the
+[Mistral package README](packages/organizations/mistral/README.md#pdf-input)
+for its exact behaviour and pricing.
 
 For non-blocking requests, install the optional `[async]` extra and follow the
 [Async API guide](ASYNC_API.md).
@@ -470,12 +485,13 @@ The `ChatResponse` object returned by `chat` includes:
 6. **cost\_input**: Cost of input tokens.
 7. **cost\_output**: Cost of output tokens.
 8. **cost\_total**: Total combined cost.
-9. **content**: The generated text response.
-10. **finish\_reason**: Provider-native reason why generation stopped (for example, `"stop"` or `"length"`).
-11. **refusal**: Provider-normalized refusal detail, or `None` when the response was not a refusal.
-12. **incomplete\_reason**: Provider-normalized incomplete-generation reason, or `None` when generation completed.
-13. **parsed\_json**: Parsed JSON object for a valid completed structured result, otherwise `None`.
-14. **parsed\_model**: Typed Pydantic instance for a valid completed `response_model` result, otherwise `None`.
+9. **cost\_breakdown**: Optional non-token `CostLineItem` values supplied by an organization package.
+10. **content**: The generated text response.
+11. **finish\_reason**: Provider-native reason why generation stopped (for example, `"stop"` or `"length"`).
+12. **refusal**: Provider-normalized refusal detail, or `None` when the response was not a refusal.
+13. **incomplete\_reason**: Provider-normalized incomplete-generation reason, or `None` when generation completed.
+14. **parsed\_json**: Parsed JSON object for a valid completed structured result, otherwise `None`.
+15. **parsed\_model**: Typed Pydantic instance for a valid completed `response_model` result, otherwise `None`.
 
 ## Timeout Support
 
@@ -1051,7 +1067,8 @@ For bytes, the adapter sends the PDF as base64 data in the provider-specific req
 `achat()` returns the same `usage`, `currency`, and cost fields as `chat()`.
 For `astream_chat()`, the finalized response passed to `on_done` contains the
 same fields, while `StreamChunk.usage` is populated when the provider reports
-usage during streaming.
+usage during streaming. `cost_input` and `cost_output` are reserved for token
+costs; non-token components use `cost_breakdown`.
 
 ### Tiered standard-rate estimates
 
@@ -1096,6 +1113,8 @@ Prices are updated with each release to reflect provider changes. Bundled prices
 ### Overriding Pricing or Currency
 
 An override replaces that rate in every pricing tier for the selected model.
+It affects token pricing only; it does not change registered metered-operation
+rates.
 
 ```python
 google = UniversalLLMAPIAdapter(

@@ -119,19 +119,22 @@ Only after the staging pull request is merged does the [dev release workflow](.g
 
 The bundled registry contains only published standard text input/output rates;
 it is not an invoice calculator. For every registry-data update, verify the
-model identifier, context window, maximum output, and tier boundaries against
-the provider's official documentation. Then update `effective_date` and record
-the exact source URLs in this section. Do not infer values when a provider does
-not publish them.
+model identifier, context window, maximum output, tier boundaries, reasoning
+capabilities, request rules, aliases, and deprecation status against the
+provider's official documentation. Do not infer a value when the provider does
+not publish it.
 
-The verification date is the root manifest's `effective_date`; update the
-source list whenever that manifest value changes.
+Update the root manifest's `effective_date` whenever the built-in core registry
+data changes, and keep the source list below current for both core and plugin
+organizations.
 
-| Provider | Official sources |
-| --- | --- |
-| OpenAI | [Model catalog](https://developers.openai.com/api/docs/models) and [API pricing](https://developers.openai.com/api/docs/pricing) |
-| Anthropic | [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing) and [model deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations) |
-| Google | [Gemini models](https://ai.google.dev/gemini-api/docs/models), [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing), and [Gemini thinking](https://ai.google.dev/gemini-api/docs/generate-content/thinking) |
+| Provider | Registry source | Official sources |
+| --- | --- | --- |
+| OpenAI | `src/llm_api_adapter/llm_registry/organizations/openai.json` | [Model catalog](https://developers.openai.com/api/docs/models) and [API pricing](https://developers.openai.com/api/docs/pricing) |
+| Anthropic | `src/llm_api_adapter/llm_registry/organizations/anthropic.json` | [Models overview](https://platform.claude.com/docs/en/about-claude/models/overview), [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing), [effort](https://platform.claude.com/docs/en/build-with-claude/effort), and [model deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations) |
+| Google | `src/llm_api_adapter/llm_registry/organizations/google.json` | [Gemini models](https://ai.google.dev/gemini-api/docs/models), [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing), [Gemini thinking](https://ai.google.dev/gemini-api/docs/generate-content/thinking), and [deprecations](https://ai.google.dev/gemini-api/docs/deprecations) |
+| Mistral | `packages/organizations/mistral/src/llm_api_adapter_mistral/registry/organizations/mistral.json` | [Model cards](https://docs.mistral.ai/models/), [pricing](https://docs.mistral.ai/inference/pricing), [reasoning](https://docs.mistral.ai/studio/conversations/reasoning), and [model lifecycle](https://docs.mistral.ai/inference/model-lifecycle) |
+| xAI | `packages/organizations/xai/src/llm_api_adapter_xai/registry/organizations/xai.json` | [Models](https://docs.x.ai/developers/models), [pricing](https://docs.x.ai/developers/pricing), and [reasoning](https://docs.x.ai/developers/model-capabilities/text/reasoning) |
 
 This verification excludes cached input, cache write/storage, batch, flex,
 priority, modality-specific, provider-hosted tool, and negotiated-volume

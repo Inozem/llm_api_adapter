@@ -22,7 +22,11 @@ import llm_api_adapter.universal_adapter as universal_module
 import llm_api_adapter_mistral.adapter as mistral_adapter_module
 import llm_api_adapter_mistral.clients.async_client as mistral_async_client_module
 from llm_api_adapter.errors.llm_api_error import LLMAPITokenLimitError
-from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
+from llm_api_adapter.llm_registry.llm_registry import (
+    RegistrySpec,
+    resolve_metered_operation_spec,
+    resolve_model_spec,
+)
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
@@ -97,6 +101,14 @@ def test_plugin_registers_verified_models_and_universal_adapter(mistral_runtime)
         "mistral",
         "mistral-large-2512",
     ) is not None
+    meter = resolve_metered_operation_spec(mistral_runtime, "mistral", "ocr")
+    assert meter is not None
+    assert (meter.model, meter.unit, meter.rate, meter.currency) == (
+        "mistral-ocr-4-1",
+        "page",
+        0.004,
+        "USD",
+    )
 
 
 @pytest.mark.integration
@@ -253,14 +265,24 @@ def test_mistral_processes_document_bytes_and_urls_through_ocr(
     transport = FakeSyncTransport(
         {},
         responses=[
-            {"model": "mistral-ocr-4-1", "pages": [{"markdown": "# One"}]},
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# One"}],
+                "usage_info": {"pages_processed": 1},
+            },
             {
                 "model": "mistral-ocr-4-1",
                 "pages": [{"markdown": "# Two"}, {"markdown": "More"}],
+                "usage_info": {"pages_processed": 3},
             },
             {
                 "model": "mistral-large-2512",
                 "choices": [{"message": {"content": "A summary."}}],
+                "usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 3,
+                    "total_tokens": 5,
+                },
             },
         ],
     )
@@ -279,6 +301,17 @@ def test_mistral_processes_document_bytes_and_urls_through_ocr(
     )
 
     assert response.content == "A summary."
+    assert response.cost_input == pytest.approx(0.000001)
+    assert response.cost_output == pytest.approx(0.0000045)
+    assert response.cost_total == pytest.approx(0.0160055)
+    assert response.cost_breakdown is not None
+    assert [
+        (item.operation, item.model, item.unit, item.quantity, item.rate, item.cost)
+        for item in response.cost_breakdown
+    ] == [
+        ("ocr", "mistral-ocr-4-1", "page", 1.0, 0.004, 0.004),
+        ("ocr", "mistral-ocr-4-1", "page", 3.0, 0.004, 0.012),
+    ]
     assert [request.url for request in transport.requests] == [
         "https://api.mistral.ai/v1/ocr",
         "https://api.mistral.ai/v1/ocr",
@@ -307,6 +340,213 @@ def test_mistral_processes_document_bytes_and_urls_through_ocr(
                 "<document index=\"2\">\n# Two\n\n---\n\nMore\n</document>"
             ),
         }
+    ]
+
+
+@pytest.mark.integration
+def test_mistral_keeps_known_ocr_costs_when_another_usage_is_unavailable(
+    mistral_runtime,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        {},
+        responses=[
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# Known"}],
+                "usage_info": {"pages_processed": 1},
+            },
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# Unknown"}],
+            },
+            {
+                "model": "mistral-large-2512",
+                "choices": [{"message": {"content": "A summary."}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+            },
+        ],
+    )
+
+    response = adapter.chat(
+        [
+            UserMessage(
+                "Summarize these documents.",
+                files=[
+                    DocumentPart(url="https://example.com/known.pdf"),
+                    DocumentPart(url="https://example.com/unknown.pdf"),
+                ],
+            )
+        ]
+    )
+
+    assert response.cost_input == pytest.approx(0.000001)
+    assert response.cost_output == pytest.approx(0.0000045)
+    assert response.cost_total is None
+    assert response.cost_breakdown is not None
+    assert [item.quantity for item in response.cost_breakdown] == [1.0]
+
+
+@pytest.mark.integration
+def test_mistral_omits_total_when_the_ocr_meter_is_unavailable(
+    mistral_runtime,
+    monkeypatch,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+    monkeypatch.setattr(adapter.adapter, "_ocr_meter", lambda: None)
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        {},
+        responses=[
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# Meterless"}],
+                "usage_info": {"pages_processed": 1},
+            },
+            {
+                "model": "mistral-large-2512",
+                "choices": [{"message": {"content": "A summary."}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+            },
+        ],
+    )
+
+    response = adapter.chat(
+        [
+            UserMessage(
+                "Summarize this document.",
+                files=[DocumentPart(url="https://example.com/meterless.pdf")],
+            )
+        ]
+    )
+
+    assert response.cost_breakdown == []
+    assert response.cost_total is None
+
+
+@pytest.mark.unit
+def test_mistral_prepared_documents_retain_ocr_usage_and_meter(mistral_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+    transport = FakeSyncTransport(
+        {},
+        responses=[
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# One"}],
+                "usage_info": {"pages_processed": 1},
+            },
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# Two"}],
+                "usage_info": {"pages_processed": 3},
+            },
+        ],
+    )
+    adapter.adapter._sync_transport = transport
+
+    prepared = adapter.adapter._prepare_document_messages(
+        [
+            UserMessage(
+                "Summarize these documents.",
+                files=[
+                    DocumentPart(data=b"%PDF", media_type="application/pdf"),
+                    DocumentPart(url="https://example.com/two.pdf"),
+                ],
+            )
+        ],
+        timeout_s=None,
+    )
+
+    assert [operation.model for operation in prepared.ocr_operations] == [
+        "mistral-ocr-4-1",
+        "mistral-ocr-4-1",
+    ]
+    assert [operation.pages_processed for operation in prepared.ocr_operations] == [
+        1,
+        3,
+    ]
+    assert all(operation.meter is not None for operation in prepared.ocr_operations)
+    assert [operation.meter.rate for operation in prepared.ocr_operations] == [
+        0.004,
+        0.004,
+    ]
+    assert prepared.messages.to_openai()[0]["content"] == (
+        "Summarize these documents.\n\n"
+        "<document index=\"1\">\n# One\n</document>\n\n"
+        "<document index=\"2\">\n# Two\n</document>"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("usage_info", "expected_pages"),
+    [
+        ({"pages_processed": 0}, 0),
+        (None, None),
+        ({}, None),
+        ({"pages_processed": -1}, None),
+        ({"pages_processed": True}, None),
+    ],
+)
+def test_mistral_prepared_documents_mark_missing_or_malformed_ocr_usage_unavailable(
+    mistral_runtime,
+    usage_info,
+    expected_pages,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+    ocr_response = {
+        "model": "mistral-ocr-4-1",
+        "pages": [{"markdown": "# One"}],
+    }
+    if usage_info is not None:
+        ocr_response["usage_info"] = usage_info
+    adapter.adapter._sync_transport = FakeSyncTransport({}, responses=[ocr_response])
+
+    prepared = adapter.adapter._prepare_document_messages(
+        [
+            UserMessage(
+                "Summarize this document.",
+                files=[DocumentPart(url="https://example.com/one.pdf")],
+            )
+        ],
+        timeout_s=None,
+    )
+
+    assert prepared.ocr_operations[0].pages_processed == expected_pages
+    assert prepared.ocr_operations[0].meter is not None
+
+
+@pytest.mark.unit
+def test_mistral_prepared_documents_leave_documentless_messages_unchanged(mistral_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+
+    prepared = adapter.adapter._prepare_document_messages(
+        [UserMessage("No documents.")],
+        timeout_s=None,
+    )
+
+    assert prepared.ocr_operations == ()
+    assert prepared.messages.to_openai() == [
+        {"role": "user", "content": "No documents."}
     ]
 
 
@@ -426,6 +666,13 @@ def test_mistral_streams_text_tools_reasoning_and_usage(mistral_runtime):
     )
     transport = FakeSyncTransport(
         {},
+        responses=[
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# Stream document"}],
+                "usage_info": {"pages_processed": 2},
+            }
+        ],
         events=[
             SSEEvent(
                 event=None,
@@ -512,7 +759,12 @@ def test_mistral_streams_text_tools_reasoning_and_usage(mistral_runtime):
 
     streamed = list(
         adapter.stream_chat(
-            [{"role": "user", "content": "Say hello."}],
+            [
+                UserMessage(
+                    "Say hello.",
+                    files=[DocumentPart(url="https://example.com/stream.pdf")],
+                )
+            ],
             buffer_chars=3,
             capture_reasoning=True,
             on_delta=deltas.append,
@@ -538,8 +790,13 @@ def test_mistral_streams_text_tools_reasoning_and_usage(mistral_runtime):
     assert response.response_id == "cmpl-mistral-stream-1"
     assert response.usage is not None
     assert response.usage.total_tokens == 11
-    assert response.cost_total == pytest.approx(0.00000435)
+    assert response.cost_total == pytest.approx(0.00800435)
+    assert response.cost_breakdown is not None
+    assert [item.quantity for item in response.cost_breakdown] == [2.0]
 
+    assert [request.url for request in transport.requests] == [
+        "https://api.mistral.ai/v1/ocr"
+    ]
     stream_request = transport.stream_requests[0]
     assert stream_request.timeout is None
     assert stream_request.payload["stream"] is True
@@ -696,10 +953,12 @@ def test_mistral_async_chat_processes_document_through_ocr(
             return {
                 "model": "mistral-ocr-4-1",
                 "pages": [{"markdown": "# Async document"}],
+                "usage_info": {"pages_processed": 2},
             }
         return {
             "model": "mistral-large-2512",
             "choices": [{"message": {"content": "Async summary."}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 3},
         }
 
     monkeypatch.setattr(
@@ -725,6 +984,9 @@ def test_mistral_async_chat_processes_document_through_ocr(
     )
 
     assert response.content == "Async summary."
+    assert response.cost_total == pytest.approx(0.0080055)
+    assert response.cost_breakdown is not None
+    assert [item.quantity for item in response.cost_breakdown] == [2.0]
     assert [url for url, _ in request_calls] == [
         "https://api.mistral.ai/v1/ocr",
         "https://api.mistral.ai/v1/chat/completions",
@@ -733,6 +995,89 @@ def test_mistral_async_chat_processes_document_through_ocr(
         "Summarize this document.\n\n"
         "<document index=\"1\">\n# Async document\n</document>"
     )
+
+
+@pytest.mark.integration
+def test_mistral_async_stream_includes_ocr_costs(mistral_runtime, monkeypatch):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+    request_calls = []
+    stream_calls = []
+
+    async def fake_async_request(url, **kwargs):
+        request_calls.append((url, kwargs))
+        return {
+            "model": "mistral-ocr-4-1",
+            "pages": [{"markdown": "# Async stream document"}],
+            "usage_info": {"pages_processed": 2},
+        }
+
+    def fake_async_stream_request(url, **kwargs):
+        stream_calls.append((url, kwargs))
+
+        async def events():
+            yield SSEEvent(
+                event=None,
+                data={
+                    "id": "cmpl-mistral-async-stream-ocr",
+                    "model": "mistral-large-2512",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "Async summary."},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 2,
+                        "completion_tokens": 3,
+                        "total_tokens": 5,
+                    },
+                },
+            )
+
+        return events()
+
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_request",
+        fake_async_request,
+    )
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+
+    async def stream_document():
+        completed = []
+        streamed = [
+            text
+            async for text in adapter.astream_chat(
+                [
+                    UserMessage(
+                        "Summarize this document.",
+                        files=[DocumentPart(url="https://example.com/async-stream.pdf")],
+                    )
+                ],
+                on_done=completed.append,
+            )
+        ]
+        return streamed, completed
+
+    streamed, completed = asyncio.run(stream_document())
+
+    assert streamed == ["Async summary."]
+    assert [url for url, _ in request_calls] == ["https://api.mistral.ai/v1/ocr"]
+    assert stream_calls[0][0] == "https://api.mistral.ai/v1/chat/completions"
+    assert len(completed) == 1
+    response = completed[0]
+    assert response.cost_total == pytest.approx(0.0080055)
+    assert response.cost_breakdown is not None
+    assert [item.quantity for item in response.cost_breakdown] == [2.0]
 
 
 @pytest.mark.unit

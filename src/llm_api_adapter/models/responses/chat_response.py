@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 import json
-from typing import Any, List, Optional
+from math import isfinite
+from typing import Any, List, Optional, Sequence
 import warnings
 
 from ...errors.llm_api_error import InvalidToolArgumentsError, LLMAPIError
@@ -13,6 +14,48 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class CostLineItem:
+    """One provider-neutral, non-token cost component."""
+
+    operation: str
+    model: str
+    unit: str
+    quantity: float
+    rate: float
+    currency: Optional[str]
+    cost: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        for field_name, value in (
+            ("operation", self.operation),
+            ("model", self.model),
+            ("unit", self.unit),
+        ):
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"cost line item {field_name} must be a non-empty string")
+        for field_name, value in (
+            ("quantity", self.quantity),
+            ("rate", self.rate),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(
+                    f"cost line item {field_name} must be a non-negative finite number"
+                )
+        if self.currency is not None and (
+            not isinstance(self.currency, str) or not self.currency
+        ):
+            raise ValueError("cost line item currency must be a non-empty string or None")
+        object.__setattr__(self, "quantity", float(self.quantity))
+        object.__setattr__(self, "rate", float(self.rate))
+        object.__setattr__(self, "cost", self.quantity * self.rate)
 
 
 @dataclass
@@ -50,6 +93,7 @@ class ChatResponse:
     cost_input: Optional[float] = None
     cost_output: Optional[float] = None
     cost_total: Optional[float] = None
+    cost_breakdown: Optional[List[CostLineItem]] = None
     content: Optional[str] = None
     tool_calls: Optional[List[ToolCall]] = None
     finish_reason: Optional[str] = None
@@ -611,3 +655,33 @@ class ChatResponse:
         self.cost_input = self.usage.input_tokens * price_input_per_token
         self.cost_output = self.usage.output_tokens * price_output_per_token
         self.cost_total = self.cost_input + self.cost_output
+
+    def apply_cost_breakdown(
+        self,
+        cost_breakdown: Sequence[CostLineItem],
+        *,
+        accounting_complete: bool = True,
+    ) -> None:
+        """Attach non-token costs and retain a total only when it is complete."""
+        line_items = list(cost_breakdown)
+        if not all(isinstance(item, CostLineItem) for item in line_items):
+            raise TypeError("cost_breakdown must contain CostLineItem values")
+        if not isinstance(accounting_complete, bool):
+            raise ValueError("accounting_complete must be a boolean")
+
+        self.cost_breakdown = line_items
+        if (
+            not accounting_complete
+            or self.cost_total is None
+            or self.currency is None
+            or any(item.currency != self.currency for item in self.cost_breakdown)
+        ):
+            self.cost_total = None
+            return
+
+        token_total = (
+            self.cost_input + self.cost_output
+            if self.cost_input is not None and self.cost_output is not None
+            else self.cost_total
+        )
+        self.cost_total = token_total + sum(item.cost for item in self.cost_breakdown)

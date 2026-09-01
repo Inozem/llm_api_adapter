@@ -7,6 +7,7 @@ import json
 from typing import Any, AsyncIterator, Iterator, List, Mapping, Optional
 import warnings
 
+import llm_api_adapter.adapters.base_adapter as base_adapter_module
 from llm_api_adapter.adapters.base_adapter import (
     AsyncOnChunk,
     AsyncOnDelta,
@@ -35,6 +36,10 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPITokenLimitError,
     LLMAPIUsageLimitError,
 )
+from llm_api_adapter.llm_registry.llm_registry import (
+    MeteredOperationSpec,
+    resolve_metered_operation_spec,
+)
 from llm_api_adapter.llms.transports import SSEEvent, SyncTransport, create_sync_transport
 from llm_api_adapter.llms.streaming import (
     StreamChunkBuffer,
@@ -46,7 +51,11 @@ from llm_api_adapter.models.messages.chat_message import (
     Messages,
     UserMessage,
 )
-from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
+from llm_api_adapter.models.responses.chat_response import (
+    ChatResponse,
+    CostLineItem,
+    Usage,
+)
 from llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from llm_api_adapter.models.tools import ToolCall, ToolSpec
 
@@ -65,6 +74,7 @@ class _MistralStreamState(_StreamState):
     text_parts: list[str] = field(default_factory=list)
     tool_calls: dict[int, dict[str, Any]] = field(default_factory=dict)
     finish_reason: Optional[str] = None
+    ocr_operations: tuple[documents.PreparedOCROperation, ...] = ()
 
 
 @dataclass(repr=False)
@@ -108,9 +118,9 @@ class MistralAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Generate one response through ``POST /v1/chat/completions``."""
-        prepared_messages = self._prepare_document_messages(messages, timeout_s)
+        prepared_documents = self._prepare_document_messages(messages, timeout_s)
         request_context, payload = self._prepare_request_payload(
-            prepared_messages,
+            prepared_documents.messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -129,10 +139,11 @@ class MistralAdapter(LLMAdapterBase):
                 response,
                 capture_reasoning=capture_reasoning,
             )
-            return self._finalize_chat_response(
+            return self._finalize_ocr_chat_response(
                 chat_response,
                 effective_schema=request_context.effective_schema,
                 response_model=response_model,
+                ocr_operations=prepared_documents.ocr_operations,
             )
         except LLMAPIError as error:
             self.handle_error(error)
@@ -158,12 +169,12 @@ class MistralAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Generate one response without blocking the event loop."""
-        prepared_messages = await self._prepare_document_messages_async(
+        prepared_documents = await self._prepare_document_messages_async(
             messages,
             timeout_s,
         )
         request_context, payload = self._prepare_request_payload(
-            prepared_messages,
+            prepared_documents.messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -182,10 +193,11 @@ class MistralAdapter(LLMAdapterBase):
                 response,
                 capture_reasoning=capture_reasoning,
             )
-            return self._finalize_chat_response(
+            return self._finalize_ocr_chat_response(
                 chat_response,
                 effective_schema=request_context.effective_schema,
                 response_model=response_model,
+                ocr_operations=prepared_documents.ocr_operations,
             )
         except LLMAPIError as error:
             self.handle_error(error)
@@ -217,9 +229,9 @@ class MistralAdapter(LLMAdapterBase):
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
         """Stream normalized visible deltas from Mistral's SSE endpoint."""
-        prepared_messages = self._prepare_document_messages(messages, timeout_s)
+        prepared_documents = self._prepare_document_messages(messages, timeout_s)
         request_context, payload = self._prepare_request_payload(
-            prepared_messages,
+            prepared_documents.messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -235,6 +247,7 @@ class MistralAdapter(LLMAdapterBase):
             buffer_chars=buffer_chars,
             capture_reasoning=capture_reasoning,
         )
+        state.ocr_operations = prepared_documents.ocr_operations
         events = self._stream_payload(payload, timeout_s)
         yield from self._run_sync_stream(
             events,
@@ -320,12 +333,12 @@ class MistralAdapter(LLMAdapterBase):
         capture_reasoning: bool,
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
-        prepared_messages = await self._prepare_document_messages_async(
+        prepared_documents = await self._prepare_document_messages_async(
             messages,
             timeout_s,
         )
         request_context, payload = self._prepare_request_payload(
-            prepared_messages,
+            prepared_documents.messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -341,6 +354,7 @@ class MistralAdapter(LLMAdapterBase):
             buffer_chars=buffer_chars,
             capture_reasoning=capture_reasoning,
         )
+        state.ocr_operations = prepared_documents.ocr_operations
         events = self._astream_payload(payload, timeout_s)
         async for text in self._run_async_stream(
             events,
@@ -402,15 +416,71 @@ class MistralAdapter(LLMAdapterBase):
         self,
         messages: List[Message] | Messages,
         timeout_s: Optional[float],
-    ) -> Messages:
+    ) -> documents.PreparedDocuments:
         return documents.prepare_document_messages(self, messages, timeout_s)
+
+    def _ocr_meter(self) -> Optional[MeteredOperationSpec]:
+        meter = resolve_metered_operation_spec(
+            base_adapter_module.LLM_REGISTRY,
+            self.company,
+            "ocr",
+        )
+        if meter is None or meter.model != documents.MISTRAL_OCR_MODEL:
+            return None
+        return meter
 
     async def _prepare_document_messages_async(
         self,
         messages: List[Message] | Messages,
         timeout_s: Optional[float],
-    ) -> Messages:
+    ) -> documents.PreparedDocuments:
         return await documents.prepare_document_messages_async(self, messages, timeout_s)
+
+    @staticmethod
+    def _apply_ocr_costs(
+        chat_response: ChatResponse,
+        ocr_operations: tuple[documents.PreparedOCROperation, ...],
+    ) -> None:
+        if not ocr_operations:
+            return
+
+        accounting_complete = True
+        cost_breakdown: list[CostLineItem] = []
+        for operation in ocr_operations:
+            if operation.pages_processed is None or operation.meter is None:
+                accounting_complete = False
+                continue
+            cost_breakdown.append(
+                CostLineItem(
+                    operation=operation.meter.name,
+                    model=operation.model,
+                    unit=operation.meter.unit,
+                    quantity=operation.pages_processed,
+                    rate=operation.meter.rate,
+                    currency=operation.meter.currency,
+                )
+            )
+
+        chat_response.apply_cost_breakdown(
+            cost_breakdown,
+            accounting_complete=accounting_complete,
+        )
+
+    def _finalize_ocr_chat_response(
+        self,
+        chat_response: ChatResponse,
+        *,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+        ocr_operations: tuple[documents.PreparedOCROperation, ...],
+    ) -> ChatResponse:
+        chat_response = self._finalize_chat_response(
+            chat_response,
+            effective_schema=effective_schema,
+            response_model=response_model,
+        )
+        self._apply_ocr_costs(chat_response, ocr_operations)
+        return chat_response
 
     def _new_stream_state(
         self,
@@ -703,12 +773,14 @@ class MistralAdapter(LLMAdapterBase):
             response_data,
             capture_reasoning=False,
         )
-        return self._finalize_stream_response(
+        chat_response = self._finalize_stream_response(
             chat_response,
             reasoning_collector=state.reasoning_collector,
             effective_schema=effective_schema,
             response_model=response_model,
         )
+        self._apply_ocr_costs(chat_response, state.ocr_operations)
+        return chat_response
 
     def _build_payload(
         self,

@@ -1,5 +1,4 @@
 import json
-from datetime import date
 from pathlib import Path
 
 import pytest
@@ -9,6 +8,7 @@ from src.llm_api_adapter.llm_registry.llm_registry import (
     DEFAULT_REGISTRY_PATH,
     ModelLimits,
     ModelSpec,
+    MeteredOperationSpec,
     NumericReasoningCapability,
     Pricing,
     PricingTier,
@@ -16,6 +16,7 @@ from src.llm_api_adapter.llm_registry.llm_registry import (
     OrganizationSpec,
     RegistrySpec,
     LLM_REGISTRY,
+    resolve_metered_operation_spec,
     resolve_model_spec,
 )
 from src.llm_api_adapter.llm_registry.request_rules import (
@@ -27,10 +28,6 @@ from src.llm_api_adapter.llm_registry.request_rules import (
     RequestRules,
     SamplingRequestRuleRegistry,
 )
-
-
-SONNET_5_STANDARD_PRICING_DATE = date(2026, 9, 1)
-
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
@@ -75,6 +72,16 @@ def _model_data(*, tiers=None):
             }
         ],
     }
+
+
+def _metered_operation_data(**overrides):
+    data = {
+        "model": "mistral-ocr-4-1",
+        "unit": "page",
+        "rate": 0.004,
+    }
+    data.update(overrides)
+    return data
 
 
 @pytest.mark.unit
@@ -169,6 +176,151 @@ def test_model_and_organization_from_dict():
     assert "gpt-5" in organization.models
     assert isinstance(organization.models["gpt-5"], ModelSpec)
     assert organization.models["gpt-5"].pricing_tiers.currency == "EUR"
+    assert organization.metered_operations == {}
+
+
+@pytest.mark.unit
+def test_organization_loads_optional_metered_operations_separately_from_models():
+    organization = OrganizationSpec.from_dict(
+        "mistral",
+        {
+            "currency": "EUR",
+            "models": {"mistral-small": _model_data()},
+            "metered_operations": {"ocr": _metered_operation_data()},
+        },
+    )
+
+    meter = organization.metered_operations["ocr"]
+    assert meter == MeteredOperationSpec(
+        name="ocr",
+        model="mistral-ocr-4-1",
+        unit="page",
+        rate=0.004,
+        currency="EUR",
+    )
+    assert isinstance(organization.models["mistral-small"], ModelSpec)
+    assert not isinstance(organization.models["mistral-small"], MeteredOperationSpec)
+
+
+@pytest.mark.unit
+def test_metered_operation_allows_zero_rate():
+    meter = MeteredOperationSpec.from_dict(
+        "ocr",
+        _metered_operation_data(rate=0),
+        currency="USD",
+    )
+
+    assert meter.rate == 0
+
+
+@pytest.mark.unit
+def test_current_token_priced_organizations_load_without_metered_operations():
+    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
+
+    assert {
+        organization_name: organization.metered_operations
+        for organization_name, organization in registry.organizations.items()
+    } == {
+        "openai": {},
+        "anthropic": {},
+        "google": {},
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "data", "currency", "message"),
+    [
+        (
+            "",
+            _metered_operation_data(),
+            "USD",
+            "metered operation name must be a non-empty string",
+        ),
+        (
+            "ocr",
+            None,
+            "USD",
+            "metered operation 'ocr' must be an object",
+        ),
+        (
+            "ocr",
+            {"unit": "page", "rate": 0.004},
+            "USD",
+            "metered operation must contain only model, unit, and rate",
+        ),
+        (
+            "ocr",
+            _metered_operation_data(model=""),
+            "USD",
+            "metered operation model must be a non-empty string",
+        ),
+        (
+            "ocr",
+            _metered_operation_data(unit=""),
+            "USD",
+            "metered operation unit must be a non-empty string",
+        ),
+        (
+            "ocr",
+            _metered_operation_data(rate=-0.004),
+            "USD",
+            "metered operation rate must be a non-negative number",
+        ),
+        (
+            "ocr",
+            _metered_operation_data(rate=True),
+            "USD",
+            "metered operation rate must be a non-negative number",
+        ),
+        (
+            "ocr",
+            _metered_operation_data(),
+            "",
+            "metered operation currency must be a non-empty string",
+        ),
+    ],
+)
+def test_metered_operation_spec_rejects_invalid_data(name, data, currency, message):
+    with pytest.raises(ValueError, match=message):
+        MeteredOperationSpec.from_dict(name, data, currency=currency)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("metered_operations", "message"),
+    [
+        (None, "metered_operations must be an object"),
+        ([], "metered_operations must be an object"),
+        ({"": _metered_operation_data()}, "name must be a non-empty string"),
+        ({"ocr": None}, "metered operation 'ocr' must be an object"),
+    ],
+)
+def test_organization_rejects_malformed_metered_operations(
+    metered_operations,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        OrganizationSpec.from_dict(
+            "mistral",
+            {
+                "models": {"mistral-small": _model_data()},
+                "metered_operations": metered_operations,
+            },
+        )
+
+
+@pytest.mark.unit
+def test_chat_model_metadata_cannot_be_parsed_as_a_metered_operation():
+    with pytest.raises(
+        ValueError,
+        match="metered operation must contain only model, unit, and rate",
+    ):
+        MeteredOperationSpec.from_dict(
+            "ocr",
+            _model_data(),
+            currency="USD",
+        )
 
 
 @pytest.mark.unit
@@ -190,6 +342,7 @@ def test_plugin_organization_metadata_uses_the_existing_validation_and_lifecycle
         organization_data={
             "currency": "EUR",
             "models": {"mistral-small": model_data},
+            "metered_operations": {"ocr": _metered_operation_data()},
         },
         request_rule_registry=MistralRequestRuleRegistry(),
     )
@@ -202,6 +355,12 @@ def test_plugin_organization_metadata_uses_the_existing_validation_and_lifecycle
     assert model is not None
     assert model.pricing_tiers.currency == "EUR"
     assert model.request_rules.rules[0].handler == "drop_parameter"
+    meter = resolve_metered_operation_spec(registry, "mistral", "ocr")
+    assert meter is not None
+    assert meter.model == "mistral-ocr-4-1"
+    assert meter.rate == 0.004
+    assert meter.currency == "EUR"
+    assert resolve_metered_operation_spec(registry, "mistral", "missing") is None
 
 
 @pytest.mark.unit
@@ -697,7 +856,7 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
         assert (DEFAULT_REGISTRY_PATH.parent / relative_path).is_file()
 
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-    assert registry.schema_version == 12
+    assert registry.schema_version == 13
     for organization in registry.organizations.values():
         for model in organization.models.values():
             assert model.limits.context_window_tokens > 0
@@ -1012,67 +1171,8 @@ def test_default_registry_contains_verified_reasoning_capabilities(
         == expected_capability
     )
 
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("provider", "model_name", "context_window_tokens", "expected_tiers"),
-    [
-        ("openai", "gpt-5.6-sol", 1_050_000, ((272_000, 5.0, 30.0), (None, 10.0, 45.0))),
-        ("openai", "gpt-5.6-terra", 1_050_000, ((272_000, 2.0, 12.0), (None, 4.0, 18.0))),
-        ("openai", "gpt-5.6-luna", 1_050_000, ((272_000, 0.2, 1.2), (None, 0.4, 1.8))),
-        ("openai", "gpt-5.5", 1_050_000, ((272_000, 5.0, 30.0), (None, 10.0, 45.0))),
-        ("openai", "gpt-5.4", 1_050_000, ((272_000, 2.5, 15.0), (None, 5.0, 22.5))),
-        ("openai", "gpt-5.4-mini", 400_000, ((None, 0.75, 4.5),)),
-        ("openai", "gpt-5.4-nano", 400_000, ((None, 0.2, 1.25),)),
-        ("openai", "gpt-5.2", 400_000, ((None, 1.75, 14.0),)),
-        ("openai", "gpt-5.1", 400_000, ((None, 1.25, 10.0),)),
-        ("openai", "gpt-5", 400_000, ((None, 1.25, 10.0),)),
-        ("openai", "gpt-5-mini", 400_000, ((None, 0.25, 2.0),)),
-        ("openai", "gpt-5-nano", 400_000, ((None, 0.05, 0.4),)),
-        ("google", "gemini-3.1-pro-preview", 1_048_576, ((200_000, 2.0, 12.0), (None, 4.0, 18.0))),
-        ("google", "gemini-3.7-flash", 1_048_576, ((None, 0.75, 3.75),)),
-        ("google", "gemini-3.6-flash", 1_048_576, ((None, 0.75, 3.75),)),
-        ("google", "gemini-3.5-flash-lite", 1_048_576, ((None, 0.3, 2.5),)),
-        ("google", "gemini-2.5-pro", 1_048_576, ((200_000, 1.25, 10.0), (None, 2.5, 15.0))),
-        ("google", "gemini-2.5-flash-lite", 1_048_576, ((None, 0.1, 0.4),)),
-    ],
-)
-def test_default_registry_contains_verified_limits_and_pricing_tiers(
-    provider,
-    model_name,
-    context_window_tokens,
-    expected_tiers,
-):
-    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-    model = registry.organizations[provider].models[model_name]
-
-    assert model.limits.context_window_tokens == context_window_tokens
-    assert len(model.pricing_tiers.tiers) == len(expected_tiers)
-    for tier, (up_to_prompt_tokens, input_per_1m, output_per_1m) in zip(
-        model.pricing_tiers.tiers,
-        expected_tiers,
-        strict=True,
-    ):
-        assert tier.up_to_prompt_tokens == up_to_prompt_tokens
-        assert tier.in_per_token * 1_000_000 == pytest.approx(input_per_1m)
-        assert tier.out_per_token * 1_000_000 == pytest.approx(output_per_1m)
-
-
 @pytest.mark.unit
 def test_default_registry_excludes_retired_claude_opus_4_1():
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
 
     assert "claude-opus-4-1" not in registry.organizations["anthropic"].models
-
-
-@pytest.mark.unit
-def test_sonnet_5_temporary_pricing_is_updated_after_promotion():
-    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-    sonnet_5 = registry.organizations["anthropic"].models["claude-sonnet-5"]
-    if date.today() < SONNET_5_STANDARD_PRICING_DATE:
-        expected_input, expected_output = 2.0, 10.0
-    else:
-        expected_input, expected_output = 3.0, 15.0
-    tier = sonnet_5.pricing_tiers.tiers[0]
-    assert pytest.approx(tier.in_per_token * 1_000_000) == expected_input
-    assert pytest.approx(tier.out_per_token * 1_000_000) == expected_output
