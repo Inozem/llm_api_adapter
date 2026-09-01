@@ -7,6 +7,7 @@ import json
 from typing import Any, AsyncIterator, Iterator, List, Mapping, Optional
 import warnings
 
+import llm_api_adapter.adapters.base_adapter as base_adapter_module
 from llm_api_adapter.adapters.base_adapter import (
     AsyncOnChunk,
     AsyncOnDelta,
@@ -34,6 +35,10 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPITimeoutError,
     LLMAPITokenLimitError,
     LLMAPIUsageLimitError,
+)
+from llm_api_adapter.llm_registry.llm_registry import (
+    MeteredOperationSpec,
+    resolve_metered_operation_spec,
 )
 from llm_api_adapter.llms.transports import SSEEvent, SyncTransport, create_sync_transport
 from llm_api_adapter.llms.streaming import (
@@ -108,9 +113,9 @@ class MistralAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Generate one response through ``POST /v1/chat/completions``."""
-        prepared_messages = self._prepare_document_messages(messages, timeout_s)
+        prepared_documents = self._prepare_document_messages(messages, timeout_s)
         request_context, payload = self._prepare_request_payload(
-            prepared_messages,
+            prepared_documents.messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -217,9 +222,9 @@ class MistralAdapter(LLMAdapterBase):
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
         """Stream normalized visible deltas from Mistral's SSE endpoint."""
-        prepared_messages = self._prepare_document_messages(messages, timeout_s)
+        prepared_documents = self._prepare_document_messages(messages, timeout_s)
         request_context, payload = self._prepare_request_payload(
-            prepared_messages,
+            prepared_documents.messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -402,8 +407,18 @@ class MistralAdapter(LLMAdapterBase):
         self,
         messages: List[Message] | Messages,
         timeout_s: Optional[float],
-    ) -> Messages:
+    ) -> documents.PreparedDocuments:
         return documents.prepare_document_messages(self, messages, timeout_s)
+
+    def _ocr_meter(self) -> Optional[MeteredOperationSpec]:
+        meter = resolve_metered_operation_spec(
+            base_adapter_module.LLM_REGISTRY,
+            self.company,
+            "ocr",
+        )
+        if meter is None or meter.model != documents.MISTRAL_OCR_MODEL:
+            return None
+        return meter
 
     async def _prepare_document_messages_async(
         self,

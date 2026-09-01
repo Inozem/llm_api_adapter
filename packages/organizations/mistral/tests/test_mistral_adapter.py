@@ -265,10 +265,15 @@ def test_mistral_processes_document_bytes_and_urls_through_ocr(
     transport = FakeSyncTransport(
         {},
         responses=[
-            {"model": "mistral-ocr-4-1", "pages": [{"markdown": "# One"}]},
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# One"}],
+                "usage_info": {"pages_processed": 1},
+            },
             {
                 "model": "mistral-ocr-4-1",
                 "pages": [{"markdown": "# Two"}, {"markdown": "More"}],
+                "usage_info": {"pages_processed": 3},
             },
             {
                 "model": "mistral-large-2512",
@@ -319,6 +324,125 @@ def test_mistral_processes_document_bytes_and_urls_through_ocr(
                 "<document index=\"2\">\n# Two\n\n---\n\nMore\n</document>"
             ),
         }
+    ]
+
+
+@pytest.mark.unit
+def test_mistral_prepared_documents_retain_ocr_usage_and_meter(mistral_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+    transport = FakeSyncTransport(
+        {},
+        responses=[
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# One"}],
+                "usage_info": {"pages_processed": 1},
+            },
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# Two"}],
+                "usage_info": {"pages_processed": 3},
+            },
+        ],
+    )
+    adapter.adapter._sync_transport = transport
+
+    prepared = adapter.adapter._prepare_document_messages(
+        [
+            UserMessage(
+                "Summarize these documents.",
+                files=[
+                    DocumentPart(data=b"%PDF", media_type="application/pdf"),
+                    DocumentPart(url="https://example.com/two.pdf"),
+                ],
+            )
+        ],
+        timeout_s=None,
+    )
+
+    assert [operation.model for operation in prepared.ocr_operations] == [
+        "mistral-ocr-4-1",
+        "mistral-ocr-4-1",
+    ]
+    assert [operation.pages_processed for operation in prepared.ocr_operations] == [
+        1,
+        3,
+    ]
+    assert all(operation.meter is not None for operation in prepared.ocr_operations)
+    assert [operation.meter.rate for operation in prepared.ocr_operations] == [
+        0.004,
+        0.004,
+    ]
+    assert prepared.messages.to_openai()[0]["content"] == (
+        "Summarize these documents.\n\n"
+        "<document index=\"1\">\n# One\n</document>\n\n"
+        "<document index=\"2\">\n# Two\n</document>"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("usage_info", "expected_pages"),
+    [
+        ({"pages_processed": 0}, 0),
+        (None, None),
+        ({}, None),
+        ({"pages_processed": -1}, None),
+        ({"pages_processed": True}, None),
+    ],
+)
+def test_mistral_prepared_documents_mark_missing_or_malformed_ocr_usage_unavailable(
+    mistral_runtime,
+    usage_info,
+    expected_pages,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+    ocr_response = {
+        "model": "mistral-ocr-4-1",
+        "pages": [{"markdown": "# One"}],
+    }
+    if usage_info is not None:
+        ocr_response["usage_info"] = usage_info
+    adapter.adapter._sync_transport = FakeSyncTransport({}, responses=[ocr_response])
+
+    prepared = adapter.adapter._prepare_document_messages(
+        [
+            UserMessage(
+                "Summarize this document.",
+                files=[DocumentPart(url="https://example.com/one.pdf")],
+            )
+        ],
+        timeout_s=None,
+    )
+
+    assert prepared.ocr_operations[0].pages_processed == expected_pages
+    assert prepared.ocr_operations[0].meter is not None
+
+
+@pytest.mark.unit
+def test_mistral_prepared_documents_leave_documentless_messages_unchanged(mistral_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-2512",
+        api_key="mistral-test-key",
+    )
+
+    prepared = adapter.adapter._prepare_document_messages(
+        [UserMessage("No documents.")],
+        timeout_s=None,
+    )
+
+    assert prepared.ocr_operations == ()
+    assert prepared.messages.to_openai() == [
+        {"role": "user", "content": "No documents."}
     ]
 
 
