@@ -110,7 +110,7 @@
       "is_adaptive_thinking": true,
       "limits": {
         "context_window_tokens": 1000000,
-        "max_output_tokens": 64000
+        "max_output_tokens": 128000
       },
       "pricing_tiers": [
         {

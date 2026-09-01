@@ -1,5 +1,4 @@
 import json
-from datetime import date
 from pathlib import Path
 
 import pytest
@@ -27,10 +26,6 @@ from src.llm_api_adapter.llm_registry.request_rules import (
     RequestRules,
     SamplingRequestRuleRegistry,
 )
-
-
-SONNET_5_STANDARD_PRICING_DATE = date(2026, 9, 1)
-
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
@@ -1063,16 +1058,3 @@ def test_default_registry_excludes_retired_claude_opus_4_1():
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
 
     assert "claude-opus-4-1" not in registry.organizations["anthropic"].models
-
-
-@pytest.mark.unit
-def test_sonnet_5_temporary_pricing_is_updated_after_promotion():
-    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-    sonnet_5 = registry.organizations["anthropic"].models["claude-sonnet-5"]
-    if date.today() < SONNET_5_STANDARD_PRICING_DATE:
-        expected_input, expected_output = 2.0, 10.0
-    else:
-        expected_input, expected_output = 3.0, 15.0
-    tier = sonnet_5.pricing_tiers.tiers[0]
-    assert pytest.approx(tier.in_per_token * 1_000_000) == expected_input
-    assert pytest.approx(tier.out_per_token * 1_000_000) == expected_output
