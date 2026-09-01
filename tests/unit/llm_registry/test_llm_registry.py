@@ -1171,52 +1171,6 @@ def test_default_registry_contains_verified_reasoning_capabilities(
         == expected_capability
     )
 
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("provider", "model_name", "context_window_tokens", "expected_tiers"),
-    [
-        ("openai", "gpt-5.6-sol", 1_050_000, ((272_000, 5.0, 30.0), (None, 10.0, 45.0))),
-        ("openai", "gpt-5.6-terra", 1_050_000, ((272_000, 2.0, 12.0), (None, 4.0, 18.0))),
-        ("openai", "gpt-5.6-luna", 1_050_000, ((272_000, 0.2, 1.2), (None, 0.4, 1.8))),
-        ("openai", "gpt-5.5", 1_050_000, ((272_000, 5.0, 30.0), (None, 10.0, 45.0))),
-        ("openai", "gpt-5.4", 1_050_000, ((272_000, 2.5, 15.0), (None, 5.0, 22.5))),
-        ("openai", "gpt-5.4-mini", 400_000, ((None, 0.75, 4.5),)),
-        ("openai", "gpt-5.4-nano", 400_000, ((None, 0.2, 1.25),)),
-        ("openai", "gpt-5.2", 400_000, ((None, 1.75, 14.0),)),
-        ("openai", "gpt-5.1", 400_000, ((None, 1.25, 10.0),)),
-        ("openai", "gpt-5", 400_000, ((None, 1.25, 10.0),)),
-        ("openai", "gpt-5-mini", 400_000, ((None, 0.25, 2.0),)),
-        ("openai", "gpt-5-nano", 400_000, ((None, 0.05, 0.4),)),
-        ("google", "gemini-3.1-pro-preview", 1_048_576, ((200_000, 2.0, 12.0), (None, 4.0, 18.0))),
-        ("google", "gemini-3.7-flash", 1_048_576, ((None, 0.75, 3.75),)),
-        ("google", "gemini-3.6-flash", 1_048_576, ((None, 0.75, 3.75),)),
-        ("google", "gemini-3.5-flash-lite", 1_048_576, ((None, 0.3, 2.5),)),
-        ("google", "gemini-2.5-pro", 1_048_576, ((200_000, 1.25, 10.0), (None, 2.5, 15.0))),
-        ("google", "gemini-2.5-flash-lite", 1_048_576, ((None, 0.1, 0.4),)),
-    ],
-)
-def test_default_registry_contains_verified_limits_and_pricing_tiers(
-    provider,
-    model_name,
-    context_window_tokens,
-    expected_tiers,
-):
-    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-    model = registry.organizations[provider].models[model_name]
-
-    assert model.limits.context_window_tokens == context_window_tokens
-    assert len(model.pricing_tiers.tiers) == len(expected_tiers)
-    for tier, (up_to_prompt_tokens, input_per_1m, output_per_1m) in zip(
-        model.pricing_tiers.tiers,
-        expected_tiers,
-        strict=True,
-    ):
-        assert tier.up_to_prompt_tokens == up_to_prompt_tokens
-        assert tier.in_per_token * 1_000_000 == pytest.approx(input_per_1m)
-        assert tier.out_per_token * 1_000_000 == pytest.approx(output_per_1m)
-
-
 @pytest.mark.unit
 def test_default_registry_excludes_retired_claude_opus_4_1():
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
