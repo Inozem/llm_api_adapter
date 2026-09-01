@@ -23,16 +23,19 @@ class RequestRuleRegistry:
     SELECT_API_VARIANT: ClassVar[str] = "select_api_variant"
     RENAME_PARAMETER: ClassVar[str] = "rename_parameter"
     DROP_PARAMETER: ClassVar[str] = "drop_parameter"
+    RESTRICT_TOOL_CHOICE: ClassVar[str] = "restrict_tool_choice"
 
     HANDLERS: ClassVar[frozenset[str]] = frozenset(
         {
             SELECT_API_VARIANT,
             RENAME_PARAMETER,
             DROP_PARAMETER,
+            RESTRICT_TOOL_CHOICE,
         }
     )
     HANDLER_PHASES: ClassVar[Dict[str, int]] = {
         SELECT_API_VARIANT: 0,
+        RESTRICT_TOOL_CHOICE: 0,
         RENAME_PARAMETER: 1,
         DROP_PARAMETER: 2,
     }
@@ -44,6 +47,7 @@ class RequestRuleRegistry:
         frozenset()
     )
     droppable_parameter_defaults: ClassVar[Dict[str, Any]] = {}
+    supported_tool_choice_modes: ClassVar[frozenset[str]] = frozenset()
 
     def validate_arguments(self, handler: str, arguments: Dict[str, Any]) -> None:
         """Validate one rule against this organization's supported payload fields."""
@@ -59,8 +63,10 @@ class RequestRuleRegistry:
             self._validate_api_variant(arguments)
         elif handler == self.RENAME_PARAMETER:
             self._validate_parameter_rename(arguments)
-        else:
+        elif handler == self.DROP_PARAMETER:
             self._validate_parameter_drop(arguments)
+        else:
+            self._validate_tool_choice_restriction(arguments)
 
     def _validate_api_variant(self, arguments: Dict[str, Any]) -> None:
         if set(arguments) != {"variant"}:
@@ -109,6 +115,30 @@ class RequestRuleRegistry:
         ):
             raise ValueError(f"unsupported request parameter path: {path!r}")
 
+    def _validate_tool_choice_restriction(self, arguments: Dict[str, Any]) -> None:
+        if set(arguments) != {"allowed_values"}:
+            raise ValueError(
+                "restrict_tool_choice arguments must contain only allowed_values"
+            )
+        allowed_values = arguments["allowed_values"]
+        if not isinstance(allowed_values, list) or not allowed_values:
+            raise ValueError(
+                "restrict_tool_choice.allowed_values must be a non-empty array"
+            )
+        if any(
+            not isinstance(value, str) or value not in self.supported_tool_choice_modes
+            for value in allowed_values
+        ):
+            supported = ", ".join(sorted(self.supported_tool_choice_modes))
+            raise ValueError(
+                "restrict_tool_choice.allowed_values must contain only: "
+                f"{supported}"
+            )
+        if len(set(allowed_values)) != len(allowed_values):
+            raise ValueError(
+                "restrict_tool_choice.allowed_values must not contain duplicates"
+            )
+
 
 class SamplingRequestRuleRegistry(RequestRuleRegistry):
     """Shared sampling-parameter rules used by OpenAI and Anthropic."""
@@ -143,6 +173,10 @@ class OpenAIRequestRuleRegistry(SamplingRequestRuleRegistry):
 
 class AnthropicRequestRuleRegistry(SamplingRequestRuleRegistry):
     organization_name = "anthropic"
+    supported_handlers = SamplingRequestRuleRegistry.supported_handlers | frozenset(
+        {RequestRuleRegistry.RESTRICT_TOOL_CHOICE}
+    )
+    supported_tool_choice_modes = frozenset({"auto", "none", "any", "tool"})
 
 
 class GoogleRequestRuleRegistry(RequestRuleRegistry):
@@ -230,6 +264,7 @@ class RequestRules:
     def _validate_rule_order(rules: tuple[RequestRule, ...]) -> None:
         last_phase = -1
         selected_api_variant = False
+        restricted_tool_choice = False
         affected_paths: set[str] = set()
         for rule in rules:
             phase = RequestRuleRegistry.HANDLER_PHASES[rule.handler]
@@ -241,6 +276,10 @@ class RequestRules:
                 if selected_api_variant:
                     raise ValueError("request rules select more than one API variant")
                 selected_api_variant = True
+            if rule.handler == RequestRuleRegistry.RESTRICT_TOOL_CHOICE:
+                if restricted_tool_choice:
+                    raise ValueError("request rules restrict tool choice more than once")
+                restricted_tool_choice = True
 
             conflicts = affected_paths.intersection(rule.affected_paths)
             if conflicts:
@@ -256,6 +295,14 @@ class RequestRules:
         for rule in self.rules:
             if rule.handler == RequestRuleRegistry.SELECT_API_VARIANT:
                 return rule.arguments["variant"]
+        return None
+
+    @property
+    def allowed_tool_choice_modes(self) -> Optional[frozenset[str]]:
+        """Return model-specific normalized tool-choice modes, when restricted."""
+        for rule in self.rules:
+            if rule.handler == RequestRuleRegistry.RESTRICT_TOOL_CHOICE:
+                return frozenset(rule.arguments["allowed_values"])
         return None
 
 
@@ -277,10 +324,10 @@ def apply_request_rules(
 ) -> tuple[dict[str, Any], tuple[AppliedRequestRule, ...]]:
     """Apply registry request rules to a copied payload.
 
-    API variant selection is transport metadata, so it is intentionally not a
-    payload transformation. A parameter with a declared default is removed
-    quietly when its value matches that default; any other removed value emits
-    one warning and one log record.
+    API variant selection and tool-choice restrictions are metadata, so they
+    are intentionally not payload transformations. A parameter with a
+    declared default is removed quietly when its value matches that default;
+    any other removed value emits one warning and one log record.
     """
     transformed_payload = copy.deepcopy(dict(payload))
     applied_rules: list[AppliedRequestRule] = []

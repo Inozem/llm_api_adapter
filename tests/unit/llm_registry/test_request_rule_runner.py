@@ -181,3 +181,25 @@ def test_api_variant_rules_are_not_payload_transformations():
 
     assert transformed == {"model": "gpt-5"}
     assert diagnostics == ()
+
+
+@pytest.mark.unit
+def test_tool_choice_restriction_is_registry_metadata_not_a_payload_change():
+    request_rules = RequestRules(
+        rules=(
+            RequestRule(
+                handler=RequestRuleRegistry.RESTRICT_TOOL_CHOICE,
+                arguments={"allowed_values": ["auto", "none"]},
+            ),
+        )
+    )
+
+    transformed, diagnostics = apply_request_rules(
+        {"model": "claude-fable-5-1"},
+        request_rules,
+        model="claude-fable-5-1",
+    )
+
+    assert request_rules.allowed_tool_choice_modes == frozenset({"auto", "none"})
+    assert transformed == {"model": "claude-fable-5-1"}
+    assert diagnostics == ()

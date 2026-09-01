@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
-from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
+from src.llm_api_adapter.errors.llm_api_error import LLMAPIError, ToolChoiceError
 from src.llm_api_adapter.adapters.anthropic_adapter import ClaudeSyncClient
 from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
@@ -147,6 +147,45 @@ def test_chat_skips_validation_for_adaptive_thinking_model(adapter):
          patch.object(ChatResponse, "from_anthropic_response", return_value=fake_chat_response) as mock_response:
         adapter.chat([UserMessage("hi")], max_tokens=100, reasoning_level="high")
     assert mock_response.called
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("tool_choice", ["any", "get_weather"])
+def test_fable_5_1_rejects_forced_tool_choice_before_request(tool_choice):
+    adapter = AnthropicAdapter(
+        api_key="test_api_key",
+        model="claude-fable-5-1",
+    )
+    tool = ToolSpec(name="get_weather", json_schema={"type": "object"})
+
+    with (
+        patch.object(ClaudeSyncClient, "chat_completion") as mock_chat_completion,
+        pytest.raises(ToolChoiceError, match="does not support forced tool use"),
+    ):
+        adapter.chat(
+            [UserMessage("What is the weather?")],
+            max_tokens=256,
+            tools=[tool],
+            tool_choice=tool_choice,
+        )
+
+    mock_chat_completion.assert_not_called()
+
+
+@pytest.mark.unit
+def test_fable_5_1_allows_automatic_tool_choice():
+    adapter = AnthropicAdapter(
+        api_key="test_api_key",
+        model="claude-fable-5-1",
+    )
+
+    assert adapter.model_spec is not None
+    assert adapter.is_adaptive_thinking is True
+    assert adapter.model_spec.request_rules.allowed_tool_choice_modes == frozenset(
+        {"auto", "none"}
+    )
+    assert adapter._to_anthropic_tool_choice("auto") == {"type": "auto"}
+    assert adapter._to_anthropic_tool_choice("none") is None
 
 
 # ---------------------------
