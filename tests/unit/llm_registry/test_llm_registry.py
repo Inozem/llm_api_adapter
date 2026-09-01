@@ -8,6 +8,7 @@ from src.llm_api_adapter.llm_registry.llm_registry import (
     DEFAULT_REGISTRY_PATH,
     ModelLimits,
     ModelSpec,
+    MeteredOperationSpec,
     NumericReasoningCapability,
     Pricing,
     PricingTier,
@@ -70,6 +71,16 @@ def _model_data(*, tiers=None):
             }
         ],
     }
+
+
+def _metered_operation_data(**overrides):
+    data = {
+        "model": "mistral-ocr-4-1",
+        "unit": "page",
+        "rate": 0.004,
+    }
+    data.update(overrides)
+    return data
 
 
 @pytest.mark.unit
@@ -164,6 +175,151 @@ def test_model_and_organization_from_dict():
     assert "gpt-5" in organization.models
     assert isinstance(organization.models["gpt-5"], ModelSpec)
     assert organization.models["gpt-5"].pricing_tiers.currency == "EUR"
+    assert organization.metered_operations == {}
+
+
+@pytest.mark.unit
+def test_organization_loads_optional_metered_operations_separately_from_models():
+    organization = OrganizationSpec.from_dict(
+        "mistral",
+        {
+            "currency": "EUR",
+            "models": {"mistral-small": _model_data()},
+            "metered_operations": {"ocr": _metered_operation_data()},
+        },
+    )
+
+    meter = organization.metered_operations["ocr"]
+    assert meter == MeteredOperationSpec(
+        name="ocr",
+        model="mistral-ocr-4-1",
+        unit="page",
+        rate=0.004,
+        currency="EUR",
+    )
+    assert isinstance(organization.models["mistral-small"], ModelSpec)
+    assert not isinstance(organization.models["mistral-small"], MeteredOperationSpec)
+
+
+@pytest.mark.unit
+def test_metered_operation_allows_zero_rate():
+    meter = MeteredOperationSpec.from_dict(
+        "ocr",
+        _metered_operation_data(rate=0),
+        currency="USD",
+    )
+
+    assert meter.rate == 0
+
+
+@pytest.mark.unit
+def test_current_token_priced_organizations_load_without_metered_operations():
+    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
+
+    assert {
+        organization_name: organization.metered_operations
+        for organization_name, organization in registry.organizations.items()
+    } == {
+        "openai": {},
+        "anthropic": {},
+        "google": {},
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "data", "currency", "message"),
+    [
+        (
+            "",
+            _metered_operation_data(),
+            "USD",
+            "metered operation name must be a non-empty string",
+        ),
+        (
+            "ocr",
+            None,
+            "USD",
+            "metered operation 'ocr' must be an object",
+        ),
+        (
+            "ocr",
+            {"unit": "page", "rate": 0.004},
+            "USD",
+            "metered operation must contain only model, unit, and rate",
+        ),
+        (
+            "ocr",
+            _metered_operation_data(model=""),
+            "USD",
+            "metered operation model must be a non-empty string",
+        ),
+        (
+            "ocr",
+            _metered_operation_data(unit=""),
+            "USD",
+            "metered operation unit must be a non-empty string",
+        ),
+        (
+            "ocr",
+            _metered_operation_data(rate=-0.004),
+            "USD",
+            "metered operation rate must be a non-negative number",
+        ),
+        (
+            "ocr",
+            _metered_operation_data(rate=True),
+            "USD",
+            "metered operation rate must be a non-negative number",
+        ),
+        (
+            "ocr",
+            _metered_operation_data(),
+            "",
+            "metered operation currency must be a non-empty string",
+        ),
+    ],
+)
+def test_metered_operation_spec_rejects_invalid_data(name, data, currency, message):
+    with pytest.raises(ValueError, match=message):
+        MeteredOperationSpec.from_dict(name, data, currency=currency)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("metered_operations", "message"),
+    [
+        (None, "metered_operations must be an object"),
+        ([], "metered_operations must be an object"),
+        ({"": _metered_operation_data()}, "name must be a non-empty string"),
+        ({"ocr": None}, "metered operation 'ocr' must be an object"),
+    ],
+)
+def test_organization_rejects_malformed_metered_operations(
+    metered_operations,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        OrganizationSpec.from_dict(
+            "mistral",
+            {
+                "models": {"mistral-small": _model_data()},
+                "metered_operations": metered_operations,
+            },
+        )
+
+
+@pytest.mark.unit
+def test_chat_model_metadata_cannot_be_parsed_as_a_metered_operation():
+    with pytest.raises(
+        ValueError,
+        match="metered operation must contain only model, unit, and rate",
+    ):
+        MeteredOperationSpec.from_dict(
+            "ocr",
+            _model_data(),
+            currency="USD",
+        )
 
 
 @pytest.mark.unit
