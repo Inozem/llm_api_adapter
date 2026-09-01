@@ -1,6 +1,29 @@
 {
   "currency": "USD",
   "models": {
+    "claude-fable-5-1": {
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high", "xhigh", "max"]
+      },
+      "is_adaptive_thinking": true,
+      "request_rules": [
+        {
+          "handler": "restrict_tool_choice",
+          "arguments": {"allowed_values": ["auto", "none"]}
+        }
+      ],
+      "limits": {
+        "context_window_tokens": 1000000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 10.0,
+          "output_per_1m": 50.0
+        }
+      ]
+    },
     "claude-fable-5": {
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]

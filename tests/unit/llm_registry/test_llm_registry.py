@@ -444,6 +444,57 @@ def test_model_request_rules_load_as_validated_metadata():
 
 
 @pytest.mark.unit
+def test_anthropic_tool_choice_restriction_loads_as_validated_metadata():
+    model_data = _model_data()
+    model_data["request_rules"] = [
+        {
+            "handler": "restrict_tool_choice",
+            "arguments": {"allowed_values": ["auto", "none"]},
+        }
+    ]
+
+    model = ModelSpec.from_dict(
+        "claude-fable-5-1",
+        model_data,
+        request_rule_registry=AnthropicRequestRuleRegistry(),
+    )
+
+    assert model.request_rules.allowed_tool_choice_modes == frozenset(
+        {"auto", "none"}
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"allowed_values": "auto"}, "must be a non-empty array"),
+        ({"allowed_values": ["auto", "forced"]}, "must contain only"),
+        ({"allowed_values": ["auto", "auto"]}, "must not contain duplicates"),
+        ({"allowed": ["auto"]}, "must contain only allowed_values"),
+    ],
+)
+def test_anthropic_tool_choice_restriction_rejects_invalid_metadata(
+    arguments,
+    message,
+):
+    model_data = _model_data()
+    model_data["request_rules"] = [
+        {
+            "handler": "restrict_tool_choice",
+            "arguments": arguments,
+        }
+    ]
+
+    with pytest.raises(ValueError, match=message):
+        ModelSpec.from_dict(
+            "claude-fable-5-1",
+            model_data,
+            request_rule_registry=AnthropicRequestRuleRegistry(),
+        )
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("request_rules", "message"),
     [
@@ -915,6 +966,16 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
                 (
                     "drop_parameter",
                     {"path": "top_p", "default": 1.0},
+                ),
+            ),
+        ),
+        (
+            "anthropic",
+            "claude-fable-5-1",
+            (
+                (
+                    "restrict_tool_choice",
+                    {"allowed_values": ["auto", "none"]},
                 ),
             ),
         ),

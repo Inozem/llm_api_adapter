@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from ...errors.config_errors import LLMReasoningLevelError
+from ...errors.llm_api_error import ToolChoiceError
 from ...models.messages.chat_message import Messages
 from ...models.responses.chat_response import ChatResponse
 from ...models.tools.tool_spec import ToolSpec
 from ..structured_output import validate_core_portable_schema
+
 
 class _AnthropicPayloadMixin:
     """Build Anthropic payloads while keeping adapter options normalized."""
@@ -163,6 +165,21 @@ class _AnthropicPayloadMixin:
     ) -> Optional[Dict[str, Any]]:
         if tool_choice is None:
             return None
+        allowed_modes = (
+            self.model_spec.request_rules.allowed_tool_choice_modes
+            if self.model_spec is not None
+            else None
+        )
+        choice_mode = (
+            tool_choice if tool_choice in {"auto", "none", "any"} else "tool"
+        )
+        if allowed_modes is not None and choice_mode not in allowed_modes:
+            raise ToolChoiceError(
+                detail=(
+                    f"Model {self.model!r} does not support forced tool use; "
+                    "use tool_choice='auto' or 'none'."
+                )
+            )
         if tool_choice == "none":
             return None
         if tool_choice in ("auto", "any"):
