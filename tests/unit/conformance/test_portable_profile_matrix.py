@@ -44,6 +44,8 @@ from llm_api_adapter.llms.google.sync_client import GeminiSyncClient
 from llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from llm_api_adapter.llms.transports import SSEEvent
+from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.models.messages.file_parts import DocumentPart
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from llm_api_adapter_mistral.adapter import MistralAdapter
@@ -528,6 +530,86 @@ async def _as_async_iter(events: list[SSEEvent]) -> AsyncIterator[SSEEvent]:
         yield event
 
 
+def _mistral_metered_messages() -> list[UserMessage]:
+    return [
+        UserMessage(
+            "Summarize this document.",
+            files=[DocumentPart(url="https://example.com/document.pdf")],
+        )
+    ]
+
+
+def _mistral_ocr_response(pages_processed: int | None) -> dict[str, Any]:
+    response: dict[str, Any] = {
+        "model": "mistral-ocr-4-1",
+        "pages": [{"markdown": "# Document"}],
+    }
+    if pages_processed is not None:
+        response["usage_info"] = {"pages_processed": pages_processed}
+    return response
+
+
+def _mistral_metered_chat_response() -> dict[str, Any]:
+    return {
+        "model": "mistral-small-2603",
+        "choices": [{"message": {"content": "Summary."}}],
+        "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+    }
+
+
+def _mistral_metered_stream_events() -> list[SSEEvent]:
+    return [
+        SSEEvent(
+            event=None,
+            data={
+                "model": "mistral-small-2603",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "Summary."},
+                    "finish_reason": "stop",
+                }],
+                "usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 3,
+                    "total_tokens": 5,
+                },
+            },
+        )
+    ]
+
+
+def _assert_mistral_metered_ocr_cost(
+    response: Any,
+    *,
+    quantity: float,
+    total_available: bool = True,
+) -> None:
+    assert response.currency == "USD"
+    assert response.cost_input == pytest.approx(0.0000003)
+    assert response.cost_output == pytest.approx(0.0000018)
+    assert response.cost_breakdown is not None
+    assert [
+        (
+            item.operation,
+            item.model,
+            item.unit,
+            item.quantity,
+            item.rate,
+            item.currency,
+            item.cost,
+        )
+        for item in response.cost_breakdown
+    ] == [
+        ("ocr", "mistral-ocr-4-1", "page", quantity, 0.004, "USD", quantity * 0.004)
+    ]
+    if total_available:
+        assert response.cost_total == pytest.approx(
+            0.0000003 + 0.0000018 + quantity * 0.004
+        )
+    else:
+        assert response.cost_total is None
+
+
 def _install_async_stream(
     case: PortableProfileCase,
     facade: UniversalLLMAPIAdapter,
@@ -597,6 +679,144 @@ async def test_portable_profile_streams_finalize_through_on_done_in_both_modes(
     assert "".join(async_output) == content
     assert sync_done[0].parsed_json == {"answer": "ok"}
     assert async_done[0].parsed_json == {"answer": "ok"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_mistral_metered_ocr_pricing_matches_across_facade_modes(
+    installed_organization_plugins,
+):
+    sync_facade = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-small-2603",
+        api_key="test-api-key",
+    )
+    sync_facade.adapter._post_ocr_payload = Mock(
+        return_value=_mistral_ocr_response(2)
+    )
+    sync_facade.adapter._post_payload = Mock(
+        return_value=_mistral_metered_chat_response()
+    )
+    sync_response = sync_facade.chat(_mistral_metered_messages())
+
+    async_facade = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-small-2603",
+        api_key="test-api-key",
+    )
+    async_facade.adapter._apost_ocr_payload = AsyncMock(
+        return_value=_mistral_ocr_response(2)
+    )
+    async_facade.adapter._apost_payload = AsyncMock(
+        return_value=_mistral_metered_chat_response()
+    )
+    async_response = await async_facade.achat(_mistral_metered_messages())
+
+    sync_stream_facade = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-small-2603",
+        api_key="test-api-key",
+    )
+    sync_stream_facade.adapter._post_ocr_payload = Mock(
+        return_value=_mistral_ocr_response(2)
+    )
+    sync_stream_facade.adapter._stream_payload = Mock(
+        return_value=iter(_mistral_metered_stream_events())
+    )
+    sync_completed: list[Any] = []
+    assert list(
+        sync_stream_facade.stream_chat(
+            _mistral_metered_messages(),
+            on_done=sync_completed.append,
+        )
+    ) == ["Summary."]
+
+    async_stream_facade = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-small-2603",
+        api_key="test-api-key",
+    )
+    async_stream_facade.adapter._apost_ocr_payload = AsyncMock(
+        return_value=_mistral_ocr_response(2)
+    )
+    async_stream_facade.adapter._astream_payload = Mock(
+        return_value=_as_async_iter(_mistral_metered_stream_events())
+    )
+    async_completed: list[Any] = []
+    assert [
+        text
+        async for text in async_stream_facade.astream_chat(
+            _mistral_metered_messages(),
+            on_done=async_completed.append,
+        )
+    ] == ["Summary."]
+
+    for response in (
+        sync_response,
+        async_response,
+        sync_completed[0],
+        async_completed[0],
+    ):
+        _assert_mistral_metered_ocr_cost(response, quantity=2.0)
+
+
+@pytest.mark.unit
+def test_mistral_zero_page_ocr_cost_is_a_known_zero_line_item(
+    installed_organization_plugins,
+):
+    facade = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-small-2603",
+        api_key="test-api-key",
+    )
+    facade.adapter._post_ocr_payload = Mock(
+        return_value=_mistral_ocr_response(0)
+    )
+    facade.adapter._post_payload = Mock(
+        return_value=_mistral_metered_chat_response()
+    )
+
+    response = facade.chat(_mistral_metered_messages())
+
+    _assert_mistral_metered_ocr_cost(response, quantity=0.0)
+
+
+@pytest.mark.unit
+def test_mistral_incomplete_ocr_usage_preserves_known_cost_components(
+    installed_organization_plugins,
+):
+    facade = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-small-2603",
+        api_key="test-api-key",
+    )
+    facade.adapter._post_ocr_payload = Mock(
+        side_effect=[
+            _mistral_ocr_response(1),
+            _mistral_ocr_response(None),
+        ]
+    )
+    facade.adapter._post_payload = Mock(
+        return_value=_mistral_metered_chat_response()
+    )
+
+    response = facade.chat(
+        [
+            UserMessage(
+                "Summarize these documents.",
+                files=[
+                    DocumentPart(url="https://example.com/known.pdf"),
+                    DocumentPart(url="https://example.com/unknown.pdf"),
+                ],
+            )
+        ]
+    )
+
+    _assert_mistral_metered_ocr_cost(
+        response,
+        quantity=1.0,
+        total_available=False,
+    )
 
 
 def _terminal_response(
