@@ -58,16 +58,27 @@ def prepare_document_messages(
 
 async def prepare_document_messages_async(
     adapter: "MistralAdapter", messages: list[Message] | Messages, timeout_s: Optional[float]
-) -> Messages:
+) -> PreparedDocuments:
     normalized = adapter._normalize_messages(messages)
     documents = document_parts(normalized)
     if not documents:
-        return normalized
-    markdowns = [
-        extract_ocr_markdown(await adapter._apost_ocr_payload(build_ocr_payload(document), timeout_s))
-        for document in documents
-    ]
-    return replace_documents(normalized, markdowns)
+        return PreparedDocuments(messages=normalized)
+
+    meter = adapter._ocr_meter()
+    markdowns: list[str] = []
+    ocr_operations: list[PreparedOCROperation] = []
+    for document in documents:
+        response = await adapter._apost_ocr_payload(
+            build_ocr_payload(document),
+            timeout_s,
+        )
+        markdowns.append(extract_ocr_markdown(response))
+        ocr_operations.append(extract_ocr_operation(response, meter))
+
+    return PreparedDocuments(
+        messages=replace_documents(normalized, markdowns),
+        ocr_operations=tuple(ocr_operations),
+    )
 
 
 def document_parts(messages: Messages) -> list[DocumentPart]:
