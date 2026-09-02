@@ -124,6 +124,7 @@ def select_e2e_lanes(changed_paths: Iterable[str]) -> E2ELaneSelection:
     """Select only the release-candidate lanes affected by ``changed_paths``."""
     paths = tuple(path.strip() for path in changed_paths if path.strip())
     core = _matches(paths, _CORE_CANDIDATE_PATHS)
+    e2e_harness = _matches(paths, _E2E_HARNESS_PATHS)
     shared_core = False
     core_organizations: tuple[str, ...] = ()
 
@@ -142,8 +143,9 @@ def select_e2e_lanes(changed_paths: Iterable[str]) -> E2ELaneSelection:
             if not core_organizations:
                 shared_core = True
                 core_organizations = _CORE_ORGANIZATIONS
+    elif e2e_harness:
+        core_organizations = _CORE_ORGANIZATIONS
 
-    e2e_harness = _matches(paths, _E2E_HARNESS_PATHS)
     mistral = _organization_package_changed(paths, "mistral")
     xai = _organization_package_changed(paths, "xai")
     return E2ELaneSelection(
