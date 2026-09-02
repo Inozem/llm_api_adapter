@@ -9,7 +9,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 import pytest
 
-from llm_api_adapter.errors import LLMAPIRateLimitError, LLMAPIServerError
+from llm_api_adapter.errors import (
+    LLMAPIRateLimitError,
+    LLMAPIServerError,
+    LLMAPITimeoutError,
+)
 from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY
 from llm_api_adapter.universal_adapter import (
     ORGANIZATION_PLUGIN_DISCOVERY,
@@ -22,6 +26,7 @@ _MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1
 _TRANSIENT_ERRORS = (
     LLMAPIServerError,
     LLMAPIRateLimitError,
+    LLMAPITimeoutError,
 )
 
 
