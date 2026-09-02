@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-import json
 from pathlib import Path
 import sys
 from typing import Iterable
@@ -76,24 +75,7 @@ _CORE_ORGANIZATION_PATHS = {
         "src/llm_api_adapter/llm_registry/organizations/google.json",
     ),
 }
-_CORE_LANE_METADATA = {
-    "openai": {
-        "organization": "OpenAI",
-        "marker": "e2e_openai",
-        "api_key_env": "OPENAI_API_KEY",
-    },
-    "anthropic": {
-        "organization": "Anthropic",
-        "marker": "e2e_anthropic",
-        "api_key_env": "ANTHROPIC_API_KEY",
-    },
-    "google": {
-        "organization": "Google",
-        "marker": "e2e_google",
-        "api_key_env": "GOOGLE_API_KEY",
-    },
-}
-_CORE_ORGANIZATIONS = tuple(_CORE_LANE_METADATA)
+_CORE_ORGANIZATIONS = ("openai", "anthropic", "google")
 
 
 def _matches(paths: tuple[str, ...], prefixes: tuple[str, ...]) -> bool:
@@ -123,16 +105,14 @@ class E2ELaneSelection:
     xai_e2e: bool
 
     def github_outputs(self) -> dict[str, str]:
-        matrix = {
-            "include": [
-                _CORE_LANE_METADATA[organization]
-                for organization in self.core_organizations
-            ]
-        }
         return {
             "core": str(self.core).lower(),
             "shared_core": str(self.shared_core).lower(),
-            "core_e2e_matrix": json.dumps(matrix, separators=(",", ":")),
+            "core_openai_e2e": str("openai" in self.core_organizations).lower(),
+            "core_anthropic_e2e": str(
+                "anthropic" in self.core_organizations
+            ).lower(),
+            "core_google_e2e": str("google" in self.core_organizations).lower(),
             "mistral": str(self.mistral).lower(),
             "mistral_e2e": str(self.mistral_e2e).lower(),
             "xai": str(self.xai).lower(),

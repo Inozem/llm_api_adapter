@@ -1,5 +1,4 @@
 import importlib.util
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -96,6 +95,11 @@ def test_select_e2e_lanes_classifies_shared_and_organization_paths(
     assert selection.core_organizations == organizations
     assert selection.mistral_e2e is mistral_e2e
     assert selection.xai_e2e is xai_e2e
+    outputs = selection.github_outputs()
+    for organization in ("openai", "anthropic", "google"):
+        assert outputs[f"core_{organization}_e2e"] == str(
+            organization in organizations
+        ).lower()
 
 
 @pytest.mark.unit
@@ -121,14 +125,9 @@ def test_selector_cli_writes_github_outputs(tmp_path):
     )
     assert outputs["core"] == "true"
     assert outputs["shared_core"] == "false"
+    assert outputs["core_openai_e2e"] == "true"
+    assert outputs["core_anthropic_e2e"] == "false"
+    assert outputs["core_google_e2e"] == "false"
+    assert "core_e2e_matrix" not in outputs
     assert outputs["mistral_e2e"] == "false"
     assert outputs["xai_e2e"] == "false"
-    assert json.loads(outputs["core_e2e_matrix"]) == {
-        "include": [
-            {
-                "organization": "OpenAI",
-                "marker": "e2e_openai",
-                "api_key_env": "OPENAI_API_KEY",
-            }
-        ]
-    }
