@@ -31,7 +31,6 @@ class E2EOrganizationProfile:
 
     name: str
     organization_names: tuple[str, ...]
-    default_models: tuple[tuple[str, str], ...] = ()
 
 
 class E2EOrganization(dict):
@@ -63,7 +62,6 @@ _MISTRAL_E2E_PROFILE = E2EOrganizationProfile(
 _XAI_E2E_PROFILE = E2EOrganizationProfile(
     name="xai",
     organization_names=("xai",),
-    default_models=(("xai", "grok-4.6"),),
 )
 _E2E_PROFILE_PARAMS = (
     pytest.param(
@@ -102,19 +100,6 @@ API_KEY_ENV = {
     "mistral": os.getenv("MISTRAL_API_KEY"),
     "xai": os.getenv("XAI_API_KEY"),
 }
-
-
-def _profile_default_model(
-    profile: E2EOrganizationProfile,
-    organization_name: str,
-    registry_models: list[str],
-) -> str | None:
-    """Return the profile's bounded-transport model for one organization."""
-    configured_models = dict(profile.default_models)
-    return configured_models.get(
-        organization_name,
-        registry_models[0] if registry_models else None,
-    )
 
 
 def _select_latest_e2e_models(organizations, override_prefix: str):
@@ -316,11 +301,7 @@ def organizations(e2e_organization_profile: E2EOrganizationProfile):
                     "name": organization_name,
                     "api_key": api_key,
                     "models": registry_models,
-                    "latest_model": _profile_default_model(
-                        e2e_organization_profile,
-                        organization_name,
-                        registry_models,
-                    ),
+                    "latest_model": registry_models[0] if registry_models else None,
                 }
             )
         )

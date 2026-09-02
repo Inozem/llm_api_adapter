@@ -258,13 +258,10 @@ def test_plugin_registers_the_xai_service_provider():
 
 
 @pytest.mark.unit
-def test_model_metadata_validates_all_fixed_model_ids():
+def test_model_metadata_lists_newest_fixed_model_first():
     organization = OrganizationSpec.from_dict("xai", MODEL_METADATA.organization_data)
 
-    assert set(organization.models) == {
-        "grok-4.5",
-        "grok-4.6",
-    }
+    assert tuple(organization.models) == ("grok-4.6", "grok-4.5")
     pricing = organization.models["grok-4.6"].pricing_tiers
     assert pricing.tier_for_prompt_tokens(199999).in_per_token == pytest.approx(
         0.000002
