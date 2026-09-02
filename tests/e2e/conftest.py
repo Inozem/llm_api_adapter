@@ -44,9 +44,17 @@ class E2EOrganization(dict):
         return dict.__repr__(safe_data)
 
 
-_BUILTIN_E2E_PROFILE = E2EOrganizationProfile(
-    name="builtin",
-    organization_names=("openai", "anthropic", "google"),
+_OPENAI_E2E_PROFILE = E2EOrganizationProfile(
+    name="openai",
+    organization_names=("openai",),
+)
+_ANTHROPIC_E2E_PROFILE = E2EOrganizationProfile(
+    name="anthropic",
+    organization_names=("anthropic",),
+)
+_GOOGLE_E2E_PROFILE = E2EOrganizationProfile(
+    name="google",
+    organization_names=("google",),
 )
 _MISTRAL_E2E_PROFILE = E2EOrganizationProfile(
     name="mistral",
@@ -59,9 +67,19 @@ _XAI_E2E_PROFILE = E2EOrganizationProfile(
 )
 _E2E_PROFILE_PARAMS = (
     pytest.param(
-        _BUILTIN_E2E_PROFILE,
-        id="builtin",
-        marks=pytest.mark.e2e_builtin,
+        _OPENAI_E2E_PROFILE,
+        id="openai",
+        marks=(pytest.mark.e2e_builtin, pytest.mark.e2e_openai),
+    ),
+    pytest.param(
+        _ANTHROPIC_E2E_PROFILE,
+        id="anthropic",
+        marks=(pytest.mark.e2e_builtin, pytest.mark.e2e_anthropic),
+    ),
+    pytest.param(
+        _GOOGLE_E2E_PROFILE,
+        id="google",
+        marks=(pytest.mark.e2e_builtin, pytest.mark.e2e_google),
     ),
     pytest.param(
         _MISTRAL_E2E_PROFILE,
