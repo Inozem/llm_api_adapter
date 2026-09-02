@@ -46,7 +46,7 @@ def test_json_schema_returns_structured_output_for_every_configured_model(
                 messages=[
                     UserMessage('Return exactly {"contact":{"name":"Ada"}}.')
                 ],
-                max_tokens=512,
+                max_tokens=1000,
                 json_schema=_PORTABLE_NESTED_OBJECT_SCHEMA,
                 timeout_s=60,
             )
