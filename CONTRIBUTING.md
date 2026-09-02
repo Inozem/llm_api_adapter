@@ -93,6 +93,17 @@ The required environment variables are:
 - `MISTRAL_API_KEY` (with the independently installed Mistral package)
 - `XAI_API_KEY` (with the independently installed xAI package)
 
+Run one built-in organization independently with its dedicated marker:
+
+```bash
+python -m pytest -v -m e2e_openai
+python -m pytest -v -m e2e_anthropic
+python -m pytest -v -m e2e_google
+```
+
+`e2e_builtin` remains the aggregate marker for all three built-in organization
+profiles.
+
 `test_json_schema.py` makes one portable structured-output request for every configured registered model. It must return the exact expected JSON without a refusal or incomplete state; advertised structured-output support is not skipped after the request.
 
 The heavyweight async suite uses one latest registered model for each provider
@@ -105,7 +116,7 @@ models that think by default still have room for visible text.
 
 For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage. The Mistral and xAI package workflows run their respective unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
 
-Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change publishes the core package and runs the built-in, Mistral, and xAI E2E lanes. A Mistral or xAI package change publishes only that organization package and runs its corresponding lane. Each lane installs the exact TestPyPI versions through the matching optional extra, verifies plugin discovery, then makes provider calls. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
+Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change selects the affected independent OpenAI, Anthropic, and Google E2E lanes. A shared Core dependency additionally runs the Mistral and xAI lanes; a provider-specific built-in adapter, client, or registry change runs only that Core organization lane. Shared E2E infrastructure runs every applicable lane. Each core lane receives only its own API key; `e2e_builtin` is not used in CI. A Mistral or xAI package change publishes only that organization package and runs its corresponding lane. Each lane installs the exact TestPyPI versions through the matching optional extra, verifies plugin discovery when needed, then makes provider calls. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
 
 ## Provider-key safety
 
@@ -189,7 +200,7 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
    ```
 
 4. Open or update the pull request to `main`. Wait for review and the deterministic main CI to pass.
-5. The maintainer opens and merges a staging pull request containing that exact candidate commit into protected `dev`. The dev release workflow publishes only changed distributions to TestPyPI, then runs the E2E lanes affected by those changes. Only an approved repository administrator should merge this staging pull request. Provide keys through CI Secrets only, and remember that the current synchronous scenarios may exercise every registered model.
+5. The maintainer opens and merges a staging pull request containing that exact candidate commit into protected `dev`. The dev release workflow publishes only changed distributions to TestPyPI, then runs the E2E lanes affected by those changes. Core organization lanes run independently; provide the matching key for each through CI Secrets only. The current synchronous scenarios may exercise every registered model of that lane.
 6. After the E2E jobs pass, the maintainer manually installs the changed package set from TestPyPI. For Mistral, verify the public installation path:
 
    ```bash

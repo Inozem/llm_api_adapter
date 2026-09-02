@@ -1,27 +1,6 @@
 {
   "currency": "USD",
   "models": {
-    "grok-4.5": {
-      "limits": {
-        "context_window_tokens": 500000,
-        "max_output_tokens": 500000
-      },
-      "pricing_tiers": [
-        {
-          "up_to_prompt_tokens": 199999,
-          "input_per_1m": 2.0,
-          "output_per_1m": 6.0
-        },
-        {
-          "up_to_prompt_tokens": null,
-          "input_per_1m": 4.0,
-          "output_per_1m": 12.0
-        }
-      ],
-      "reasoning_capability": {
-        "allowed_values": ["low", "medium", "high"]
-      }
-    },
     "grok-4.6": {
       "limits": {
         "context_window_tokens": 500000,
@@ -41,6 +20,27 @@
       ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh"]
+      }
+    },
+    "grok-4.5": {
+      "limits": {
+        "context_window_tokens": 500000,
+        "max_output_tokens": 500000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": 199999,
+          "input_per_1m": 2.0,
+          "output_per_1m": 6.0
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 4.0,
+          "output_per_1m": 12.0
+        }
+      ],
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high"]
       }
     }
   }
