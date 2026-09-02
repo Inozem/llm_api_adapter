@@ -137,6 +137,27 @@ def iter_organization_models(organizations):
 
 
 @pytest.fixture(scope="session")
+def tool_choice_for_model():
+    """Select the strongest registered tool-choice mode for one E2E model."""
+
+    def _select(organization_name: str, model_name: str, tool_name: str) -> str:
+        model_spec = LLM_REGISTRY.organizations[organization_name].models[model_name]
+        allowed_modes = model_spec.request_rules.allowed_tool_choice_modes
+        if allowed_modes is None or "tool" in allowed_modes:
+            return tool_name
+        if "any" in allowed_modes:
+            return "any"
+        if "auto" in allowed_modes:
+            return "auto"
+        raise pytest.UsageError(
+            f"{organization_name}/{model_name} has no tool-call mode enabled "
+            "in its registered request rules"
+        )
+
+    return _select
+
+
+@pytest.fixture(scope="session")
 def chat_with_retry():
     """Returns a helper that retries adapter.chat() on 5xx errors, rate limits, or model refusals.
 

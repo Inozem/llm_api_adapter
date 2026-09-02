@@ -29,24 +29,23 @@ SIMPLE_SCHEMA = {
     "required": ["name", "age"],
 }
 
-FRUIT_POPULARITY = {
-    "strawberry": 73,
-    "banana": 41,
-    "orange": 58,
-}
+KUDIBLOID_COUNTS = {7: 479}
 
-FRUIT_TOOL = ToolSpec(
-    name="get_fruit_popularity",
-    description="Return the popularity rating for a fruit.",
+KUDIBLOID_TOOL = ToolSpec(
+    name="lookup_kudibloids",
+    description=(
+        "Return the authoritative kudibloid count for a number of brankiches. "
+        "This tool is the only source for these values."
+    ),
     json_schema={
         "type": "object",
         "properties": {
-            "fruit": {
-                "type": "string",
-                "enum": list(FRUIT_POPULARITY),
+            "brankiches": {
+                "type": "integer",
+                "enum": list(KUDIBLOID_COUNTS),
             },
         },
-        "required": ["fruit"],
+        "required": ["brankiches"],
         "additionalProperties": False,
     },
 )
@@ -171,24 +170,36 @@ async def test_async_tools_round_trip_with_previous_response(
     subtests,
     configured_async_e2e_models,
     async_chat_with_retry,
+    tool_choice_for_model,
 ):
     if not configured_async_e2e_models:
         pytest.skip("No provider API keys are configured")
 
     for provider, model in configured_async_e2e_models:
-        with subtests.test(provider=provider["name"], model=model):
+        tool_choice = tool_choice_for_model(
+            provider["name"],
+            model,
+            KUDIBLOID_TOOL.name,
+        )
+        with subtests.test(
+            provider=provider["name"],
+            model=model,
+            tool_choice=tool_choice,
+        ):
             adapter = _adapter(provider, model)
             messages = [
                 UserMessage(
-                    "What is the popularity of banana? "
-                    "Use the available tool to look it up."
+                    "Retrieve the kudibloid count for 7 brankiches. The count is "
+                    "not available in this prompt: call lookup_kudibloids to "
+                    "obtain it. After the tool returns, answer with its "
+                    "kudibloids value; do not guess."
                 )
             ]
             first = await async_chat_with_retry(
                 adapter,
                 messages=messages,
-                tools=[FRUIT_TOOL],
-                tool_choice="get_fruit_popularity",
+                tools=[KUDIBLOID_TOOL],
+                tool_choice=tool_choice,
                 max_tokens=512,
                 timeout_s=60,
             )
@@ -196,16 +207,16 @@ async def test_async_tools_round_trip_with_previous_response(
             assert first.tool_calls
             messages.append(AIMessage(content=first.content or "", tool_calls=first.tool_calls))
             for tool_call in first.tool_calls:
-                assert tool_call.name == FRUIT_TOOL.name
-                fruit = tool_call.arguments["fruit"]
-                assert fruit in FRUIT_POPULARITY
+                assert tool_call.name == KUDIBLOID_TOOL.name
+                brankiches = tool_call.arguments["brankiches"]
+                assert brankiches in KUDIBLOID_COUNTS
                 messages.append(
                     ToolMessage(
                         tool_call_id=tool_call.call_id,
                         content=json.dumps(
                             {
-                                "fruit": fruit,
-                                "popularity": FRUIT_POPULARITY[fruit],
+                                "brankiches": brankiches,
+                                "kudibloids": KUDIBLOID_COUNTS[brankiches],
                             }
                         ),
                     )
@@ -219,6 +230,7 @@ async def test_async_tools_round_trip_with_previous_response(
                 previous_response=first,
             )
             assert final.content and final.content.strip()
+            assert str(KUDIBLOID_COUNTS[7]) in final.content
             assert not final.tool_calls
 
 
