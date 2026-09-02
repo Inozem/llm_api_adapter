@@ -8,6 +8,7 @@ import pytest
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _SELECTOR_PATH = _REPOSITORY_ROOT / ".github" / "scripts" / "select_e2e_lanes.py"
+_WORKFLOW_PATH = _REPOSITORY_ROOT / ".github" / "workflows" / "ci-dev-release.yml"
 _MODULE_SPEC = importlib.util.spec_from_file_location(
     "ci_e2e_lane_selector", _SELECTOR_PATH
 )
@@ -74,7 +75,7 @@ _MODULE_SPEC.loader.exec_module(_SELECTOR)
             ["tests/e2e/test_tools_auto_loop.py"],
             False,
             False,
-            (),
+            ("openai", "anthropic", "google"),
             True,
             True,
         ),
@@ -131,3 +132,17 @@ def test_selector_cli_writes_github_outputs(tmp_path):
     assert "core_e2e_matrix" not in outputs
     assert outputs["mistral_e2e"] == "false"
     assert outputs["xai_e2e"] == "false"
+
+
+@pytest.mark.unit
+def test_core_e2e_jobs_run_after_a_skipped_core_publish_for_harness_changes():
+    workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    for organization in ("openai", "anthropic", "google"):
+        job = workflow.split(f"  post-publish-{organization}-e2e:\n", maxsplit=1)[1]
+        job = job.split("\n  post-publish-", maxsplit=1)[0]
+
+        assert f"needs.changes.outputs.core_{organization}_e2e == 'true'" in job
+        assert "needs.publish-core-testpypi.result == 'success'" in job
+        assert "needs.publish-core-testpypi.result == 'skipped'" in job
+        assert "needs.changes.outputs.core == 'true'" not in job
