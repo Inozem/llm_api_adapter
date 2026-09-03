@@ -9,7 +9,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 import pytest
 
-from llm_api_adapter.errors import LLMAPIRateLimitError, LLMAPIServerError
+from llm_api_adapter.errors import (
+    LLMAPIRateLimitError,
+    LLMAPIServerError,
+    LLMAPITimeoutError,
+)
 from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY
 from llm_api_adapter.universal_adapter import (
     ORGANIZATION_PLUGIN_DISCOVERY,
@@ -22,6 +26,7 @@ _MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1
 _TRANSIENT_ERRORS = (
     LLMAPIServerError,
     LLMAPIRateLimitError,
+    LLMAPITimeoutError,
 )
 
 
@@ -31,7 +36,6 @@ class E2EOrganizationProfile:
 
     name: str
     organization_names: tuple[str, ...]
-    default_models: tuple[tuple[str, str], ...] = ()
 
 
 class E2EOrganization(dict):
@@ -44,9 +48,17 @@ class E2EOrganization(dict):
         return dict.__repr__(safe_data)
 
 
-_BUILTIN_E2E_PROFILE = E2EOrganizationProfile(
-    name="builtin",
-    organization_names=("openai", "anthropic", "google"),
+_OPENAI_E2E_PROFILE = E2EOrganizationProfile(
+    name="openai",
+    organization_names=("openai",),
+)
+_ANTHROPIC_E2E_PROFILE = E2EOrganizationProfile(
+    name="anthropic",
+    organization_names=("anthropic",),
+)
+_GOOGLE_E2E_PROFILE = E2EOrganizationProfile(
+    name="google",
+    organization_names=("google",),
 )
 _MISTRAL_E2E_PROFILE = E2EOrganizationProfile(
     name="mistral",
@@ -55,13 +67,22 @@ _MISTRAL_E2E_PROFILE = E2EOrganizationProfile(
 _XAI_E2E_PROFILE = E2EOrganizationProfile(
     name="xai",
     organization_names=("xai",),
-    default_models=(("xai", "grok-4.6"),),
 )
 _E2E_PROFILE_PARAMS = (
     pytest.param(
-        _BUILTIN_E2E_PROFILE,
-        id="builtin",
-        marks=pytest.mark.e2e_builtin,
+        _OPENAI_E2E_PROFILE,
+        id="openai",
+        marks=(pytest.mark.e2e_builtin, pytest.mark.e2e_openai),
+    ),
+    pytest.param(
+        _ANTHROPIC_E2E_PROFILE,
+        id="anthropic",
+        marks=(pytest.mark.e2e_builtin, pytest.mark.e2e_anthropic),
+    ),
+    pytest.param(
+        _GOOGLE_E2E_PROFILE,
+        id="google",
+        marks=(pytest.mark.e2e_builtin, pytest.mark.e2e_google),
     ),
     pytest.param(
         _MISTRAL_E2E_PROFILE,
@@ -84,19 +105,6 @@ API_KEY_ENV = {
     "mistral": os.getenv("MISTRAL_API_KEY"),
     "xai": os.getenv("XAI_API_KEY"),
 }
-
-
-def _profile_default_model(
-    profile: E2EOrganizationProfile,
-    organization_name: str,
-    registry_models: list[str],
-) -> str | None:
-    """Return the profile's bounded-transport model for one organization."""
-    configured_models = dict(profile.default_models)
-    return configured_models.get(
-        organization_name,
-        registry_models[0] if registry_models else None,
-    )
 
 
 def _select_latest_e2e_models(organizations, override_prefix: str):
@@ -134,6 +142,27 @@ def iter_organization_models(organizations):
                 if model is not None:
                     yield organization, model
     return _iter
+
+
+@pytest.fixture(scope="session")
+def tool_choice_for_model():
+    """Select the strongest registered tool-choice mode for one E2E model."""
+
+    def _select(organization_name: str, model_name: str, tool_name: str) -> str:
+        model_spec = LLM_REGISTRY.organizations[organization_name].models[model_name]
+        allowed_modes = model_spec.request_rules.allowed_tool_choice_modes
+        if allowed_modes is None or "tool" in allowed_modes:
+            return tool_name
+        if "any" in allowed_modes:
+            return "any"
+        if "auto" in allowed_modes:
+            return "auto"
+        raise pytest.UsageError(
+            f"{organization_name}/{model_name} has no tool-call mode enabled "
+            "in its registered request rules"
+        )
+
+    return _select
 
 
 @pytest.fixture(scope="session")
@@ -277,11 +306,7 @@ def organizations(e2e_organization_profile: E2EOrganizationProfile):
                     "name": organization_name,
                     "api_key": api_key,
                     "models": registry_models,
-                    "latest_model": _profile_default_model(
-                        e2e_organization_profile,
-                        organization_name,
-                        registry_models,
-                    ),
+                    "latest_model": registry_models[0] if registry_models else None,
                 }
             )
         )

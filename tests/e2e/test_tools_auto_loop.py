@@ -11,50 +11,59 @@ from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
-FRUIT_POPULARITY = {
-    "strawberry": 73,
-    "banana": 41,
-    "orange": 58,
-}
+KUDIBLOID_COUNTS = {7: 479}
 
 
 def run_tool(name, args):
-    if name == "get_fruit_popularity":
-        fruit = args["fruit"]
-        if fruit not in FRUIT_POPULARITY:
-            raise ValueError(f"Unknown fruit {fruit}")
+    if name == "lookup_kudibloids":
+        brankiches = args["brankiches"]
+        if brankiches not in KUDIBLOID_COUNTS:
+            raise ValueError(f"Unknown brankich count {brankiches}")
 
         return {
-            "fruit": fruit,
-            "popularity": FRUIT_POPULARITY[fruit],
+            "brankiches": brankiches,
+            "kudibloids": KUDIBLOID_COUNTS[brankiches],
         }
 
     raise ValueError(f"Unknown tool {name}")
 
 
 @pytest.mark.e2e
-def test_basic_auto_tool_loop_with_previous_response(subtests, iter_organization_models, chat_with_retry):
+def test_basic_tool_loop_with_previous_response(
+    subtests,
+    iter_organization_models,
+    chat_with_retry,
+    tool_choice_for_model,
+):
     tools = [
         ToolSpec(
-            name="get_fruit_popularity",
-            description="Return the popularity rating for a fruit.",
+            name="lookup_kudibloids",
+            description=(
+                "Return the authoritative kudibloid count for a number of "
+                "brankiches. This tool is the only source for these values."
+            ),
             json_schema={
                 "type": "object",
                 "properties": {
-                    "fruit": {
-                        "type": "string",
-                        "enum": list(FRUIT_POPULARITY),
-                        "description": "The fruit whose popularity is requested.",
+                    "brankiches": {
+                        "type": "integer",
+                        "enum": list(KUDIBLOID_COUNTS),
+                        "description": "The number of brankiches to look up.",
                     },
                 },
-                "required": ["fruit"],
+                "required": ["brankiches"],
                 "additionalProperties": False,
             },
         )
     ]
 
     for p, model in iter_organization_models():
-        with subtests.test(provider=p["name"], model=model):
+        tool_choice = tool_choice_for_model(p["name"], model, tools[0].name)
+        with subtests.test(
+            provider=p["name"],
+            model=model,
+            tool_choice=tool_choice,
+        ):
             adapter = UniversalLLMAPIAdapter(
                 organization=p["name"],
                 model=model,
@@ -63,8 +72,10 @@ def test_basic_auto_tool_loop_with_previous_response(subtests, iter_organization
 
             messages = [
                 UserMessage(
-                    "What is the popularity of the fruit banana? "
-                    "Use the available tool to look it up."
+                    "Retrieve the kudibloid count for 7 brankiches. The count is "
+                    "not available in this prompt: call lookup_kudibloids to "
+                    "obtain it. After the tool returns, answer with its "
+                    "kudibloids value; do not guess."
                 )
             ]
 
@@ -72,7 +83,7 @@ def test_basic_auto_tool_loop_with_previous_response(subtests, iter_organization
                 adapter,
                 messages=messages,
                 tools=tools,
-                tool_choice="get_fruit_popularity",
+                tool_choice=tool_choice,
                 max_tokens=512,
                 timeout_s=60,
             )
@@ -92,13 +103,13 @@ def test_basic_auto_tool_loop_with_previous_response(subtests, iter_organization
             )
 
             for tc in first.tool_calls:
-                assert tc.name == "get_fruit_popularity"
+                assert tc.name == "lookup_kudibloids"
                 assert isinstance(tc.arguments, dict)
-                fruit = tc.arguments["fruit"]
-                assert fruit in FRUIT_POPULARITY
+                brankiches = tc.arguments["brankiches"]
+                assert brankiches in KUDIBLOID_COUNTS
 
                 result = run_tool(tc.name, tc.arguments)
-                assert result["popularity"] == FRUIT_POPULARITY[fruit]
+                assert result["kudibloids"] == KUDIBLOID_COUNTS[brankiches]
 
                 messages.append(
                     ToolMessage(
@@ -117,6 +128,7 @@ def test_basic_auto_tool_loop_with_previous_response(subtests, iter_organization
 
             assert isinstance(final.content, str)
             assert final.content.strip() != ""
+            assert str(KUDIBLOID_COUNTS[7]) in final.content
             assert not final.tool_calls, (
                 f"{p['name']} / {model}: expected final natural-language answer, "
                 f"got tool_calls: {final.tool_calls!r}"
