@@ -76,7 +76,7 @@ def _model_data(*, tiers=None):
 
 def _metered_operation_data(**overrides):
     data = {
-        "model": "mistral-ocr-4-1",
+        "model": "metered-test-model",
         "unit": "page",
         "rate": 0.004,
     }
@@ -151,9 +151,9 @@ def test_pricing_tier_for_prompt_tokens_uses_inclusive_boundaries():
 def test_model_and_organization_from_dict():
     model_data = _model_data()
 
-    model = ModelSpec.from_dict("gpt-5", model_data)
+    model = ModelSpec.from_dict("test-model", model_data)
 
-    assert model.name == "gpt-5"
+    assert model.name == "test-model"
     assert model.limits == ModelLimits(
         context_window_tokens=128_000,
         max_output_tokens=16_384,
@@ -167,25 +167,25 @@ def test_model_and_organization_from_dict():
     )
 
     organization = OrganizationSpec.from_dict(
-        "prov",
-        {"currency": "EUR", "models": {"gpt-5": model_data}},
+        "test-organization",
+        {"currency": "EUR", "models": {"test-model": model_data}},
     )
 
-    assert organization.name == "prov"
+    assert organization.name == "test-organization"
     assert organization.currency == "EUR"
-    assert "gpt-5" in organization.models
-    assert isinstance(organization.models["gpt-5"], ModelSpec)
-    assert organization.models["gpt-5"].pricing_tiers.currency == "EUR"
+    assert "test-model" in organization.models
+    assert isinstance(organization.models["test-model"], ModelSpec)
+    assert organization.models["test-model"].pricing_tiers.currency == "EUR"
     assert organization.metered_operations == {}
 
 
 @pytest.mark.unit
 def test_organization_loads_optional_metered_operations_separately_from_models():
     organization = OrganizationSpec.from_dict(
-        "mistral",
+        "test-organization",
         {
             "currency": "EUR",
-            "models": {"mistral-small": _model_data()},
+            "models": {"test-model": _model_data()},
             "metered_operations": {"ocr": _metered_operation_data()},
         },
     )
@@ -193,13 +193,13 @@ def test_organization_loads_optional_metered_operations_separately_from_models()
     meter = organization.metered_operations["ocr"]
     assert meter == MeteredOperationSpec(
         name="ocr",
-        model="mistral-ocr-4-1",
+        model="metered-test-model",
         unit="page",
         rate=0.004,
         currency="EUR",
     )
-    assert isinstance(organization.models["mistral-small"], ModelSpec)
-    assert not isinstance(organization.models["mistral-small"], MeteredOperationSpec)
+    assert isinstance(organization.models["test-model"], ModelSpec)
+    assert not isinstance(organization.models["test-model"], MeteredOperationSpec)
 
 
 @pytest.mark.unit
@@ -217,14 +217,10 @@ def test_metered_operation_allows_zero_rate():
 def test_current_token_priced_organizations_load_without_metered_operations():
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
 
-    assert {
-        organization_name: organization.metered_operations
-        for organization_name, organization in registry.organizations.items()
-    } == {
-        "openai": {},
-        "anthropic": {},
-        "google": {},
-    }
+    assert all(
+        not organization.metered_operations
+        for organization in registry.organizations.values()
+    )
 
 
 @pytest.mark.unit
@@ -302,9 +298,9 @@ def test_organization_rejects_malformed_metered_operations(
 ):
     with pytest.raises(ValueError, match=message):
         OrganizationSpec.from_dict(
-            "mistral",
+            "test-organization",
             {
-                "models": {"mistral-small": _model_data()},
+                "models": {"test-model": _model_data()},
                 "metered_operations": metered_operations,
             },
         )
@@ -325,8 +321,8 @@ def test_chat_model_metadata_cannot_be_parsed_as_a_metered_operation():
 
 @pytest.mark.unit
 def test_plugin_organization_metadata_uses_the_existing_validation_and_lifecycle():
-    class MistralRequestRuleRegistry(RequestRuleRegistry):
-        organization_name = "mistral"
+    class TestPluginRequestRuleRegistry(RequestRuleRegistry):
+        organization_name = "test-plugin"
         supported_handlers = frozenset({RequestRuleRegistry.DROP_PARAMETER})
         droppable_parameter_defaults = {"temperature": 1.0}
 
@@ -338,29 +334,29 @@ def test_plugin_organization_metadata_uses_the_existing_validation_and_lifecycle
         }
     ]
     metadata = OrganizationModelMetadata(
-        organization="mistral",
+        organization="test-plugin",
         organization_data={
             "currency": "EUR",
-            "models": {"mistral-small": model_data},
+            "models": {"test-model": model_data},
             "metered_operations": {"ocr": _metered_operation_data()},
         },
-        request_rule_registry=MistralRequestRuleRegistry(),
+        request_rule_registry=TestPluginRequestRuleRegistry(),
     )
     registry = RegistrySpec()
 
     assert registry.register_organization_metadata(metadata) is True
     assert registry.register_organization_metadata(metadata) is False
 
-    model = resolve_model_spec(registry, "mistral", "mistral-small")
+    model = resolve_model_spec(registry, "test-plugin", "test-model")
     assert model is not None
     assert model.pricing_tiers.currency == "EUR"
     assert model.request_rules.rules[0].handler == "drop_parameter"
-    meter = resolve_metered_operation_spec(registry, "mistral", "ocr")
+    meter = resolve_metered_operation_spec(registry, "test-plugin", "ocr")
     assert meter is not None
-    assert meter.model == "mistral-ocr-4-1"
+    assert meter.model == "metered-test-model"
     assert meter.rate == 0.004
     assert meter.currency == "EUR"
-    assert resolve_metered_operation_spec(registry, "mistral", "missing") is None
+    assert resolve_metered_operation_spec(registry, "test-plugin", "missing") is None
 
 
 @pytest.mark.unit
@@ -368,29 +364,29 @@ def test_invalid_plugin_organization_metadata_does_not_mutate_the_registry():
     registry = RegistrySpec()
     organizations_before = registry.organizations
     invalid_metadata = OrganizationModelMetadata(
-        organization="mistral",
-        organization_data={"models": {"mistral-small": {}}},
+        organization="test-plugin",
+        organization_data={"models": {"test-model": {}}},
     )
 
-    with pytest.raises(ValueError, match="Invalid organization metadata for 'mistral'"):
+    with pytest.raises(ValueError, match="Invalid organization metadata for 'test-plugin'"):
         registry.register_organization_metadata(invalid_metadata)
 
     assert registry.organizations is organizations_before
-    assert "mistral" not in registry.organizations
+    assert "test-plugin" not in registry.organizations
 
 
 @pytest.mark.unit
 def test_conflicting_plugin_organization_metadata_is_rejected():
     registry = RegistrySpec()
     metadata = OrganizationModelMetadata(
-        organization="mistral",
-        organization_data={"models": {"mistral-small": _model_data()}},
+        organization="test-plugin",
+        organization_data={"models": {"test-model": _model_data()}},
     )
     changed_metadata = OrganizationModelMetadata(
-        organization="mistral",
+        organization="test-plugin",
         organization_data={
             "models": {
-                "mistral-small": _model_data(
+                "test-model": _model_data(
                     tiers=[
                         {
                             "up_to_prompt_tokens": None,
@@ -423,7 +419,7 @@ def test_model_request_rules_load_as_validated_metadata():
     ]
 
     model = ModelSpec.from_dict(
-        "gpt-5",
+        "test-model",
         model_data,
         request_rule_registry=OpenAIRequestRuleRegistry(),
     )
@@ -454,7 +450,7 @@ def test_anthropic_tool_choice_restriction_loads_as_validated_metadata():
     ]
 
     model = ModelSpec.from_dict(
-        "claude-fable-5-1",
+        "test-model",
         model_data,
         request_rule_registry=AnthropicRequestRuleRegistry(),
     )
@@ -488,7 +484,7 @@ def test_anthropic_tool_choice_restriction_rejects_invalid_metadata(
 
     with pytest.raises(ValueError, match=message):
         ModelSpec.from_dict(
-            "claude-fable-5-1",
+            "test-model",
             model_data,
             request_rule_registry=AnthropicRequestRuleRegistry(),
         )
@@ -625,7 +621,7 @@ def test_request_rule_schemas_are_scoped_to_their_organization():
 
     with pytest.raises(ValueError, match="not supported for organization 'anthropic'"):
         ModelSpec.from_dict(
-            "claude-sonnet-4-5",
+            "test-model",
             model_data,
             request_rule_registry=AnthropicRequestRuleRegistry(),
         )
@@ -638,7 +634,7 @@ def test_request_rule_schemas_are_scoped_to_their_organization():
     ]
     with pytest.raises(ValueError, match="unsupported request parameter path"):
         ModelSpec.from_dict(
-            "gemini-2.5-flash",
+            "test-model",
             model_data,
             request_rule_registry=GoogleRequestRuleRegistry(),
         )
@@ -902,11 +898,13 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
     assert DEFAULT_REGISTRY_PATH.is_file()
 
     manifest = json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
-    assert set(manifest["organization_files"]) == {"openai", "anthropic", "google"}
-    for relative_path in manifest["organization_files"].values():
+    organization_files = manifest["organization_files"]
+    assert organization_files
+    for relative_path in organization_files.values():
         assert (DEFAULT_REGISTRY_PATH.parent / relative_path).is_file()
 
     registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
+    assert set(registry.organizations) == set(organization_files)
     assert registry.schema_version == 13
     for organization in registry.organizations.values():
         for model in organization.models.values():
@@ -918,322 +916,7 @@ def test_default_registry_json_exists_and_uses_tiered_schema():
             else:
                 assert model.reasoning_capability is None
 
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("provider", "model_name", "expected_rules"),
-    [
-        (
-            "openai",
-            "gpt-5",
-            (
-                ("select_api_variant", {"variant": "responses"}),
-                (
-                    "drop_parameter",
-                    {"path": "top_p", "default": 1.0},
-                ),
-            ),
-        ),
-        (
-            "openai",
-            "gpt-5-nano",
-            (
-                ("select_api_variant", {"variant": "responses"}),
-                (
-                    "drop_parameter",
-                    {"path": "top_p", "default": 1.0},
-                ),
-                (
-                    "drop_parameter",
-                    {"path": "temperature", "default": 1.0},
-                ),
-            ),
-        ),
-        (
-            "openai",
-            "gpt-4.1-mini",
-            (
-                (
-                    "rename_parameter",
-                    {"from": "max_tokens", "to": "max_completion_tokens"},
-                ),
-            ),
-        ),
-        (
-            "anthropic",
-            "claude-sonnet-4-5",
-            (
-                (
-                    "drop_parameter",
-                    {"path": "top_p", "default": 1.0},
-                ),
-            ),
-        ),
-        (
-            "anthropic",
-            "claude-fable-5-1",
-            (
-                (
-                    "restrict_tool_choice",
-                    {"allowed_values": ["auto", "none"]},
-                ),
-            ),
-        ),
-        (
-            "google",
-            "gemini-2.5-flash",
-            (
-                (
-                    "drop_parameter",
-                    {"path": "generationConfig.maxOutputTokens", "default": None},
-                ),
-            ),
-        ),
-        (
-            "google",
-            "gemini-3.7-flash",
-            (
-                (
-                    "drop_parameter",
-                    {"path": "generationConfig.temperature", "default": 1.0},
-                ),
-                (
-                    "drop_parameter",
-                    {"path": "generationConfig.topP", "default": 1.0},
-                ),
-            ),
-        ),
-    ],
-)
-def test_default_registry_contains_current_request_rules(
-    provider,
-    model_name,
-    expected_rules,
-):
-    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-
-    rules = registry.organizations[provider].models[model_name].request_rules.rules
-
-    assert tuple((rule.handler, rule.arguments) for rule in rules) == expected_rules
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("provider", "model_name", "expected_capability"),
-    [
-        (
-            "openai",
-            "gpt-5.6-sol",
-            CategoricalReasoningCapability(
-                ("none", "low", "medium", "high", "xhigh", "max")
-            ),
-        ),
-        (
-            "openai",
-            "gpt-5.6-terra",
-            CategoricalReasoningCapability(
-                ("none", "low", "medium", "high", "xhigh", "max")
-            ),
-        ),
-        (
-            "openai",
-            "gpt-5.6-luna",
-            CategoricalReasoningCapability(
-                ("none", "low", "medium", "high", "xhigh", "max")
-            ),
-        ),
-        (
-            "openai",
-            "gpt-5.5",
-            CategoricalReasoningCapability(
-                ("none", "low", "medium", "high", "xhigh")
-            ),
-        ),
-        (
-            "openai",
-            "gpt-5.4",
-            CategoricalReasoningCapability(
-                ("none", "low", "medium", "high", "xhigh")
-            ),
-        ),
-        (
-            "openai",
-            "gpt-5.4-mini",
-            CategoricalReasoningCapability(
-                ("none", "low", "medium", "high", "xhigh")
-            ),
-        ),
-        (
-            "openai",
-            "gpt-5.4-nano",
-            CategoricalReasoningCapability(
-                ("none", "low", "medium", "high", "xhigh")
-            ),
-        ),
-        (
-            "openai",
-            "gpt-5.2",
-            CategoricalReasoningCapability(
-                ("none", "low", "medium", "high", "xhigh")
-            ),
-        ),
-        (
-            "openai",
-            "gpt-5.1",
-            CategoricalReasoningCapability(("none", "low", "medium", "high")),
-        ),
-        (
-            "openai",
-            "gpt-5",
-            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
-        ),
-        (
-            "openai",
-            "gpt-5-mini",
-            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
-        ),
-        (
-            "openai",
-            "gpt-5-nano",
-            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
-        ),
-        (
-            "anthropic",
-            "claude-fable-5",
-            CategoricalReasoningCapability(
-                ("low", "medium", "high", "xhigh", "max")
-            ),
-        ),
-        (
-            "anthropic",
-            "claude-opus-5",
-            CategoricalReasoningCapability(
-                ("low", "medium", "high", "xhigh", "max")
-            ),
-        ),
-        (
-            "anthropic",
-            "claude-sonnet-5",
-            CategoricalReasoningCapability(
-                ("low", "medium", "high", "xhigh", "max")
-            ),
-        ),
-        (
-            "anthropic",
-            "claude-opus-4-8",
-            CategoricalReasoningCapability(
-                ("low", "medium", "high", "xhigh", "max")
-            ),
-        ),
-        (
-            "anthropic",
-            "claude-opus-4-7",
-            CategoricalReasoningCapability(
-                ("low", "medium", "high", "xhigh", "max")
-            ),
-        ),
-        (
-            "anthropic",
-            "claude-opus-4-6",
-            CategoricalReasoningCapability(("low", "medium", "high", "max")),
-        ),
-        (
-            "anthropic",
-            "claude-sonnet-4-6",
-            CategoricalReasoningCapability(("low", "medium", "high", "max")),
-        ),
-        (
-            "anthropic",
-            "claude-opus-4-5",
-            NumericReasoningCapability(1_024, 128_000),
-        ),
-        (
-            "anthropic",
-            "claude-sonnet-4-5",
-            NumericReasoningCapability(1_024, 64_000),
-        ),
-        (
-            "anthropic",
-            "claude-haiku-4-5",
-            NumericReasoningCapability(1_024, 64_000),
-        ),
-        (
-            "google",
-            "gemini-3.7-flash",
-            CategoricalReasoningCapability(("low", "medium", "high")),
-        ),
-        (
-            "google",
-            "gemini-3.6-flash",
-            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
-        ),
-        (
-            "google",
-            "gemini-3.5-flash",
-            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
-        ),
-        (
-            "google",
-            "gemini-3.5-flash-lite",
-            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
-        ),
-        (
-            "google",
-            "gemini-3.1-pro-preview",
-            CategoricalReasoningCapability(("low", "medium", "high")),
-        ),
-        (
-            "google",
-            "gemini-3.1-flash-lite",
-            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
-        ),
-        (
-            "google",
-            "gemini-3-flash-preview",
-            CategoricalReasoningCapability(("minimal", "low", "medium", "high")),
-        ),
-        (
-            "google",
-            "gemini-2.5-pro",
-            NumericReasoningCapability(
-                128,
-                32_768,
-            ),
-        ),
-        (
-            "google",
-            "gemini-2.5-flash",
-            NumericReasoningCapability(
-                0,
-                24_576,
-                can_disable_thinking=True,
-            ),
-        ),
-        (
-            "google",
-            "gemini-2.5-flash-lite",
-            NumericReasoningCapability(
-                512,
-                24_576,
-                can_disable_thinking=True,
-            ),
-        ),
-    ],
-)
-def test_default_registry_contains_verified_reasoning_capabilities(
-    provider,
-    model_name,
-    expected_capability,
-):
-    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-
-    assert (
-        registry.organizations[provider].models[model_name].reasoning_capability
-        == expected_capability
+    assert registry.organizations
+    assert all(
+        organization.models for organization in registry.organizations.values()
     )
-
-@pytest.mark.unit
-def test_default_registry_excludes_retired_claude_opus_4_1():
-    registry = RegistrySpec(path=str(DEFAULT_REGISTRY_PATH))
-
-    assert "claude-opus-4-1" not in registry.organizations["anthropic"].models

@@ -1,6 +1,26 @@
 {
   "currency": "USD",
   "models": {
+    "gemini-3.8-flash": {
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high"]
+      },
+      "request_rules": [
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.temperature", "default": 1.0}},
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.topP", "default": 1.0}}
+      ],
+      "limits": {
+        "context_window_tokens": 1048576,
+        "max_output_tokens": 65536
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.75,
+          "output_per_1m": 3.75
+        }
+      ]
+    },
     "gemini-3.7-flash": {
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high"]
