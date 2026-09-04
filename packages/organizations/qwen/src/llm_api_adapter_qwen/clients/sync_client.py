@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Iterator
 
 from llm_api_adapter.errors.llm_api_error import (
     LLMAPIAuthorizationError,
@@ -15,7 +15,12 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPITokenLimitError,
     LLMAPIUsageLimitError,
 )
-from llm_api_adapter.llms.transports import JSONResponse, SyncTransport, TransportRequest
+from llm_api_adapter.llms.transports import (
+    JSONResponse,
+    SSEEvent,
+    SyncTransport,
+    TransportRequest,
+)
 
 
 FRANKFURT_MESSAGES_URL = (
@@ -77,6 +82,31 @@ class QwenMessagesSyncClient:
             )
         return response_data
 
+    def stream(
+        self,
+        *,
+        api_key: str,
+        workspace_id: object,
+        payload: dict[str, Any],
+        timeout_s: float | None,
+    ) -> Iterator[SSEEvent]:
+        """Open one Qwen Messages SSE response through the Core transport."""
+        stream_payload = dict(payload)
+        stream_payload["stream"] = True
+        return self.transport.post_sse(
+            TransportRequest(
+                url=messages_url(workspace_id),
+                headers={
+                    "x-api-key": api_key,
+                    "Content-Type": "application/json",
+                },
+                payload=stream_payload,
+                timeout=timeout_s,
+            ),
+            http_error_handler=self._handle_http_error,
+            stream_error_handler=self._handle_stream_error,
+        )
+
     @classmethod
     def _handle_http_error(cls, http_error: Any) -> None:
         response = getattr(http_error, "response", None)
@@ -98,6 +128,25 @@ class QwenMessagesSyncClient:
                     detail = raw_detail
 
         cls._raise_mapped_error(status_code, error_type, detail)
+
+    @classmethod
+    def _handle_stream_error(cls, event: SSEEvent) -> None:
+        """Map one Qwen Messages ``error`` SSE event to a public error."""
+        payload = event.data if isinstance(event.data, Mapping) else {}
+        error = payload.get("error", payload)
+        if not isinstance(error, Mapping):
+            raise LLMAPIClientError(
+                detail="Qwen Messages returned an invalid SSE error event",
+            )
+        raw_type = error.get("type") or error.get("code")
+        error_type = raw_type if isinstance(raw_type, str) else None
+        raw_detail = error.get("message") or error.get("detail")
+        detail = (
+            raw_detail
+            if isinstance(raw_detail, str) and raw_detail
+            else "Qwen Messages returned an SSE error"
+        )
+        cls._raise_mapped_error(None, error_type, detail)
 
     @staticmethod
     def _raise_mapped_error(
