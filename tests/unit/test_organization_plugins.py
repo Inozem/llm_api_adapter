@@ -228,6 +228,12 @@ def test_qwen_is_known_before_installation_and_loads_only_through_its_plugin(
     monkeypatch,
     isolated_plugin_runtime,
 ):
+    for module_name in (
+        "llm_api_adapter_qwen.plugin",
+        "llm_api_adapter_qwen",
+    ):
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+
     installed_entry_points: list[FakeEntryPoint] = []
 
     def get_entry_points(*, group: str):
