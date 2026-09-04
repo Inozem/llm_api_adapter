@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from typing import Any, Mapping, Optional
 
 from llm_api_adapter.adapters.base_adapter import _StreamState
+from llm_api_adapter.errors.llm_api_error import InvalidToolArgumentsError
 from llm_api_adapter.llms.streaming import StreamChunkBuffer, StreamUsageTracker
 from llm_api_adapter.llms.transports import SSEEvent
 from llm_api_adapter.models.responses.chat_response import Usage
@@ -17,6 +19,7 @@ class QwenMessagesStreamState(_StreamState):
 
     message_data: dict[str, Any] = field(default_factory=dict)
     content_blocks: dict[int, dict[str, Any]] = field(default_factory=dict)
+    input_json_fragments: dict[int, list[str]] = field(default_factory=dict)
     usage: dict[str, Any] = field(default_factory=dict)
     message_delta: dict[str, Any] = field(default_factory=dict)
 
@@ -52,6 +55,8 @@ class QwenMessagesStreamParser:
             cls._record_content_block_start(payload, state)
         elif event_type == "content_block_delta":
             visible_delta = cls._record_content_block_delta(payload, state)
+        elif event_type == "content_block_stop":
+            cls._finalize_content_block(payload, state)
         elif event_type == "message_delta":
             cls._record_message_delta(payload, state)
 
@@ -106,6 +111,11 @@ class QwenMessagesStreamParser:
         if copied_block.get("type") == "text":
             text = copied_block.get("text")
             copied_block["text"] = text if isinstance(text, str) else ""
+        elif copied_block.get("type") == "tool_use":
+            current_input = copied_block.get("input")
+            copied_block["input"] = (
+                dict(current_input) if isinstance(current_input, Mapping) else {}
+            )
         state.content_blocks[index] = copied_block
 
     @staticmethod
@@ -117,16 +127,55 @@ class QwenMessagesStreamParser:
         delta = payload.get("delta")
         if isinstance(index, bool) or not isinstance(index, int):
             return None
-        if not isinstance(delta, Mapping) or delta.get("type") != "text_delta":
+        if not isinstance(delta, Mapping):
+            return None
+        block = state.content_blocks.get(index)
+        if block is None:
+            return None
+        if delta.get("type") == "input_json_delta":
+            partial_json = delta.get("partial_json")
+            if isinstance(partial_json, str):
+                state.input_json_fragments.setdefault(index, []).append(partial_json)
+            return None
+        if delta.get("type") != "text_delta" or block.get("type") != "text":
             return None
         text = delta.get("text")
-        block = state.content_blocks.get(index)
-        if not isinstance(text, str) or not text or block is None:
-            return None
-        if block.get("type") != "text":
+        if not isinstance(text, str) or not text:
             return None
         block["text"] = f"{block.get('text', '')}{text}"
         return text
+
+    @staticmethod
+    def _finalize_content_block(
+        payload: Mapping[str, Any],
+        state: QwenMessagesStreamState,
+    ) -> None:
+        index = payload.get("index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            return
+        block = state.content_blocks.get(index)
+        if not block or block.get("type") != "tool_use":
+            return
+        raw_input = "".join(state.input_json_fragments.get(index, []))
+        if not raw_input:
+            return
+        try:
+            parsed_input = json.loads(raw_input)
+        except json.JSONDecodeError as error:
+            raise InvalidToolArgumentsError(
+                detail=(
+                    "Qwen tool input JSON parse failed "
+                    f"for tool={block.get('name')!r}: {error}"
+                ),
+            ) from error
+        if not isinstance(parsed_input, dict):
+            raise InvalidToolArgumentsError(
+                detail=(
+                    "Qwen tool input must decode to an object "
+                    f"for tool={block.get('name')!r}"
+                ),
+            )
+        block["input"] = parsed_input
 
     @staticmethod
     def _record_message_delta(

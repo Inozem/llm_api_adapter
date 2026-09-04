@@ -297,12 +297,12 @@ class QwenAdapter(LLMAdapterBase):
         validated_workspace_id = validate_workspace_id(workspace_id)
         self._reject_deferred_features(
             reasoning_level=reasoning_level,
-            tools=tools,
-            tool_choice=tool_choice,
             parallel_tool_calls=parallel_tool_calls,
             json_schema=json_schema,
             response_model=response_model,
         )
+        self._validate_tools(tools)
+        normalized_tool_choice = self._normalize_tool_choice(tool_choice, tools)
         validated_max_tokens = self._validate_max_tokens(max_tokens)
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
         normalized_messages = self._normalize_messages(messages)
@@ -316,6 +316,12 @@ class QwenAdapter(LLMAdapterBase):
         }
         if system_prompt is not None:
             payload["system"] = system_prompt
+        if tools:
+            payload["tools"] = [self._to_qwen_tool(tool) for tool in tools]
+        if normalized_tool_choice is not None:
+            payload["tool_choice"] = self._to_qwen_tool_choice(
+                normalized_tool_choice,
+            )
         return validated_workspace_id, payload
 
     def _consume_stream_event(
@@ -387,20 +393,36 @@ class QwenAdapter(LLMAdapterBase):
     def _reject_deferred_features(
         *,
         reasoning_level: Optional[str | int],
-        tools: Optional[list[ToolSpec]],
-        tool_choice: Any,
         parallel_tool_calls: Optional[bool],
         json_schema: Optional[dict],
         response_model: Optional[Any],
     ) -> None:
         if reasoning_level is not None:
             raise NotImplementedError("Qwen reasoning controls are not implemented yet")
-        if tools:
-            raise NotImplementedError("Qwen application tools are not implemented yet")
-        if tool_choice is not None or parallel_tool_calls is not None:
-            raise NotImplementedError("Qwen application tools are not implemented yet")
+        if parallel_tool_calls is not None:
+            raise NotImplementedError(
+                "Qwen parallel tool-call controls are not implemented yet",
+            )
         if json_schema is not None or response_model is not None:
             raise NotImplementedError("Qwen structured output is not implemented yet")
+
+    @staticmethod
+    def _to_qwen_tool(tool: ToolSpec) -> dict[str, Any]:
+        """Map one validated Core tool to the Messages wire format."""
+        payload: dict[str, Any] = {
+            "name": tool.name,
+            "input_schema": tool.json_schema,
+        }
+        if tool.description:
+            payload["description"] = tool.description
+        return payload
+
+    @staticmethod
+    def _to_qwen_tool_choice(normalized_tool_choice: str) -> dict[str, str]:
+        """Map normalized Core tool selection to Model Studio Messages."""
+        if normalized_tool_choice in {"auto", "none", "any"}:
+            return {"type": normalized_tool_choice}
+        return {"type": "tool", "name": normalized_tool_choice}
 
     @staticmethod
     def _parse_response(

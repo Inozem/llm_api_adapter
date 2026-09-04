@@ -28,6 +28,7 @@ from llm_api_adapter.errors.llm_api_error import (
 )
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
+from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
@@ -132,6 +133,89 @@ def qwen_messages_sse_events(model="qwen3.8-max"):
                 "type": "message_delta",
                 "delta": {"stop_reason": "end_turn"},
                 "usage": {"input_tokens": 5, "output_tokens": 2},
+            },
+        ),
+        SSEEvent(event="message_stop", data={"type": "message_stop"}),
+    ]
+
+
+def qwen_messages_tool_sse_events(model="qwen3.8-max"):
+    return [
+        SSEEvent(
+            event="message_start",
+            data={
+                "type": "message_start",
+                "message": {
+                    "id": "msg-qwen-tool-stream-1",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": model,
+                    "content": [],
+                    "usage": {"input_tokens": 5, "output_tokens": 0},
+                },
+            },
+        ),
+        SSEEvent(
+            event="content_block_start",
+            data={
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "Checking "},
+            },
+        ),
+        SSEEvent(
+            event="content_block_start",
+            data={
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_qwen_1",
+                    "name": "get_weather",
+                    "input": {},
+                },
+            },
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": '{"city":"Tel',
+                },
+            },
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": ' Aviv"}',
+                },
+            },
+        ),
+        SSEEvent(
+            event="content_block_stop",
+            data={"type": "content_block_stop", "index": 1},
+        ),
+        SSEEvent(
+            event="message_delta",
+            data={
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use"},
+                "usage": {"input_tokens": 5, "output_tokens": 8},
             },
         ),
         SSEEvent(event="message_stop", data={"type": "message_stop"}),
@@ -759,3 +843,260 @@ async def test_qwen_async_stream_cancellation_closes_resources(qwen_runtime, mon
 
     assert stream_closed is True
     assert completed == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("tool_choice", "expected_tool_choice"),
+    [
+        ("auto", {"type": "auto"}),
+        ("none", {"type": "none"}),
+        ("any", {"type": "any"}),
+        ("get_weather", {"type": "tool", "name": "get_weather"}),
+    ],
+)
+def test_qwen_chat_maps_tools_and_normalized_tool_choice(
+    qwen_runtime,
+    tool_choice,
+    expected_tool_choice,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-tool-1",
+            "model": "qwen3.8-max",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_qwen_1",
+                    "name": "get_weather",
+                    "input": {"city": "Tel Aviv"},
+                }
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 10, "output_tokens": 20},
+        },
+    )
+    adapter.adapter._sync_transport = transport
+    tool = ToolSpec(
+        name="get_weather",
+        description="Look up the weather for a city.",
+        json_schema={
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    )
+
+    response = adapter.chat(
+        [{"role": "user", "content": "What is the weather in Tel Aviv?"}],
+        max_tokens=64,
+        tools=[tool],
+        tool_choice=tool_choice,
+        workspace_id="frankfurt-workspace",
+    )
+
+    assert response.content is None
+    assert response.finish_reason == "tool_use"
+    assert response.tool_calls is not None
+    assert response.tool_calls[0].name == "get_weather"
+    assert response.tool_calls[0].call_id == "toolu_qwen_1"
+    assert response.tool_calls[0].arguments == {"city": "Tel Aviv"}
+    assert transport.requests[0].payload["tools"] == [
+        {
+            "name": "get_weather",
+            "description": "Look up the weather for a city.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        }
+    ]
+    assert transport.requests[0].payload["tool_choice"] == expected_tool_choice
+
+
+@pytest.mark.integration
+def test_qwen_chat_maps_application_controlled_tool_result_messages(qwen_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-tool-result-1",
+            "model": "qwen3.8-max",
+            "content": [{"type": "text", "text": "It is sunny."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 12, "output_tokens": 4},
+        },
+    )
+    adapter.adapter._sync_transport = transport
+    tool = ToolSpec(
+        name="get_weather",
+        json_schema={"type": "object", "properties": {}},
+    )
+
+    response = adapter.chat(
+        [
+            {"role": "user", "content": "What is the weather in Tel Aviv?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "name": "get_weather",
+                        "arguments": {"city": "Tel Aviv"},
+                        "call_id": "toolu_qwen_1",
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_qwen_1",
+                "content": "{\"condition\": \"sunny\"}",
+            },
+        ],
+        max_tokens=64,
+        tools=[tool],
+        workspace_id="frankfurt-workspace",
+    )
+
+    assert response.content == "It is sunny."
+    assert transport.requests[0].payload["messages"] == [
+        {"role": "user", "content": "What is the weather in Tel Aviv?"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_qwen_1",
+                    "name": "get_weather",
+                    "input": {"city": "Tel Aviv"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_qwen_1",
+                    "content": "{\"condition\": \"sunny\"}",
+                }
+            ],
+        },
+    ]
+
+
+@pytest.mark.integration
+def test_qwen_stream_delivers_completed_tool_call_before_done(qwen_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport({}, events=qwen_messages_tool_sse_events())
+    adapter.adapter._sync_transport = transport
+    events = []
+
+    output = list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "What is the weather in Tel Aviv?"}],
+            max_tokens=64,
+            tools=[
+                ToolSpec(
+                    name="get_weather",
+                    json_schema={"type": "object", "properties": {}},
+                )
+            ],
+            tool_choice="any",
+            workspace_id="frankfurt-workspace",
+            on_tool_call=lambda call: events.append(
+                ("tool", call.name, call.arguments, call.call_id),
+            ),
+            on_done=lambda response: events.append(
+                ("done", response.finish_reason, response.tool_calls),
+            ),
+        )
+    )
+
+    assert output == ["Checking "]
+    assert events[0] == (
+        "tool",
+        "get_weather",
+        {"city": "Tel Aviv"},
+        "toolu_qwen_1",
+    )
+    assert events[1][0:2] == ("done", "tool_use")
+    assert events[1][2] is not None
+    assert events[1][2][0].arguments == {"city": "Tel Aviv"}
+    assert transport.sse_requests[0].payload["tool_choice"] == {"type": "any"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_qwen_astream_delivers_completed_tool_call_before_done(
+    qwen_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    def fake_async_stream_request(url, **kwargs):
+        async def events():
+            for event in qwen_messages_tool_sse_events():
+                yield event
+
+        return events()
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    callbacks = []
+
+    async def on_tool_call(call):
+        callbacks.append(("tool", call.name, call.arguments, call.call_id))
+
+    async def on_done(response):
+        callbacks.append(("done", response.finish_reason, response.tool_calls))
+
+    output = [
+        text
+        async for text in adapter.astream_chat(
+            [{"role": "user", "content": "What is the weather in Tel Aviv?"}],
+            max_tokens=64,
+            tools=[
+                ToolSpec(
+                    name="get_weather",
+                    json_schema={"type": "object", "properties": {}},
+                )
+            ],
+            tool_choice={"type": "tool", "name": "get_weather"},
+            workspace_id="frankfurt-workspace",
+            on_tool_call=on_tool_call,
+            on_done=on_done,
+        )
+    ]
+
+    assert output == ["Checking "]
+    assert callbacks[0] == (
+        "tool",
+        "get_weather",
+        {"city": "Tel Aviv"},
+        "toolu_qwen_1",
+    )
+    assert callbacks[1][0:2] == ("done", "tool_use")
+    assert callbacks[1][2] is not None
+    assert callbacks[1][2][0].arguments == {"city": "Tel Aviv"}
