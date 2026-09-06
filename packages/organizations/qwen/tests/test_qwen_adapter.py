@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.errors.llm_api_error import (
+    JSONSchemaError,
     LLMAPIAuthorizationError,
     LLMAPIClientError,
     LLMAPIRateLimitError,
@@ -31,6 +33,20 @@ from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+
+FLAT_OBJECT_SCHEMA = {
+    "type": "object",
+    "properties": {"answer": {"type": "string"}},
+    "required": ["answer"],
+    "additionalProperties": False,
+}
+
+
+class StructuredAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str
 
 
 class FakeSyncTransport:
@@ -222,6 +238,66 @@ def qwen_messages_tool_sse_events(model="qwen3.8-max"):
     ]
 
 
+def qwen_messages_thinking_sse_events(model="qwen3.8-max"):
+    return [
+        SSEEvent(
+            event="message_start",
+            data={
+                "type": "message_start",
+                "message": {
+                    "id": "msg-qwen-thinking-stream-1",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": model,
+                    "content": [],
+                    "usage": {"input_tokens": 5, "output_tokens": 0},
+                },
+            },
+        ),
+        SSEEvent(
+            event="content_block_start",
+            data={
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": ""},
+            },
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "Plan"},
+            },
+        ),
+        SSEEvent(
+            event="content_block_start",
+            data={
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "Visible"},
+            },
+        ),
+        SSEEvent(
+            event="message_delta",
+            data={
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"input_tokens": 5, "output_tokens": 2},
+            },
+        ),
+        SSEEvent(event="message_stop", data={"type": "message_stop"}),
+    ]
+
+
 @pytest.fixture
 def qwen_runtime(monkeypatch):
     from llm_api_adapter_qwen.plugin import PLUGIN
@@ -322,6 +398,227 @@ def test_universal_chat_uses_the_frankfurt_messages_endpoint(qwen_runtime, model
         "temperature": 0.7,
         "top_p": 0.8,
     }
+
+
+@pytest.mark.integration
+def test_qwen_chat_supports_core_portable_json_schema(qwen_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-json-1",
+            "model": "qwen3.8-max",
+            "content": [{"type": "text", "text": '{"answer":"Hallo"}'}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    )
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat(
+        [{"role": "user", "content": "Reply as JSON."}],
+        max_tokens=64,
+        json_schema=FLAT_OBJECT_SCHEMA,
+        workspace_id="frankfurt-workspace",
+    )
+
+    assert response.parsed_json == {"answer": "Hallo"}
+    assert transport.requests[0].payload["output_config"] == {
+        "format": {"type": "json_schema", "schema": FLAT_OBJECT_SCHEMA},
+    }
+
+
+@pytest.mark.integration
+def test_qwen_chat_supports_pydantic_structured_output(qwen_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.7-plus",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-pydantic-1",
+            "model": "qwen3.7-plus",
+            "content": [{"type": "text", "text": '{"answer":"Hallo"}'}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    )
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat(
+        [{"role": "user", "content": "Reply as JSON."}],
+        max_tokens=64,
+        response_model=StructuredAnswer,
+        workspace_id="frankfurt-workspace",
+    )
+
+    assert response.parsed_json == {"answer": "Hallo"}
+    assert response.parsed_model == StructuredAnswer(answer="Hallo")
+    assert transport.requests[0].payload["output_config"]["format"] == {
+        "type": "json_schema",
+        "schema": StructuredAnswer.model_json_schema(),
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stop_reason, stop_details, attribute, expected",
+    [
+        ("refusal", {"reason": "policy"}, "refusal", "policy"),
+        ("max_tokens", None, "incomplete_reason", "max_tokens"),
+    ],
+)
+def test_qwen_structured_terminal_outcomes_are_not_parsed(
+    qwen_runtime,
+    stop_reason,
+    stop_details,
+    attribute,
+    expected,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-flash",
+        api_key="qwen-test-key",
+    )
+    payload = {
+        "id": "msg-qwen-terminal-1",
+        "model": "qwen3.8-flash",
+        "content": [{"type": "text", "text": '{"answer":"partial"}'}],
+        "stop_reason": stop_reason,
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+    if stop_details is not None:
+        payload["stop_details"] = stop_details
+    adapter.adapter._sync_transport = FakeSyncTransport(payload)
+
+    response = adapter.chat(
+        [{"role": "user", "content": "Reply as JSON."}],
+        max_tokens=64,
+        json_schema=FLAT_OBJECT_SCHEMA,
+        workspace_id="frankfurt-workspace",
+    )
+
+    assert getattr(response, attribute) == expected
+    assert response.parsed_json is None
+    assert response.parsed_model is None
+
+
+@pytest.mark.unit
+def test_qwen_rejects_invalid_or_incompatible_structured_requests_before_transport(
+    qwen_runtime,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport({})
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(JSONSchemaError, match="Core portable profile"):
+        adapter.chat(
+            [{"role": "user", "content": "Reply as JSON."}],
+            max_tokens=64,
+            json_schema={"type": "object", "properties": {"answer": True}},
+            workspace_id="frankfurt-workspace",
+        )
+    with pytest.raises(JSONSchemaError, match="json_schema and tools"):
+        adapter.chat(
+            [{"role": "user", "content": "Reply as JSON."}],
+            max_tokens=64,
+            json_schema=FLAT_OBJECT_SCHEMA,
+            tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+            workspace_id="frankfurt-workspace",
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "model, reasoning_level, expected_options",
+    [
+        ("qwen3.8-max", "medium", {"output_config": {"effort": "medium"}}),
+        ("qwen3.8-flash", "medium", {"output_config": {"effort": "medium"}}),
+        (
+            "qwen3.7-plus",
+            "low",
+            {"thinking": {"type": "enabled", "budget_tokens": 65_537}},
+        ),
+        (
+            "qwen3.7-flash",
+            "low",
+            {"thinking": {"type": "enabled", "budget_tokens": 65_537}},
+        ),
+    ],
+)
+def test_qwen_resolves_reasoning_from_registry_metadata(
+    qwen_runtime,
+    model,
+    reasoning_level,
+    expected_options,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-reasoning-1",
+            "model": model,
+            "content": [{"type": "text", "text": "Hallo"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    )
+    adapter.adapter._sync_transport = transport
+
+    adapter.chat(
+        [{"role": "user", "content": "Think carefully."}],
+        max_tokens=131_072,
+        reasoning_level=reasoning_level,
+        workspace_id="frankfurt-workspace",
+    )
+
+    request_payload = transport.requests[0].payload
+    assert {key: request_payload[key] for key in expected_options} == expected_options
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "model",
+    ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.7-flash"],
+)
+def test_qwen_reasoning_none_disables_thinking_for_every_model(qwen_runtime, model):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-no-thinking-1",
+            "model": model,
+            "content": [{"type": "text", "text": "Hallo"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    )
+    adapter.adapter._sync_transport = transport
+
+    adapter.chat(
+        [{"role": "user", "content": "Do not think aloud."}],
+        max_tokens=64,
+        reasoning_level="none",
+        workspace_id="frankfurt-workspace",
+    )
+
+    assert transport.requests[0].payload["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.unit
@@ -480,6 +777,104 @@ def test_universal_stream_chat_reconstructs_qwen_messages_response(qwen_runtime)
     assert request.payload["model"] == "qwen3.8-max"
 
 
+@pytest.mark.integration
+def test_qwen_stream_finalizes_core_structured_output(qwen_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    events = qwen_messages_sse_events()
+    events[2].data["delta"]["text"] = '{"answer":"Hal'
+    events[3].data["delta"]["text"] = 'lo"}'
+    transport = FakeSyncTransport({}, events=events)
+    adapter.adapter._sync_transport = transport
+    completed = []
+
+    output = list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "Reply as JSON."}],
+            max_tokens=64,
+            json_schema=FLAT_OBJECT_SCHEMA,
+            workspace_id="frankfurt-workspace",
+            on_done=completed.append,
+        )
+    )
+
+    assert output == ['{"answer":"Hal', 'lo"}']
+    assert completed[0].parsed_json == {"answer": "Hallo"}
+    assert transport.sse_requests[0].payload["output_config"] == {
+        "format": {"type": "json_schema", "schema": FLAT_OBJECT_SCHEMA},
+    }
+
+
+@pytest.mark.integration
+def test_qwen_captures_nonstream_thinking_only_on_request(qwen_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-thinking-1",
+            "model": "qwen3.8-max",
+            "content": [
+                {"type": "thinking", "thinking": "Plan"},
+                {"type": "text", "text": "Visible"},
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    )
+    adapter.adapter._sync_transport = transport
+
+    without_capture = adapter.chat(
+        [{"role": "user", "content": "Think carefully."}],
+        max_tokens=64,
+        workspace_id="frankfurt-workspace",
+    )
+    with_capture = adapter.chat(
+        [{"role": "user", "content": "Think carefully."}],
+        max_tokens=64,
+        workspace_id="frankfurt-workspace",
+        capture_reasoning=True,
+    )
+
+    assert without_capture.content == with_capture.content == "Visible"
+    assert without_capture.reasoning_events == []
+    assert [event.text for event in with_capture.reasoning_events] == ["Plan"]
+
+
+@pytest.mark.integration
+def test_qwen_stream_separates_captured_thinking_from_visible_text(qwen_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport({}, events=qwen_messages_thinking_sse_events())
+    adapter.adapter._sync_transport = transport
+    reasoning = []
+    completed = []
+
+    output = list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "Think carefully."}],
+            max_tokens=64,
+            workspace_id="frankfurt-workspace",
+            capture_reasoning=True,
+            on_reasoning=reasoning.append,
+            on_done=completed.append,
+        )
+    )
+
+    assert output == ["Visible"]
+    assert [event.text for event in reasoning] == ["Plan"]
+    assert completed[0].content == "Visible"
+    assert [event.text for event in completed[0].reasoning_events] == ["Plan"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_universal_achat_uses_qwen_async_client(qwen_runtime, monkeypatch):
@@ -607,6 +1002,52 @@ async def test_universal_astream_chat_matches_sync_lifecycle(qwen_runtime, monke
     assert closed is True
     assert requests[0][0].endswith("/apps/anthropic/v1/messages")
     assert requests[0][1]["payload"]["stream"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_qwen_astream_separates_captured_thinking_from_visible_text(
+    qwen_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    def fake_async_stream_request(url, **kwargs):
+        async def events():
+            for event in qwen_messages_thinking_sse_events():
+                yield event
+
+        return events()
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    reasoning = []
+    completed = []
+
+    output = [
+        text
+        async for text in adapter.astream_chat(
+            [{"role": "user", "content": "Think carefully."}],
+            max_tokens=64,
+            workspace_id="frankfurt-workspace",
+            capture_reasoning=True,
+            on_reasoning=reasoning.append,
+            on_done=completed.append,
+        )
+    ]
+
+    assert output == ["Visible"]
+    assert [event.text for event in reasoning] == ["Plan"]
+    assert completed[0].content == "Visible"
+    assert [event.text for event in completed[0].reasoning_events] == ["Plan"]
 
 
 @pytest.mark.asyncio

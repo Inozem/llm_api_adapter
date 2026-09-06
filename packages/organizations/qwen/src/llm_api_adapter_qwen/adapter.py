@@ -19,6 +19,7 @@ from llm_api_adapter.adapters.base_adapter import (
     OnReasoning,
     OnToolCall,
 )
+from llm_api_adapter.adapters.structured_output import validate_core_portable_schema
 from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIError
 from llm_api_adapter.llms.transports import SyncTransport, create_sync_transport
 from llm_api_adapter.models.messages.chat_message import Message, Messages
@@ -75,7 +76,7 @@ class QwenAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Create one Qwen Messages response in an explicit Frankfurt workspace."""
-        workspace_id, payload = self._prepare_request_payload(
+        workspace_id, request_context, payload = self._prepare_request_payload(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -101,8 +102,11 @@ class QwenAdapter(LLMAdapterBase):
                 response,
                 capture_reasoning=capture_reasoning,
             )
-            self._apply_response_pricing(chat_response)
-            return chat_response
+            return self._finalize_chat_response(
+                chat_response,
+                effective_schema=request_context.effective_schema,
+                response_model=request_context.response_model,
+            )
         except LLMAPIError as error:
             self.handle_error(error)
 
@@ -125,7 +129,7 @@ class QwenAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Create one Qwen Messages response without blocking the event loop."""
-        workspace_id, payload = self._prepare_request_payload(
+        workspace_id, request_context, payload = self._prepare_request_payload(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -151,8 +155,11 @@ class QwenAdapter(LLMAdapterBase):
                 response,
                 capture_reasoning=capture_reasoning,
             )
-            self._apply_response_pricing(chat_response)
-            return chat_response
+            return self._finalize_chat_response(
+                chat_response,
+                effective_schema=request_context.effective_schema,
+                response_model=request_context.response_model,
+            )
         except LLMAPIError as error:
             self.handle_error(error)
 
@@ -181,7 +188,7 @@ class QwenAdapter(LLMAdapterBase):
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
         """Stream Qwen Messages text through the shared synchronous lifecycle."""
-        workspace_id, payload = self._prepare_request_payload(
+        workspace_id, request_context, payload = self._prepare_request_payload(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -195,7 +202,10 @@ class QwenAdapter(LLMAdapterBase):
             workspace_id=workspace_id,
         )
         _ = previous_response
-        state = QwenMessagesStreamParser.new_state(buffer_chars=buffer_chars)
+        state = QwenMessagesStreamParser.new_state(
+            buffer_chars=buffer_chars,
+            capture_reasoning=capture_reasoning,
+        )
         events = self._client.stream(
             api_key=self.api_key,
             workspace_id=workspace_id,
@@ -207,8 +217,8 @@ class QwenAdapter(LLMAdapterBase):
             state,
             consume_event=self._consume_stream_event,
             finalize_response=self._finalize_stream,
-            effective_schema=None,
-            response_model=None,
+            effective_schema=request_context.effective_schema,
+            response_model=request_context.response_model,
             on_delta=on_delta,
             on_tool_call=on_tool_call,
             on_done=on_done,
@@ -242,7 +252,7 @@ class QwenAdapter(LLMAdapterBase):
         on_reasoning: Optional[AsyncOnReasoning] = None,
     ) -> AsyncIterator[str]:
         """Stream Qwen Messages text through the shared async lifecycle."""
-        workspace_id, payload = self._prepare_request_payload(
+        workspace_id, request_context, payload = self._prepare_request_payload(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -256,7 +266,10 @@ class QwenAdapter(LLMAdapterBase):
             workspace_id=workspace_id,
         )
         _ = previous_response
-        state = QwenMessagesStreamParser.new_state(buffer_chars=buffer_chars)
+        state = QwenMessagesStreamParser.new_state(
+            buffer_chars=buffer_chars,
+            capture_reasoning=capture_reasoning,
+        )
         events = self._async_client.stream(
             api_key=self.api_key,
             workspace_id=workspace_id,
@@ -268,8 +281,8 @@ class QwenAdapter(LLMAdapterBase):
             state,
             consume_event=self._consume_stream_event_async,
             finalize_response=self._finalize_stream,
-            effective_schema=None,
-            response_model=None,
+            effective_schema=request_context.effective_schema,
+            response_model=request_context.response_model,
             on_delta=on_delta,
             on_tool_call=on_tool_call,
             on_done=on_done,
@@ -292,21 +305,20 @@ class QwenAdapter(LLMAdapterBase):
         json_schema: Optional[dict],
         response_model: Optional[Any],
         workspace_id: str | None,
-    ) -> tuple[str, dict[str, Any]]:
+    ) -> tuple[str, Any, dict[str, Any]]:
         """Validate one shared request and serialize its Qwen Messages payload."""
         validated_workspace_id = validate_workspace_id(workspace_id)
-        self._reject_deferred_features(
-            reasoning_level=reasoning_level,
-            parallel_tool_calls=parallel_tool_calls,
-            json_schema=json_schema,
-            response_model=response_model,
+        self._reject_unsupported_features(parallel_tool_calls=parallel_tool_calls)
+        request_context = self._prepare_chat_request(
+            messages,
+            tools,
+            tool_choice,
+            json_schema,
+            response_model,
         )
-        self._validate_tools(tools)
-        normalized_tool_choice = self._normalize_tool_choice(tool_choice, tools)
         validated_max_tokens = self._validate_max_tokens(max_tokens)
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
-        normalized_messages = self._normalize_messages(messages)
-        system_prompt, message_payload = normalized_messages.to_anthropic()
+        system_prompt, message_payload = request_context.normalized_messages.to_anthropic()
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": message_payload,
@@ -318,11 +330,19 @@ class QwenAdapter(LLMAdapterBase):
             payload["system"] = system_prompt
         if tools:
             payload["tools"] = [self._to_qwen_tool(tool) for tool in tools]
-        if normalized_tool_choice is not None:
+        if request_context.normalized_tool_choice is not None:
             payload["tool_choice"] = self._to_qwen_tool_choice(
-                normalized_tool_choice,
+                request_context.normalized_tool_choice,
             )
-        return validated_workspace_id, payload
+        if request_context.effective_schema is not None:
+            payload.setdefault("output_config", {})["format"] = {
+                "type": "json_schema",
+                "schema": self._to_qwen_structured_output_schema(
+                    request_context.effective_schema,
+                ),
+            }
+        self._apply_reasoning_options(payload, reasoning_level)
+        return validated_workspace_id, request_context, payload
 
     def _consume_stream_event(
         self,
@@ -334,8 +354,20 @@ class QwenAdapter(LLMAdapterBase):
         on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
         """Normalize one Qwen SSE event and emit its text delta, if any."""
-        _ = on_reasoning
-        text = QwenMessagesStreamParser.consume_event(event, state)
+        text, thinking = QwenMessagesStreamParser.consume_event(event, state)
+        if (
+            thinking is not None
+            and state.reasoning_collector is not None
+            and state.reasoning_response is not None
+        ):
+            self._record_reasoning_event(
+                state.reasoning_response,
+                state.reasoning_collector,
+                thinking,
+                capture_reasoning=True,
+                kind="summary",
+                on_reasoning=on_reasoning,
+            )
         if text is not None:
             yield from self._emit_stream_chunks(
                 state.chunk_buffer.add(text),
@@ -353,8 +385,20 @@ class QwenAdapter(LLMAdapterBase):
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
         """Normalize one Qwen SSE event with async callback ordering."""
-        _ = on_reasoning
-        text = QwenMessagesStreamParser.consume_event(event, state)
+        text, thinking = QwenMessagesStreamParser.consume_event(event, state)
+        if (
+            thinking is not None
+            and state.reasoning_collector is not None
+            and state.reasoning_response is not None
+        ):
+            await self._record_async_reasoning_event(
+                state.reasoning_response,
+                state.reasoning_collector,
+                thinking,
+                capture_reasoning=True,
+                kind="summary",
+                on_reasoning=on_reasoning,
+            )
         if text is None:
             return
         async for emitted_text in self._emit_async_stream_chunks(
@@ -379,6 +423,7 @@ class QwenAdapter(LLMAdapterBase):
         )
         return self._finalize_stream_response(
             chat_response,
+            reasoning_collector=state.reasoning_collector,
             effective_schema=effective_schema,
             response_model=response_model,
         )
@@ -390,21 +435,42 @@ class QwenAdapter(LLMAdapterBase):
         return max_tokens
 
     @staticmethod
-    def _reject_deferred_features(
+    def _reject_unsupported_features(
         *,
-        reasoning_level: Optional[str | int],
         parallel_tool_calls: Optional[bool],
-        json_schema: Optional[dict],
-        response_model: Optional[Any],
     ) -> None:
-        if reasoning_level is not None:
-            raise NotImplementedError("Qwen reasoning controls are not implemented yet")
         if parallel_tool_calls is not None:
             raise NotImplementedError(
                 "Qwen parallel tool-call controls are not implemented yet",
             )
-        if json_schema is not None or response_model is not None:
-            raise NotImplementedError("Qwen structured output is not implemented yet")
+
+    def _apply_reasoning_options(
+        self,
+        payload: dict[str, Any],
+        reasoning_level: Optional[str | int],
+    ) -> None:
+        """Serialize registry-resolved Qwen thinking controls."""
+        if reasoning_level is None:
+            return
+
+        provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
+        if isinstance(provider_value, int):
+            payload["thinking"] = (
+                {"type": "disabled"}
+                if provider_value == 0
+                else {"type": "enabled", "budget_tokens": provider_value}
+            )
+            return
+        if isinstance(provider_value, str):
+            if provider_value == "none":
+                payload["thinking"] = {"type": "disabled"}
+            else:
+                payload.setdefault("output_config", {})["effort"] = provider_value
+
+    @staticmethod
+    def _to_qwen_structured_output_schema(schema: dict) -> dict:
+        """Validate the shared portable profile without changing its meaning."""
+        return validate_core_portable_schema(schema, provider="qwen")
 
     @staticmethod
     def _to_qwen_tool(tool: ToolSpec) -> dict[str, Any]:

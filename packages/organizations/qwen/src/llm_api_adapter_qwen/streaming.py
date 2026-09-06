@@ -8,9 +8,13 @@ from typing import Any, Mapping, Optional
 
 from llm_api_adapter.adapters.base_adapter import _StreamState
 from llm_api_adapter.errors.llm_api_error import InvalidToolArgumentsError
-from llm_api_adapter.llms.streaming import StreamChunkBuffer, StreamUsageTracker
+from llm_api_adapter.llms.streaming import (
+    StreamChunkBuffer,
+    StreamReasoningCollector,
+    StreamUsageTracker,
+)
 from llm_api_adapter.llms.transports import SSEEvent
-from llm_api_adapter.models.responses.chat_response import Usage
+from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 
 
 @dataclass
@@ -28,14 +32,20 @@ class QwenMessagesStreamParser:
     """Accumulate the documented Anthropic-compatible Qwen SSE event trace."""
 
     @staticmethod
-    def new_state(*, buffer_chars: Optional[int]) -> QwenMessagesStreamState:
+    def new_state(
+        *,
+        buffer_chars: Optional[int],
+        capture_reasoning: bool,
+    ) -> QwenMessagesStreamState:
         """Create fresh shared lifecycle state for one Qwen stream."""
         return QwenMessagesStreamState(
             message_data={"content": []},
             chunk_buffer=StreamChunkBuffer(buffer_chars),
             usage_tracker=StreamUsageTracker(),
-            reasoning_collector=None,
-            reasoning_response=None,
+            reasoning_collector=(
+                StreamReasoningCollector() if capture_reasoning else None
+            ),
+            reasoning_response=ChatResponse() if capture_reasoning else None,
         )
 
     @classmethod
@@ -43,18 +53,22 @@ class QwenMessagesStreamParser:
         cls,
         event: SSEEvent,
         state: QwenMessagesStreamState,
-    ) -> Optional[str]:
-        """Record one event and return its visible text delta, when present."""
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Record one event and return visible and thinking deltas separately."""
         payload = event.data if isinstance(event.data, Mapping) else {}
         event_type = event.event or payload.get("type")
         visible_delta: Optional[str] = None
+        thinking_delta: Optional[str] = None
 
         if event_type == "message_start":
             cls._record_message_start(payload, state)
         elif event_type == "content_block_start":
             cls._record_content_block_start(payload, state)
         elif event_type == "content_block_delta":
-            visible_delta = cls._record_content_block_delta(payload, state)
+            visible_delta, thinking_delta = cls._record_content_block_delta(
+                payload,
+                state,
+            )
         elif event_type == "content_block_stop":
             cls._finalize_content_block(payload, state)
         elif event_type == "message_delta":
@@ -64,7 +78,7 @@ class QwenMessagesStreamParser:
             state.chunk_buffer,
             cls._normalize_usage(state.usage),
         )
-        return visible_delta
+        return visible_delta, thinking_delta
 
     @staticmethod
     def finalize(
@@ -111,6 +125,9 @@ class QwenMessagesStreamParser:
         if copied_block.get("type") == "text":
             text = copied_block.get("text")
             copied_block["text"] = text if isinstance(text, str) else ""
+        elif copied_block.get("type") == "thinking":
+            thinking = copied_block.get("thinking")
+            copied_block["thinking"] = thinking if isinstance(thinking, str) else ""
         elif copied_block.get("type") == "tool_use":
             current_input = copied_block.get("input")
             copied_block["input"] = (
@@ -122,28 +139,34 @@ class QwenMessagesStreamParser:
     def _record_content_block_delta(
         payload: Mapping[str, Any],
         state: QwenMessagesStreamState,
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], Optional[str]]:
         index = payload.get("index")
         delta = payload.get("delta")
         if isinstance(index, bool) or not isinstance(index, int):
-            return None
+            return None, None
         if not isinstance(delta, Mapping):
-            return None
+            return None, None
         block = state.content_blocks.get(index)
         if block is None:
-            return None
+            return None, None
         if delta.get("type") == "input_json_delta":
             partial_json = delta.get("partial_json")
             if isinstance(partial_json, str):
                 state.input_json_fragments.setdefault(index, []).append(partial_json)
-            return None
+            return None, None
+        if delta.get("type") == "thinking_delta" and block.get("type") == "thinking":
+            thinking = delta.get("thinking")
+            if not isinstance(thinking, str) or not thinking:
+                return None, None
+            block["thinking"] = f"{block.get('thinking', '')}{thinking}"
+            return None, thinking
         if delta.get("type") != "text_delta" or block.get("type") != "text":
-            return None
+            return None, None
         text = delta.get("text")
         if not isinstance(text, str) or not text:
-            return None
+            return None, None
         block["text"] = f"{block.get('text', '')}{text}"
-        return text
+        return text, None
 
     @staticmethod
     def _finalize_content_block(
