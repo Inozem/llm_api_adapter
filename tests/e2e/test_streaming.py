@@ -1,7 +1,6 @@
 import pytest
 
 from llm_api_adapter.models.messages.chat_message import UserMessage
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 @pytest.mark.e2e
@@ -9,6 +8,7 @@ def test_stream_chat_returns_text_and_finalized_response(
     subtests,
     iter_organization_models,
     stream_with_retry,
+    e2e_adapter,
 ):
     configured_models = 0
 
@@ -18,11 +18,7 @@ def test_stream_chat_returns_text_and_finalized_response(
         configured_models += 1
 
         with subtests.test(organization=organization["name"], model=model):
-            adapter = UniversalLLMAPIAdapter(
-                organization=organization["name"],
-                model=model,
-                api_key=organization["api_key"],
-            )
+            adapter = e2e_adapter(organization, model)
             completed_responses = []
             observed_chunks = []
 
