@@ -6,7 +6,13 @@ the Anthropic-compatible Messages API directly.
 
 ## Installation
 
-Install the independently versioned package alongside Core:
+Install through the Core package extra:
+
+```bash
+pip install "llm-api-adapter[qwen]"
+```
+
+Direct installation is also supported when Core is managed separately:
 
 ```bash
 pip install llm-api-adapter-qwen
@@ -15,11 +21,11 @@ pip install llm-api-adapter-qwen
 Async requests need HTTPX:
 
 ```bash
-pip install "llm-api-adapter-qwen[async]"
+pip install "llm-api-adapter[qwen,async]"
 ```
 
 Synchronous requests use `requests` by default. To opt into HTTPX for sync
-`chat()` and `stream_chat()`, install `"llm-api-adapter-qwen[httpx]"` and pass
+`chat()` and `stream_chat()`, install `"llm-api-adapter[qwen,httpx]"` and pass
 `transport="httpx"`.
 
 ## Quick start

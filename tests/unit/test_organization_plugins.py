@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import sys
 from typing import Any
 
@@ -30,6 +31,9 @@ from src.llm_api_adapter.service_provider_registry import (
     ServiceProviderRegistry,
 )
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass
@@ -287,6 +291,13 @@ def test_qwen_is_known_before_installation_and_loads_only_through_its_plugin(
     ) is adapter.adapter.model_spec
     assert entry_point.load_calls == 1
     assert "llm_api_adapter_qwen" not in sys.modules
+
+
+@pytest.mark.unit
+def test_core_declares_the_qwen_optional_extra():
+    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'qwen = ["llm-api-adapter-qwen>=0.1.0,<0.2.0"]' in pyproject
 
 
 @pytest.mark.unit
