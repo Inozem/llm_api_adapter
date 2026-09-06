@@ -30,6 +30,7 @@ from llm_api_adapter.errors.llm_api_error import (
 )
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
+from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -398,6 +399,116 @@ def test_universal_chat_uses_the_frankfurt_messages_endpoint(qwen_runtime, model
         "temperature": 0.7,
         "top_p": 0.8,
     }
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "model",
+    ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.7-flash"],
+)
+@pytest.mark.parametrize(
+    "image, expected_source",
+    [
+        (
+            ImagePart(url="https://example.com/landscape.jpg"),
+            {"type": "url", "url": "https://example.com/landscape.jpg"},
+        ),
+        (
+            ImagePart(data=b"qwen-image", media_type="image/png"),
+            {"type": "base64", "media_type": "image/png", "data": "cXdlbi1pbWFnZQ=="},
+        ),
+    ],
+)
+def test_qwen_chat_serializes_image_parts_for_every_selected_model(
+    qwen_runtime,
+    model,
+    image,
+    expected_source,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-image-1",
+            "model": model,
+            "content": [{"type": "text", "text": "I see an image."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    )
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat(
+        [
+            {
+                "role": "user",
+                "content": "Describe this image.",
+                "files": [image],
+            }
+        ],
+        max_tokens=64,
+        workspace_id="frankfurt-workspace",
+    )
+
+    assert response.content == "I see an image."
+    assert transport.requests[0].payload["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this image."},
+                {"type": "image", "source": expected_source},
+            ],
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "document",
+    [
+        DocumentPart(url="https://example.com/report.pdf"),
+        DocumentPart(data=b"%PDF-qwen", media_type="application/pdf"),
+    ],
+)
+def test_qwen_rejects_every_document_part_before_transport(qwen_runtime, document):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport({})
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(ValueError, match="DocumentPart; PDF and OCR are unavailable"):
+        adapter.chat(
+            [
+                {
+                    "role": "user",
+                    "content": "Summarize this PDF.",
+                    "files": [document],
+                }
+            ],
+            max_tokens=64,
+            workspace_id="frankfurt-workspace",
+        )
+    with pytest.raises(ValueError, match="DocumentPart; PDF and OCR are unavailable"):
+        adapter.stream_chat(
+            [
+                {
+                    "role": "user",
+                    "content": "Summarize this PDF.",
+                    "files": [document],
+                }
+            ],
+            max_tokens=64,
+            workspace_id="frankfurt-workspace",
+        )
+
+    assert transport.requests == []
+    assert transport.sse_requests == []
 
 
 @pytest.mark.integration

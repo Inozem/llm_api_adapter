@@ -22,7 +22,8 @@ from llm_api_adapter.adapters.base_adapter import (
 from llm_api_adapter.adapters.structured_output import validate_core_portable_schema
 from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIError
 from llm_api_adapter.llms.transports import SyncTransport, create_sync_transport
-from llm_api_adapter.models.messages.chat_message import Message, Messages
+from llm_api_adapter.models.messages.chat_message import Message, Messages, UserMessage
+from llm_api_adapter.models.messages.file_parts import DocumentPart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 
@@ -316,6 +317,7 @@ class QwenAdapter(LLMAdapterBase):
             json_schema,
             response_model,
         )
+        self._reject_document_parts(request_context.normalized_messages)
         validated_max_tokens = self._validate_max_tokens(max_tokens)
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
         system_prompt, message_payload = request_context.normalized_messages.to_anthropic()
@@ -442,6 +444,20 @@ class QwenAdapter(LLMAdapterBase):
         if parallel_tool_calls is not None:
             raise NotImplementedError(
                 "Qwen parallel tool-call controls are not implemented yet",
+            )
+
+    @staticmethod
+    def _reject_document_parts(messages: Messages) -> None:
+        """Reject PDFs before Qwen serializes or sends a Messages request."""
+        if any(
+            isinstance(file, DocumentPart)
+            for message in messages.items
+            if isinstance(message, UserMessage) and message.files
+            for file in message.files
+        ):
+            raise ValueError(
+                "Qwen does not support DocumentPart; PDF and OCR are unavailable "
+                "in Qwen 0.1.0.",
             )
 
     def _apply_reasoning_options(
