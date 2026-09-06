@@ -21,12 +21,15 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.errors.llm_api_error import (
+    InvalidToolArgumentsError,
     JSONSchemaError,
     LLMAPIAuthorizationError,
     LLMAPIClientError,
     LLMAPIRateLimitError,
     LLMAPIServerError,
     LLMAPITimeoutError,
+    LLMAPITokenLimitError,
+    LLMAPIUsageLimitError,
 )
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
@@ -34,6 +37,15 @@ from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter_qwen.streaming import QwenMessagesStreamParser
+
+
+QWEN_MODELS = (
+    "qwen3.8-max",
+    "qwen3.8-flash",
+    "qwen3.7-plus",
+    "qwen3.7-flash",
+)
 
 
 FLAT_OBJECT_SCHEMA = {
@@ -322,7 +334,7 @@ def qwen_runtime(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "model",
-    ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.7-flash"],
+    QWEN_MODELS,
 )
 def test_qwen_plugin_registers_each_declared_model(qwen_runtime, model):
     from llm_api_adapter_qwen.adapter import QwenAdapter
@@ -344,7 +356,7 @@ def test_qwen_plugin_registers_each_declared_model(qwen_runtime, model):
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "model",
-    ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.7-flash"],
+    QWEN_MODELS,
 )
 def test_universal_chat_uses_the_frankfurt_messages_endpoint(qwen_runtime, model):
     adapter = UniversalLLMAPIAdapter(
@@ -403,8 +415,61 @@ def test_universal_chat_uses_the_frankfurt_messages_endpoint(qwen_runtime, model
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
+    ("model", "input_tokens", "input_rate", "output_rate"),
+    [
+        ("qwen3.8-max", 10, 12, 36),
+        ("qwen3.8-flash", 10, 0.8, 2.7),
+        ("qwen3.7-plus", 256_000, 2, 8),
+        ("qwen3.7-plus", 256_001, 6, 24),
+        ("qwen3.7-flash", 32_000, 0.2, 0.8),
+        ("qwen3.7-flash", 32_001, 0.6, 2.4),
+        ("qwen3.7-flash", 256_001, 1.2, 4.8),
+    ],
+)
+def test_qwen_finalizes_each_declared_frankfurt_pricing_tier(
+    qwen_runtime,
+    model,
+    input_tokens,
+    input_rate,
+    output_rate,
+):
+    output_tokens = 10
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        {
+            "id": f"msg-qwen-pricing-{model}",
+            "model": model,
+            "content": [{"type": "text", "text": "Hallo"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
+        }
+    )
+
+    response = adapter.chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        workspace_id="frankfurt-workspace",
+    )
+
+    assert response.currency == "CNY"
+    assert response.cost_input == pytest.approx(input_tokens * input_rate / 1_000_000)
+    assert response.cost_output == pytest.approx(output_tokens * output_rate / 1_000_000)
+    assert response.cost_total == pytest.approx(
+        response.cost_input + response.cost_output,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
     "model",
-    ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.7-flash"],
+    QWEN_MODELS,
 )
 @pytest.mark.parametrize(
     "image, expected_source",
@@ -466,6 +531,7 @@ def test_qwen_chat_serializes_image_parts_for_every_selected_model(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("model", QWEN_MODELS)
 @pytest.mark.parametrize(
     "document",
     [
@@ -473,10 +539,14 @@ def test_qwen_chat_serializes_image_parts_for_every_selected_model(
         DocumentPart(data=b"%PDF-qwen", media_type="application/pdf"),
     ],
 )
-def test_qwen_rejects_every_document_part_before_transport(qwen_runtime, document):
+def test_qwen_rejects_every_document_part_before_transport(
+    qwen_runtime,
+    model,
+    document,
+):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model=model,
         api_key="qwen-test-key",
     )
     transport = FakeSyncTransport({})
@@ -512,16 +582,17 @@ def test_qwen_rejects_every_document_part_before_transport(qwen_runtime, documen
 
 
 @pytest.mark.integration
-def test_qwen_chat_supports_core_portable_json_schema(qwen_runtime):
+@pytest.mark.parametrize("model", QWEN_MODELS)
+def test_qwen_chat_supports_core_portable_json_schema(qwen_runtime, model):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model=model,
         api_key="qwen-test-key",
     )
     transport = FakeSyncTransport(
         {
             "id": "msg-qwen-json-1",
-            "model": "qwen3.8-max",
+            "model": model,
             "content": [{"type": "text", "text": '{"answer":"Hallo"}'}],
             "stop_reason": "end_turn",
             "usage": {"input_tokens": 10, "output_tokens": 5},
@@ -543,16 +614,17 @@ def test_qwen_chat_supports_core_portable_json_schema(qwen_runtime):
 
 
 @pytest.mark.integration
-def test_qwen_chat_supports_pydantic_structured_output(qwen_runtime):
+@pytest.mark.parametrize("model", QWEN_MODELS)
+def test_qwen_chat_supports_pydantic_structured_output(qwen_runtime, model):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.7-plus",
+        model=model,
         api_key="qwen-test-key",
     )
     transport = FakeSyncTransport(
         {
             "id": "msg-qwen-pydantic-1",
-            "model": "qwen3.7-plus",
+            "model": model,
             "content": [{"type": "text", "text": '{"answer":"Hallo"}'}],
             "stop_reason": "end_turn",
             "usage": {"input_tokens": 10, "output_tokens": 5},
@@ -576,6 +648,7 @@ def test_qwen_chat_supports_pydantic_structured_output(qwen_runtime):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("model", QWEN_MODELS)
 @pytest.mark.parametrize(
     "stop_reason, stop_details, attribute, expected",
     [
@@ -585,6 +658,7 @@ def test_qwen_chat_supports_pydantic_structured_output(qwen_runtime):
 )
 def test_qwen_structured_terminal_outcomes_are_not_parsed(
     qwen_runtime,
+    model,
     stop_reason,
     stop_details,
     attribute,
@@ -592,12 +666,12 @@ def test_qwen_structured_terminal_outcomes_are_not_parsed(
 ):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-flash",
+        model=model,
         api_key="qwen-test-key",
     )
     payload = {
         "id": "msg-qwen-terminal-1",
-        "model": "qwen3.8-flash",
+        "model": model,
         "content": [{"type": "text", "text": '{"answer":"partial"}'}],
         "stop_reason": stop_reason,
         "usage": {"input_tokens": 10, "output_tokens": 5},
@@ -703,7 +777,7 @@ def test_qwen_resolves_reasoning_from_registry_metadata(
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "model",
-    ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.7-flash"],
+    QWEN_MODELS,
 )
 def test_qwen_reasoning_none_disables_thinking_for_every_model(qwen_runtime, model):
     adapter = UniversalLLMAPIAdapter(
@@ -757,6 +831,51 @@ def test_qwen_rejects_missing_or_malformed_workspace_before_transport(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("max_tokens", [None, 0, -1, True, "64"])
+def test_qwen_rejects_invalid_output_limits_before_transport(
+    qwen_runtime,
+    max_tokens,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport({})
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(ValueError, match="max_tokens"):
+        adapter.chat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=max_tokens,
+            workspace_id="frankfurt-workspace",
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+def test_qwen_rejects_parallel_tool_controls_before_transport(qwen_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport({})
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(NotImplementedError, match="parallel tool-call"):
+        adapter.chat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=64,
+            parallel_tool_calls=True,
+            workspace_id="frankfurt-workspace",
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("status_code", "error_type", "expected_error"),
     [
@@ -765,6 +884,8 @@ def test_qwen_rejects_missing_or_malformed_workspace_before_transport(
         (429, "rate_limit_error", LLMAPIRateLimitError),
         (504, "timeout_error", LLMAPITimeoutError),
         (500, "api_error", LLMAPIServerError),
+        (400, "max_output_tokens_exceeded", LLMAPITokenLimitError),
+        (400, "quota_exceeded", LLMAPIUsageLimitError),
     ],
 )
 def test_qwen_normalizes_messages_http_failures(
@@ -830,14 +951,113 @@ def test_qwen_rejects_malformed_messages_response(qwen_runtime, payload, detail)
         )
 
 
-@pytest.mark.integration
-def test_universal_stream_chat_reconstructs_qwen_messages_response(qwen_runtime):
+@pytest.mark.unit
+def test_qwen_rejects_non_object_messages_response_before_normalization(qwen_runtime):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
         model="qwen3.8-max",
         api_key="qwen-test-key",
     )
-    transport = FakeSyncTransport({}, events=qwen_messages_sse_events())
+    adapter.adapter._sync_transport = FakeSyncTransport(["not", "an", "object"])
+
+    with pytest.raises(LLMAPIClientError, match="non-object response"):
+        adapter.chat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=64,
+            workspace_id="frankfurt-workspace",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_qwen_async_client_rejects_non_object_messages_response(
+    qwen_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    async def fake_async_request(*args, **kwargs):
+        return ["not", "an", "object"]
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+
+    with pytest.raises(LLMAPIClientError, match="non-object response"):
+        await adapter.achat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=64,
+            workspace_id="frankfurt-workspace",
+        )
+
+
+@pytest.mark.unit
+def test_qwen_stream_parser_ignores_malformed_nonterminal_events():
+    state = QwenMessagesStreamParser.new_state(
+        buffer_chars=None,
+        capture_reasoning=False,
+    )
+
+    for event in (
+        SSEEvent(event="message_start", data={"type": "message_start"}),
+        SSEEvent(
+            event="content_block_start",
+            data={"index": True, "content_block": {"type": "text"}},
+        ),
+        SSEEvent(
+            event="content_block_delta",
+            data={"index": 0, "delta": {"type": "text_delta", "text": "orphan"}},
+        ),
+        SSEEvent(event="content_block_stop", data={"index": 0}),
+    ):
+        assert QwenMessagesStreamParser.consume_event(event, state) == (None, None)
+
+    assert QwenMessagesStreamParser.finalize(
+        state,
+        model="qwen3.8-max",
+    ) == {"content": [], "model": "qwen3.8-max"}
+
+
+@pytest.mark.unit
+def test_qwen_stream_rejects_non_object_tool_arguments_before_done(qwen_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    events = qwen_messages_tool_sse_events()
+    events[4].data["delta"]["partial_json"] = "[]"
+    events[5].data["delta"]["partial_json"] = ""
+    transport = FakeSyncTransport({}, events=events)
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(InvalidToolArgumentsError, match="must decode to an object"):
+        list(
+            adapter.stream_chat(
+                [{"role": "user", "content": "What is the weather?"}],
+                max_tokens=64,
+                workspace_id="frankfurt-workspace",
+            )
+        )
+
+    assert transport.sse_closed is True
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("model", QWEN_MODELS)
+def test_universal_stream_chat_reconstructs_qwen_messages_response(
+    qwen_runtime,
+    model,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport({}, events=qwen_messages_sse_events(model))
     adapter.adapter._sync_transport = transport
     callback_order = []
     completed = []
@@ -885,17 +1105,18 @@ def test_universal_stream_chat_reconstructs_qwen_messages_response(qwen_runtime)
     request = transport.sse_requests[0]
     assert request.timeout == 12.5
     assert request.payload["stream"] is True
-    assert request.payload["model"] == "qwen3.8-max"
+    assert request.payload["model"] == model
 
 
 @pytest.mark.integration
-def test_qwen_stream_finalizes_core_structured_output(qwen_runtime):
+@pytest.mark.parametrize("model", QWEN_MODELS)
+def test_qwen_stream_finalizes_core_structured_output(qwen_runtime, model):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model=model,
         api_key="qwen-test-key",
     )
-    events = qwen_messages_sse_events()
+    events = qwen_messages_sse_events(model)
     events[2].data["delta"]["text"] = '{"answer":"Hal'
     events[3].data["delta"]["text"] = 'lo"}'
     transport = FakeSyncTransport({}, events=events)
@@ -920,16 +1141,17 @@ def test_qwen_stream_finalizes_core_structured_output(qwen_runtime):
 
 
 @pytest.mark.integration
-def test_qwen_captures_nonstream_thinking_only_on_request(qwen_runtime):
+@pytest.mark.parametrize("model", QWEN_MODELS)
+def test_qwen_captures_nonstream_thinking_only_on_request(qwen_runtime, model):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model=model,
         api_key="qwen-test-key",
     )
     transport = FakeSyncTransport(
         {
             "id": "msg-qwen-thinking-1",
-            "model": "qwen3.8-max",
+            "model": model,
             "content": [
                 {"type": "thinking", "thinking": "Plan"},
                 {"type": "text", "text": "Visible"},
@@ -958,13 +1180,20 @@ def test_qwen_captures_nonstream_thinking_only_on_request(qwen_runtime):
 
 
 @pytest.mark.integration
-def test_qwen_stream_separates_captured_thinking_from_visible_text(qwen_runtime):
+@pytest.mark.parametrize("model", QWEN_MODELS)
+def test_qwen_stream_separates_captured_thinking_from_visible_text(
+    qwen_runtime,
+    model,
+):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model=model,
         api_key="qwen-test-key",
     )
-    transport = FakeSyncTransport({}, events=qwen_messages_thinking_sse_events())
+    transport = FakeSyncTransport(
+        {},
+        events=qwen_messages_thinking_sse_events(model),
+    )
     adapter.adapter._sync_transport = transport
     reasoning = []
     completed = []
@@ -988,7 +1217,12 @@ def test_qwen_stream_separates_captured_thinking_from_visible_text(qwen_runtime)
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_universal_achat_uses_qwen_async_client(qwen_runtime, monkeypatch):
+@pytest.mark.parametrize("model", QWEN_MODELS)
+async def test_universal_achat_uses_qwen_async_client(
+    qwen_runtime,
+    monkeypatch,
+    model,
+):
     from llm_api_adapter_qwen.clients import async_client as async_client_module
 
     requests = []
@@ -997,7 +1231,7 @@ async def test_universal_achat_uses_qwen_async_client(qwen_runtime, monkeypatch)
         requests.append((url, kwargs))
         return {
             "id": "msg-qwen-async-1",
-            "model": "qwen3.8-max",
+            "model": model,
             "content": [{"type": "text", "text": "Hallo async"}],
             "stop_reason": "end_turn",
             "usage": {"input_tokens": 10, "output_tokens": 20},
@@ -1006,7 +1240,7 @@ async def test_universal_achat_uses_qwen_async_client(qwen_runtime, monkeypatch)
     monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model=model,
         api_key="qwen-test-key",
     )
 
@@ -1031,7 +1265,7 @@ async def test_universal_achat_uses_qwen_async_client(qwen_runtime, monkeypatch)
         "Content-Type": "application/json",
     }
     assert requests[0][1]["payload"] == {
-        "model": "qwen3.8-max",
+        "model": model,
         "messages": [{"role": "user", "content": "Hello"}],
         "max_tokens": 64,
         "temperature": 1.0,
@@ -1042,7 +1276,12 @@ async def test_universal_achat_uses_qwen_async_client(qwen_runtime, monkeypatch)
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_universal_astream_chat_matches_sync_lifecycle(qwen_runtime, monkeypatch):
+@pytest.mark.parametrize("model", QWEN_MODELS)
+async def test_universal_astream_chat_matches_sync_lifecycle(
+    qwen_runtime,
+    monkeypatch,
+    model,
+):
     from llm_api_adapter_qwen.clients import async_client as async_client_module
 
     requests = []
@@ -1054,7 +1293,7 @@ async def test_universal_astream_chat_matches_sync_lifecycle(qwen_runtime, monke
         async def events():
             nonlocal closed
             try:
-                for event in qwen_messages_sse_events():
+                for event in qwen_messages_sse_events(model):
                     yield event
             finally:
                 closed = True
@@ -1068,7 +1307,7 @@ async def test_universal_astream_chat_matches_sync_lifecycle(qwen_runtime, monke
     )
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model=model,
         api_key="qwen-test-key",
     )
     callback_order = []
@@ -1398,6 +1637,7 @@ async def test_qwen_async_stream_cancellation_closes_resources(qwen_runtime, mon
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("model", QWEN_MODELS)
 @pytest.mark.parametrize(
     ("tool_choice", "expected_tool_choice"),
     [
@@ -1409,18 +1649,19 @@ async def test_qwen_async_stream_cancellation_closes_resources(qwen_runtime, mon
 )
 def test_qwen_chat_maps_tools_and_normalized_tool_choice(
     qwen_runtime,
+    model,
     tool_choice,
     expected_tool_choice,
 ):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model=model,
         api_key="qwen-test-key",
     )
     transport = FakeSyncTransport(
         {
             "id": "msg-qwen-tool-1",
-            "model": "qwen3.8-max",
+            "model": model,
             "content": [
                 {
                     "type": "tool_use",
@@ -1473,16 +1714,20 @@ def test_qwen_chat_maps_tools_and_normalized_tool_choice(
 
 
 @pytest.mark.integration
-def test_qwen_chat_maps_application_controlled_tool_result_messages(qwen_runtime):
+@pytest.mark.parametrize("model", QWEN_MODELS)
+def test_qwen_chat_maps_application_controlled_tool_result_messages(
+    qwen_runtime,
+    model,
+):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model=model,
         api_key="qwen-test-key",
     )
     transport = FakeSyncTransport(
         {
             "id": "msg-qwen-tool-result-1",
-            "model": "qwen3.8-max",
+            "model": model,
             "content": [{"type": "text", "text": "It is sunny."}],
             "stop_reason": "end_turn",
             "usage": {"input_tokens": 12, "output_tokens": 4},
@@ -1547,13 +1792,14 @@ def test_qwen_chat_maps_application_controlled_tool_result_messages(qwen_runtime
 
 
 @pytest.mark.integration
-def test_qwen_stream_delivers_completed_tool_call_before_done(qwen_runtime):
+@pytest.mark.parametrize("model", QWEN_MODELS)
+def test_qwen_stream_delivers_completed_tool_call_before_done(qwen_runtime, model):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model=model,
         api_key="qwen-test-key",
     )
-    transport = FakeSyncTransport({}, events=qwen_messages_tool_sse_events())
+    transport = FakeSyncTransport({}, events=qwen_messages_tool_sse_events(model))
     adapter.adapter._sync_transport = transport
     events = []
 
@@ -1593,15 +1839,17 @@ def test_qwen_stream_delivers_completed_tool_call_before_done(qwen_runtime):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+@pytest.mark.parametrize("model", QWEN_MODELS)
 async def test_qwen_astream_delivers_completed_tool_call_before_done(
     qwen_runtime,
     monkeypatch,
+    model,
 ):
     from llm_api_adapter_qwen.clients import async_client as async_client_module
 
     def fake_async_stream_request(url, **kwargs):
         async def events():
-            for event in qwen_messages_tool_sse_events():
+            for event in qwen_messages_tool_sse_events(model):
                 yield event
 
         return events()
@@ -1613,7 +1861,7 @@ async def test_qwen_astream_delivers_completed_tool_call_before_done(
     )
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model=model,
         api_key="qwen-test-key",
     )
     callbacks = []
