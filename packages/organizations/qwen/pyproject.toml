@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-api-adapter-qwen"
-version = "0.1.0.post2"
+version = "0.1.0.post3"
 description = "Qwen Model Studio package for llm-api-adapter"
 readme = "README.md"
 requires-python = ">=3.10"

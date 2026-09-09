@@ -1,30 +1,30 @@
 {
-  "currency": "CNY",
+  "currency": "USD",
   "models": {
     "qwen3.8-max": {
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
-      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 12, "output_per_1m": 36}],
+      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 1.65, "output_per_1m": 4.951}],
       "reasoning_capability": {"allowed_values": ["none", "low", "medium", "xhigh"]}
     },
     "qwen3.8-flash": {
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
-      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 0.8, "output_per_1m": 2.7}],
+      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 0.113, "output_per_1m": 0.382}],
       "reasoning_capability": {"allowed_values": ["none", "low", "medium", "xhigh"]}
     },
     "qwen3.7-plus": {
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [
-        {"up_to_prompt_tokens": 256000, "input_per_1m": 2, "output_per_1m": 8},
-        {"up_to_prompt_tokens": null, "input_per_1m": 6, "output_per_1m": 24}
+        {"up_to_prompt_tokens": 256000, "input_per_1m": 0.276, "output_per_1m": 1.101},
+        {"up_to_prompt_tokens": null, "input_per_1m": 0.826, "output_per_1m": 3.301}
       ],
       "reasoning_capability": {"min_budget_tokens": 1, "max_budget_tokens": 262144, "can_disable_thinking": true}
     },
     "qwen3.7-flash": {
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [
-        {"up_to_prompt_tokens": 32000, "input_per_1m": 0.2, "output_per_1m": 0.8},
-        {"up_to_prompt_tokens": 256000, "input_per_1m": 0.6, "output_per_1m": 2.4},
-        {"up_to_prompt_tokens": null, "input_per_1m": 1.2, "output_per_1m": 4.8}
+        {"up_to_prompt_tokens": 32000, "input_per_1m": 0.028, "output_per_1m": 0.11},
+        {"up_to_prompt_tokens": 256000, "input_per_1m": 0.083, "output_per_1m": 0.33},
+        {"up_to_prompt_tokens": null, "input_per_1m": 0.165, "output_per_1m": 0.66}
       ],
       "reasoning_capability": {"min_budget_tokens": 1, "max_budget_tokens": 262144, "can_disable_thinking": true}
     }
