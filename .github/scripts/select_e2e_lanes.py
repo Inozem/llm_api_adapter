@@ -49,6 +49,9 @@ _E2E_HARNESS_PATHS = (
     ".github/workflows/ci-dev-release.yml",
     ".github/scripts/",
 )
+_ORGANIZATION_E2E_PATHS = {
+    "qwen": ("packages/organizations/qwen/tests/e2e/",),
+}
 _CORE_ORGANIZATION_PATHS = {
     "openai": (
         "src/llm_api_adapter/adapters/openai/",
@@ -101,8 +104,10 @@ class E2ELaneSelection:
     core_organizations: tuple[str, ...]
     mistral: bool
     xai: bool
+    qwen: bool
     mistral_e2e: bool
     xai_e2e: bool
+    qwen_e2e: bool
 
     def github_outputs(self) -> dict[str, str]:
         return {
@@ -117,6 +122,8 @@ class E2ELaneSelection:
             "mistral_e2e": str(self.mistral_e2e).lower(),
             "xai": str(self.xai).lower(),
             "xai_e2e": str(self.xai_e2e).lower(),
+            "qwen": str(self.qwen).lower(),
+            "qwen_e2e": str(self.qwen_e2e).lower(),
         }
 
 
@@ -148,14 +155,22 @@ def select_e2e_lanes(changed_paths: Iterable[str]) -> E2ELaneSelection:
 
     mistral = _organization_package_changed(paths, "mistral")
     xai = _organization_package_changed(paths, "xai")
+    qwen = _organization_package_changed(paths, "qwen")
     return E2ELaneSelection(
         core=core,
         shared_core=shared_core,
         core_organizations=core_organizations,
         mistral=mistral,
         xai=xai,
+        qwen=qwen,
         mistral_e2e=shared_core or mistral or e2e_harness,
         xai_e2e=shared_core or xai or e2e_harness,
+        qwen_e2e=(
+            shared_core
+            or qwen
+            or e2e_harness
+            or _matches(paths, _ORGANIZATION_E2E_PATHS["qwen"])
+        ),
     )
 
 

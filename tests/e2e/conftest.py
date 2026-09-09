@@ -1,33 +1,20 @@
-import asyncio
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 import os
-import time
 from itertools import zip_longest
 from pathlib import Path
 
 from dotenv import load_dotenv
 import pytest
 
-from llm_api_adapter.errors import (
-    LLMAPIRateLimitError,
-    LLMAPIServerError,
-    LLMAPITimeoutError,
-)
 from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY
 from llm_api_adapter.universal_adapter import (
     ORGANIZATION_PLUGIN_DISCOVERY,
     SERVICE_PROVIDER_REGISTRY,
 )
+from tests.e2e import harness
 
 _FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
-_RETRY_DELAYS = [2, 4, 8]
-_MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1
-_TRANSIENT_ERRORS = (
-    LLMAPIServerError,
-    LLMAPIRateLimitError,
-    LLMAPITimeoutError,
-)
 
 
 @dataclass(frozen=True)
@@ -36,37 +23,93 @@ class E2EOrganizationProfile:
 
     name: str
     organization_names: tuple[str, ...]
+    supported_features: frozenset[str]
+    distribution: str | None = None
+    api_key_is_required: bool = False
+    missing_api_key_is_usage_error: bool = False
+    operation_kwargs_env: tuple[tuple[str, str], ...] = ()
+
+
+_PORTABLE_E2E_FEATURES = frozenset(
+    {
+        "text",
+        "sync_chat",
+        "async_chat",
+        "streaming",
+        "tools",
+        "structured_output",
+        "reasoning",
+        "image_input",
+        "document_input",
+        "error_normalization",
+    }
+)
+_QWEN_PORTABLE_E2E_FEATURES = frozenset(
+    {
+        "text",
+        "sync_chat",
+        "async_chat",
+        "streaming",
+        "tools",
+        "structured_output",
+        "reasoning",
+        "image_input",
+    }
+)
 
 
 class E2EOrganization(dict):
-    """Organization test data that never renders an API key in pytest output."""
+    """Organization test data that never renders credentials in pytest output."""
 
     def __repr__(self) -> str:
         safe_data = dict(self)
         if safe_data.get("api_key"):
             safe_data["api_key"] = "***"
+        if safe_data.get("operation_kwargs"):
+            safe_data["operation_kwargs"] = {
+                key: "***" for key in safe_data["operation_kwargs"]
+            }
         return dict.__repr__(safe_data)
 
 
 _OPENAI_E2E_PROFILE = E2EOrganizationProfile(
     name="openai",
     organization_names=("openai",),
+    supported_features=_PORTABLE_E2E_FEATURES,
 )
 _ANTHROPIC_E2E_PROFILE = E2EOrganizationProfile(
     name="anthropic",
     organization_names=("anthropic",),
+    supported_features=_PORTABLE_E2E_FEATURES,
 )
 _GOOGLE_E2E_PROFILE = E2EOrganizationProfile(
     name="google",
     organization_names=("google",),
+    supported_features=_PORTABLE_E2E_FEATURES,
 )
 _MISTRAL_E2E_PROFILE = E2EOrganizationProfile(
     name="mistral",
     organization_names=("mistral",),
+    supported_features=_PORTABLE_E2E_FEATURES | {"ocr"},
+    distribution="llm-api-adapter-mistral",
+    api_key_is_required=True,
 )
 _XAI_E2E_PROFILE = E2EOrganizationProfile(
     name="xai",
     organization_names=("xai",),
+    supported_features=_PORTABLE_E2E_FEATURES,
+    distribution="llm-api-adapter-xai",
+    api_key_is_required=True,
+    missing_api_key_is_usage_error=True,
+)
+_QWEN_E2E_PROFILE = E2EOrganizationProfile(
+    name="qwen",
+    organization_names=("qwen",),
+    supported_features=_QWEN_PORTABLE_E2E_FEATURES,
+    distribution="llm-api-adapter-qwen",
+    api_key_is_required=True,
+    missing_api_key_is_usage_error=True,
+    operation_kwargs_env=(("workspace_id", "QWEN_WORKSPACE_ID"),),
 )
 _E2E_PROFILE_PARAMS = (
     pytest.param(
@@ -94,6 +137,11 @@ _E2E_PROFILE_PARAMS = (
         id="xai",
         marks=pytest.mark.e2e_xai,
     ),
+    pytest.param(
+        _QWEN_E2E_PROFILE,
+        id="qwen",
+        marks=pytest.mark.e2e_qwen,
+    ),
 )
 
 load_dotenv()
@@ -104,7 +152,89 @@ API_KEY_ENV = {
     "google": os.getenv("GOOGLE_API_KEY"),
     "mistral": os.getenv("MISTRAL_API_KEY"),
     "xai": os.getenv("XAI_API_KEY"),
+    "qwen": os.getenv("QWEN_API_KEY"),
 }
+
+
+def _profile_operation_kwargs(profile: E2EOrganizationProfile) -> dict[str, str]:
+    """Read declared test-only operation kwargs after ``.env`` is loaded."""
+    operation_kwargs = {
+        keyword: os.getenv(environment_name, "")
+        for keyword, environment_name in profile.operation_kwargs_env
+    }
+    missing = [
+        environment_name
+        for keyword, environment_name in profile.operation_kwargs_env
+        if not operation_kwargs[keyword]
+    ]
+    if missing:
+        raise pytest.UsageError(
+            f"{', '.join(missing)} is not configured for the {profile.name} "
+            "E2E profile"
+        )
+    return operation_kwargs
+
+
+def _profile_supports_features(
+    profile: E2EOrganizationProfile,
+    required_features: frozenset[str],
+) -> bool:
+    return required_features <= profile.supported_features
+
+
+def get_e2e_organization_profile(name: str) -> E2EOrganizationProfile:
+    """Return one named E2E profile for a package-local specialized check."""
+    profiles = {
+        profile.name: profile
+        for profile in (
+            _OPENAI_E2E_PROFILE,
+            _ANTHROPIC_E2E_PROFILE,
+            _GOOGLE_E2E_PROFILE,
+            _MISTRAL_E2E_PROFILE,
+            _XAI_E2E_PROFILE,
+            _QWEN_E2E_PROFILE,
+        )
+    }
+    try:
+        return profiles[name]
+    except KeyError as exc:
+        raise pytest.UsageError(f"Unknown E2E organization profile: {name}") from exc
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    """Deselect profile/test combinations whose declared feature is unavailable."""
+    selected = []
+    deselected = []
+    for item in items:
+        callspec = getattr(item, "callspec", None)
+        profile = (
+            callspec.params.get("e2e_organization_profile")
+            if callspec is not None
+            else None
+        )
+        feature_markers = tuple(item.iter_markers("e2e_feature"))
+        if not isinstance(profile, E2EOrganizationProfile) or not feature_markers:
+            selected.append(item)
+            continue
+
+        required_features = frozenset(
+            feature
+            for marker in feature_markers
+            for feature in marker.args
+            if isinstance(feature, str)
+        )
+        if not required_features:
+            raise pytest.UsageError(
+                f"{item.nodeid} must declare at least one string e2e_feature"
+            )
+        if _profile_supports_features(profile, required_features):
+            selected.append(item)
+        else:
+            deselected.append(item)
+
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = selected
 
 
 def _select_latest_e2e_models(organizations, override_prefix: str):
@@ -144,111 +274,39 @@ def iter_organization_models(organizations):
     return _iter
 
 
+@pytest.fixture
+def e2e_adapter():
+    return harness.create_e2e_adapter
+
+
 @pytest.fixture(scope="session")
 def tool_choice_for_model():
     """Select the strongest registered tool-choice mode for one E2E model."""
-
-    def _select(organization_name: str, model_name: str, tool_name: str) -> str:
-        model_spec = LLM_REGISTRY.organizations[organization_name].models[model_name]
-        allowed_modes = model_spec.request_rules.allowed_tool_choice_modes
-        if allowed_modes is None or "tool" in allowed_modes:
-            return tool_name
-        if "any" in allowed_modes:
-            return "any"
-        if "auto" in allowed_modes:
-            return "auto"
-        raise pytest.UsageError(
-            f"{organization_name}/{model_name} has no tool-call mode enabled "
-            "in its registered request rules"
-        )
-
-    return _select
+    return harness.select_tool_choice_for_model
 
 
 @pytest.fixture(scope="session")
 def chat_with_retry():
-    """Returns a helper that retries adapter.chat() on 5xx errors, rate limits, or model refusals.
-
-    Delays follow exponential backoff: 2s, 4s, 8s.
-    """
-    def _call(adapter, **kwargs):
-        for attempt in range(_MAX_ATTEMPTS):
-            try:
-                resp = adapter.chat(**kwargs)
-            except _TRANSIENT_ERRORS:
-                if attempt == _MAX_ATTEMPTS - 1:
-                    raise
-                time.sleep(_RETRY_DELAYS[attempt])
-                continue
-            if resp.finish_reason != "refusal" or attempt == _MAX_ATTEMPTS - 1:
-                return resp
-            time.sleep(_RETRY_DELAYS[attempt])
-        return resp
-    return _call
+    """Return the reusable synchronous transient-retry helper."""
+    return harness.chat_with_transient_retry
 
 
 @pytest.fixture(scope="session")
 def stream_with_retry():
-    """Returns a helper that retries a complete stream on transient provider errors.
-
-    ``on_retry`` may reset callback observers after a partial failed attempt.
-    """
-    def _call(adapter, **kwargs):
-        on_retry = kwargs.pop("on_retry", None)
-        for attempt in range(_MAX_ATTEMPTS):
-            try:
-                return list(adapter.stream_chat(**kwargs))
-            except _TRANSIENT_ERRORS:
-                if attempt == _MAX_ATTEMPTS - 1:
-                    raise
-                if on_retry is not None:
-                    on_retry()
-                time.sleep(_RETRY_DELAYS[attempt])
-        return []
-
-    return _call
+    """Return the reusable synchronous stream-retry helper."""
+    return harness.stream_with_transient_retry
 
 
 @pytest.fixture(scope="session")
 def async_chat_with_retry():
-    """Return an async helper that retries transient achat() failures."""
-    async def _call(adapter, **kwargs):
-        for attempt in range(_MAX_ATTEMPTS):
-            try:
-                response = await adapter.achat(**kwargs)
-            except _TRANSIENT_ERRORS:
-                if attempt == _MAX_ATTEMPTS - 1:
-                    raise
-                await asyncio.sleep(_RETRY_DELAYS[attempt])
-                continue
-            if response.finish_reason != "refusal" or attempt == _MAX_ATTEMPTS - 1:
-                return response
-            await asyncio.sleep(_RETRY_DELAYS[attempt])
-        return response
-
-    return _call
+    """Return the reusable asynchronous chat-retry helper."""
+    return harness.async_chat_with_transient_retry
 
 
 @pytest.fixture(scope="session")
 def async_stream_with_retry():
-    """Return an async helper that retries a complete astream_chat() run."""
-    async def _call(adapter, **kwargs):
-        on_retry = kwargs.pop("on_retry", None)
-        for attempt in range(_MAX_ATTEMPTS):
-            try:
-                chunks = []
-                async for chunk in adapter.astream_chat(**kwargs):
-                    chunks.append(chunk)
-                return chunks
-            except _TRANSIENT_ERRORS:
-                if attempt == _MAX_ATTEMPTS - 1:
-                    raise
-                if on_retry is not None:
-                    on_retry()
-                await asyncio.sleep(_RETRY_DELAYS[attempt])
-        return []
-
-    return _call
+    """Return the reusable asynchronous stream-retry helper."""
+    return harness.async_stream_with_transient_retry
 
 
 @pytest.fixture(scope="session")
@@ -267,21 +325,23 @@ def e2e_organization_profile(request) -> E2EOrganizationProfile:
     return request.param
 
 
-@pytest.fixture(scope="session")
-def organizations(e2e_organization_profile: E2EOrganizationProfile):
+def resolve_e2e_organizations(e2e_organization_profile: E2EOrganizationProfile):
     """Return the organizations selected for the current E2E lane."""
-    if e2e_organization_profile.name in {"mistral", "xai"}:
-        distribution = f"llm-api-adapter-{e2e_organization_profile.name}"
+    if e2e_organization_profile.distribution is not None:
         try:
-            version(distribution)
+            version(e2e_organization_profile.distribution)
         except PackageNotFoundError:
-            pytest.skip(f"{distribution} is not installed")
+            pytest.skip(f"{e2e_organization_profile.distribution} is not installed")
 
         api_key_env_name = f"{e2e_organization_profile.name.upper()}_API_KEY"
-        if not API_KEY_ENV[e2e_organization_profile.name]:
-            if e2e_organization_profile.name == "xai":
+        if (
+            e2e_organization_profile.api_key_is_required
+            and not API_KEY_ENV[e2e_organization_profile.name]
+        ):
+            if e2e_organization_profile.missing_api_key_is_usage_error:
                 raise pytest.UsageError(
-                    f"{api_key_env_name} is not configured for the xAI E2E profile"
+                    f"{api_key_env_name} is not configured for the "
+                    f"{e2e_organization_profile.name} E2E profile"
                 )
             pytest.skip(f"{api_key_env_name} is not configured")
 
@@ -300,6 +360,7 @@ def organizations(e2e_organization_profile: E2EOrganizationProfile):
         registry_models = list(organization_spec.models.keys())
 
         api_key = API_KEY_ENV.get(organization_name)
+        operation_kwargs = _profile_operation_kwargs(e2e_organization_profile)
         organizations_with_models.append(
             E2EOrganization(
                 {
@@ -307,10 +368,16 @@ def organizations(e2e_organization_profile: E2EOrganizationProfile):
                     "api_key": api_key,
                     "models": registry_models,
                     "latest_model": registry_models[0] if registry_models else None,
+                    "operation_kwargs": operation_kwargs,
                 }
             )
         )
     return organizations_with_models
+
+
+@pytest.fixture(scope="session")
+def organizations(e2e_organization_profile: E2EOrganizationProfile):
+    return resolve_e2e_organizations(e2e_organization_profile)
 
 
 @pytest.fixture(scope="session")

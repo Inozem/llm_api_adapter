@@ -3,7 +3,6 @@
 import pytest
 
 from llm_api_adapter.models.messages.chat_message import UserMessage
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 pytest.importorskip("httpx")
@@ -26,15 +25,6 @@ def _assert_usage_and_pricing(response):
         assert response.cost_output >= 0
 
 
-def _adapter(organization, model: str, *, transport: str) -> UniversalLLMAPIAdapter:
-    return UniversalLLMAPIAdapter(
-        organization=organization["name"],
-        model=model,
-        api_key=organization["api_key"],
-        transport=transport,
-    )
-
-
 def _chat_kwargs():
     return {
         "messages": [UserMessage("Reply with exactly: OK")],
@@ -50,6 +40,7 @@ def test_sync_httpx_chat_returns_contract_for_latest_provider_models(
     subtests,
     configured_sync_httpx_e2e_models,
     chat_with_retry,
+    e2e_adapter,
 ):
     """Make one HTTPX-backed sync request for each configured provider."""
     if not configured_sync_httpx_e2e_models:
@@ -58,7 +49,7 @@ def test_sync_httpx_chat_returns_contract_for_latest_provider_models(
     for organization, model in configured_sync_httpx_e2e_models:
         with subtests.test(organization=organization["name"], model=model):
             response = chat_with_retry(
-                _adapter(organization, model, transport="httpx"),
+                e2e_adapter(organization, model, transport="httpx"),
                 **_chat_kwargs(),
             )
             _assert_usage_and_pricing(response)
@@ -70,6 +61,7 @@ async def test_async_httpx_chat_returns_contract_for_latest_provider_models(
     subtests,
     configured_sync_httpx_e2e_models,
     async_chat_with_retry,
+    e2e_adapter,
 ):
     """Make one async HTTPX request for each configured provider.
 
@@ -83,7 +75,7 @@ async def test_async_httpx_chat_returns_contract_for_latest_provider_models(
     for organization, model in configured_sync_httpx_e2e_models:
         with subtests.test(organization=organization["name"], model=model):
             response = await async_chat_with_retry(
-                _adapter(organization, model, transport="httpx"),
+                e2e_adapter(organization, model, transport="httpx"),
                 **_chat_kwargs(),
             )
             _assert_usage_and_pricing(response)

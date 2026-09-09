@@ -6,9 +6,9 @@
 
 ## Overview
 
-**llm-api-adapter** is a minimal, typed adapter for five organizations: OpenAI, Anthropic, Google, Mistral, and xAI. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching organizations means changing two arguments.
+**llm-api-adapter** is a minimal, typed adapter for six organizations: OpenAI, Anthropic, Google, Mistral, xAI, and Qwen. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching organizations means changing two arguments.
 
-**Note:** Mistral and xAI are installed separately with their optional extras.
+**Note:** Mistral, xAI, and Qwen are installed separately with their optional extras.
 
 Supports Python 3.10–3.14.
 
@@ -119,10 +119,18 @@ To use xAI, install its optional organization package:
 pip install "llm-api-adapter[xai]"
 ```
 
-The [Mistral package README](packages/organizations/mistral/README.md) and
-[xAI package README](packages/organizations/xai/README.md) list their
+To use Qwen Model Studio, install its optional organization package:
+
+```bash
+pip install "llm-api-adapter[qwen]"
+```
+
+The [Mistral package README](packages/organizations/mistral/README.md),
+[xAI package README](packages/organizations/xai/README.md), and
+[Qwen package README](packages/organizations/qwen/README.md) list their
 supported models and organization-specific behaviour. Direct installation of
-`llm-api-adapter-mistral` or `llm-api-adapter-xai` remains supported.
+`llm-api-adapter-mistral`, `llm-api-adapter-xai`, or
+`llm-api-adapter-qwen` remains supported.
 
 **Core baseline and organization packages.** An organization enters Core when
 its supported models and adapter implement the complete provider-neutral
@@ -147,7 +155,7 @@ the optional `[httpx]` extra and pass `transport="httpx"`. The default remains
 `requests`; see the [HTTPX sync pilot guide](HTTPX_SYNC_PILOT.md).
 
 **Note:** You need an API key from each LLM provider you use, including
-Mistral or xAI when their optional packages are installed. Refer to the
+Mistral, xAI, or Qwen when their optional packages are installed. Refer to the
 provider's documentation for API-key instructions.
 
 
@@ -383,13 +391,14 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 ### Using Different Providers and Models
 
-The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, and xAI. Mistral and xAI require their corresponding optional extras.
+The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, xAI, and Qwen. Mistral, xAI, and Qwen require their corresponding optional extras.
 
 - **OpenAI**: You can use models like `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
 - **Anthropic**: Available models include `claude-fable-5-1`, `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
 - **Google**: Models such as `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite` can be used.
 - **Mistral**: Install with `pip install "llm-api-adapter[mistral]"`. Available models are `mistral-small-2603`, `mistral-medium-3-5`, and `mistral-large-2512`; see the [Mistral package README](packages/organizations/mistral/README.md) for Mistral-specific behaviour.
 - **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.5` and `grok-4.6`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
+- **Qwen**: Install with `pip install "llm-api-adapter[qwen]"`. Fixed model IDs are `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`; every operation requires an explicit Frankfurt `workspace_id`. See the [Qwen package README](packages/organizations/qwen/README.md) for its capability boundary, including unsupported PDF input.
 
 Example:
 
@@ -895,6 +904,7 @@ and `parsed_model` remains `None` in those cases as well.
 | **Google** | `generationConfig.responseMimeType="application/json"` + `responseJsonSchema` |
 | **Mistral** | Native `response_format.type=json_schema` with `strict=true` (optional organization package) |
 | **xAI** | Responses `text.format.type=json_schema` with `strict=true` plus xAI's additive local overlay (optional organization package) |
+| **Qwen** | Messages `output_config.format.type=json_schema` (optional organization package) |
 
 The same **portable** schema can be reused across these organizations without
 provider-specific request code. Google sends the portable JSON Schema through
@@ -1015,7 +1025,7 @@ response = adapter.chat(messages=messages, max_tokens=200)
 
 ## Document Input
 
-The SDK supports PDF documents alongside text using `DocumentPart` and the `files` parameter on `UserMessage`. Provider-specific wire formats are handled automatically.
+The SDK supports PDF documents alongside text using `DocumentPart` and the `files` parameter on `UserMessage` when the selected organization supports document input. Provider-specific wire formats are handled automatically.
 
 ### Import
 
@@ -1061,6 +1071,10 @@ For bytes, the adapter sends the PDF as base64 data in the provider-specific req
 | ImagePart (bytes) | ✅ | ✅ | ✅ | ✅ |
 | DocumentPart (URL) | ✅ | ❌ | ✅ | ✅ |
 | DocumentPart (bytes) | ✅ | ✅ | ✅ | ✅ |
+
+Qwen 0.1.0 supports images, but rejects every `DocumentPart` URL or byte before
+HTTP: PDF and OCR input are outside its package contract. See the
+[Qwen package README](packages/organizations/qwen/README.md#pdf-input).
 
 ## Token Usage and Pricing
 

@@ -3,7 +3,6 @@
 import pytest
 
 from llm_api_adapter.models.messages.chat_message import UserMessage
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 _EXPECTED_JSON = {"contact": {"name": "Ada"}}
@@ -27,6 +26,7 @@ def test_json_schema_returns_structured_output_for_every_configured_model(
     subtests,
     iter_organization_models,
     chat_with_retry,
+    e2e_adapter,
 ):
     """Make one portable structured-output request for every configured model."""
     configured_models = 0
@@ -36,11 +36,7 @@ def test_json_schema_returns_structured_output_for_every_configured_model(
         configured_models += 1
 
         with subtests.test(organization=organization["name"], model=model):
-            adapter = UniversalLLMAPIAdapter(
-                organization=organization["name"],
-                model=model,
-                api_key=organization["api_key"],
-            )
+            adapter = e2e_adapter(organization, model)
             response = chat_with_retry(
                 adapter,
                 messages=[
