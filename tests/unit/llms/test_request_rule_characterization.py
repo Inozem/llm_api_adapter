@@ -107,6 +107,21 @@ def test_openai_preserves_native_none_when_registry_allows_it(client_class):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
+def test_openai_maps_unsupported_none_to_the_first_native_effort_for_gpt6_astra(
+    client_class,
+):
+    client = client_class(api_key="test_api_key")
+
+    payload = client._prepare_responses_payload_for_model(
+        "gpt-6-astra",
+        {"reasoning_effort": "none"},
+    )
+
+    assert payload["reasoning"] == {"effort": "low"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
 def test_openai_silently_omits_default_top_p_for_gpt5(client_class):
     client = client_class(api_key="test_api_key")
 
@@ -175,6 +190,30 @@ def test_openai_warns_once_when_omitting_non_default_temperature_for_gpt5_nano(
     assert caught[0].category is UserWarning
     assert "temperature" in str(caught[0].message)
     assert "gpt-5-nano" in str(caught[0].message)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
+def test_openai_astra_warns_when_omitting_unsupported_sampling_parameters(
+    client_class,
+):
+    client = client_class(api_key="test_api_key")
+
+    with _captured_warnings() as caught:
+        warnings.simplefilter("always")
+        payload = client._prepare_responses_payload_for_model(
+            "gpt-6-astra",
+            {"temperature": 0.2, "top_p": 0.2},
+        )
+
+    assert "temperature" not in payload
+    assert "top_p" not in payload
+    assert len(caught) == 2
+    assert {str(warning.message).split("'")[1] for warning in caught} == {
+        "temperature",
+        "top_p",
+    }
+    assert all("gpt-6-astra" in str(warning.message) for warning in caught)
 
 
 @pytest.mark.unit

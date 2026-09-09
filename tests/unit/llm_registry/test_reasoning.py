@@ -111,15 +111,49 @@ def test_categorical_projection_without_none_uses_the_working_scale(
 
 
 @pytest.mark.unit
-def test_categorical_none_falls_back_to_minimum_when_disable_is_unavailable(registry):
+@pytest.mark.parametrize(
+    ("organization", "model_name"),
+    [
+        ("google", "gemini-3.1-pro-preview"),
+        ("openai", "gpt-6-astra"),
+    ],
+)
+def test_categorical_none_falls_back_to_minimum_when_disable_is_unavailable(
+    registry,
+    organization,
+    model_name,
+):
     resolution = resolve_reasoning_level(
-        _model(registry, "google", "gemini-3.1-pro-preview"),
+        _model(registry, organization, model_name),
         "none",
     )
 
     assert resolution.provider_value == "low"
     assert resolution.reason == "none_to_minimum"
     assert "cannot disable reasoning" in resolution.warning
+
+
+@pytest.mark.unit
+def test_openai_astra_has_verified_registry_metadata(registry):
+    model = _model(registry, "openai", "gpt-6-astra")
+
+    assert model.limits.context_window_tokens == 1_050_000
+    assert model.limits.max_output_tokens == 128_000
+    assert model.reasoning_capability.allowed_values == (
+        "low", "medium", "high", "xhigh", "max",
+    )
+    assert model.request_rules.api_variant == "responses"
+    assert [rule.arguments["path"] for rule in model.request_rules.rules[1:]] == [
+        "top_p",
+        "temperature",
+    ]
+    assert [
+        (tier.up_to_prompt_tokens, tier.in_per_token, tier.out_per_token)
+        for tier in model.pricing_tiers.tiers
+    ] == [
+        (272_000, 10 / 1_000_000, 50 / 1_000_000),
+        (None, 20 / 1_000_000, 75 / 1_000_000),
+    ]
 
 
 @pytest.mark.unit

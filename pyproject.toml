@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-api-adapter"
-version = "0.9.4.post1"
+version = "0.9.4.post2"
 description = "Lightweight multi-provider LLM API adapter for Python — OpenAI, Anthropic, Google, Mistral, xAI, and Qwen."
 readme = "README.md"
 requires-python = ">=3.10"

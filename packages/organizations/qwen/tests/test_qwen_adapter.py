@@ -392,7 +392,7 @@ def test_universal_chat_uses_the_frankfurt_messages_endpoint(qwen_runtime, model
     assert response.response_id == "msg-qwen-1"
     assert response.usage is not None
     assert response.usage.total_tokens == 30
-    assert response.currency == "CNY"
+    assert response.currency == "USD"
 
     request = transport.requests[0]
     assert request.url == (
@@ -418,13 +418,13 @@ def test_universal_chat_uses_the_frankfurt_messages_endpoint(qwen_runtime, model
 @pytest.mark.parametrize(
     ("model", "input_tokens", "input_rate", "output_rate"),
     [
-        ("qwen3.8-max", 10, 12, 36),
-        ("qwen3.8-flash", 10, 0.8, 2.7),
-        ("qwen3.7-plus", 256_000, 2, 8),
-        ("qwen3.7-plus", 256_001, 6, 24),
-        ("qwen3.7-flash", 32_000, 0.2, 0.8),
-        ("qwen3.7-flash", 32_001, 0.6, 2.4),
-        ("qwen3.7-flash", 256_001, 1.2, 4.8),
+        ("qwen3.8-max", 10, 1.65, 4.951),
+        ("qwen3.8-flash", 10, 0.113, 0.382),
+        ("qwen3.7-plus", 256_000, 0.276, 1.101),
+        ("qwen3.7-plus", 256_001, 0.826, 3.301),
+        ("qwen3.7-flash", 32_000, 0.028, 0.11),
+        ("qwen3.7-flash", 32_001, 0.083, 0.33),
+        ("qwen3.7-flash", 256_001, 0.165, 0.66),
     ],
 )
 def test_qwen_finalizes_each_declared_frankfurt_pricing_tier(
@@ -459,7 +459,7 @@ def test_qwen_finalizes_each_declared_frankfurt_pricing_tier(
         workspace_id="frankfurt-workspace",
     )
 
-    assert response.currency == "CNY"
+    assert response.currency == "USD"
     assert response.cost_input == pytest.approx(input_tokens * input_rate / 1_000_000)
     assert response.cost_output == pytest.approx(output_tokens * output_rate / 1_000_000)
     assert response.cost_total == pytest.approx(
@@ -1194,7 +1194,7 @@ def test_universal_stream_chat_reconstructs_qwen_messages_response(
     assert completed[0].response_id == "msg-qwen-stream-1"
     assert completed[0].usage is not None
     assert completed[0].usage.total_tokens == 7
-    assert completed[0].currency == "CNY"
+    assert completed[0].currency == "USD"
     assert transport.sse_closed is True
 
     request = transport.sse_requests[0]
@@ -1349,7 +1349,7 @@ async def test_universal_achat_uses_qwen_async_client(
     assert response.content == "Hallo async"
     assert response.usage is not None
     assert response.usage.total_tokens == 30
-    assert response.currency == "CNY"
+    assert response.currency == "USD"
     assert len(requests) == 1
     assert requests[0][0] == (
         "https://frankfurt-workspace.eu-central-1.maas.aliyuncs.com/"

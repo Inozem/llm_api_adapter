@@ -117,8 +117,9 @@ class OpenAISyncClient:
         capture_reasoning = payload.pop("capture_reasoning", False)
         reasoning: dict = {}
         if reasoning_effort is not None:
-            if self._uses_minimal_reasoning_for_none(model) and reasoning_effort == "none":
-                reasoning_effort = "minimal"
+            fallback_effort = self._fallback_reasoning_effort_for_none(model)
+            if reasoning_effort == "none" and fallback_effort is not None:
+                reasoning_effort = fallback_effort
             reasoning["effort"] = reasoning_effort
         if capture_reasoning:
             reasoning["summary"] = "auto"
@@ -128,15 +129,16 @@ class OpenAISyncClient:
         return payload
 
     @staticmethod
-    def _uses_minimal_reasoning_for_none(model: str) -> bool:
-        """Map legacy ``none`` to the first native effort level when required."""
+    def _fallback_reasoning_effort_for_none(model: str) -> str | None:
+        """Return the lowest native effort when a model cannot disable reasoning."""
         model_spec = model_spec_for("openai", model)
         capability = model_spec.reasoning_capability if model_spec else None
-        return (
+        if (
             isinstance(capability, CategoricalReasoningCapability)
             and "none" not in capability.allowed_values
-            and "minimal" in capability.allowed_values
-        )
+        ):
+            return capability.allowed_values[0]
+        return None
 
     def _send_request(self, url: str, payload: dict, timeout: float | None = None):
         return self._sync_transport.post_json(

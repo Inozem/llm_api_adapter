@@ -77,6 +77,9 @@ With thinking enabled, Model Studio's reported `usage.output_tokens` can also
 include thinking tokens, so it can exceed `max_tokens` even when the visible
 answer respects that output limit.
 
+Cost fields use Frankfurt Global standard USD text rates. They exclude cached,
+batch, promotional, and negotiated pricing.
+
 Qwen permits `tool_choice="auto"` and `"none"` in thinking mode, but not a
 forced `"any"` or named tool. For a forced tool call, the adapter automatically
 disables thinking and issues a `UserWarning`; pass `reasoning_level="none"` to
