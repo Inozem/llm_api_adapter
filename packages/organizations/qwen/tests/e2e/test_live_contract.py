@@ -12,8 +12,8 @@ _MAX_TOKENS = 128
 
 @pytest.mark.e2e
 @pytest.mark.e2e_qwen
-def test_qwen_models_bound_output_and_toggle_thinking():
-    """Probe every registered Qwen model's Frankfurt Messages behavior."""
+def test_qwen_models_toggle_thinking_and_return_bounded_text():
+    """Probe Qwen's thinking toggle without conflating usage with visible text."""
     profile = core_e2e.get_e2e_organization_profile("qwen")
     (organization,) = core_e2e.resolve_e2e_organizations(profile)
 
@@ -28,9 +28,9 @@ def test_qwen_models_bound_output_and_toggle_thinking():
                 timeout_s=60,
             )
 
-            assert response.content and response.content.strip()
+            assert response.content and response.content.strip() == "OK"
             assert response.finish_reason
             assert response.usage is not None
-            assert response.usage.output_tokens <= _MAX_TOKENS
             if reasoning_level == "none":
+                assert response.usage.output_tokens <= _MAX_TOKENS
                 assert response.reasoning_events == []

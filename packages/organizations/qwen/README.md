@@ -73,6 +73,9 @@ All four models default to hybrid thinking. Set `reasoning_level="none"` to
 disable thinking, or `capture_reasoning=True` to receive provider-emitted
 reasoning separately from visible text. `max_tokens` must be a positive integer
 and limits generated output; it is separate from Qwen 3.7's thinking budget.
+With thinking enabled, Model Studio's reported `usage.output_tokens` can also
+include thinking tokens, so it can exceed `max_tokens` even when the visible
+answer respects that output limit.
 
 Qwen permits `tool_choice="auto"` and `"none"` in thinking mode, but not a
 forced `"any"` or named tool. For a forced tool call, the adapter automatically
