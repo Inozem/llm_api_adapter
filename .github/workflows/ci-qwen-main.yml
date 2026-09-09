@@ -80,10 +80,10 @@ jobs:
           pip install -e "packages/organizations/qwen[async,httpx]"
 
       - name: Run Qwen unit tests
-        run: pytest -v -m unit packages/organizations/qwen/tests
+        run: pytest -v --ignore=packages/organizations/qwen/tests/e2e -m unit packages/organizations/qwen/tests
 
       - name: Run Qwen integration tests
-        run: pytest -v -m integration packages/organizations/qwen/tests
+        run: pytest -v --ignore=packages/organizations/qwen/tests/e2e -m integration packages/organizations/qwen/tests
 
   test-gate:
     name: Test (main, Qwen)
