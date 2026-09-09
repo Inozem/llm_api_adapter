@@ -214,8 +214,14 @@ def test_qwen_deterministic_and_tag_workflows_cover_unit_and_integration_tests()
     for filename in ("ci-qwen-dev.yml", "ci-qwen-main.yml"):
         workflow = (workflow_dir / filename).read_text(encoding="utf-8")
         assert "packages/organizations/qwen/**" in workflow
-        assert "pytest -v -m unit packages/organizations/qwen/tests" in workflow
-        assert "pytest -v -m integration packages/organizations/qwen/tests" in workflow
+        assert (
+            "pytest -v --ignore=packages/organizations/qwen/tests/e2e "
+            "-m unit packages/organizations/qwen/tests"
+        ) in workflow
+        assert (
+            "pytest -v --ignore=packages/organizations/qwen/tests/e2e "
+            "-m integration packages/organizations/qwen/tests"
+        ) in workflow
         assert "e2e_qwen" not in workflow
         assert "secrets." not in workflow
 
