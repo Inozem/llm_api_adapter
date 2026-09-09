@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 import sys
+import warnings
 
 import pytest
 from pydantic import BaseModel, ConfigDict
@@ -806,6 +807,100 @@ def test_qwen_reasoning_none_disables_thinking_for_every_model(qwen_runtime, mod
     assert transport.requests[0].payload["thinking"] == {"type": "disabled"}
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("model", "reasoning_level", "tool_choice", "expected_tool_choice"),
+    [
+        ("qwen3.8-max", None, "any", {"type": "any"}),
+        (
+            "qwen3.8-flash",
+            "medium",
+            "get_weather",
+            {"type": "tool", "name": "get_weather"},
+        ),
+        ("qwen3.7-plus", "low", "any", {"type": "any"}),
+        (
+            "qwen3.7-flash",
+            "low",
+            "get_weather",
+            {"type": "tool", "name": "get_weather"},
+        ),
+    ],
+)
+def test_qwen_forced_tool_choice_disables_thinking_and_warns(
+    qwen_runtime,
+    model,
+    reasoning_level,
+    tool_choice,
+    expected_tool_choice,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-forced-tool-1",
+            "model": model,
+            "content": [{"type": "tool_use", "id": "toolu_qwen_1", "name": "get_weather", "input": {}}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    )
+    adapter.adapter._sync_transport = transport
+
+    with pytest.warns(UserWarning, match="disabled thinking because forced tool_choice"):
+        adapter.chat(
+            [{"role": "user", "content": "Use the weather tool."}],
+            max_tokens=131_072,
+            reasoning_level=reasoning_level,
+            tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+            tool_choice=tool_choice,
+            workspace_id="frankfurt-workspace",
+        )
+
+    payload = transport.requests[0].payload
+    assert payload["tool_choice"] == expected_tool_choice
+    assert payload["thinking"] == {"type": "disabled"}
+    assert "effort" not in payload.get("output_config", {})
+
+
+@pytest.mark.unit
+def test_qwen_explicit_thinking_disable_with_forced_tool_choice_does_not_warn(
+    qwen_runtime,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-explicit-no-thinking-1",
+            "model": "qwen3.8-max",
+            "content": [{"type": "tool_use", "id": "toolu_qwen_1", "name": "get_weather", "input": {}}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    )
+    adapter.adapter._sync_transport = transport
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        adapter.chat(
+            [{"role": "user", "content": "Use the weather tool."}],
+            max_tokens=64,
+            reasoning_level="none",
+            tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+            tool_choice="any",
+            workspace_id="frankfurt-workspace",
+        )
+
+    assert captured == []
+    assert transport.requests[0].payload["thinking"] == {"type": "disabled"}
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("workspace_id", [None, "", "wrong/workspace", "wrong.workspace"])
 def test_qwen_rejects_missing_or_malformed_workspace_before_transport(
@@ -1276,6 +1371,45 @@ async def test_universal_achat_uses_qwen_async_client(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_qwen_achat_disables_thinking_for_forced_tool_choice(
+    qwen_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    requests = []
+
+    async def fake_async_request(url, **kwargs):
+        requests.append((url, kwargs))
+        return {
+            "id": "msg-qwen-async-tool-1",
+            "model": "qwen3.8-max",
+            "content": [{"type": "tool_use", "id": "toolu_qwen_1", "name": "get_weather", "input": {}}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+
+    with pytest.warns(UserWarning, match="disabled thinking because forced tool_choice"):
+        await adapter.achat(
+            [{"role": "user", "content": "Use the weather tool."}],
+            max_tokens=64,
+            tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+            tool_choice="get_weather",
+            workspace_id="frankfurt-workspace",
+        )
+
+    assert requests[0][1]["payload"]["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 @pytest.mark.parametrize("model", QWEN_MODELS)
 async def test_universal_astream_chat_matches_sync_lifecycle(
     qwen_runtime,
@@ -1643,8 +1777,6 @@ async def test_qwen_async_stream_cancellation_closes_resources(qwen_runtime, mon
     [
         ("auto", {"type": "auto"}),
         ("none", {"type": "none"}),
-        ("any", {"type": "any"}),
-        ("get_weather", {"type": "tool", "name": "get_weather"}),
     ],
 )
 def test_qwen_chat_maps_tools_and_normalized_tool_choice(
@@ -1711,6 +1843,7 @@ def test_qwen_chat_maps_tools_and_normalized_tool_choice(
         }
     ]
     assert transport.requests[0].payload["tool_choice"] == expected_tool_choice
+    assert "thinking" not in transport.requests[0].payload
 
 
 @pytest.mark.integration
@@ -1803,26 +1936,27 @@ def test_qwen_stream_delivers_completed_tool_call_before_done(qwen_runtime, mode
     adapter.adapter._sync_transport = transport
     events = []
 
-    output = list(
-        adapter.stream_chat(
-            [{"role": "user", "content": "What is the weather in Tel Aviv?"}],
-            max_tokens=64,
-            tools=[
-                ToolSpec(
-                    name="get_weather",
-                    json_schema={"type": "object", "properties": {}},
-                )
-            ],
-            tool_choice="any",
-            workspace_id="frankfurt-workspace",
-            on_tool_call=lambda call: events.append(
-                ("tool", call.name, call.arguments, call.call_id),
-            ),
-            on_done=lambda response: events.append(
-                ("done", response.finish_reason, response.tool_calls),
-            ),
+    with pytest.warns(UserWarning, match="disabled thinking because forced tool_choice"):
+        output = list(
+            adapter.stream_chat(
+                [{"role": "user", "content": "What is the weather in Tel Aviv?"}],
+                max_tokens=64,
+                tools=[
+                    ToolSpec(
+                        name="get_weather",
+                        json_schema={"type": "object", "properties": {}},
+                    )
+                ],
+                tool_choice="any",
+                workspace_id="frankfurt-workspace",
+                on_tool_call=lambda call: events.append(
+                    ("tool", call.name, call.arguments, call.call_id),
+                ),
+                on_done=lambda response: events.append(
+                    ("done", response.finish_reason, response.tool_calls),
+                ),
+            )
         )
-    )
 
     assert output == ["Checking "]
     assert events[0] == (
@@ -1835,6 +1969,7 @@ def test_qwen_stream_delivers_completed_tool_call_before_done(qwen_runtime, mode
     assert events[1][2] is not None
     assert events[1][2][0].arguments == {"city": "Tel Aviv"}
     assert transport.sse_requests[0].payload["tool_choice"] == {"type": "any"}
+    assert transport.sse_requests[0].payload["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.asyncio
@@ -1847,7 +1982,11 @@ async def test_qwen_astream_delivers_completed_tool_call_before_done(
 ):
     from llm_api_adapter_qwen.clients import async_client as async_client_module
 
+    requests = []
+
     def fake_async_stream_request(url, **kwargs):
+        requests.append((url, kwargs))
+
         async def events():
             for event in qwen_messages_tool_sse_events(model):
                 yield event
@@ -1872,23 +2011,24 @@ async def test_qwen_astream_delivers_completed_tool_call_before_done(
     async def on_done(response):
         callbacks.append(("done", response.finish_reason, response.tool_calls))
 
-    output = [
-        text
-        async for text in adapter.astream_chat(
-            [{"role": "user", "content": "What is the weather in Tel Aviv?"}],
-            max_tokens=64,
-            tools=[
-                ToolSpec(
-                    name="get_weather",
-                    json_schema={"type": "object", "properties": {}},
-                )
-            ],
-            tool_choice={"type": "tool", "name": "get_weather"},
-            workspace_id="frankfurt-workspace",
-            on_tool_call=on_tool_call,
-            on_done=on_done,
-        )
-    ]
+    with pytest.warns(UserWarning, match="disabled thinking because forced tool_choice"):
+        output = [
+            text
+            async for text in adapter.astream_chat(
+                [{"role": "user", "content": "What is the weather in Tel Aviv?"}],
+                max_tokens=64,
+                tools=[
+                    ToolSpec(
+                        name="get_weather",
+                        json_schema={"type": "object", "properties": {}},
+                    )
+                ],
+                tool_choice={"type": "tool", "name": "get_weather"},
+                workspace_id="frankfurt-workspace",
+                on_tool_call=on_tool_call,
+                on_done=on_done,
+            )
+        ]
 
     assert output == ["Checking "]
     assert callbacks[0] == (
@@ -1900,3 +2040,4 @@ async def test_qwen_astream_delivers_completed_tool_call_before_done(
     assert callbacks[1][0:2] == ("done", "tool_use")
     assert callbacks[1][2] is not None
     assert callbacks[1][2][0].arguments == {"city": "Tel Aviv"}
+    assert requests[0][1]["payload"]["thinking"] == {"type": "disabled"}

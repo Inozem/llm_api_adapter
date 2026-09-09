@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass, field
+import logging
 from typing import Any, Optional
+import warnings
 
 from llm_api_adapter.adapters.base_adapter import (
     AsyncOnChunk,
@@ -30,6 +32,9 @@ from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from .clients.async_client import QwenMessagesAsyncClient
 from .clients.sync_client import QwenMessagesSyncClient, validate_workspace_id
 from .streaming import QwenMessagesStreamParser, QwenMessagesStreamState
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(repr=False)
@@ -344,6 +349,10 @@ class QwenAdapter(LLMAdapterBase):
                 ),
             }
         self._apply_reasoning_options(payload, reasoning_level)
+        self._disable_thinking_for_forced_tool_choice(
+            payload,
+            normalized_tool_choice=request_context.normalized_tool_choice,
+        )
         return validated_workspace_id, request_context, payload
 
     def _consume_stream_event(
@@ -482,6 +491,35 @@ class QwenAdapter(LLMAdapterBase):
                 payload["thinking"] = {"type": "disabled"}
             else:
                 payload.setdefault("output_config", {})["effort"] = provider_value
+
+    @staticmethod
+    def _disable_thinking_for_forced_tool_choice(
+        payload: dict[str, Any],
+        *,
+        normalized_tool_choice: str | None,
+    ) -> None:
+        """Apply Model Studio's forced-tool restriction before transport."""
+        if normalized_tool_choice in {None, "auto", "none"}:
+            return
+
+        thinking = payload.get("thinking")
+        if isinstance(thinking, Mapping) and thinking.get("type") == "disabled":
+            return
+
+        output_config = payload.get("output_config")
+        if isinstance(output_config, dict):
+            output_config.pop("effort", None)
+            if not output_config:
+                payload.pop("output_config")
+        payload["thinking"] = {"type": "disabled"}
+
+        message = (
+            "Qwen disabled thinking because forced tool_choice ('any' or a named "
+            "tool) is unsupported in thinking mode. Pass reasoning_level='none' "
+            "to make this choice explicit."
+        )
+        warnings.warn(message, UserWarning, stacklevel=4)
+        logger.warning(message)
 
     @staticmethod
     def _to_qwen_structured_output_schema(schema: dict) -> dict:

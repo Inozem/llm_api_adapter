@@ -18,7 +18,7 @@ def test_qwen_models_bound_output_and_toggle_thinking():
     (organization,) = core_e2e.resolve_e2e_organizations(profile)
 
     for model in organization["models"]:
-        for reasoning_level in (1024, None):
+        for reasoning_level in (1024, "none"):
             response = e2e_harness.chat_with_transient_retry(
                 e2e_harness.create_e2e_adapter(organization, model),
                 messages=[UserMessage("Reply with exactly: OK")],
@@ -32,5 +32,5 @@ def test_qwen_models_bound_output_and_toggle_thinking():
             assert response.finish_reason
             assert response.usage is not None
             assert response.usage.output_tokens <= _MAX_TOKENS
-            if reasoning_level is None:
-                assert response.reasoning is None
+            if reasoning_level == "none":
+                assert response.reasoning_events == []

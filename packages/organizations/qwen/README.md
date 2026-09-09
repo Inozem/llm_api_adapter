@@ -74,6 +74,11 @@ disable thinking, or `capture_reasoning=True` to receive provider-emitted
 reasoning separately from visible text. `max_tokens` must be a positive integer
 and limits generated output; it is separate from Qwen 3.7's thinking budget.
 
+Qwen permits `tool_choice="auto"` and `"none"` in thinking mode, but not a
+forced `"any"` or named tool. For a forced tool call, the adapter automatically
+disables thinking and issues a `UserWarning`; pass `reasoning_level="none"` to
+make that choice explicit without a warning.
+
 ## PDF input
 
 Qwen 0.1.0 supports images, but not PDFs. `DocumentPart` URLs and bytes are
