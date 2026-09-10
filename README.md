@@ -53,7 +53,7 @@ Supports Python 3.10–3.14.
 | Unified error hierarchy   | ✓ | OpenAI-compatible | framework-specific | ✗ |
 | Sync streaming            | ✓ text-first | ✓ | ✓ | ✓ |
 | Async API                 | ✓ optional | ✓ | ✓ | ✓ |
-| Number of organizations   | 5 | 100+ | 50+ | 1 |
+| Number of organizations   | 6 | 100+ | 50+ | 1 |
 
 * `reasoning_level` is one application-level parameter, but the available levels, native mapping, and emitted reasoning content remain model/provider-dependent.
 
