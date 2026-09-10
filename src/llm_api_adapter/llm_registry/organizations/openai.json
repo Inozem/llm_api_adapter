@@ -1,6 +1,32 @@
 {
   "currency": "USD",
   "models": {
+    "gpt-6-astra": {
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high", "xhigh", "max"]
+      },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}},
+        {"handler": "drop_parameter", "arguments": {"path": "temperature", "default": 1.0}}
+      ],
+      "limits": {
+        "context_window_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": 272000,
+          "input_per_1m": 10.0,
+          "output_per_1m": 50.0
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 20.0,
+          "output_per_1m": 75.0
+        }
+      ]
+    },
     "gpt-5.6-sol": {
       "reasoning_capability": {
         "allowed_values": ["none", "low", "medium", "high", "xhigh", "max"]

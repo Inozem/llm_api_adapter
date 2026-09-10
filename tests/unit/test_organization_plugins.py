@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+import sys
 from typing import Any
 
 import pytest
@@ -29,6 +31,9 @@ from src.llm_api_adapter.service_provider_registry import (
     ServiceProviderRegistry,
 )
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass
@@ -220,6 +225,79 @@ def test_known_xai_organization_is_installable_before_its_package_is_available(
         "test-model",
     ) is adapter.adapter.model_spec
     assert entry_point.load_calls == 1
+
+
+@pytest.mark.unit
+def test_qwen_is_known_before_installation_and_loads_only_through_its_plugin(
+    monkeypatch,
+    isolated_plugin_runtime,
+):
+    for module_name in (
+        "llm_api_adapter_qwen.plugin",
+        "llm_api_adapter_qwen",
+    ):
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    installed_entry_points: list[FakeEntryPoint] = []
+
+    def get_entry_points(*, group: str):
+        assert group == ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP
+        return tuple(installed_entry_points)
+
+    monkeypatch.setattr(registry_module, "entry_points", get_entry_points)
+
+    with pytest.raises(ValueError, match="Unsupported organization: qwen-like"):
+        UniversalLLMAPIAdapter(
+            organization="qwen-like",
+            model="test-model",
+            api_key="test-key",
+        )
+
+    with pytest.raises(OrganizationNotInstalledError) as raised:
+        UniversalLLMAPIAdapter(
+            organization="qwen",
+            model="test-model",
+            api_key="test-key",
+        )
+
+    assert str(raised.value) == (
+        "Organization 'qwen' is not installed. "
+        "Install it with: pip install llm-api-adapter-qwen"
+    )
+    assert "llm_api_adapter_qwen" not in sys.modules
+
+    entry_point = FakeEntryPoint(
+        name="qwen",
+        value="test_plugins.qwen:PLUGIN",
+        plugin=_test_plugin(
+            organization="qwen",
+            model_metadata=_organization_model_metadata("qwen"),
+        ),
+    )
+    installed_entry_points.append(entry_point)
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="test-model",
+        api_key="test-key",
+    )
+
+    assert isinstance(adapter.adapter, PluginTestAdapter)
+    assert adapter.adapter.company == adapter.adapter.service_provider == "qwen"
+    assert resolve_model_spec(
+        isolated_plugin_runtime[2],
+        "qwen",
+        "test-model",
+    ) is adapter.adapter.model_spec
+    assert entry_point.load_calls == 1
+    assert "llm_api_adapter_qwen" not in sys.modules
+
+
+@pytest.mark.unit
+def test_core_declares_the_qwen_optional_extra():
+    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'qwen = ["llm-api-adapter-qwen>=0.1.0,<0.2.0"]' in pyproject
 
 
 @pytest.mark.unit

@@ -3,7 +3,6 @@ from math import isclose
 import pytest
 
 from llm_api_adapter.models.messages.chat_message import UserMessage
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 def _assert_pricing_contract(response) -> None:
@@ -25,14 +24,15 @@ def _assert_pricing_contract(response) -> None:
 
 
 @pytest.mark.e2e
-def test_chat_accepts_basic_params_and_returns_contract(subtests, iter_organization_models, chat_with_retry):
+def test_chat_accepts_basic_params_and_returns_contract(
+    subtests,
+    iter_organization_models,
+    chat_with_retry,
+    e2e_adapter,
+):
     for p, model in iter_organization_models():
         with subtests.test(provider=p["name"], model=model):
-            adapter = UniversalLLMAPIAdapter(
-                organization=p["name"],
-                model=model,
-                api_key=p["api_key"],
-            )
+            adapter = e2e_adapter(p, model)
             resp = chat_with_retry(
                 adapter,
                 messages=[UserMessage("Say 'OK'.")],
@@ -54,14 +54,15 @@ def test_chat_accepts_basic_params_and_returns_contract(subtests, iter_organizat
 
 
 @pytest.mark.e2e
-def test_chat_with_reasoning_level_returns_valid_contract(subtests, iter_organization_models, chat_with_retry):
+def test_chat_with_reasoning_level_returns_valid_contract(
+    subtests,
+    iter_organization_models,
+    chat_with_retry,
+    e2e_adapter,
+):
     for p, model in iter_organization_models():
         with subtests.test(provider=p["name"], model=model):
-            adapter = UniversalLLMAPIAdapter(
-                organization=p["name"],
-                model=model,
-                api_key=p["api_key"],
-            )
+            adapter = e2e_adapter(p, model)
             resp = chat_with_retry(
                 adapter,
                 messages=[{"role": "user", "content": "Say 'OK'."}],

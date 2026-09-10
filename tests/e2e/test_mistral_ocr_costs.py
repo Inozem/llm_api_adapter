@@ -1,35 +1,28 @@
 import pytest
 
 from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY
-from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from tests.e2e import harness
 
 
 @pytest.mark.e2e
+@pytest.mark.e2e_feature("ocr")
 def test_mistral_pdf_ocr_exposes_cost_breakdown(
-    e2e_organization_profile,
     organizations,
     pdf_bytes,
     chat_with_retry,
+    e2e_adapter,
 ):
-    if e2e_organization_profile.name != "mistral":
-        pytest.skip("Mistral-specific OCR cost contract")
-
     organization = organizations[0]
     meter = LLM_REGISTRY.organizations["mistral"].metered_operations["ocr"]
-    adapter = UniversalLLMAPIAdapter(
-        organization="mistral",
-        model=organization["latest_model"],
-        api_key=organization["api_key"],
-    )
+    adapter = e2e_adapter(organization, organization["latest_model"])
 
     response = chat_with_retry(
         adapter,
         messages=[
-            UserMessage(
+            harness.make_document_message(
                 "Summarize this document in one sentence.",
-                files=[DocumentPart(data=pdf_bytes, media_type="application/pdf")],
+                DocumentPart(data=pdf_bytes, media_type="application/pdf"),
             )
         ],
         max_tokens=150,

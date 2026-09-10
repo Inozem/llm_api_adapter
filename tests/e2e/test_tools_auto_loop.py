@@ -8,7 +8,6 @@ from llm_api_adapter.models.messages.chat_message import (
     ToolMessage,
 )
 from llm_api_adapter.models.tools import ToolSpec
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 KUDIBLOID_COUNTS = {7: 479}
@@ -34,6 +33,7 @@ def test_basic_tool_loop_with_previous_response(
     iter_organization_models,
     chat_with_retry,
     tool_choice_for_model,
+    e2e_adapter,
 ):
     tools = [
         ToolSpec(
@@ -64,11 +64,7 @@ def test_basic_tool_loop_with_previous_response(
             model=model,
             tool_choice=tool_choice,
         ):
-            adapter = UniversalLLMAPIAdapter(
-                organization=p["name"],
-                model=model,
-                api_key=p["api_key"],
-            )
+            adapter = e2e_adapter(p, model)
 
             messages = [
                 UserMessage(
