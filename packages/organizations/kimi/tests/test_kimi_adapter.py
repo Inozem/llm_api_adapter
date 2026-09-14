@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 import sys
 import warnings
@@ -19,6 +20,7 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
         sys.path.insert(0, source)
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
+import llm_api_adapter.organization_registry as organization_registry_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.errors.llm_api_error import (
     LLMAPIAuthorizationError,
@@ -36,8 +38,14 @@ from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
+from llm_api_adapter.organization_registry import (
+    ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP,
+    OrganizationPluginDiscovery,
+)
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter_kimi.adapter import KimiAdapter
+from llm_api_adapter_kimi.plugin import PLUGIN
 from tests.fixtures.structured_output import (
     FLAT_OBJECT_SCHEMA,
     INVALID_JSON_CONTENT,
@@ -1596,3 +1604,142 @@ async def test_kimi_async_stream_cancellation_closes_resources(
 
     assert stream_closed is True
     assert completed == []
+
+
+@dataclass(frozen=True)
+class _InstalledKimiEntryPoint:
+    """Minimal installed-distribution entry point exercised by the facade."""
+
+    name: str = "kimi"
+    value: str = "llm_api_adapter_kimi.plugin:PLUGIN"
+
+    def load(self):
+        return PLUGIN
+
+
+@pytest.fixture
+def installed_kimi_plugin(monkeypatch):
+    """Discover the real Kimi plugin instead of registering it in the test."""
+    service_providers = ServiceProviderRegistry()
+    model_registry = RegistrySpec()
+
+    def installed_entry_points(*, group: str):
+        assert group == ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP
+        return [_InstalledKimiEntryPoint()]
+
+    monkeypatch.setattr(
+        organization_registry_module,
+        "entry_points",
+        installed_entry_points,
+    )
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        service_providers,
+    )
+    monkeypatch.setattr(
+        universal_module,
+        "ORGANIZATION_PLUGIN_DISCOVERY",
+        OrganizationPluginDiscovery(),
+    )
+    monkeypatch.setattr(universal_module, "LLM_REGISTRY", model_registry)
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", model_registry)
+    return model_registry
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", KIMI_MODELS)
+def test_installed_kimi_plugin_conforms_through_the_public_facade(
+    installed_kimi_plugin,
+    monkeypatch,
+    model,
+):
+    """Keep plugin discovery plus requests/HTTPX/SSE coverage credential-free."""
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+
+    assert isinstance(adapter.adapter, KimiAdapter)
+    assert set(installed_kimi_plugin.organizations["kimi"].models) == set(KIMI_MODELS)
+
+    sync_transport = FakeSyncTransport(kimi_response(model))
+    adapter.adapter._sync_transport = sync_transport
+    sync_response = adapter.chat([UserMessage("Hello")], max_tokens=64)
+
+    assert sync_response.content == "Kimi test."
+    assert sync_response.usage is not None
+    assert sync_response.usage.total_tokens == 32
+    assert sync_response.cost_total is not None
+    assert sync_transport.requests[0].payload["model"] == model
+
+    async_requests = []
+
+    async def fake_async_request(url, **kwargs):
+        async_requests.append((url, kwargs))
+        return kimi_response(model)
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    async_response = asyncio.run(
+        adapter.achat([UserMessage("Hello")], max_tokens=64),
+    )
+
+    assert async_response.content == sync_response.content
+    assert async_response.usage == sync_response.usage
+    assert async_response.cost_total == sync_response.cost_total
+    assert async_requests[0][0] == "https://api.moonshot.ai/v1/chat/completions"
+    assert async_requests[0][1]["payload"]["model"] == model
+
+    stream_transport = FakeSyncTransport({}, events=kimi_chat_sse_events(model))
+    adapter.adapter._sync_transport = stream_transport
+    sync_completed = []
+    sync_output = list(
+        adapter.stream_chat(
+            [UserMessage("Hello")],
+            max_tokens=64,
+            on_done=sync_completed.append,
+        )
+    )
+
+    assert sync_output == ["Hello ", "world"]
+    assert sync_completed[0].content == "Hello world"
+    assert stream_transport.sse_closed is True
+
+    async_stream_requests = []
+
+    def fake_async_stream_request(url, **kwargs):
+        async_stream_requests.append((url, kwargs))
+
+        async def events():
+            for event in kimi_chat_sse_events(model):
+                yield event
+
+        return events()
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+
+    async def consume_async_stream():
+        completed = []
+        output = [
+            text
+            async for text in adapter.astream_chat(
+                [UserMessage("Hello")],
+                max_tokens=64,
+                on_done=completed.append,
+            )
+        ]
+        return output, completed
+
+    async_output, async_completed = asyncio.run(consume_async_stream())
+
+    assert async_output == sync_output
+    assert async_completed[0].content == sync_completed[0].content
+    assert async_stream_requests[0][0] == "https://api.moonshot.ai/v1/chat/completions"
+    assert async_stream_requests[0][1]["payload"]["model"] == model
