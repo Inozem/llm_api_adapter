@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import sys
 import warnings
@@ -29,7 +30,7 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPIUsageLimitError,
 )
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
-from llm_api_adapter.llms.transports import JSONResponse
+from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
@@ -38,10 +39,13 @@ KIMI_MODELS = ("kimi-k3", "kimi-k2.7-code", "kimi-k2.6")
 
 
 class FakeSyncTransport:
-    def __init__(self, response, *, error=None) -> None:
+    def __init__(self, response, *, error=None, events=None) -> None:
         self.response = response
         self.error = error
+        self.events = list(events or [])
         self.requests = []
+        self.sse_requests = []
+        self.sse_closed = False
 
     def post_json(self, request, *, http_error_handler=None):
         self.requests.append(request)
@@ -49,6 +53,28 @@ class FakeSyncTransport:
             assert http_error_handler is not None
             http_error_handler(self.error)
         return JSONResponse(self.response)
+
+    def post_sse(
+        self,
+        request,
+        *,
+        http_error_handler=None,
+        stream_error_handler=None,
+    ):
+        self.sse_requests.append(request)
+
+        def event_iterator():
+            try:
+                for event in self.events:
+                    payload = event.data if isinstance(event.data, dict) else {}
+                    if event.event == "error" or payload.get("type") == "error":
+                        assert stream_error_handler is not None
+                        stream_error_handler(event)
+                    yield event
+            finally:
+                self.sse_closed = True
+
+        return event_iterator()
 
 
 class FakeHTTPResponse:
@@ -86,6 +112,143 @@ def kimi_response(model: str, *, cached_tokens: int | None = 12) -> dict:
         ],
         "usage": usage,
     }
+
+
+def kimi_chat_sse_events(model: str = "kimi-k3") -> list[SSEEvent]:
+    """A complete OpenAI-compatible Kimi stream, including final usage."""
+    stream_metadata = {
+        "id": "cmpl-kimi-stream-1",
+        "created": 1_789_721_600,
+        "model": model,
+    }
+    return [
+        SSEEvent(
+            event=None,
+            data={
+                **stream_metadata,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": ""},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                **stream_metadata,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": "First reason. ",
+                            "content": "Hello ",
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                **stream_metadata,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "world"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                **stream_metadata,
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 19,
+                    "completion_tokens": 13,
+                    "total_tokens": 32,
+                    "cached_tokens": 12,
+                },
+            },
+        ),
+        SSEEvent(event=None, data="[DONE]", done=True),
+    ]
+
+
+def kimi_tool_call_sse_events(model: str = "kimi-k3") -> list[SSEEvent]:
+    """Kimi chunks whose function arguments arrive in OpenAI-style pieces."""
+    stream_metadata = {
+        "id": "cmpl-kimi-tool-stream-1",
+        "created": 1_789_721_600,
+        "model": model,
+    }
+    return [
+        SSEEvent(
+            event=None,
+            data={
+                **stream_metadata,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_kimi_weather",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_weather",
+                                        "arguments": '{"city":"Tel',
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                **stream_metadata,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"arguments": ' Aviv"}'},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            },
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                **stream_metadata,
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 19,
+                    "completion_tokens": 13,
+                    "total_tokens": 32,
+                    "cached_tokens": 12,
+                },
+            },
+        ),
+        SSEEvent(event=None, data="[DONE]", done=True),
+    ]
 
 
 @pytest.fixture
@@ -378,3 +541,479 @@ def test_kimi_rejects_unimplemented_features_before_transport(kimi_runtime):
         )
 
     assert transport.requests == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("model", KIMI_MODELS)
+def test_kimi_stream_reconstructs_chat_completion_and_callback_order(
+    kimi_runtime,
+    model,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport({}, events=kimi_chat_sse_events(model))
+    adapter.adapter._sync_transport = transport
+    callback_order = []
+    completed = []
+
+    def on_reasoning(event):
+        callback_order.append(("reasoning", event.text))
+
+    def on_chunk(chunk):
+        callback_order.append(("chunk", chunk.text))
+
+    def on_delta(text):
+        callback_order.append(("delta", text))
+
+    def on_done(response):
+        completed.append(response)
+        callback_order.append(("done", response.content))
+
+    output = []
+    for text in adapter.stream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        timeout_s=12.5,
+        capture_reasoning=True,
+        on_reasoning=on_reasoning,
+        on_chunk=on_chunk,
+        on_delta=on_delta,
+        on_done=on_done,
+    ):
+        callback_order.append(("yield", text))
+        output.append(text)
+
+    assert output == ["Hello ", "world"]
+    assert callback_order == [
+        ("reasoning", "First reason. "),
+        ("chunk", "Hello "),
+        ("delta", "Hello "),
+        ("yield", "Hello "),
+        ("chunk", "world"),
+        ("delta", "world"),
+        ("yield", "world"),
+        ("done", "Hello world"),
+    ]
+    assert len(completed) == 1
+    assert completed[0].response_id == "cmpl-kimi-stream-1"
+    assert completed[0].usage is not None
+    assert completed[0].usage.total_tokens == 32
+    assert completed[0].usage.cached_tokens == 12
+    assert completed[0].currency == "USD"
+    assert [event.text for event in completed[0].reasoning_events] == [
+        "First reason. "
+    ]
+    assert transport.sse_closed is True
+
+    request = transport.sse_requests[0]
+    assert request.url == "https://api.moonshot.ai/v1/chat/completions"
+    assert request.headers_dict() == {
+        "Authorization": "Bearer kimi-test-key",
+        "Content-Type": "application/json",
+    }
+    assert request.timeout == 12.5
+    expected_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Hello"}],
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    expected_payload["max_completion_tokens" if model == "kimi-k3" else "max_tokens"] = 64
+    assert request.payload == expected_payload
+
+
+@pytest.mark.integration
+def test_kimi_stream_keeps_reasoning_out_of_visible_text_without_capture(kimi_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        {},
+        events=kimi_chat_sse_events(),
+    )
+    completed = []
+
+    output = list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=64,
+            on_done=completed.append,
+        )
+    )
+
+    assert output == ["Hello ", "world"]
+    assert completed[0].content == "Hello world"
+    assert completed[0].reasoning_events == []
+
+
+@pytest.mark.integration
+def test_kimi_stream_reconstructs_fragmented_tool_calls_before_done(kimi_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport({}, events=kimi_tool_call_sse_events())
+    adapter.adapter._sync_transport = transport
+    callback_order = []
+    completed = []
+
+    def on_tool_call(tool_call):
+        callback_order.append(("tool", tool_call.name, tool_call.arguments))
+
+    def on_done(response):
+        completed.append(response)
+        callback_order.append(("done", response.finish_reason))
+
+    assert list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "What is the weather?"}],
+            max_tokens=64,
+            on_tool_call=on_tool_call,
+            on_done=on_done,
+        )
+    ) == []
+    assert callback_order == [
+        ("tool", "get_weather", {"city": "Tel Aviv"}),
+        ("done", "tool_calls"),
+    ]
+    assert completed[0].tool_calls is not None
+    assert completed[0].tool_calls[0].call_id == "call_kimi_weather"
+    assert transport.sse_closed is True
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("model", KIMI_MODELS)
+def test_kimi_captures_nonstream_reasoning_only_when_requested(kimi_runtime, model):
+    payload = kimi_response(model)
+    payload["choices"][0]["message"]["reasoning_content"] = "First reason."
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(payload)
+
+    without_capture = adapter.chat(
+        [{"role": "user", "content": "Think carefully."}],
+        max_tokens=64,
+    )
+    with_capture = adapter.chat(
+        [{"role": "user", "content": "Think carefully."}],
+        max_tokens=64,
+        capture_reasoning=True,
+    )
+
+    assert without_capture.content == with_capture.content == "Kimi test."
+    assert without_capture.reasoning_events == []
+    assert [event.text for event in with_capture.reasoning_events] == [
+        "First reason."
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("model", KIMI_MODELS)
+async def test_kimi_achat_uses_httpx_async_client(kimi_runtime, monkeypatch, model):
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    requests = []
+
+    async def fake_async_request(url, **kwargs):
+        requests.append((url, kwargs))
+        return kimi_response(model)
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+
+    response = await adapter.achat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        timeout_s=12.5,
+    )
+
+    assert response.content == "Kimi test."
+    assert response.usage is not None
+    assert response.usage.total_tokens == 32
+    assert response.currency == "USD"
+    assert len(requests) == 1
+    assert requests[0][0] == "https://api.moonshot.ai/v1/chat/completions"
+    assert requests[0][1]["headers"] == {
+        "Authorization": "Bearer kimi-test-key",
+        "Content-Type": "application/json",
+    }
+    expected_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Hello"}],
+    }
+    expected_payload["max_completion_tokens" if model == "kimi-k3" else "max_tokens"] = 64
+    assert requests[0][1]["payload"] == expected_payload
+    assert requests[0][1]["timeout"] == 12.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("model", KIMI_MODELS)
+async def test_kimi_astream_matches_sync_lifecycle(kimi_runtime, monkeypatch, model):
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    requests = []
+    stream_closed = False
+
+    def fake_async_stream_request(url, **kwargs):
+        requests.append((url, kwargs))
+
+        async def events():
+            nonlocal stream_closed
+            try:
+                for event in kimi_chat_sse_events(model):
+                    yield event
+            finally:
+                stream_closed = True
+
+        return events()
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+    callback_order = []
+    completed = []
+
+    async def on_chunk(chunk):
+        callback_order.append(("chunk", chunk.text))
+
+    def on_delta(text):
+        callback_order.append(("delta", text))
+
+    async def on_reasoning(event):
+        callback_order.append(("reasoning", event.text))
+
+    async def on_done(response):
+        completed.append(response)
+        callback_order.append(("done", response.content))
+
+    output = []
+    async for text in adapter.astream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        timeout_s=12.5,
+        capture_reasoning=True,
+        on_reasoning=on_reasoning,
+        on_chunk=on_chunk,
+        on_delta=on_delta,
+        on_done=on_done,
+    ):
+        callback_order.append(("yield", text))
+        output.append(text)
+
+    assert output == ["Hello ", "world"]
+    assert callback_order == [
+        ("reasoning", "First reason. "),
+        ("chunk", "Hello "),
+        ("delta", "Hello "),
+        ("yield", "Hello "),
+        ("chunk", "world"),
+        ("delta", "world"),
+        ("yield", "world"),
+        ("done", "Hello world"),
+    ]
+    assert completed[0].usage is not None
+    assert completed[0].usage.total_tokens == 32
+    assert [event.text for event in completed[0].reasoning_events] == [
+        "First reason. "
+    ]
+    assert stream_closed is True
+    assert requests[0][0] == "https://api.moonshot.ai/v1/chat/completions"
+    assert requests[0][1]["payload"]["stream"] is True
+    assert requests[0][1]["payload"]["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.unit
+def test_kimi_stream_error_is_mapped_and_closes_resources(kimi_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport(
+        {},
+        events=[
+            SSEEvent(
+                event="error",
+                data={
+                    "error": {
+                        "type": "rate_limit_error",
+                        "message": "Kimi stream rate limit",
+                    }
+                },
+            )
+        ],
+    )
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(LLMAPIRateLimitError, match="Kimi stream rate limit"):
+        list(
+            adapter.stream_chat(
+                [{"role": "user", "content": "Hello"}],
+                max_tokens=64,
+            )
+        )
+
+    assert transport.sse_closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kimi_async_stream_error_is_mapped_and_closes_resources(
+    kimi_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    stream_closed = False
+
+    def fake_async_stream_request(url, **kwargs):
+        async def events():
+            nonlocal stream_closed
+            try:
+                event = SSEEvent(
+                    event="error",
+                    data={
+                        "error": {
+                            "type": "rate_limit_error",
+                            "message": "Kimi async stream rate limit",
+                        }
+                    },
+                )
+                kwargs["stream_error_handler"](event)
+                yield event  # pragma: no cover - the handler always raises
+            finally:
+                stream_closed = True
+
+        return events()
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+
+    with pytest.raises(LLMAPIRateLimitError, match="Kimi async stream rate limit"):
+        [
+            text
+            async for text in adapter.astream_chat(
+                [{"role": "user", "content": "Hello"}],
+                max_tokens=64,
+            )
+        ]
+
+    assert stream_closed is True
+
+
+@pytest.mark.unit
+def test_kimi_stream_close_before_completion_closes_resources(kimi_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport({}, events=kimi_chat_sse_events())
+    adapter.adapter._sync_transport = transport
+    completed = []
+
+    stream = adapter.stream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        on_done=completed.append,
+    )
+    assert next(stream) == "Hello "
+    stream.close()
+
+    assert transport.sse_closed is True
+    assert completed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kimi_async_stream_cancellation_closes_resources(
+    kimi_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    stream_closed = False
+    stream_entered = asyncio.Event()
+    never = asyncio.Event()
+
+    def fake_async_stream_request(url, **kwargs):
+        async def events():
+            nonlocal stream_closed
+            try:
+                yield SSEEvent(
+                    event=None,
+                    data={
+                        "id": "cmpl-kimi-cancel",
+                        "model": "kimi-k3",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": "Hello "},
+                                "finish_reason": None,
+                            }
+                        ],
+                    },
+                )
+                stream_entered.set()
+                await never.wait()
+            finally:
+                stream_closed = True
+
+        return events()
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    completed = []
+    stream = adapter.astream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        on_done=completed.append,
+    )
+
+    assert await stream.__anext__() == "Hello "
+    pending_chunk = asyncio.create_task(stream.__anext__())
+    await stream_entered.wait()
+    pending_chunk.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending_chunk
+
+    assert stream_closed is True
+    assert completed == []

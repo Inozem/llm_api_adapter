@@ -14,7 +14,12 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPITokenLimitError,
     LLMAPIUsageLimitError,
 )
-from llm_api_adapter.llms.transports import JSONResponse, SyncTransport, TransportRequest
+from llm_api_adapter.llms.transports import (
+    JSONResponse,
+    SSEEvent,
+    SyncTransport,
+    TransportRequest,
+)
 
 
 KIMI_CHAT_COMPLETIONS_URL = "https://api.moonshot.ai/v1/chat/completions"
@@ -53,6 +58,31 @@ class KimiSyncClient:
             )
         return response_data
 
+    def stream(
+        self,
+        *,
+        api_key: str,
+        payload: dict[str, Any],
+        timeout_s: float | None,
+    ):
+        """Open one Kimi SSE response and request its terminal usage report."""
+        stream_payload = dict(payload)
+        stream_payload["stream"] = True
+        stream_payload["stream_options"] = {"include_usage": True}
+        return self.transport.post_sse(
+            TransportRequest(
+                url=KIMI_CHAT_COMPLETIONS_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                payload=stream_payload,
+                timeout=timeout_s,
+            ),
+            http_error_handler=self._handle_http_error,
+            stream_error_handler=self._handle_stream_error,
+        )
+
     @classmethod
     def _handle_http_error(cls, http_error: Any) -> None:
         response = getattr(http_error, "response", None)
@@ -72,6 +102,25 @@ class KimiSyncClient:
                 if isinstance(raw_detail, str) and raw_detail:
                     detail = raw_detail
         cls._raise_mapped_error(status_code, error_type, detail)
+
+    @classmethod
+    def _handle_stream_error(cls, event: SSEEvent) -> None:
+        """Map a documented Kimi SSE error frame through the public hierarchy."""
+        payload = event.data if isinstance(event.data, Mapping) else {}
+        error = payload.get("error", payload)
+        if not isinstance(error, Mapping):
+            raise LLMAPIClientError(
+                detail="Kimi Chat Completions returned an invalid SSE error event",
+            )
+        raw_type = error.get("type") or error.get("code")
+        error_type = raw_type if isinstance(raw_type, str) else None
+        raw_detail = error.get("message") or error.get("detail")
+        detail = (
+            raw_detail
+            if isinstance(raw_detail, str) and raw_detail
+            else "Kimi Chat Completions returned an SSE error"
+        )
+        cls._raise_mapped_error(None, error_type, detail)
 
     @staticmethod
     def _raise_mapped_error(
