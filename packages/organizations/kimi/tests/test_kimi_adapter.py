@@ -32,6 +32,8 @@ from llm_api_adapter.errors.llm_api_error import (
 from llm_api_adapter.errors.llm_api_error import JSONSchemaError
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
+from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
@@ -405,6 +407,88 @@ def test_universal_chat_uses_chat_completions_for_every_declared_model(
     }
     expected_payload["max_completion_tokens" if model == "kimi-k3" else "max_tokens"] = 64
     assert request.payload == expected_payload
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("model", KIMI_MODELS)
+@pytest.mark.parametrize(
+    ("image", "expected_url"),
+    [
+        (
+            ImagePart(data=b"kimi-image", media_type="image/png"),
+            "data:image/png;base64,a2ltaS1pbWFnZQ==",
+        ),
+        (
+            ImagePart(url="data:image/webp;base64,a2ltaS13ZWJw"),
+            "data:image/webp;base64,a2ltaS13ZWJw",
+        ),
+    ],
+)
+def test_kimi_maps_image_bytes_and_data_uris_for_every_declared_model(
+    kimi_runtime,
+    model,
+    image,
+    expected_url,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport(kimi_response(model))
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat([UserMessage("Describe this image.", files=[image])])
+
+    assert response.content == "Kimi test."
+    assert transport.requests[0].payload["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this image."},
+                {"type": "image_url", "image_url": {"url": expected_url}},
+            ],
+        },
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", KIMI_MODELS)
+@pytest.mark.parametrize(
+    ("file_part", "detail"),
+    [
+        (
+            ImagePart(url="https://example.com/kimi.png"),
+            "public ImagePart URLs",
+        ),
+        (
+            DocumentPart(data=b"%PDF-kimi", media_type="application/pdf"),
+            "does not support DocumentPart",
+        ),
+        (
+            DocumentPart(url="https://example.com/kimi.pdf"),
+            "does not support DocumentPart",
+        ),
+    ],
+)
+def test_kimi_rejects_file_inputs_that_cannot_meet_the_shared_contract(
+    kimi_runtime,
+    model,
+    file_part,
+    detail,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport(kimi_response(model))
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(ValueError, match=detail):
+        adapter.chat([UserMessage("Read this file.", files=[file_part])])
+
+    assert transport.requests == []
 
 
 @pytest.mark.integration

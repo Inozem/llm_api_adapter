@@ -35,6 +35,7 @@ from llm_api_adapter.llms.transports import (
     create_sync_transport,
 )
 from llm_api_adapter.models.messages.chat_message import Message, Messages, UserMessage
+from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
@@ -588,7 +589,7 @@ class KimiAdapter(LLMAdapterBase):
             json_schema,
             response_model,
         )
-        self._reject_file_parts(request_context.normalized_messages)
+        self._reject_unsupported_file_parts(request_context.normalized_messages)
         validated_max_tokens = self._validate_max_tokens(max_tokens)
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
         payload: dict[str, Any] = {
@@ -698,12 +699,30 @@ class KimiAdapter(LLMAdapterBase):
         }
 
     @staticmethod
-    def _reject_file_parts(messages: Messages) -> None:
-        if any(
-            isinstance(message, UserMessage) and message.files
-            for message in messages.items
-        ):
-            raise NotImplementedError("Kimi image and document inputs are not implemented yet")
+    def _reject_unsupported_file_parts(messages: Messages) -> None:
+        """Preserve the shared file contract without fetching caller URLs.
+
+        Kimi accepts image data URIs, including ones created by ``ImagePart``
+        from bytes, but does not fetch public image URLs.  Its Files API exposes
+        extracted PDF text rather than a Chat Completions document attachment, so
+        accepting either ``DocumentPart`` form would make bytes and URLs behave
+        differently.
+        """
+        for message in messages.items:
+            if not isinstance(message, UserMessage) or not message.files:
+                continue
+            for file_part in message.files:
+                if isinstance(file_part, ImagePart) and file_part._is_url():
+                    raise ValueError(
+                        "Kimi does not support public ImagePart URLs; pass image "
+                        "bytes or a data URI instead",
+                    )
+                if isinstance(file_part, DocumentPart):
+                    raise ValueError(
+                        "Kimi does not support DocumentPart because its Files API "
+                        "cannot attach PDF bytes and public URLs through the same "
+                        "Chat Completions contract",
+                    )
 
     def _validate_max_tokens(self, max_tokens: Optional[int]) -> Optional[int]:
         if max_tokens is None:
