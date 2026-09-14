@@ -1,1 +1,5 @@
-"""Kimi HTTP clients are introduced with the API implementation."""
+"""Kimi HTTP clients."""
+
+from .sync_client import KimiSyncClient
+
+__all__ = ["KimiSyncClient"]

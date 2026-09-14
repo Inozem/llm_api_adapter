@@ -1,8 +1,4 @@
-"""Kimi organization-plugin entry point.
-
-The registration hook is intentionally empty until the Kimi adapter and model
-metadata are introduced in the next implementation commits.
-"""
+"""Entry point loaded by the Core organization-plugin discovery mechanism."""
 
 from __future__ import annotations
 
@@ -12,15 +8,19 @@ from llm_api_adapter.organization_registry import (
 )
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 
+from .adapter import KimiAdapter
+from .registry import MODEL_METADATA
+
 
 def register(registry: ServiceProviderRegistry) -> None:
-    """Reserve Kimi's direct service-provider registration hook."""
-    _ = registry
+    """Register Kimi's direct Chat Completions service provider."""
+    registry.register("kimi", KimiAdapter)
 
 
 PLUGIN = OrganizationPlugin(
     api_version=ORGANIZATION_PLUGIN_API_VERSION,
     register=register,
+    model_metadata=MODEL_METADATA,
 )
 
 

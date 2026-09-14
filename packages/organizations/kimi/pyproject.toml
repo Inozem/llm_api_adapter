@@ -51,4 +51,5 @@ include-package-data = true
 [tool.pytest.ini_options]
 markers = [
   "unit: unit tests (no network, pure logic, mocks)",
+  "integration: integration tests (mocked HTTP, no real organizations)",
 ]
