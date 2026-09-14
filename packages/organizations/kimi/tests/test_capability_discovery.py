@@ -1,4 +1,4 @@
-"""Contract checks for the Kimi discovery record.
+"""Package-local contract checks for the Kimi discovery record.
 
 The tests keep the pre-implementation admission matrix closed: a later change
 cannot silently add a candidate, capability, evidence source, or unsupported
@@ -7,9 +7,18 @@ file path without changing the reviewed discovery record.
 
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
 import pytest
 
-from tests.fixtures.kimi_capability_discovery import (
+
+TEST_ROOT = Path(__file__).resolve().parent
+if str(TEST_ROOT) not in sys.path:
+    sys.path.insert(0, str(TEST_ROOT))
+
+
+from fixtures.kimi_capability_discovery import (
     CANDIDATE_MODELS,
     KIMI_CAPABILITY_DISCOVERY,
     KIMI_CHAT_COMPLETION_RESPONSE,

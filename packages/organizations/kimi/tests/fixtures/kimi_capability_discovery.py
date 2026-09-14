@@ -1,9 +1,9 @@
 """Sanitized Kimi protocol fixtures captured during capability discovery.
 
 These fixtures intentionally describe only documented Chat Completions and Files
-wire shapes.  They are not an adapter implementation and contain no credentials
-or live-provider assertions.  Later package tests reuse them to prove the
-capabilities admitted in ``docs/kimi_capability_discovery.json``.
+wire shapes. They are not an adapter implementation and contain no credentials
+or live-provider assertions. Later package tests reuse them to prove the
+capabilities admitted during discovery.
 """
 
 from __future__ import annotations
