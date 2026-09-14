@@ -33,6 +33,10 @@ class KnownOrganizationPackage:
 
 
 KNOWN_ORGANIZATION_PACKAGES = {
+    "kimi": KnownOrganizationPackage(
+        organization="kimi",
+        distribution="llm-api-adapter-kimi",
+    ),
     "mistral": KnownOrganizationPackage(
         organization="mistral",
         distribution="llm-api-adapter-mistral",
