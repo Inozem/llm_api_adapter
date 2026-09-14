@@ -31,11 +31,22 @@ from llm_api_adapter.errors.llm_api_error import (
 )
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
+from llm_api_adapter.models.responses.chat_response import ChatResponse
+from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 KIMI_MODELS = ("kimi-k3", "kimi-k2.7-code", "kimi-k2.6")
+WEATHER_TOOL = ToolSpec(
+    name="get_weather",
+    description="Return the current weather for a city.",
+    json_schema={
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+    },
+)
 
 
 class FakeSyncTransport:
@@ -112,6 +123,28 @@ def kimi_response(model: str, *, cached_tokens: int | None = 12) -> dict:
         ],
         "usage": usage,
     }
+
+
+def kimi_tool_response(model: str) -> dict:
+    response = kimi_response(model)
+    response["choices"][0] = {
+        "message": {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_kimi_weather",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city":"Tel Aviv"}',
+                    },
+                },
+            ],
+        },
+        "finish_reason": "tool_calls",
+    }
+    return response
 
 
 def kimi_chat_sse_events(model: str = "kimi-k3") -> list[SSEEvent]:
@@ -350,6 +383,123 @@ def test_universal_chat_uses_chat_completions_for_every_declared_model(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("model", KIMI_MODELS)
+@pytest.mark.parametrize(
+    ("tool_choice", "expected_tool_choice"),
+    [
+        ("auto", "auto"),
+        ("none", "none"),
+        ("any", "required"),
+        (
+            {"type": "tool", "name": "get_weather"},
+            {"type": "function", "function": {"name": "get_weather"}},
+        ),
+    ],
+)
+def test_kimi_maps_application_tools_and_returns_normalized_tool_calls(
+    kimi_runtime,
+    model,
+    tool_choice,
+    expected_tool_choice,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport(kimi_tool_response(model))
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat(
+        [{"role": "user", "content": "What is the weather in Tel Aviv?"}],
+        tools=[WEATHER_TOOL],
+        tool_choice=tool_choice,
+    )
+
+    assert response.finish_reason == "tool_calls"
+    assert response.tool_calls is not None
+    assert response.tool_calls[0].name == "get_weather"
+    assert response.tool_calls[0].arguments == {"city": "Tel Aviv"}
+    assert response.tool_calls[0].call_id == "call_kimi_weather"
+    assert transport.requests[0].payload["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Return the current weather for a city.",
+                "parameters": WEATHER_TOOL.json_schema,
+            },
+        },
+    ]
+    assert transport.requests[0].payload["tool_choice"] == expected_tool_choice
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("model", KIMI_MODELS)
+def test_kimi_uses_explicit_tool_history_and_ignores_previous_response(
+    kimi_runtime,
+    model,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport(kimi_response(model))
+    adapter.adapter._sync_transport = transport
+
+    adapter.chat(
+        [
+            {"role": "user", "content": "What is the weather in Tel Aviv?"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_kimi_weather",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city":"Tel Aviv"}',
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_kimi_weather",
+                "content": "Sunny, 25 C",
+            },
+        ],
+        tools=[WEATHER_TOOL],
+        previous_response=ChatResponse(response_id="cmpl-previous"),
+    )
+
+    payload = transport.requests[0].payload
+    assert "previous_response" not in payload
+    assert "previous_response_id" not in payload
+    assert payload["messages"][1] == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_kimi_weather",
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "arguments": '{"city": "Tel Aviv"}',
+                },
+            },
+        ],
+    }
+    assert payload["messages"][2] == {
+        "role": "tool",
+        "tool_call_id": "call_kimi_weather",
+        "content": "Sunny, 25 C",
+    }
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("model", "cache_hit_rate", "cache_miss_rate", "output_rate"),
     [
@@ -540,6 +690,13 @@ def test_kimi_rejects_unimplemented_features_before_transport(kimi_runtime):
             reasoning_level="high",
         )
 
+    with pytest.raises(NotImplementedError, match="parallel_tool_calls"):
+        adapter.chat(
+            [{"role": "user", "content": "Hello"}],
+            tools=[WEATHER_TOOL],
+            parallel_tool_calls=False,
+        )
+
     assert transport.requests == []
 
 
@@ -674,6 +831,8 @@ def test_kimi_stream_reconstructs_fragmented_tool_calls_before_done(kimi_runtime
         adapter.stream_chat(
             [{"role": "user", "content": "What is the weather?"}],
             max_tokens=64,
+            tools=[WEATHER_TOOL],
+            tool_choice="auto",
             on_tool_call=on_tool_call,
             on_done=on_done,
         )
@@ -685,6 +844,8 @@ def test_kimi_stream_reconstructs_fragmented_tool_calls_before_done(kimi_runtime
     assert completed[0].tool_calls is not None
     assert completed[0].tool_calls[0].call_id == "call_kimi_weather"
     assert transport.sse_closed is True
+    assert transport.sse_requests[0].payload["tools"][0]["function"]["name"] == "get_weather"
+    assert transport.sse_requests[0].payload["tool_choice"] == "auto"
 
 
 @pytest.mark.integration
@@ -739,6 +900,8 @@ async def test_kimi_achat_uses_httpx_async_client(kimi_runtime, monkeypatch, mod
         [{"role": "user", "content": "Hello"}],
         max_tokens=64,
         timeout_s=12.5,
+        tools=[WEATHER_TOOL],
+        tool_choice="auto",
     )
 
     assert response.content == "Kimi test."
@@ -754,6 +917,17 @@ async def test_kimi_achat_uses_httpx_async_client(kimi_runtime, monkeypatch, mod
     expected_payload = {
         "model": model,
         "messages": [{"role": "user", "content": "Hello"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Return the current weather for a city.",
+                    "parameters": WEATHER_TOOL.json_schema,
+                },
+            },
+        ],
+        "tool_choice": "auto",
     }
     expected_payload["max_completion_tokens" if model == "kimi-k3" else "max_tokens"] = 64
     assert requests[0][1]["payload"] == expected_payload
@@ -813,6 +987,8 @@ async def test_kimi_astream_matches_sync_lifecycle(kimi_runtime, monkeypatch, mo
         [{"role": "user", "content": "Hello"}],
         max_tokens=64,
         timeout_s=12.5,
+        tools=[WEATHER_TOOL],
+        tool_choice="auto",
         capture_reasoning=True,
         on_reasoning=on_reasoning,
         on_chunk=on_chunk,
@@ -842,6 +1018,8 @@ async def test_kimi_astream_matches_sync_lifecycle(kimi_runtime, monkeypatch, mo
     assert requests[0][0] == "https://api.moonshot.ai/v1/chat/completions"
     assert requests[0][1]["payload"]["stream"] is True
     assert requests[0][1]["payload"]["stream_options"] == {"include_usage": True}
+    assert requests[0][1]["payload"]["tools"][0]["function"]["name"] == "get_weather"
+    assert requests[0][1]["payload"]["tool_choice"] == "auto"
 
 
 @pytest.mark.unit

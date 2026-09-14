@@ -571,19 +571,17 @@ class KimiAdapter(LLMAdapterBase):
         json_schema: Optional[dict],
         response_model: Optional[Any],
     ) -> dict[str, Any]:
-        """Validate the direct-chat slice and apply metadata request rules."""
+        """Validate the Chat Completions request and apply metadata rules."""
         self._reject_deferred_features(
             reasoning_level=reasoning_level,
-            tools=tools,
-            tool_choice=tool_choice,
             parallel_tool_calls=parallel_tool_calls,
             json_schema=json_schema,
             response_model=response_model,
         )
         request_context = self._prepare_chat_request(
             messages,
-            None,
-            None,
+            tools,
+            tool_choice,
             None,
             None,
         )
@@ -598,6 +596,14 @@ class KimiAdapter(LLMAdapterBase):
         }
         if validated_max_tokens is not None:
             payload["max_tokens"] = validated_max_tokens
+        mapped_tools = self._map_tools(tools)
+        if mapped_tools is not None:
+            payload["tools"] = mapped_tools
+        mapped_tool_choice = self._map_tool_choice(
+            request_context.normalized_tool_choice,
+        )
+        if mapped_tool_choice is not None:
+            payload["tool_choice"] = mapped_tool_choice
         if self.model_spec is None:
             return payload
         transformed_payload, _ = apply_request_rules(
@@ -611,18 +617,47 @@ class KimiAdapter(LLMAdapterBase):
     def _reject_deferred_features(
         *,
         reasoning_level: Optional[str | int],
-        tools: Optional[list[ToolSpec]],
-        tool_choice: Any,
         parallel_tool_calls: Optional[bool],
         json_schema: Optional[dict],
         response_model: Optional[Any],
     ) -> None:
         if reasoning_level is not None:
             raise NotImplementedError("Kimi reasoning controls are not implemented yet")
-        if tools is not None or tool_choice is not None or parallel_tool_calls is not None:
-            raise NotImplementedError("Kimi application tools are not implemented yet")
+        if parallel_tool_calls is not None:
+            raise NotImplementedError(
+                "Kimi parallel_tool_calls control is not implemented because "
+                "the Chat Completions API has no documented parameter for it",
+            )
         if json_schema is not None or response_model is not None:
             raise NotImplementedError("Kimi structured output is not implemented yet")
+
+    @staticmethod
+    def _map_tools(tools: Optional[list[ToolSpec]]) -> Optional[list[dict[str, Any]]]:
+        """Serialize provider-neutral tools as Kimi's OpenAI-compatible format."""
+        if not tools:
+            return None
+        mapped_tools: list[dict[str, Any]] = []
+        for tool in tools:
+            function: dict[str, Any] = {
+                "name": tool.name,
+                "parameters": tool.json_schema,
+            }
+            if tool.description:
+                function["description"] = tool.description
+            mapped_tools.append({"type": "function", "function": function})
+        return mapped_tools
+
+    @staticmethod
+    def _map_tool_choice(tool_choice: Optional[str]) -> Any:
+        """Translate the canonical selection modes to Kimi's wire values."""
+        if tool_choice is None or tool_choice in {"auto", "none"}:
+            return tool_choice
+        if tool_choice == "any":
+            return "required"
+        return {
+            "type": "function",
+            "function": {"name": tool_choice},
+        }
 
     @staticmethod
     def _reject_file_parts(messages: Messages) -> None:
