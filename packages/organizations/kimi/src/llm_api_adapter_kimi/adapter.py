@@ -20,6 +20,7 @@ from llm_api_adapter.adapters.base_adapter import (
     OnToolCall,
     _StreamState,
 )
+from llm_api_adapter.adapters.structured_output import validate_core_portable_schema
 from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIError
 from llm_api_adapter.llm_registry.request_rules import apply_request_rules
 from llm_api_adapter.llms.streaming import (
@@ -100,7 +101,7 @@ class KimiAdapter(LLMAdapterBase):
     ) -> ChatResponse:
         """Create one Kimi response through ``POST /v1/chat/completions``."""
         _ = previous_response
-        payload = self._prepare_request_payload(
+        request_context, payload = self._prepare_request_payload(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -121,6 +122,8 @@ class KimiAdapter(LLMAdapterBase):
             return self._finalize_kimi_chat_response(
                 response,
                 capture_reasoning=capture_reasoning,
+                effective_schema=request_context.effective_schema,
+                response_model=request_context.response_model,
             )
         except LLMAPIError as error:
             self.handle_error(error)
@@ -144,7 +147,7 @@ class KimiAdapter(LLMAdapterBase):
     ) -> ChatResponse:
         """Create one Kimi response without blocking the event loop."""
         _ = previous_response
-        payload = self._prepare_request_payload(
+        request_context, payload = self._prepare_request_payload(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -165,6 +168,8 @@ class KimiAdapter(LLMAdapterBase):
             return self._finalize_kimi_chat_response(
                 response,
                 capture_reasoning=capture_reasoning,
+                effective_schema=request_context.effective_schema,
+                response_model=request_context.response_model,
             )
         except LLMAPIError as error:
             self.handle_error(error)
@@ -194,7 +199,7 @@ class KimiAdapter(LLMAdapterBase):
     ) -> Iterator[str]:
         """Stream Kimi visible deltas through the shared lifecycle."""
         _ = previous_response
-        payload = self._prepare_request_payload(
+        request_context, payload = self._prepare_request_payload(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -220,8 +225,8 @@ class KimiAdapter(LLMAdapterBase):
             state,
             consume_event=self._consume_stream_event,
             finalize_response=self._finalize_stream,
-            effective_schema=None,
-            response_model=None,
+            effective_schema=request_context.effective_schema,
+            response_model=request_context.response_model,
             on_delta=on_delta,
             on_tool_call=on_tool_call,
             on_done=on_done,
@@ -301,7 +306,7 @@ class KimiAdapter(LLMAdapterBase):
     ) -> AsyncIterator[str]:
         """Run one asynchronous Kimi stream without server-side continuation."""
         _ = previous_response
-        payload = self._prepare_request_payload(
+        request_context, payload = self._prepare_request_payload(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -327,8 +332,8 @@ class KimiAdapter(LLMAdapterBase):
             state,
             consume_event=self._consume_stream_event_async,
             finalize_response=self._finalize_stream,
-            effective_schema=None,
-            response_model=None,
+            effective_schema=request_context.effective_schema,
+            response_model=request_context.response_model,
             on_delta=on_delta,
             on_tool_call=on_tool_call,
             on_done=on_done,
@@ -570,20 +575,18 @@ class KimiAdapter(LLMAdapterBase):
         parallel_tool_calls: Optional[bool],
         json_schema: Optional[dict],
         response_model: Optional[Any],
-    ) -> dict[str, Any]:
+    ) -> tuple[Any, dict[str, Any]]:
         """Validate the Chat Completions request and apply metadata rules."""
         self._reject_deferred_features(
             reasoning_level=reasoning_level,
             parallel_tool_calls=parallel_tool_calls,
-            json_schema=json_schema,
-            response_model=response_model,
         )
         request_context = self._prepare_chat_request(
             messages,
             tools,
             tool_choice,
-            None,
-            None,
+            json_schema,
+            response_model,
         )
         self._reject_file_parts(request_context.normalized_messages)
         validated_max_tokens = self._validate_max_tokens(max_tokens)
@@ -604,22 +607,27 @@ class KimiAdapter(LLMAdapterBase):
         )
         if mapped_tool_choice is not None:
             payload["tool_choice"] = mapped_tool_choice
+        if request_context.effective_schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": self._to_kimi_structured_output_schema(
+                    request_context.effective_schema,
+                ),
+            }
         if self.model_spec is None:
-            return payload
+            return request_context, payload
         transformed_payload, _ = apply_request_rules(
             payload,
             self.model_spec.request_rules,
             model=self.model,
         )
-        return transformed_payload
+        return request_context, transformed_payload
 
     @staticmethod
     def _reject_deferred_features(
         *,
         reasoning_level: Optional[str | int],
         parallel_tool_calls: Optional[bool],
-        json_schema: Optional[dict],
-        response_model: Optional[Any],
     ) -> None:
         if reasoning_level is not None:
             raise NotImplementedError("Kimi reasoning controls are not implemented yet")
@@ -628,8 +636,11 @@ class KimiAdapter(LLMAdapterBase):
                 "Kimi parallel_tool_calls control is not implemented because "
                 "the Chat Completions API has no documented parameter for it",
             )
-        if json_schema is not None or response_model is not None:
-            raise NotImplementedError("Kimi structured output is not implemented yet")
+
+    @staticmethod
+    def _to_kimi_structured_output_schema(schema: dict) -> dict:
+        """Validate the shared portable profile without changing its meaning."""
+        return validate_core_portable_schema(schema, provider="kimi")
 
     @staticmethod
     def _map_tools(tools: Optional[list[ToolSpec]]) -> Optional[list[dict[str, Any]]]:
@@ -755,11 +766,13 @@ class KimiAdapter(LLMAdapterBase):
         response: Mapping[str, Any],
         *,
         capture_reasoning: bool,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
     ) -> ChatResponse:
         chat_response = self._finalize_chat_response(
             self._parse_response(response, capture_reasoning=capture_reasoning),
-            effective_schema=None,
-            response_model=None,
+            effective_schema=effective_schema,
+            response_model=response_model,
         )
         self._apply_cache_aware_pricing(chat_response)
         return chat_response
