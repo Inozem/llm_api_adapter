@@ -22,6 +22,7 @@ from llm_api_adapter.adapters.base_adapter import (
 )
 from llm_api_adapter.adapters.structured_output import validate_core_portable_schema
 from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIError
+from llm_api_adapter.llm_registry.llm_registry import CategoricalReasoningCapability
 from llm_api_adapter.llm_registry.request_rules import apply_request_rules
 from llm_api_adapter.llms.streaming import (
     StreamChunkBuffer,
@@ -578,7 +579,6 @@ class KimiAdapter(LLMAdapterBase):
     ) -> tuple[Any, dict[str, Any]]:
         """Validate the Chat Completions request and apply metadata rules."""
         self._reject_deferred_features(
-            reasoning_level=reasoning_level,
             parallel_tool_calls=parallel_tool_calls,
         )
         request_context = self._prepare_chat_request(
@@ -614,6 +614,7 @@ class KimiAdapter(LLMAdapterBase):
                     request_context.effective_schema,
                 ),
             }
+        self._apply_reasoning_options(payload, reasoning_level)
         if self.model_spec is None:
             return request_context, payload
         transformed_payload, _ = apply_request_rules(
@@ -626,16 +627,42 @@ class KimiAdapter(LLMAdapterBase):
     @staticmethod
     def _reject_deferred_features(
         *,
-        reasoning_level: Optional[str | int],
         parallel_tool_calls: Optional[bool],
     ) -> None:
-        if reasoning_level is not None:
-            raise NotImplementedError("Kimi reasoning controls are not implemented yet")
         if parallel_tool_calls is not None:
             raise NotImplementedError(
                 "Kimi parallel_tool_calls control is not implemented because "
                 "the Chat Completions API has no documented parameter for it",
             )
+
+    def _apply_reasoning_options(
+        self,
+        payload: dict[str, Any],
+        reasoning_level: Optional[str | int],
+    ) -> None:
+        """Serialize only registry-resolved Kimi reasoning controls.
+
+        Kimi keeps no adapter-managed server state.  The common registry resolves
+        the native value; this adapter only selects Kimi's documented wire shape
+        and never synthesizes or logs readable reasoning history.
+        """
+        if reasoning_level is None:
+            return
+
+        provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
+        if provider_value is None:
+            return
+        if not isinstance(provider_value, str):
+            raise TypeError("Kimi reasoning resolution must produce a string")
+        reasoning_capability = (
+            self.model_spec.reasoning_capability if self.model_spec else None
+        )
+        if not isinstance(reasoning_capability, CategoricalReasoningCapability):
+            return
+        if provider_value == "none":
+            payload["thinking"] = {"type": "disabled"}
+        elif "enabled" not in reasoning_capability.allowed_values:
+            payload["reasoning_effort"] = provider_value
 
     @staticmethod
     def _to_kimi_structured_output_schema(schema: dict) -> dict:

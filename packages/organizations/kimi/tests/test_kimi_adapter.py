@@ -860,7 +860,63 @@ def test_kimi_rejects_malformed_chat_completions_responses(kimi_runtime, payload
 
 
 @pytest.mark.unit
-def test_kimi_rejects_unimplemented_features_before_transport(kimi_runtime):
+@pytest.mark.parametrize(
+    ("model", "reasoning_level", "expected_options", "expected_warning"),
+    [
+        ("kimi-k3", "high", {"reasoning_effort": "high"}, None),
+        ("kimi-k3", "very_high", {"reasoning_effort": "max"}, None),
+        (
+            "kimi-k3",
+            "none",
+            {"reasoning_effort": "low"},
+            "cannot disable reasoning",
+        ),
+        ("kimi-k2.7-code", "high", {}, None),
+        ("kimi-k2.7-code", "none", {}, "cannot disable reasoning"),
+        ("kimi-k2.6", "high", {}, None),
+        ("kimi-k2.6", "none", {"thinking": {"type": "disabled"}}, None),
+    ],
+)
+def test_kimi_resolves_reasoning_controls_from_registry_metadata(
+    kimi_runtime,
+    model,
+    reasoning_level,
+    expected_options,
+    expected_warning,
+):
+    """Keep K3 effort and K2 thinking choices out of adapter model branching."""
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport(kimi_response(model))
+    adapter.adapter._sync_transport = transport
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        response = adapter.chat(
+            [{"role": "user", "content": "Hello"}],
+            reasoning_level=reasoning_level,
+        )
+
+    assert response.content == "Kimi test."
+    payload = transport.requests[0].payload
+    native_options = {
+        key: payload[key]
+        for key in ("reasoning_effort", "thinking")
+        if key in payload
+    }
+    assert native_options == expected_options
+    warning_messages = [str(item.message) for item in captured]
+    if expected_warning is None:
+        assert warning_messages == []
+    else:
+        assert any(expected_warning in message for message in warning_messages)
+
+
+@pytest.mark.unit
+def test_kimi_rejects_unsupported_parallel_tool_calls_before_transport(kimi_runtime):
     adapter = UniversalLLMAPIAdapter(
         organization="kimi",
         model="kimi-k3",
@@ -868,12 +924,6 @@ def test_kimi_rejects_unimplemented_features_before_transport(kimi_runtime):
     )
     transport = FakeSyncTransport(kimi_response("kimi-k3"))
     adapter.adapter._sync_transport = transport
-
-    with pytest.raises(NotImplementedError, match="reasoning controls"):
-        adapter.chat(
-            [{"role": "user", "content": "Hello"}],
-            reasoning_level="high",
-        )
 
     with pytest.raises(NotImplementedError, match="parallel_tool_calls"):
         adapter.chat(
