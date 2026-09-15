@@ -411,7 +411,7 @@ The SDK allows you to easily switch between LLM providers and specify the model 
 - **Mistral**: Install with `pip install "llm-api-adapter[mistral]"`. Available models are `mistral-small-2603`, `mistral-medium-3-5`, and `mistral-large-2512`; see the [Mistral package README](packages/organizations/mistral/README.md) for Mistral-specific behaviour.
 - **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.5` and `grok-4.6`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
 - **Qwen**: Install with `pip install "llm-api-adapter[qwen]"`. Fixed model IDs are `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`; every operation requires an explicit Frankfurt `workspace_id`. See the [Qwen package README](packages/organizations/qwen/README.md) for its capability boundary, including unsupported PDF input.
-- **Kimi**: Install with `pip install "llm-api-adapter[kimi]"`. Fixed model IDs are `kimi-k3`, `kimi-k2.7-code`, and `kimi-k2.6`; image bytes/data URIs are supported, while public image URLs and all PDF `DocumentPart` forms are rejected before HTTP. See the [Kimi package README](packages/organizations/kimi/README.md) for reasoning, cache-pricing, and data-handling details.
+- **Kimi**: Install with `pip install "llm-api-adapter[kimi]"`. Fixed model IDs are `kimi-k3` and `kimi-k2.6`; image bytes/data URIs are supported, while public image URLs and all PDF `DocumentPart` forms are rejected before HTTP. See the [Kimi package README](packages/organizations/kimi/README.md) for reasoning, cache-pricing, and data-handling details.
 
 Example:
 

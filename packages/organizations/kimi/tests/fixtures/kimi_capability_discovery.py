@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Final
 
 
-CANDIDATE_MODELS: Final = ("kimi-k3", "kimi-k2.7-code", "kimi-k2.6")
+CANDIDATE_MODELS: Final = ("kimi-k3", "kimi-k2.6")
 MATRIX_CAPABILITIES: Final = (
     "endpoint",
     "reasoning",
@@ -46,7 +46,6 @@ KIMI_CAPABILITY_DISCOVERY: Final = {
         "model_list": "https://platform.kimi.ai/docs/models",
         "parameter_reference": "https://platform.kimi.ai/docs/api/models-overview",
         "k3_guide": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart",
-        "k27_guide": "https://platform.kimi.ai/docs/guide/kimi-k2-7-code-quickstart",
         "k26_guide": "https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart",
         "vision": "https://platform.kimi.ai/docs/guide/use-kimi-vision-model",
         "structured_output": "https://platform.kimi.ai/docs/guide/response_format",
@@ -73,28 +72,6 @@ KIMI_CAPABILITY_DISCOVERY: Final = {
                 "pdf_bytes": ("pending_manual_e2e", ("files",), "KIMI_FILE_EXTRACTION_RESPONSE"),
                 "pdf_url": ("excluded", ("files",), "KIMI_PUBLIC_IMAGE_URL"),
                 "streaming": ("pending_conformance", ("chat_api", "k3_guide"), "KIMI_STREAM_EVENTS"),
-                "usage": ("pending_conformance", ("chat_api",), "KIMI_STREAM_EVENTS"),
-            },
-        },
-        "kimi-k2.7-code": {
-            "context_window_tokens": 262_144,
-            "max_output_tokens": None,
-            "documented_default_output_tokens": 32_768,
-            "pricing_per_1m_usd": {
-                "cache_hit_input": 0.19,
-                "cache_miss_input": 0.95,
-                "output": 4.00,
-            },
-            "capabilities": {
-                "endpoint": ("pending_conformance", ("api_overview", "chat_api"), "KIMI_CHAT_COMPLETION_RESPONSE"),
-                "reasoning": ("pending_conformance", ("parameter_reference", "k27_guide"), "KIMI_CHAT_COMPLETION_RESPONSE"),
-                "tools": ("pending_conformance", ("chat_api", "parameter_reference", "k27_guide"), "KIMI_TOOL_CALL_RESPONSE"),
-                "json_schema": ("pending_conformance", ("chat_api", "structured_output"), "KIMI_STRUCTURED_OUTPUT_RESPONSE"),
-                "image_bytes": ("pending_conformance", ("vision", "k27_guide"), "KIMI_IMAGE_DATA_URI_MESSAGE"),
-                "image_url": ("excluded", ("vision",), "KIMI_PUBLIC_IMAGE_URL"),
-                "pdf_bytes": ("pending_manual_e2e", ("files",), "KIMI_FILE_EXTRACTION_RESPONSE"),
-                "pdf_url": ("excluded", ("files",), "KIMI_PUBLIC_IMAGE_URL"),
-                "streaming": ("pending_conformance", ("chat_api",), "KIMI_STREAM_EVENTS"),
                 "usage": ("pending_conformance", ("chat_api",), "KIMI_STREAM_EVENTS"),
             },
         },

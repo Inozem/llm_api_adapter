@@ -53,19 +53,18 @@ print(response.content)
 ## Supported models and capabilities
 
 The package deliberately exposes fixed model IDs, not moving aliases:
-`kimi-k3`, `kimi-k2.7-code`, and `kimi-k2.6`.
+`kimi-k3` and `kimi-k2.6`.
 
 | Capability | Supported models |
 | --- | --- |
-| Text chat; sync/async streaming; application tools; portable JSON Schema/Pydantic output; image bytes and data URIs | All three models |
+| Text chat; sync/async streaming; application tools; portable JSON Schema/Pydantic output; image bytes and data URIs | Both models |
 | Public `ImagePart` URLs and every `DocumentPart` PDF URL or byte | Unsupported; rejected before HTTP |
 
-`reasoning_level` is resolved automatically from registry metadata. K3 and
-K2.7 Code cannot disable reasoning, so `reasoning_level="none"` warns. K2.6
-maps `"none"` to disabled thinking and every other valid level to enabled
-thinking. When omitted, no thinking control is sent and Kimi's native default
-is preserved. K2.7 Code is code-oriented, but is not restricted to code-only
-prompts. Reasoning is never mixed into visible text; use
+`reasoning_level` is resolved automatically from registry metadata. K3 cannot
+disable reasoning, so `reasoning_level="none"` warns. K2.6 maps `"none"` to
+disabled thinking and every other valid level to enabled thinking. When
+omitted, no thinking control is sent and Kimi's native default is preserved.
+Reasoning is never mixed into visible text; use
 `capture_reasoning=True` for opt-in observability.
 
 ## History, files, and pricing

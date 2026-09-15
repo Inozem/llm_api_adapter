@@ -54,7 +54,7 @@ from tests.fixtures.structured_output import (
 )
 
 
-KIMI_MODELS = ("kimi-k3", "kimi-k2.7-code", "kimi-k2.6")
+KIMI_MODELS = ("kimi-k3", "kimi-k2.6")
 WEATHER_TOOL = ToolSpec(
     name="get_weather",
     description="Return the current weather for a city.",
@@ -781,7 +781,6 @@ def test_kimi_rejects_invalid_json_and_pydantic_structured_responses(kimi_runtim
     ("model", "cache_hit_rate", "cache_miss_rate", "output_rate"),
     [
         ("kimi-k3", 0.30, 3.00, 15.00),
-        ("kimi-k2.7-code", 0.19, 0.95, 4.00),
         ("kimi-k2.6", 0.16, 0.95, 4.00),
     ],
 )
@@ -963,8 +962,6 @@ def test_kimi_rejects_malformed_chat_completions_responses(kimi_runtime, payload
             {"reasoning_effort": "low"},
             "cannot disable reasoning",
         ),
-        ("kimi-k2.7-code", "high", {}, None),
-        ("kimi-k2.7-code", "none", {}, "cannot disable reasoning"),
         ("kimi-k2.6", "high", {}, None),
         ("kimi-k2.6", "none", {"thinking": {"type": "disabled"}}, None),
     ],
