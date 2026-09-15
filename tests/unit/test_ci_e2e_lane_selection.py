@@ -156,6 +156,8 @@ def test_selector_cli_writes_github_outputs(tmp_path):
     assert outputs["core_anthropic_e2e"] == "false"
     assert outputs["core_google_e2e"] == "false"
     assert "core_e2e_matrix" not in outputs
+    assert outputs["kimi"] == "false"
+    assert outputs["kimi_e2e"] == "false"
     assert outputs["mistral_e2e"] == "false"
     assert outputs["xai_e2e"] == "false"
     assert outputs["qwen"] == "false"
@@ -187,6 +189,32 @@ def test_qwen_package_changes_select_candidate_and_e2e_lane():
 
 
 @pytest.mark.unit
+def test_kimi_package_changes_select_only_its_candidate_and_e2e_lane():
+    selection = _SELECTOR.select_e2e_lanes(
+        ["packages/organizations/kimi/src/llm_api_adapter_kimi/adapter.py"]
+    )
+
+    assert selection.kimi is True
+    assert selection.kimi_e2e is True
+    assert selection.mistral_e2e is False
+    assert selection.xai_e2e is False
+    assert selection.qwen_e2e is False
+
+
+@pytest.mark.unit
+def test_kimi_package_e2e_changes_select_only_the_kimi_live_lane():
+    selection = _SELECTOR.select_e2e_lanes(
+        ["packages/organizations/kimi/tests/e2e/test_live_contract.py"]
+    )
+
+    assert selection.kimi is False
+    assert selection.kimi_e2e is True
+    assert selection.mistral_e2e is False
+    assert selection.xai_e2e is False
+    assert selection.qwen_e2e is False
+
+
+@pytest.mark.unit
 def test_qwen_candidate_e2e_job_uses_only_qwen_credentials_and_candidates():
     workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
     job = workflow.split("  post-publish-qwen-e2e:\n", maxsplit=1)[1]
@@ -205,6 +233,28 @@ def test_qwen_candidate_e2e_job_uses_only_qwen_credentials_and_candidates():
     assert "pytest -v -m e2e_qwen" in job
     assert "MISTRAL_API_KEY" not in job
     assert "XAI_API_KEY" not in job
+
+
+@pytest.mark.unit
+def test_kimi_candidate_e2e_job_uses_only_kimi_credentials_and_candidates():
+    workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
+    job = workflow.split("  post-publish-kimi-e2e:\n", maxsplit=1)[1]
+    job = job.split("\n  post-publish-", maxsplit=1)[0]
+
+    assert "needs.changes.outputs.kimi_e2e == 'true'" in job
+    assert "needs.publish-core-testpypi.result == 'success'" in job
+    assert "needs.publish-core-testpypi.result == 'skipped'" in job
+    assert "needs.publish-kimi-testpypi.result == 'success'" in job
+    assert "needs.publish-kimi-testpypi.result == 'skipped'" in job
+    assert "KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}" in job
+    assert "llm-api-adapter[async,httpx]==${CORE_CANDIDATE_VERSION}" in job
+    assert "llm-api-adapter-kimi[async,httpx]==${KIMI_CANDIDATE_VERSION}" in job
+    assert "organization='kimi'" in job
+    assert "model='kimi-k3'" in job
+    assert "pytest -v -m e2e_kimi" in job
+    assert "MISTRAL_API_KEY" not in job
+    assert "XAI_API_KEY" not in job
+    assert "QWEN_API_KEY" not in job
 
 
 @pytest.mark.unit
@@ -229,3 +279,27 @@ def test_qwen_deterministic_and_tag_workflows_cover_unit_and_integration_tests()
     assert '"qwen-v*"' in main_workflow
     assert "test-qwen:" in main_workflow
     assert "publish-qwen-pypi:" in main_workflow
+
+
+@pytest.mark.unit
+def test_kimi_deterministic_and_tag_workflows_cover_unit_and_integration_tests():
+    workflow_dir = _REPOSITORY_ROOT / ".github" / "workflows"
+
+    for filename in ("ci-kimi-dev.yml", "ci-kimi-main.yml"):
+        workflow = (workflow_dir / filename).read_text(encoding="utf-8")
+        assert "packages/organizations/kimi/**" in workflow
+        assert (
+            "pytest -v --ignore=packages/organizations/kimi/tests/e2e "
+            "-m unit packages/organizations/kimi/tests"
+        ) in workflow
+        assert (
+            "pytest -v --ignore=packages/organizations/kimi/tests/e2e "
+            "-m integration packages/organizations/kimi/tests"
+        ) in workflow
+        assert "e2e_kimi" not in workflow
+        assert "secrets." not in workflow
+
+    main_workflow = (workflow_dir / "ci-main.yml").read_text(encoding="utf-8")
+    assert '"kimi-v*"' in main_workflow
+    assert "test-kimi:" in main_workflow
+    assert "publish-kimi-pypi:" in main_workflow
