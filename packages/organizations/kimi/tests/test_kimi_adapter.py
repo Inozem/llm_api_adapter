@@ -30,6 +30,7 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPITimeoutError,
     LLMAPITokenLimitError,
     LLMAPIUsageLimitError,
+    ToolChoiceError,
 )
 from llm_api_adapter.errors.llm_api_error import JSONSchemaError
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
@@ -361,14 +362,48 @@ def test_kimi_plugin_registers_each_declared_model(kimi_runtime, model):
 
 
 @pytest.mark.unit
-def test_kimi_metadata_records_the_pricing_snapshot_and_cache_split():
+def test_kimi_metadata_uses_standard_fields_and_cache_pricing_extension():
     from llm_api_adapter_kimi.registry import CACHE_PRICING, ORGANIZATION_DATA
 
     assert tuple(ORGANIZATION_DATA["models"]) == KIMI_MODELS
     for model in KIMI_MODELS:
-        assert ORGANIZATION_DATA["models"][model]["pricing_as_of"] == "2026-09-14"
+        model_data = ORGANIZATION_DATA["models"][model]
+        assert set(model_data) == {
+            "limits",
+            "pricing_tiers",
+            "reasoning_capability",
+            "request_rules",
+            "cache_pricing",
+        }
         assert CACHE_PRICING[model].cache_hit_input_per_token > 0
         assert CACHE_PRICING[model].cache_miss_input_per_token > 0
+
+
+@pytest.mark.unit
+def test_core_e2e_selects_the_strongest_kimi_tool_choice_from_registry(
+    kimi_runtime,
+    monkeypatch,
+):
+    from tests.e2e import harness as e2e_harness
+
+    monkeypatch.setattr(e2e_harness, "LLM_REGISTRY", kimi_runtime)
+
+    assert (
+        e2e_harness.select_tool_choice_for_model(
+            "kimi",
+            "kimi-k3",
+            "get_weather",
+        )
+        == "any"
+    )
+    assert (
+        e2e_harness.select_tool_choice_for_model(
+            "kimi",
+            "kimi-k2.6",
+            "get_weather",
+        )
+        == "auto"
+    )
 
 
 @pytest.mark.integration
@@ -500,20 +535,17 @@ def test_kimi_rejects_file_inputs_that_cannot_meet_the_shared_contract(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("model", KIMI_MODELS)
 @pytest.mark.parametrize(
-    ("tool_choice", "expected_tool_choice"),
+    ("model", "tool_choice", "expected_tool_choice"),
     [
-        ("auto", "auto"),
-        ("none", "none"),
-        ("any", "required"),
-        (
-            {"type": "tool", "name": "get_weather"},
-            {"type": "function", "function": {"name": "get_weather"}},
-        ),
+        ("kimi-k3", "auto", "auto"),
+        ("kimi-k3", "none", "none"),
+        ("kimi-k3", "any", "required"),
+        ("kimi-k2.6", "auto", "auto"),
+        ("kimi-k2.6", "none", "none"),
     ],
 )
-def test_kimi_maps_application_tools_and_returns_normalized_tool_calls(
+def test_kimi_maps_supported_application_tool_choices_and_returns_normalized_tool_calls(
     kimi_runtime,
     model,
     tool_choice,
@@ -549,6 +581,38 @@ def test_kimi_maps_application_tools_and_returns_normalized_tool_calls(
         },
     ]
     assert transport.requests[0].payload["tool_choice"] == expected_tool_choice
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model", "tool_choice"),
+    [
+        ("kimi-k3", {"type": "tool", "name": "get_weather"}),
+        ("kimi-k2.6", "any"),
+        ("kimi-k2.6", {"type": "tool", "name": "get_weather"}),
+    ],
+)
+def test_kimi_rejects_unsupported_tool_choice_before_transport(
+    kimi_runtime,
+    model,
+    tool_choice,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport(kimi_tool_response(model))
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(ToolChoiceError, match="does not support tool_choice mode"):
+        adapter.chat(
+            [{"role": "user", "content": "What is the weather in Tel Aviv?"}],
+            tools=[WEATHER_TOOL],
+            tool_choice=tool_choice,
+        )
+
+    assert transport.requests == []
 
 
 @pytest.mark.integration

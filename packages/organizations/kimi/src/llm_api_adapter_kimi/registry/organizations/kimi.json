@@ -2,7 +2,6 @@
   "currency": "USD",
   "models": {
     "kimi-k3": {
-      "pricing_as_of": "2026-09-14",
       "limits": {
         "context_window_tokens": 1048576,
         "max_output_tokens": 1048576
@@ -24,6 +23,10 @@
       },
       "request_rules": [
         {
+          "handler": "restrict_tool_choice",
+          "arguments": {"allowed_values": ["auto", "none", "any"]}
+        },
+        {
           "handler": "rename_parameter",
           "arguments": {"from": "max_tokens", "to": "max_completion_tokens"}
         },
@@ -38,7 +41,6 @@
       ]
     },
     "kimi-k2.6": {
-      "pricing_as_of": "2026-09-14",
       "limits": {
         "context_window_tokens": 262144,
         "max_output_tokens": 32768
@@ -59,6 +61,10 @@
         "allowed_values": ["none", "enabled"]
       },
       "request_rules": [
+        {
+          "handler": "restrict_tool_choice",
+          "arguments": {"allowed_values": ["auto", "none"]}
+        },
         {
           "handler": "drop_parameter",
           "arguments": {"path": "temperature", "default": 1.0}

@@ -21,7 +21,11 @@ from llm_api_adapter.adapters.base_adapter import (
     _StreamState,
 )
 from llm_api_adapter.adapters.structured_output import validate_core_portable_schema
-from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIError
+from llm_api_adapter.errors.llm_api_error import (
+    LLMAPIClientError,
+    LLMAPIError,
+    ToolChoiceError,
+)
 from llm_api_adapter.llm_registry.llm_registry import CategoricalReasoningCapability
 from llm_api_adapter.llm_registry.request_rules import apply_request_rules
 from llm_api_adapter.llms.streaming import (
@@ -686,10 +690,25 @@ class KimiAdapter(LLMAdapterBase):
             mapped_tools.append({"type": "function", "function": function})
         return mapped_tools
 
-    @staticmethod
-    def _map_tool_choice(tool_choice: Optional[str]) -> Any:
+    def _map_tool_choice(self, tool_choice: Optional[str]) -> Any:
         """Translate the canonical selection modes to Kimi's wire values."""
-        if tool_choice is None or tool_choice in {"auto", "none"}:
+        if tool_choice is None:
+            return None
+        allowed_modes = (
+            self.model_spec.request_rules.allowed_tool_choice_modes
+            if self.model_spec is not None
+            else None
+        )
+        choice_mode = tool_choice if tool_choice == "any" else "tool"
+        if allowed_modes is not None and choice_mode not in allowed_modes:
+            allowed = ", ".join(sorted(allowed_modes))
+            raise ToolChoiceError(
+                detail=(
+                    f"Model {self.model!r} does not support tool_choice mode "
+                    f"{choice_mode!r}; allowed modes: {allowed}."
+                )
+            )
+        if tool_choice in {"auto", "none"}:
             return tool_choice
         if tool_choice == "any":
             return "required"

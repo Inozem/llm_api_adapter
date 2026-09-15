@@ -13,7 +13,10 @@ class KimiRequestRuleRegistry(SamplingRequestRuleRegistry):
 
     organization_name = "kimi"
     supported_handlers = SamplingRequestRuleRegistry.supported_handlers | frozenset(
-        {RequestRuleRegistry.RENAME_PARAMETER},
+        {
+            RequestRuleRegistry.RENAME_PARAMETER,
+            RequestRuleRegistry.RESTRICT_TOOL_CHOICE,
+        },
     )
     supported_parameter_renames = frozenset(
         {("max_tokens", "max_completion_tokens")},
@@ -22,6 +25,7 @@ class KimiRequestRuleRegistry(SamplingRequestRuleRegistry):
         "temperature": 1.0,
         "top_p": 1.0,
     }
+    supported_tool_choice_modes = frozenset({"auto", "none", "any", "tool"})
 
 
 KIMI_REQUEST_RULE_REGISTRY = KimiRequestRuleRegistry()
