@@ -10,6 +10,8 @@ on:
       - ".github/workflows/ci-mistral-main.yml"
       - ".github/workflows/ci-xai-dev.yml"
       - ".github/workflows/ci-xai-main.yml"
+      - ".github/workflows/ci-kimi-dev.yml"
+      - ".github/workflows/ci-kimi-main.yml"
       - ".github/workflows/ci-qwen-dev.yml"
       - ".github/workflows/ci-qwen-main.yml"
   pull_request:
@@ -21,6 +23,8 @@ on:
       - ".github/workflows/ci-mistral-main.yml"
       - ".github/workflows/ci-xai-dev.yml"
       - ".github/workflows/ci-xai-main.yml"
+      - ".github/workflows/ci-kimi-dev.yml"
+      - ".github/workflows/ci-kimi-main.yml"
       - ".github/workflows/ci-qwen-dev.yml"
       - ".github/workflows/ci-qwen-main.yml"
 
@@ -51,10 +55,10 @@ jobs:
           pip install -e ".[async]"
 
       - name: Unit tests
-        run: pytest -v -m unit --cov=src/llm_api_adapter --cov-report=xml
+        run: pytest -v --import-mode=importlib -m unit --cov=src/llm_api_adapter --cov-report=xml
 
       - name: Integration tests
-        run: pytest -v -m integration --cov=src/llm_api_adapter --cov-report=xml --cov-append
+        run: pytest -v --import-mode=importlib -m integration --cov=src/llm_api_adapter --cov-report=xml --cov-append
 
       - name: Show canonical coverage summary
         if: ${{ matrix.python-version == '3.10' }}

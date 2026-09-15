@@ -92,6 +92,7 @@ The required environment variables are:
 - `GOOGLE_API_KEY`
 - `MISTRAL_API_KEY` (with the independently installed Mistral package)
 - `XAI_API_KEY` (with the independently installed xAI package)
+- `KIMI_API_KEY` (with the independently installed Kimi package)
 
 Run one built-in organization independently with its dedicated marker:
 
@@ -104,6 +105,18 @@ python -m pytest -v -m e2e_google
 `e2e_builtin` remains the aggregate marker for all three built-in organization
 profiles.
 
+Run Kimi's targeted external-package profile only after installing the Kimi
+package and deliberately configuring its key:
+
+```bash
+python -m pytest -v -m e2e_kimi
+```
+
+It validates the installed plugin through `UniversalLLMAPIAdapter`, runs the
+shared Kimi scenarios, and includes the package-local reasoning and file-boundary
+contracts. It may make paid requests; the deterministic Kimi package suite
+remains the normal local development command.
+
 `test_json_schema.py` makes one portable structured-output request for every configured registered model. It must return the exact expected JSON without a refusal or incomplete state; advertised structured-output support is not skipped after the request.
 
 The heavyweight async suite uses one latest registered model for each provider
@@ -114,9 +127,9 @@ paid `chat()` request plus one paid `achat()` request for that selected model
 per configured provider. The HTTPX requests reserve 512 generated tokens so
 models that think by default still have room for visible text.
 
-For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage. The Mistral and xAI package workflows run their respective unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
+For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage. The Mistral, xAI, Qwen, and Kimi package workflows run their respective unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
 
-Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change selects the affected independent OpenAI, Anthropic, and Google E2E lanes. A shared Core dependency additionally runs the Mistral and xAI lanes; a provider-specific built-in adapter, client, or registry change runs only that Core organization lane. Shared E2E infrastructure runs every applicable lane. Each core lane receives only its own API key; `e2e_builtin` is not used in CI. A Mistral or xAI package change publishes only that organization package and runs its corresponding lane. Each lane installs the exact TestPyPI versions through the matching optional extra, verifies plugin discovery when needed, then makes provider calls. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
+Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change selects the affected independent OpenAI, Anthropic, and Google E2E lanes. A shared Core dependency additionally runs the Mistral, xAI, Qwen, and Kimi lanes; a provider-specific built-in adapter, client, or registry change runs only that Core organization lane. Shared E2E infrastructure runs every applicable lane. Each core lane receives only its own API key; `e2e_builtin` is not used in CI. A Mistral, xAI, Qwen, or Kimi package change publishes only that organization package and runs its corresponding lane. Each lane installs the exact TestPyPI versions through the matching optional extra, verifies plugin discovery when needed, then makes provider calls. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
 
 ## Provider-key safety
 
@@ -146,10 +159,13 @@ organizations.
 | Google | `src/llm_api_adapter/llm_registry/organizations/google.json` | [Gemini models](https://ai.google.dev/gemini-api/docs/models), [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing), [Gemini thinking](https://ai.google.dev/gemini-api/docs/generate-content/thinking), and [deprecations](https://ai.google.dev/gemini-api/docs/deprecations) |
 | Mistral | `packages/organizations/mistral/src/llm_api_adapter_mistral/registry/organizations/mistral.json` | [Model cards](https://docs.mistral.ai/models/), [pricing](https://docs.mistral.ai/inference/pricing), [reasoning](https://docs.mistral.ai/studio/conversations/reasoning), and [model lifecycle](https://docs.mistral.ai/inference/model-lifecycle) |
 | xAI | `packages/organizations/xai/src/llm_api_adapter_xai/registry/organizations/xai.json` | [Models](https://docs.x.ai/developers/models), [pricing](https://docs.x.ai/developers/pricing), and [reasoning](https://docs.x.ai/developers/model-capabilities/text/reasoning) |
+| Kimi | `packages/organizations/kimi/src/llm_api_adapter_kimi/registry/organizations/kimi.json` | [Models](https://platform.kimi.ai/docs/models), [Chat Completions API](https://platform.kimi.ai/docs/api/chat), and [pricing](https://platform.kimi.ai/docs/pricing/chat) |
 
-This verification excludes cached input, cache write/storage, batch, flex,
-priority, modality-specific, provider-hosted tool, and negotiated-volume
-charges. Record any unsupported modality-specific rate as an explicit registry
+This verification excludes cache write/storage, batch, flex, priority,
+modality-specific, provider-hosted tool, and negotiated-volume charges. Kimi is
+the explicit cache-aware exception: verify its cache-hit and cache-miss rates
+against official evidence, and apply them only when `usage.cached_tokens` is
+reported. Record any unsupported modality-specific rate as an explicit registry
 limitation rather than silently applying a text rate.
 
 ## Reasoning smoke script
@@ -185,6 +201,8 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
    python -m pytest -v -m unit packages/organizations/mistral/tests
    python -m pytest -v -m integration packages/organizations/mistral/tests
    python -m pytest -v -m unit packages/organizations/xai/tests
+   python -m pytest -v --ignore=packages/organizations/kimi/tests/e2e -m unit packages/organizations/kimi/tests
+   python -m pytest -v --ignore=packages/organizations/kimi/tests/e2e -m integration packages/organizations/kimi/tests
    ```
 
    The dev workflow collects coverage separately while running its unit and integration jobs.
@@ -197,6 +215,7 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
    # Run for each changed organization package:
    python -m build packages/organizations/mistral
    python -m build packages/organizations/xai
+   python -m build packages/organizations/kimi
    ```
 
 4. Open or update the pull request to `main`. Wait for review and the deterministic main CI to pass.
@@ -219,9 +238,19 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
      "llm-api-adapter-xai==<xai-version>"
    ```
 
+   For Kimi, install the exact candidate pair and the transports exercised by
+   the release-candidate lane:
+
+   ```bash
+   pip install --index-url https://test.pypi.org/simple/ \\
+     --extra-index-url https://pypi.org/simple \\
+     "llm-api-adapter[async,httpx]==<core-version>" \\
+     "llm-api-adapter-kimi[async,httpx]==<kimi-version>"
+   ```
+
    Then verify the changed behavior, critical flows, and absence of regressions.
 7. Merge the already verified pull request into `main`.
-8. After the pull request is merged, create one final tag for each changed distribution: `v<core-version>` for the core package, `mistral-v<mistral-version>` for Mistral, and `xai-v<xai-version>` for xAI. The tags may point to the same commit. The main workflow publishes only the distribution selected by its tag.
+8. After the pull request is merged, create one final tag for each changed distribution: `v<core-version>` for the core package, `mistral-v<mistral-version>` for Mistral, `xai-v<xai-version>` for xAI, and `kimi-v<kimi-version>` for Kimi. The tags may point to the same commit. The main workflow publishes only the distribution selected by its tag.
 
 The post-publish E2E job is a release-candidate gate, not a general development check. Keep it out of pull-request jobs and Python-version matrices so paid provider calls remain bounded.
 

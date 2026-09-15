@@ -6,9 +6,9 @@
 
 ## Overview
 
-**llm-api-adapter** is a minimal, typed adapter for six organizations: OpenAI, Anthropic, Google, Mistral, xAI, and Qwen. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching organizations means changing two arguments.
+**llm-api-adapter** is a minimal, typed adapter for seven organizations: OpenAI, Anthropic, Google, Mistral, xAI, Qwen, and Kimi. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching organizations means changing two arguments.
 
-**Note:** Mistral, xAI, and Qwen are installed separately with their optional extras.
+**Note:** Mistral, xAI, Qwen, and Kimi are installed separately with their optional extras.
 
 Supports Python 3.10–3.14.
 
@@ -53,7 +53,7 @@ Supports Python 3.10–3.14.
 | Unified error hierarchy   | ✓ | OpenAI-compatible | framework-specific | ✗ |
 | Sync streaming            | ✓ text-first | ✓ | ✓ | ✓ |
 | Async API                 | ✓ optional | ✓ | ✓ | ✓ |
-| Number of organizations   | 6 | 100+ | 50+ | 1 |
+| Number of organizations   | 7 | 100+ | 50+ | 1 |
 
 * `reasoning_level` is one application-level parameter, but the available levels, native mapping, and emitted reasoning content remain model/provider-dependent.
 
@@ -90,7 +90,7 @@ This table is a positioning snapshot. Provider capabilities change independently
 - **Asynchronous API**: Use `achat()` and `astream_chat()` with the optional `[async]` installation for non-blocking HTTPX requests and awaitable callbacks. See the [Async API guide](ASYNC_API.md).
 - **Reasoning Observability**: Opt in to provider-emitted reasoning summaries through `capture_reasoning=True`, `ReasoningEvent`, and the `on_reasoning` callback without mixing reasoning into visible text.
 - **Provider-Neutral Messages and Responses**: Use the same typed messages, `ChatResponse`, usage, pricing, parsed output, and tool-call fields regardless of the provider.
-- **Vision Input**: Send images alongside text via `ImagePart` — URL or raw bytes, all providers handled automatically.
+- **Vision Input**: Send images alongside text via `ImagePart` as a URL, raw bytes, or data URI when the selected organization supports that form.
 - **PDF Documents**: Send PDF URLs or bytes via `DocumentPart`; provider-specific file/document payloads are generated automatically.
 - **Tool / Function Calling**: Provider-agnostic tool definitions and normalized tool calls in `ChatResponse.tool_calls`.
 - **Portable Structured Output**: Pass a documented portable JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` across all supported organizations.
@@ -125,12 +125,19 @@ To use Qwen Model Studio, install its optional organization package:
 pip install "llm-api-adapter[qwen]"
 ```
 
+To use Kimi / Moonshot, install its optional organization package:
+
+```bash
+pip install "llm-api-adapter[kimi]"
+```
+
 The [Mistral package README](packages/organizations/mistral/README.md),
 [xAI package README](packages/organizations/xai/README.md), and
-[Qwen package README](packages/organizations/qwen/README.md) list their
+[Qwen package README](packages/organizations/qwen/README.md), and
+[Kimi package README](packages/organizations/kimi/README.md) list their
 supported models and organization-specific behaviour. Direct installation of
 `llm-api-adapter-mistral`, `llm-api-adapter-xai`, or
-`llm-api-adapter-qwen` remains supported.
+`llm-api-adapter-qwen`, or `llm-api-adapter-kimi` remains supported.
 
 **Core baseline and organization packages.** An organization enters Core when
 its supported models and adapter implement the complete provider-neutral
@@ -155,7 +162,7 @@ the optional `[httpx]` extra and pass `transport="httpx"`. The default remains
 `requests`; see the [HTTPX sync pilot guide](HTTPX_SYNC_PILOT.md).
 
 **Note:** You need an API key from each LLM provider you use, including
-Mistral, xAI, or Qwen when their optional packages are installed. Refer to the
+Mistral, xAI, Qwen, or Kimi when their optional packages are installed. Refer to the
 provider's documentation for API-key instructions.
 
 
@@ -376,17 +383,17 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 ### Provider Error Mapping
 
-| Exception | OpenAI | Anthropic | Google |
-|---|---|---|---|
-| `LLMAPIAuthorizationError` | HTTP 401; `InvalidAuthenticationError`, `AuthenticationError` | HTTP 401; `AuthenticationError`, `PermissionError` | HTTP 401/403; `PERMISSION_DENIED` |
-| `LLMAPIRateLimitError` | HTTP 429; `RateLimitError` | HTTP 429; `RateLimitError` | HTTP 429; `RESOURCE_EXHAUSTED` |
-| `LLMAPITokenLimitError` | `MaxTokensExceededError`, `TokenLimitError` | — | — |
-| `LLMAPIClientError` | HTTP 4xx; `InvalidRequestError`, `BadRequestError` | HTTP 4xx; `InvalidRequestError`, `RequestTooLargeError`, `NotFoundError` | HTTP 4xx; `INVALID_ARGUMENT`, `FAILED_PRECONDITION`, `NOT_FOUND` |
-| `LLMAPIServerError` | HTTP 5xx; `InternalServerError`, `ServiceUnavailableError` | HTTP 5xx; `APIError`, `OverloadedError` | HTTP 5xx; `INTERNAL`, `UNAVAILABLE` |
-| `LLMAPITimeoutError` | `requests.Timeout`, `httpx.TimeoutException`; `TimeoutError` | `requests.Timeout`, `httpx.TimeoutException` | `requests.Timeout`, `httpx.TimeoutException`; `DEADLINE_EXCEEDED` |
-| `LLMAPIUsageLimitError` | `UsageLimitError`, `QuotaExceededError` | — | — |
+| Exception | OpenAI | Anthropic | Google | Kimi |
+|---|---|---|---|---|
+| `LLMAPIAuthorizationError` | HTTP 401; `InvalidAuthenticationError`, `AuthenticationError` | HTTP 401; `AuthenticationError`, `PermissionError` | HTTP 401/403; `PERMISSION_DENIED` | HTTP 401/403; authentication or permission error type |
+| `LLMAPIRateLimitError` | HTTP 429; `RateLimitError` | HTTP 429; `RateLimitError` | HTTP 429; `RESOURCE_EXHAUSTED` | HTTP 429; `rate_limit_error`, `rate_limit_exceeded` |
+| `LLMAPITokenLimitError` | `MaxTokensExceededError`, `TokenLimitError` | — | — | `context_length_exceeded`, `input_too_long`, output-token limit types |
+| `LLMAPIClientError` | HTTP 4xx; `InvalidRequestError`, `BadRequestError` | HTTP 4xx; `InvalidRequestError`, `RequestTooLargeError`, `NotFoundError` | HTTP 4xx; `INVALID_ARGUMENT`, `FAILED_PRECONDITION`, `NOT_FOUND` | Unclassified HTTP/client or SSE error |
+| `LLMAPIServerError` | HTTP 5xx; `InternalServerError`, `ServiceUnavailableError` | HTTP 5xx; `APIError`, `OverloadedError` | HTTP 5xx; `INTERNAL`, `UNAVAILABLE` | HTTP 5xx; `api_error`, `internal_error`, `overloaded_error` |
+| `LLMAPITimeoutError` | `requests.Timeout`, `httpx.TimeoutException`; `TimeoutError` | `requests.Timeout`, `httpx.TimeoutException` | `requests.Timeout`, `httpx.TimeoutException`; `DEADLINE_EXCEEDED` | HTTP 408/504; `timeout`, `timeout_error` |
+| `LLMAPIUsageLimitError` | `UsageLimitError`, `QuotaExceededError` | — | — | `insufficient_quota`, `quota_exceeded`, `usage_limit_exceeded` |
 
-> - `LLMAPITokenLimitError` and `LLMAPIUsageLimitError` are OpenAI-only; equivalent cases for Anthropic and Google fall into `LLMAPIClientError` (HTTP 4xx).
+> - Kimi maps its documented token-limit and quota error types to `LLMAPITokenLimitError` and `LLMAPIUsageLimitError`. Equivalent cases for Anthropic and Google fall into `LLMAPIClientError` (HTTP 4xx).
 > - `LLMAPIClientError` is the default fallback for all unhandled HTTP 4xx responses.
 > - `LLMAPIServerError` is the default fallback for all HTTP 5xx responses.
 > - `InvalidToolSchemaError`, `InvalidToolArgumentsError`, `ToolChoiceError`, `JSONSchemaError` — client-side errors (validated before the request is sent); inherit from `LLMAPIClientError`.
@@ -396,7 +403,7 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 ### Using Different Providers and Models
 
-The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, xAI, and Qwen. Mistral, xAI, and Qwen require their corresponding optional extras.
+The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, xAI, Qwen, and Kimi. Mistral, xAI, Qwen, and Kimi require their corresponding optional extras.
 
 - **OpenAI**: You can use models like `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
 - **Anthropic**: Available models include `claude-fable-5-1`, `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
@@ -404,6 +411,7 @@ The SDK allows you to easily switch between LLM providers and specify the model 
 - **Mistral**: Install with `pip install "llm-api-adapter[mistral]"`. Available models are `mistral-small-2603`, `mistral-medium-3-5`, and `mistral-large-2512`; see the [Mistral package README](packages/organizations/mistral/README.md) for Mistral-specific behaviour.
 - **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.5` and `grok-4.6`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
 - **Qwen**: Install with `pip install "llm-api-adapter[qwen]"`. Fixed model IDs are `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`; every operation requires an explicit Frankfurt `workspace_id`. See the [Qwen package README](packages/organizations/qwen/README.md) for its capability boundary, including unsupported PDF input.
+- **Kimi**: Install with `pip install "llm-api-adapter[kimi]"`. Fixed model IDs are `kimi-k3` and `kimi-k2.6`; image bytes/data URIs are supported, while public image URLs and all PDF `DocumentPart` forms are rejected before HTTP. See the [Kimi package README](packages/organizations/kimi/README.md) for reasoning, cache-pricing, and data-handling details.
 
 Example:
 
@@ -800,10 +808,10 @@ semantically combined `$ref` values are rejected with `JSONSchemaError` before
 a provider request. Other JSON Schema composition, validation, and conditional
 keywords are intentionally outside the portable profile.
 
-OpenAI, Anthropic, and Google enforce this Core profile. The Mistral and xAI
-organization packages require core `>=0.9.2,<1.0.0` and enforce the same
-boundary; xAI additionally rejects the documented xAI-only invalid constructs
-before sending its request.
+OpenAI, Anthropic, and Google enforce this Core profile. The Mistral, xAI,
+Qwen, and Kimi organization packages enforce the same boundary; xAI
+additionally rejects the documented xAI-only invalid constructs before sending
+its request.
 
 ### Pydantic Integration (`response_model`)
 
@@ -1026,6 +1034,11 @@ messages = [{
 response = adapter.chat(messages=messages, max_tokens=200)
 ```
 
+Kimi 0.1.0 accepts image bytes and data URIs for all three admitted models, but
+does not fetch public image URLs. `ImagePart(url=...)` is rejected before HTTP;
+use `ImagePart(data=..., media_type="image/...")` instead. See the
+[Kimi package README](packages/organizations/kimi/README.md#history-images-files-and-data-handling).
+
 > **Note:** `ImagePart` is supported in v0.5.0; `DocumentPart` is introduced in v0.5.1. Google already supports audio input, but `AudioPart` is postponed because Anthropic does not support audio and OpenAI uses a separate audio API, so there is no common provider-neutral contract yet.
 
 ## Document Input
@@ -1081,6 +1094,12 @@ Qwen 0.1.0 supports images, but rejects every `DocumentPart` URL or byte before
 HTTP: PDF and OCR input are outside its package contract. See the
 [Qwen package README](packages/organizations/qwen/README.md#pdf-input).
 
+Kimi 0.1.0 also rejects every `DocumentPart` URL or byte before HTTP. Kimi's
+Files API exposes extracted text rather than a Chat Completions attachment, so
+it cannot meet the same bytes-and-URL contract without hidden URL retrieval.
+The adapter does not upload or delete files for Kimi. See the
+[Kimi package README](packages/organizations/kimi/README.md#history-images-files-and-data-handling).
+
 ## Token Usage and Pricing
 
 `achat()` returns the same `usage`, `currency`, and cost fields as `chat()`.
@@ -1107,6 +1126,14 @@ The estimate covers bundled standard text input/output rates only. It excludes
 cached input, cache write/storage, batch, flex, priority, modality-specific,
 provider-hosted tool, and negotiated-volume charges. Do not use it to reconcile
 a provider invoice.
+
+Kimi is the narrow exception when the provider reports an explicit
+`usage.cached_tokens` split: its organization package applies registered
+cache-hit and cache-miss input rates and can calculate `cost_total`. If Kimi
+does not return that split, `cost_input` and `cost_total` stay unset rather than
+assuming all input was uncached. This does not enable Kimi caching; it only
+accounts for provider-reported usage. See the
+[Kimi package README](packages/organizations/kimi/README.md#usage-cache-aware-pricing-and-errors).
 
 ### Token Usage and Pricing Example
 

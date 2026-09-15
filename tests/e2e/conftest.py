@@ -56,6 +56,7 @@ _QWEN_PORTABLE_E2E_FEATURES = frozenset(
         "image_input",
     }
 )
+_KIMI_PORTABLE_E2E_FEATURES = _QWEN_PORTABLE_E2E_FEATURES
 
 
 class E2EOrganization(dict):
@@ -102,6 +103,14 @@ _XAI_E2E_PROFILE = E2EOrganizationProfile(
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
 )
+_KIMI_E2E_PROFILE = E2EOrganizationProfile(
+    name="kimi",
+    organization_names=("kimi",),
+    supported_features=_KIMI_PORTABLE_E2E_FEATURES,
+    distribution="llm-api-adapter-kimi",
+    api_key_is_required=True,
+    missing_api_key_is_usage_error=True,
+)
 _QWEN_E2E_PROFILE = E2EOrganizationProfile(
     name="qwen",
     organization_names=("qwen",),
@@ -138,6 +147,11 @@ _E2E_PROFILE_PARAMS = (
         marks=pytest.mark.e2e_xai,
     ),
     pytest.param(
+        _KIMI_E2E_PROFILE,
+        id="kimi",
+        marks=pytest.mark.e2e_kimi,
+    ),
+    pytest.param(
         _QWEN_E2E_PROFILE,
         id="qwen",
         marks=pytest.mark.e2e_qwen,
@@ -152,6 +166,7 @@ API_KEY_ENV = {
     "google": os.getenv("GOOGLE_API_KEY"),
     "mistral": os.getenv("MISTRAL_API_KEY"),
     "xai": os.getenv("XAI_API_KEY"),
+    "kimi": os.getenv("KIMI_API_KEY"),
     "qwen": os.getenv("QWEN_API_KEY"),
 }
 
@@ -192,6 +207,7 @@ def get_e2e_organization_profile(name: str) -> E2EOrganizationProfile:
             _GOOGLE_E2E_PROFILE,
             _MISTRAL_E2E_PROFILE,
             _XAI_E2E_PROFILE,
+            _KIMI_E2E_PROFILE,
             _QWEN_E2E_PROFILE,
         )
     }
