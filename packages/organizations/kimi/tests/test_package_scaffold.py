@@ -35,7 +35,7 @@ def test_kimi_plugin_entry_point_matches_the_core_contract():
 def test_kimi_project_forwards_only_core_transport_extras():
     metadata = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert 'dependencies = ["llm-api-adapter>=0.9.4,<1.0.0"]' in metadata
-    assert 'async = ["llm-api-adapter[async]>=0.9.4,<1.0.0"]' in metadata
-    assert 'httpx = ["llm-api-adapter[httpx]>=0.9.4,<1.0.0"]' in metadata
+    assert 'dependencies = ["llm-api-adapter>=0.9.5,<1.0.0"]' in metadata
+    assert 'async = ["llm-api-adapter[async]>=0.9.5,<1.0.0"]' in metadata
+    assert 'httpx = ["llm-api-adapter[httpx]>=0.9.5,<1.0.0"]' in metadata
     assert 'kimi = "llm_api_adapter_kimi.plugin:PLUGIN"' in metadata

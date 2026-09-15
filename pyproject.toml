@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-api-adapter"
-version = "0.9.4"
-description = "Lightweight multi-provider LLM API adapter for Python — OpenAI, Anthropic, Google, Mistral, xAI, and Qwen."
+version = "0.9.5"
+description = "Lightweight multi-provider LLM API adapter for Python — OpenAI, Anthropic, Google, Mistral, xAI, Qwen, and Kimi."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [{name = "Sergey Inozemtsev"}]
-keywords = ["llm", "adapter", "lightweight", "api", "openai", "anthropic", "google", "mistral", "xai", "grok", "qwen", "model-studio"]
+keywords = ["llm", "adapter", "lightweight", "api", "openai", "anthropic", "google", "mistral", "xai", "grok", "qwen", "model-studio", "kimi", "moonshot"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
