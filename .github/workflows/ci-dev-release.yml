@@ -268,7 +268,7 @@ jobs:
           exit 1
 
       - name: Run OpenAI E2E tests
-        run: pytest -v -m e2e_openai
+        run: pytest -v --import-mode=importlib -m e2e_openai
 
   post-publish-anthropic-e2e:
     name: Anthropic E2E tests (post-publish)
@@ -325,7 +325,7 @@ jobs:
           exit 1
 
       - name: Run Anthropic E2E tests
-        run: pytest -v -m e2e_anthropic
+        run: pytest -v --import-mode=importlib -m e2e_anthropic
 
   post-publish-google-e2e:
     name: Google E2E tests (post-publish)
@@ -382,7 +382,7 @@ jobs:
           exit 1
 
       - name: Run Google E2E tests
-        run: pytest -v -m e2e_google
+        run: pytest -v --import-mode=importlib -m e2e_google
 
   post-publish-kimi-e2e:
     name: Kimi E2E tests (release candidate)
@@ -444,7 +444,7 @@ jobs:
           python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='kimi', model='kimi-k3', api_key='test-key')"
 
       - name: Run Kimi E2E tests
-        run: pytest -v -m e2e_kimi
+        run: pytest -v --import-mode=importlib -m e2e_kimi
 
   post-publish-mistral-e2e:
     name: Mistral E2E tests (release candidate)
@@ -506,7 +506,7 @@ jobs:
           python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='mistral', model='mistral-large-2512', api_key='test-key')"
 
       - name: Run Mistral E2E tests
-        run: pytest -v -m e2e_mistral
+        run: pytest -v --import-mode=importlib -m e2e_mistral
 
   post-publish-xai-e2e:
     name: xAI E2E tests (release candidate)
@@ -568,7 +568,7 @@ jobs:
           python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='xai', model='grok-4.6', api_key='test-key')"
 
       - name: Run xAI E2E tests
-        run: pytest -v -m e2e_xai
+        run: pytest -v --import-mode=importlib -m e2e_xai
 
   post-publish-qwen-e2e:
     name: Qwen E2E tests (release candidate)
@@ -635,4 +635,4 @@ jobs:
           python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='qwen', model='qwen3.8-max', api_key='test-key')"
 
       - name: Run Qwen E2E tests
-        run: pytest -v -m e2e_qwen
+        run: pytest -v --import-mode=importlib -m e2e_qwen

@@ -230,7 +230,7 @@ def test_qwen_candidate_e2e_job_uses_only_qwen_credentials_and_candidates():
     assert "llm-api-adapter-qwen[async,httpx]==${QWEN_CANDIDATE_VERSION}" in job
     assert "organization='qwen'" in job
     assert "model='qwen3.8-max'" in job
-    assert "pytest -v -m e2e_qwen" in job
+    assert "pytest -v --import-mode=importlib -m e2e_qwen" in job
     assert "MISTRAL_API_KEY" not in job
     assert "XAI_API_KEY" not in job
 
@@ -251,10 +251,26 @@ def test_kimi_candidate_e2e_job_uses_only_kimi_credentials_and_candidates():
     assert "llm-api-adapter-kimi[async,httpx]==${KIMI_CANDIDATE_VERSION}" in job
     assert "organization='kimi'" in job
     assert "model='kimi-k3'" in job
-    assert "pytest -v -m e2e_kimi" in job
+    assert "pytest -v --import-mode=importlib -m e2e_kimi" in job
     assert "MISTRAL_API_KEY" not in job
     assert "XAI_API_KEY" not in job
     assert "QWEN_API_KEY" not in job
+
+
+@pytest.mark.unit
+def test_post_publish_e2e_jobs_use_importlib_collection_mode():
+    workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    for marker in (
+        "e2e_openai",
+        "e2e_anthropic",
+        "e2e_google",
+        "e2e_kimi",
+        "e2e_mistral",
+        "e2e_xai",
+        "e2e_qwen",
+    ):
+        assert f"pytest -v --import-mode=importlib -m {marker}" in workflow
 
 
 @pytest.mark.unit
