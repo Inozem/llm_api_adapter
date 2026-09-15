@@ -22,6 +22,8 @@ jobs:
       core_openai_e2e: ${{ steps.filter.outputs.core_openai_e2e }}
       core_anthropic_e2e: ${{ steps.filter.outputs.core_anthropic_e2e }}
       core_google_e2e: ${{ steps.filter.outputs.core_google_e2e }}
+      kimi: ${{ steps.filter.outputs.kimi }}
+      kimi_e2e: ${{ steps.filter.outputs.kimi_e2e }}
       mistral: ${{ steps.filter.outputs.mistral }}
       mistral_e2e: ${{ steps.filter.outputs.mistral_e2e }}
       xai: ${{ steps.filter.outputs.xai }}
@@ -29,6 +31,7 @@ jobs:
       qwen: ${{ steps.filter.outputs.qwen }}
       qwen_e2e: ${{ steps.filter.outputs.qwen_e2e }}
       core_version: ${{ steps.versions.outputs.core }}
+      kimi_version: ${{ steps.versions.outputs.kimi }}
       mistral_version: ${{ steps.versions.outputs.mistral }}
       xai_version: ${{ steps.versions.outputs.xai }}
       qwen_version: ${{ steps.versions.outputs.qwen }}
@@ -47,14 +50,17 @@ jobs:
         shell: bash
         run: |
           core_version="$(grep -m1 '^version = ' pyproject.toml | cut -d '"' -f 2)"
+          kimi_version="$(grep -m1 '^version = ' packages/organizations/kimi/pyproject.toml | cut -d '"' -f 2)"
           mistral_version="$(grep -m1 '^version = ' packages/organizations/mistral/pyproject.toml | cut -d '"' -f 2)"
           xai_version="$(grep -m1 '^version = ' packages/organizations/xai/pyproject.toml | cut -d '"' -f 2)"
           qwen_version="$(grep -m1 '^version = ' packages/organizations/qwen/pyproject.toml | cut -d '"' -f 2)"
           test -n "$core_version"
+          test -n "$kimi_version"
           test -n "$mistral_version"
           test -n "$xai_version"
           test -n "$qwen_version"
           echo "core=$core_version" >> "$GITHUB_OUTPUT"
+          echo "kimi=$kimi_version" >> "$GITHUB_OUTPUT"
           echo "mistral=$mistral_version" >> "$GITHUB_OUTPUT"
           echo "xai=$xai_version" >> "$GITHUB_OUTPUT"
           echo "qwen=$qwen_version" >> "$GITHUB_OUTPUT"
@@ -93,6 +99,34 @@ jobs:
         with:
           password: ${{ secrets.TEST_PYPI_API_TOKEN }}
           repository-url: https://test.pypi.org/legacy/
+          verbose: true
+
+  publish-kimi-testpypi:
+    name: Publish Kimi package to TestPyPI
+    needs: changes
+    if: ${{ needs.changes.outputs.kimi == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Build Kimi distribution
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build packages/organizations/kimi
+
+      - name: Publish Kimi package to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: packages/organizations/kimi/dist/
           verbose: true
 
   publish-mistral-testpypi:
@@ -234,7 +268,7 @@ jobs:
           exit 1
 
       - name: Run OpenAI E2E tests
-        run: pytest -v -m e2e_openai
+        run: pytest -v --import-mode=importlib -m e2e_openai
 
   post-publish-anthropic-e2e:
     name: Anthropic E2E tests (post-publish)
@@ -291,7 +325,7 @@ jobs:
           exit 1
 
       - name: Run Anthropic E2E tests
-        run: pytest -v -m e2e_anthropic
+        run: pytest -v --import-mode=importlib -m e2e_anthropic
 
   post-publish-google-e2e:
     name: Google E2E tests (post-publish)
@@ -348,7 +382,69 @@ jobs:
           exit 1
 
       - name: Run Google E2E tests
-        run: pytest -v -m e2e_google
+        run: pytest -v --import-mode=importlib -m e2e_google
+
+  post-publish-kimi-e2e:
+    name: Kimi E2E tests (release candidate)
+    needs: [changes, publish-core-testpypi, publish-kimi-testpypi]
+    if: >-
+      ${{
+        always() &&
+        (needs.changes.outputs.shared_core == 'true' || needs.changes.outputs.kimi == 'true' || needs.changes.outputs.kimi_e2e == 'true') &&
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped') &&
+        (needs.publish-kimi-testpypi.result == 'success' || needs.publish-kimi-testpypi.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    env:
+      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+      CORE_CANDIDATE_VERSION: ${{ needs.changes.outputs.core_version }}
+      KIMI_CANDIDATE_VERSION: ${{ needs.changes.outputs.kimi_version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Require Kimi API key
+        shell: bash
+        run: |
+          test -n "$KIMI_API_KEY" || {
+            echo "::error::KIMI_API_KEY is not configured."
+            exit 1
+          }
+
+      - name: Install test runner and candidate packages from TestPyPI
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/requirements-test.txt
+
+          for attempt in 1 2 3; do
+            if pip install --index-url https://test.pypi.org/simple/ \
+              --extra-index-url https://pypi.org/simple \
+              "llm-api-adapter[async,httpx]==${CORE_CANDIDATE_VERSION}" \
+              "llm-api-adapter-kimi[async,httpx]==${KIMI_CANDIDATE_VERSION}"; then
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "Candidate packages are not available yet; retrying in 2 minutes."
+              sleep 120
+            fi
+          done
+
+          echo "Candidate packages were not available after 3 attempts."
+          exit 1
+
+      - name: Verify Kimi plugin discovery
+        run: |
+          python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='kimi', model='kimi-k3', api_key='test-key')"
+
+      - name: Run Kimi E2E tests
+        run: pytest -v --import-mode=importlib -m e2e_kimi
 
   post-publish-mistral-e2e:
     name: Mistral E2E tests (release candidate)
@@ -410,7 +506,7 @@ jobs:
           python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='mistral', model='mistral-large-2512', api_key='test-key')"
 
       - name: Run Mistral E2E tests
-        run: pytest -v -m e2e_mistral
+        run: pytest -v --import-mode=importlib -m e2e_mistral
 
   post-publish-xai-e2e:
     name: xAI E2E tests (release candidate)
@@ -472,7 +568,7 @@ jobs:
           python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='xai', model='grok-4.6', api_key='test-key')"
 
       - name: Run xAI E2E tests
-        run: pytest -v -m e2e_xai
+        run: pytest -v --import-mode=importlib -m e2e_xai
 
   post-publish-qwen-e2e:
     name: Qwen E2E tests (release candidate)
@@ -539,4 +635,4 @@ jobs:
           python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='qwen', model='qwen3.8-max', api_key='test-key')"
 
       - name: Run Qwen E2E tests
-        run: pytest -v -m e2e_qwen
+        run: pytest -v --import-mode=importlib -m e2e_qwen

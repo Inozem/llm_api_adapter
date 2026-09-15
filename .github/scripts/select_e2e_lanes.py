@@ -50,6 +50,7 @@ _E2E_HARNESS_PATHS = (
     ".github/scripts/",
 )
 _ORGANIZATION_E2E_PATHS = {
+    "kimi": ("packages/organizations/kimi/tests/e2e/",),
     "qwen": ("packages/organizations/qwen/tests/e2e/",),
 }
 _CORE_ORGANIZATION_PATHS = {
@@ -102,9 +103,11 @@ class E2ELaneSelection:
     core: bool
     shared_core: bool
     core_organizations: tuple[str, ...]
+    kimi: bool
     mistral: bool
     xai: bool
     qwen: bool
+    kimi_e2e: bool
     mistral_e2e: bool
     xai_e2e: bool
     qwen_e2e: bool
@@ -118,6 +121,8 @@ class E2ELaneSelection:
                 "anthropic" in self.core_organizations
             ).lower(),
             "core_google_e2e": str("google" in self.core_organizations).lower(),
+            "kimi": str(self.kimi).lower(),
+            "kimi_e2e": str(self.kimi_e2e).lower(),
             "mistral": str(self.mistral).lower(),
             "mistral_e2e": str(self.mistral_e2e).lower(),
             "xai": str(self.xai).lower(),
@@ -153,6 +158,7 @@ def select_e2e_lanes(changed_paths: Iterable[str]) -> E2ELaneSelection:
     elif e2e_harness:
         core_organizations = _CORE_ORGANIZATIONS
 
+    kimi = _organization_package_changed(paths, "kimi")
     mistral = _organization_package_changed(paths, "mistral")
     xai = _organization_package_changed(paths, "xai")
     qwen = _organization_package_changed(paths, "qwen")
@@ -160,9 +166,16 @@ def select_e2e_lanes(changed_paths: Iterable[str]) -> E2ELaneSelection:
         core=core,
         shared_core=shared_core,
         core_organizations=core_organizations,
+        kimi=kimi,
         mistral=mistral,
         xai=xai,
         qwen=qwen,
+        kimi_e2e=(
+            shared_core
+            or kimi
+            or e2e_harness
+            or _matches(paths, _ORGANIZATION_E2E_PATHS["kimi"])
+        ),
         mistral_e2e=shared_core or mistral or e2e_harness,
         xai_e2e=shared_core or xai or e2e_harness,
         qwen_e2e=(

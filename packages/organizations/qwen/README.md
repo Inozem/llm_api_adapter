@@ -38,14 +38,14 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 adapter = UniversalLLMAPIAdapter(
     organization="qwen",
-    model="qwen3.8-flash",
+    model="qwen3.8-max",
     api_key=os.environ["QWEN_API_KEY"],
 )
 
 response = adapter.chat(
     messages=[UserMessage("Explain retrieval-augmented generation.")],
     max_tokens=128,
-    workspace_id="frankfurt-workspace",
+    workspace_id=os.environ["QWEN_WORKSPACE_ID"],
 )
 print(response.content)
 ```
