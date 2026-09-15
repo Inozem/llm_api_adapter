@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [{name = "Sergey Inozemtsev"}]
-keywords = ["llm", "adapter", "lightweight", "api", "openai", "anthropic", "google", "mistral", "xai", "grok", "qwen", "model-studio", "kimi", "moonshot"]
+keywords = ["llm", "adapter", "lightweight", "api", "openai", "anthropic", "google", "mistral", "xai", "grok", "qwen", "kimi"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
