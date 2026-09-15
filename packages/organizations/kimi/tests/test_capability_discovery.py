@@ -50,7 +50,7 @@ def kimi_discovery_record() -> dict:
 
 
 @pytest.mark.unit
-def test_discovery_matrix_is_closed_to_the_three_planned_candidates(
+def test_discovery_matrix_is_closed_to_the_supported_candidates(
     kimi_discovery_record,
 ):
     assert kimi_discovery_record["candidate_models"] == CANDIDATE_MODELS

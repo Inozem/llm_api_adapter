@@ -67,6 +67,17 @@ WEATHER_TOOL = ToolSpec(
 )
 
 
+def kimi_response_format(schema: dict) -> dict:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "response",
+            "strict": True,
+            "schema": schema,
+        },
+    }
+
+
 class FakeSyncTransport:
     def __init__(self, response, *, error=None, events=None) -> None:
         self.response = response
@@ -699,10 +710,9 @@ def test_kimi_chat_supports_core_portable_json_schema(kimi_runtime, model):
     )
 
     assert response.parsed_json == {"answer": "Hello"}
-    assert transport.requests[0].payload["response_format"] == {
-        "type": "json_schema",
-        "json_schema": FLAT_OBJECT_SCHEMA,
-    }
+    assert transport.requests[0].payload["response_format"] == kimi_response_format(
+        FLAT_OBJECT_SCHEMA,
+    )
 
 
 @pytest.mark.asyncio
@@ -737,7 +747,10 @@ async def test_kimi_achat_supports_pydantic_structured_output(
     assert response.parsed_model == NestedPydanticResponse(
         contact={"name": "Ada"},
     )
-    serialized_schema = requests[0][1]["payload"]["response_format"]["json_schema"]
+    response_format = requests[0][1]["payload"]["response_format"]
+    assert response_format["json_schema"]["name"] == "response"
+    assert response_format["json_schema"]["strict"] is True
+    serialized_schema = response_format["json_schema"]["schema"]
     contact_schema = serialized_schema["properties"]["contact"]
     assert contact_schema["additionalProperties"] is False
     assert contact_schema["properties"]["name"]["type"] == "string"
@@ -877,20 +890,35 @@ def test_kimi_prices_reported_cache_hits_exactly(
 
 
 @pytest.mark.unit
-def test_kimi_does_not_publish_a_total_when_the_cache_split_is_missing(kimi_runtime):
+@pytest.mark.parametrize(
+    ("model", "input_rate", "output_rate"),
+    [
+        ("kimi-k3", 3.00, 15.00),
+        ("kimi-k2.6", 0.95, 4.00),
+    ],
+)
+def test_kimi_uses_cache_miss_pricing_when_the_cache_split_is_missing(
+    kimi_runtime,
+    model,
+    input_rate,
+    output_rate,
+):
     adapter = UniversalLLMAPIAdapter(
         organization="kimi",
-        model="kimi-k3",
+        model=model,
         api_key="kimi-test-key",
     )
     adapter.adapter._sync_transport = FakeSyncTransport(
-        kimi_response("kimi-k3", cached_tokens=None),
+        kimi_response(model, cached_tokens=None),
     )
 
     response = adapter.chat([{"role": "user", "content": "Hello"}])
 
-    assert response.cost_input is None
-    assert response.cost_total is None
+    assert response.cost_input == pytest.approx(19 * input_rate / 1_000_000)
+    assert response.cost_output == pytest.approx(13 * output_rate / 1_000_000)
+    assert response.cost_total == pytest.approx(
+        response.cost_input + response.cost_output,
+    )
 
 
 @pytest.mark.unit
@@ -1221,10 +1249,9 @@ def test_kimi_stream_finalizes_core_structured_output(kimi_runtime, model):
 
     assert output == ['{"answer":"Hel', 'lo"}']
     assert completed[0].parsed_json == {"answer": "Hello"}
-    assert transport.sse_requests[0].payload["response_format"] == {
-        "type": "json_schema",
-        "json_schema": FLAT_OBJECT_SCHEMA,
-    }
+    assert transport.sse_requests[0].payload["response_format"] == kimi_response_format(
+        FLAT_OBJECT_SCHEMA,
+    )
 
 
 @pytest.mark.asyncio
@@ -1272,10 +1299,9 @@ async def test_kimi_astream_finalizes_core_structured_output(
 
     assert output == ['{"answer":"Hel', 'lo"}']
     assert completed[0].parsed_json == {"answer": "Hello"}
-    assert requests[0][1]["payload"]["response_format"] == {
-        "type": "json_schema",
-        "json_schema": FLAT_OBJECT_SCHEMA,
-    }
+    assert requests[0][1]["payload"]["response_format"] == kimi_response_format(
+        FLAT_OBJECT_SCHEMA,
+    )
 
 
 @pytest.mark.integration

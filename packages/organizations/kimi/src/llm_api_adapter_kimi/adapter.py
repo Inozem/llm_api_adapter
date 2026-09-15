@@ -615,9 +615,13 @@ class KimiAdapter(LLMAdapterBase):
         if request_context.effective_schema is not None:
             payload["response_format"] = {
                 "type": "json_schema",
-                "json_schema": self._to_kimi_structured_output_schema(
-                    request_context.effective_schema,
-                ),
+                "json_schema": {
+                    "name": "response",
+                    "strict": True,
+                    "schema": self._to_kimi_structured_output_schema(
+                        request_context.effective_schema,
+                    ),
+                },
             }
         self._apply_reasoning_options(payload, reasoning_level)
         if self.model_spec is None:
@@ -699,7 +703,9 @@ class KimiAdapter(LLMAdapterBase):
             if self.model_spec is not None
             else None
         )
-        choice_mode = tool_choice if tool_choice == "any" else "tool"
+        choice_mode = (
+            tool_choice if tool_choice in {"auto", "none", "any"} else "tool"
+        )
         if allowed_modes is not None and choice_mode not in allowed_modes:
             allowed = ", ".join(sorted(allowed_modes))
             raise ToolChoiceError(
@@ -849,8 +855,6 @@ class KimiAdapter(LLMAdapterBase):
         if cache_pricing is None or not isinstance(usage, KimiUsage):
             return
         if usage.cached_tokens is None:
-            chat_response.cost_input = None
-            chat_response.cost_total = None
             return
         uncached_tokens = usage.input_tokens - usage.cached_tokens
         chat_response.currency = "USD"

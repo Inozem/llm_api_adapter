@@ -80,7 +80,7 @@ not upload, retain, download, extract, or delete caller files.
 
 Cost fields use registered standard USD rates. When Kimi reports
 `usage.cached_tokens`, the adapter applies cache-hit and cache-miss input
-rates; without that split, `cost_input` and `cost_total` remain unset. This
+rates; without that split, it retains the standard cache-miss estimate. This
 does not enable Kimi context caching, and the result is not an invoice.
 
 Kimi maps authentication/authorization (401/403), rate-limit (429), timeout
