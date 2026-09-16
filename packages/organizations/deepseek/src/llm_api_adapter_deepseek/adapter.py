@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 from typing import Any, AsyncIterator, Iterator, List, Mapping, Optional
+from urllib.parse import urlparse
 
 from llm_api_adapter.adapters.base_adapter import (
     AsyncOnChunk,
@@ -34,7 +37,9 @@ from llm_api_adapter.models.messages.chat_message import (
     Message,
     Messages,
     Prompt,
+    UserMessage,
 )
+from llm_api_adapter.models.messages.file_parts import ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools import ToolSpec
 
@@ -50,6 +55,12 @@ from .streaming import (
 
 
 _REASONING_REPLAY_KEY = "deepseek.reasoning_replay"
+_SUPPORTED_IMAGE_MEDIA_TYPES = frozenset(
+    {"image/jpeg", "image/png", "image/gif", "image/webp"}
+)
+_MAX_IMAGE_URL_LENGTH = 8192
+_MAX_INLINE_IMAGE_BYTES = 32 * 1024 * 1024
+_MAX_IMAGES_PER_REQUEST = 600
 
 
 @dataclass(frozen=True)
@@ -459,6 +470,7 @@ class DeepSeekAdapter(LLMAdapterBase):
             response_model,
         )
         normalized_messages = request_context.normalized_messages
+        self._validate_deepseek_file_inputs(normalized_messages)
         effective_schema = request_context.effective_schema
         if effective_schema is not None:
             effective_schema = validate_core_portable_schema(
@@ -504,6 +516,88 @@ class DeepSeekAdapter(LLMAdapterBase):
             response_model=request_context.response_model,
             capture_reasoning=capture_reasoning,
         )
+
+    @staticmethod
+    def _validate_deepseek_file_inputs(messages: Messages) -> None:
+        """Reject files outside DeepSeek's verified Responses image boundary."""
+        image_count = 0
+        for message in messages.items:
+            files = getattr(message, "files", None)
+            if files is None:
+                continue
+            if not isinstance(message, UserMessage):
+                raise ValueError(
+                    "DeepSeek input_image parts are supported only in user messages",
+                )
+            if not isinstance(files, list):
+                raise ValueError("DeepSeek user message files must be a list")
+
+            for part in files:
+                if not isinstance(part, ImagePart):
+                    raise ValueError(
+                        "DeepSeek Responses supports only image inputs; "
+                        "DocumentPart and non-image file inputs are unsupported",
+                    )
+                image_count += 1
+                if image_count > _MAX_IMAGES_PER_REQUEST:
+                    raise ValueError(
+                        "DeepSeek supports at most 600 images per request",
+                    )
+                DeepSeekAdapter._validate_image_part(part)
+
+    @staticmethod
+    def _validate_image_part(part: ImagePart) -> None:
+        """Validate one image's media type, source form, and documented limits."""
+        media_type = (part._get_media_type() or "").lower()
+        if media_type not in _SUPPORTED_IMAGE_MEDIA_TYPES:
+            raise ValueError(
+                "DeepSeek supports only JPEG, PNG, GIF, and WebP images",
+            )
+
+        if part.url is not None:
+            if not isinstance(part.url, str):
+                raise ValueError("DeepSeek image URL must be a string")
+            if part.url.startswith("data:"):
+                prefix, separator, encoded = part.url.partition(",")
+                prefix_parts = (
+                    prefix[5:].split(";")
+                    if prefix.lower().startswith("data:")
+                    else []
+                )
+                declared_media_type = (
+                    prefix_parts[0].lower() if prefix_parts else None
+                )
+                parameters = {value.lower() for value in prefix_parts[1:]}
+                if (
+                    not separator
+                    or "base64" not in parameters
+                    or declared_media_type != media_type
+                ):
+                    raise ValueError(
+                        "DeepSeek image data URI must be base64 and match its media type",
+                    )
+                try:
+                    decoded_size = len(base64.b64decode(encoded, validate=True))
+                except (binascii.Error, ValueError):
+                    raise ValueError(
+                        "DeepSeek image data URI contains invalid base64",
+                    ) from None
+                if decoded_size == 0:
+                    raise ValueError("DeepSeek image data URI must not be empty")
+                if decoded_size > _MAX_INLINE_IMAGE_BYTES:
+                    raise ValueError("DeepSeek inline images must be at most 32 MiB")
+                return
+            if len(part.url) > _MAX_IMAGE_URL_LENGTH:
+                raise ValueError("DeepSeek image URLs must be at most 8192 characters")
+            parsed = urlparse(part.url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("DeepSeek image URLs must use http(s)")
+            return
+
+        if part.data is None or not isinstance(part.data, bytes) or not part.data:
+            raise ValueError("DeepSeek image data must be non-empty bytes")
+        if len(part.data) > _MAX_INLINE_IMAGE_BYTES:
+            raise ValueError("DeepSeek inline images must be at most 32 MiB")
 
     def _validate_capability_preflight(
         self,
