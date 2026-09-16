@@ -6,9 +6,9 @@
 
 ## Overview
 
-**llm-api-adapter** is a minimal, typed adapter for seven organizations: OpenAI, Anthropic, Google, Mistral, xAI, Qwen, and Kimi. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching organizations means changing two arguments.
+**llm-api-adapter** is a minimal, typed adapter for eight organizations: OpenAI, Anthropic, Google, Mistral, xAI, Qwen, Kimi, and DeepSeek. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching organizations means changing two arguments.
 
-**Note:** Mistral, xAI, Qwen, and Kimi are installed separately with their optional extras.
+**Note:** Mistral, xAI, Qwen, Kimi, and DeepSeek are installed separately with their optional extras.
 
 Supports Python 3.10–3.14.
 
@@ -53,7 +53,7 @@ Supports Python 3.10–3.14.
 | Unified error hierarchy   | ✓ | OpenAI-compatible | framework-specific | ✗ |
 | Sync streaming            | ✓ text-first | ✓ | ✓ | ✓ |
 | Async API                 | ✓ optional | ✓ | ✓ | ✓ |
-| Number of organizations   | 7 | 100+ | 50+ | 1 |
+| Number of organizations   | 8 | 100+ | 50+ | 1 |
 
 * `reasoning_level` is one application-level parameter, but the available levels, native mapping, and emitted reasoning content remain model/provider-dependent.
 
@@ -131,13 +131,21 @@ To use Kimi / Moonshot, install its optional organization package:
 pip install "llm-api-adapter[kimi]"
 ```
 
+To use DeepSeek, install its optional organization package:
+
+```bash
+pip install "llm-api-adapter[deepseek]"
+```
+
 The [Mistral package README](packages/organizations/mistral/README.md),
-[xAI package README](packages/organizations/xai/README.md), and
-[Qwen package README](packages/organizations/qwen/README.md), and
-[Kimi package README](packages/organizations/kimi/README.md) list their
+[xAI package README](packages/organizations/xai/README.md),
+[Qwen package README](packages/organizations/qwen/README.md),
+[Kimi package README](packages/organizations/kimi/README.md), and
+[DeepSeek package README](packages/organizations/deepseek/README.md) list their
 supported models and organization-specific behaviour. Direct installation of
 `llm-api-adapter-mistral`, `llm-api-adapter-xai`, or
-`llm-api-adapter-qwen`, or `llm-api-adapter-kimi` remains supported.
+`llm-api-adapter-qwen`, `llm-api-adapter-kimi`, or
+`llm-api-adapter-deepseek` remains supported.
 
 **Core baseline and organization packages.** An organization enters Core when
 its supported models and adapter implement the complete provider-neutral
@@ -162,7 +170,7 @@ the optional `[httpx]` extra and pass `transport="httpx"`. The default remains
 `requests`; see the [HTTPX sync pilot guide](HTTPX_SYNC_PILOT.md).
 
 **Note:** You need an API key from each LLM provider you use, including
-Mistral, xAI, Qwen, or Kimi when their optional packages are installed. Refer to the
+Mistral, xAI, Qwen, Kimi, or DeepSeek when their optional packages are installed. Refer to the
 provider's documentation for API-key instructions.
 
 
@@ -403,7 +411,7 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 ### Using Different Providers and Models
 
-The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, xAI, Qwen, and Kimi. Mistral, xAI, Qwen, and Kimi require their corresponding optional extras.
+The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, xAI, Qwen, Kimi, and DeepSeek. Mistral, xAI, Qwen, Kimi, and DeepSeek require their corresponding optional extras.
 
 - **OpenAI**: You can use models like `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
 - **Anthropic**: Available models include `claude-fable-5-1`, `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
@@ -412,6 +420,7 @@ The SDK allows you to easily switch between LLM providers and specify the model 
 - **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.5` and `grok-4.6`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
 - **Qwen**: Install with `pip install "llm-api-adapter[qwen]"`. Fixed model IDs are `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`; every operation requires an explicit Frankfurt `workspace_id`. See the [Qwen package README](packages/organizations/qwen/README.md) for its capability boundary, including unsupported PDF input.
 - **Kimi**: Install with `pip install "llm-api-adapter[kimi]"`. Fixed model IDs are `kimi-k3` and `kimi-k2.6`; image bytes/data URIs are supported, while public image URLs and all PDF `DocumentPart` forms are rejected before HTTP. See the [Kimi package README](packages/organizations/kimi/README.md) for reasoning, cache-pricing, and data-handling details.
+- **DeepSeek**: Install with `pip install "llm-api-adapter[deepseek]"`, or install `llm-api-adapter-deepseek` directly. The package currently exposes the canonical `deepseek` organization entry point; see the [DeepSeek package README](packages/organizations/deepseek/README.md) for installation and discovery behavior.
 
 Example:
 
