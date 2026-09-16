@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import binascii
 from copy import deepcopy
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 from typing import Any, AsyncIterator, Iterator, List, Mapping, Optional
 from urllib.parse import urlparse
@@ -40,7 +42,7 @@ from llm_api_adapter.models.messages.chat_message import (
     UserMessage,
 )
 from llm_api_adapter.models.messages.file_parts import ImagePart
-from llm_api_adapter.models.responses.chat_response import ChatResponse
+from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from llm_api_adapter.models.tools import ToolSpec
 
 from .clients.sync_client import (
@@ -48,6 +50,10 @@ from .clients.sync_client import (
     DeepSeekResponsesSyncClient,
 )
 from .clients.async_client import DeepSeekResponsesAsyncClient
+from .registry.cache_pricing import (
+    DeepSeekFlashPricing,
+    pricing_for_dispatch,
+)
 from .streaming import (
     DeepSeekResponsesStreamParser,
     DeepSeekResponsesStreamState,
@@ -61,6 +67,32 @@ _SUPPORTED_IMAGE_MEDIA_TYPES = frozenset(
 _MAX_IMAGE_URL_LENGTH = 8192
 _MAX_INLINE_IMAGE_BYTES = 32 * 1024 * 1024
 _MAX_IMAGES_PER_REQUEST = 600
+_DEEPSEEK_DISPATCH_TIME: ContextVar[Optional[datetime]] = ContextVar(
+    "deepseek_dispatch_time",
+    default=None,
+)
+
+
+def _utc_now() -> datetime:
+    """Return an aware UTC instant for time-of-use pricing."""
+    return datetime.now(timezone.utc)
+
+
+def _reset_dispatch_time(token: Any) -> None:
+    """Reset a request context token when the async generator context permits it."""
+    try:
+        _DEEPSEEK_DISPATCH_TIME.reset(token)
+    except ValueError:
+        # Async-generator cancellation may finalize in a different context.
+        pass
+
+
+@dataclass
+class DeepSeekUsage(Usage):
+    """Provider usage with optional cache and reasoning token details."""
+
+    cached_tokens: Optional[int] = None
+    reasoning_tokens: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -135,7 +167,9 @@ class DeepSeekAdapter(LLMAdapterBase):
             response_model=response_model,
             capture_reasoning=capture_reasoning,
         )
+        dispatch_token = None
         try:
+            dispatch_token = _DEEPSEEK_DISPATCH_TIME.set(_utc_now())
             response = self._client.create(
                 model=self.model,
                 timeout=timeout_s,
@@ -152,6 +186,9 @@ class DeepSeekAdapter(LLMAdapterBase):
         except Exception as error:
             error_message = getattr(error, "text", None) or str(error)
             self.handle_error(error=error, error_message=error_message)
+        finally:
+            if dispatch_token is not None:
+                _reset_dispatch_time(dispatch_token)
 
     async def achat(
         self,
@@ -185,7 +222,9 @@ class DeepSeekAdapter(LLMAdapterBase):
             response_model=response_model,
             capture_reasoning=capture_reasoning,
         )
+        dispatch_token = None
         try:
+            dispatch_token = _DEEPSEEK_DISPATCH_TIME.set(_utc_now())
             response = await self._async_client.create(
                 model=self.model,
                 timeout=timeout_s,
@@ -202,6 +241,9 @@ class DeepSeekAdapter(LLMAdapterBase):
         except Exception as error:
             error_message = getattr(error, "text", None) or str(error)
             self.handle_error(error=error, error_message=error_message)
+        finally:
+            if dispatch_token is not None:
+                _reset_dispatch_time(dispatch_token)
 
     def stream_chat(
         self,
@@ -245,25 +287,29 @@ class DeepSeekAdapter(LLMAdapterBase):
             buffer_chars=buffer_chars,
             capture_reasoning=prepared.capture_reasoning,
         )
-        events = self._client.stream(
-            model=self.model,
-            timeout=timeout_s,
-            **prepared.parameters,
-        )
-        yield from self._run_sync_stream(
-            events,
-            state,
-            consume_event=self._consume_stream_event,
-            finalize_response=self._finalize_stream,
-            effective_schema=prepared.effective_schema,
-            response_model=prepared.response_model,
-            on_delta=on_delta,
-            on_tool_call=on_tool_call,
-            on_done=on_done,
-            on_chunk=on_chunk,
-            capture_reasoning=prepared.capture_reasoning,
-            on_reasoning=on_reasoning,
-        )
+        dispatch_token = _DEEPSEEK_DISPATCH_TIME.set(_utc_now())
+        try:
+            events = self._client.stream(
+                model=self.model,
+                timeout=timeout_s,
+                **prepared.parameters,
+            )
+            yield from self._run_sync_stream(
+                events,
+                state,
+                consume_event=self._consume_stream_event,
+                finalize_response=self._finalize_stream,
+                effective_schema=prepared.effective_schema,
+                response_model=prepared.response_model,
+                on_delta=on_delta,
+                on_tool_call=on_tool_call,
+                on_done=on_done,
+                on_chunk=on_chunk,
+                capture_reasoning=prepared.capture_reasoning,
+                on_reasoning=on_reasoning,
+            )
+        finally:
+            _reset_dispatch_time(dispatch_token)
 
     async def astream_chat(
         self,
@@ -307,26 +353,30 @@ class DeepSeekAdapter(LLMAdapterBase):
             buffer_chars=buffer_chars,
             capture_reasoning=prepared.capture_reasoning,
         )
-        events = self._async_client.stream(
-            model=self.model,
-            timeout=timeout_s,
-            **prepared.parameters,
-        )
-        async for text in self._run_async_stream(
-            events,
-            state,
-            consume_event=self._consume_stream_event_async,
-            finalize_response=self._finalize_stream,
-            effective_schema=prepared.effective_schema,
-            response_model=prepared.response_model,
-            on_delta=on_delta,
-            on_tool_call=on_tool_call,
-            on_done=on_done,
-            on_chunk=on_chunk,
-            capture_reasoning=prepared.capture_reasoning,
-            on_reasoning=on_reasoning,
-        ):
-            yield text
+        dispatch_token = _DEEPSEEK_DISPATCH_TIME.set(_utc_now())
+        try:
+            events = self._async_client.stream(
+                model=self.model,
+                timeout=timeout_s,
+                **prepared.parameters,
+            )
+            async for text in self._run_async_stream(
+                events,
+                state,
+                consume_event=self._consume_stream_event_async,
+                finalize_response=self._finalize_stream,
+                effective_schema=prepared.effective_schema,
+                response_model=prepared.response_model,
+                on_delta=on_delta,
+                on_tool_call=on_tool_call,
+                on_done=on_done,
+                on_chunk=on_chunk,
+                capture_reasoning=prepared.capture_reasoning,
+                on_reasoning=on_reasoning,
+            ):
+                yield text
+        finally:
+            _reset_dispatch_time(dispatch_token)
 
     def _consume_stream_event(
         self,
@@ -772,9 +822,71 @@ class DeepSeekAdapter(LLMAdapterBase):
             raise LLMAPIClientError(
                 detail="DeepSeek Responses API response.output must be an array",
             )
-        return ChatResponse.from_openai_responses_response(
+        chat_response = ChatResponse.from_openai_responses_response(
             response,
             capture_reasoning=capture_reasoning,
+        )
+        chat_response.usage = DeepSeekAdapter._normalize_deepseek_usage(
+            response.get("usage"),
+        )
+        return chat_response
+
+    @staticmethod
+    def _normalize_deepseek_usage(raw_usage: Any) -> Optional[DeepSeekUsage]:
+        """Normalize only complete, internally consistent provider usage."""
+        if not isinstance(raw_usage, Mapping):
+            return None
+
+        input_tokens = raw_usage.get("input_tokens")
+        output_tokens = raw_usage.get("output_tokens")
+        total_tokens = raw_usage.get("total_tokens")
+        required = (input_tokens, output_tokens, total_tokens)
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            for value in required
+        ):
+            return None
+        if total_tokens != input_tokens + output_tokens:
+            return None
+
+        cached_tokens: Optional[int] = None
+        input_details = raw_usage.get("input_tokens_details")
+        if input_details is not None:
+            if not isinstance(input_details, Mapping):
+                return None
+            if "cached_tokens" in input_details:
+                cached_tokens = input_details.get("cached_tokens")
+                if cached_tokens is not None and (
+                    isinstance(cached_tokens, bool)
+                    or not isinstance(cached_tokens, int)
+                    or cached_tokens < 0
+                    or cached_tokens > input_tokens
+                ):
+                    return None
+
+        reasoning_tokens: Optional[int] = None
+        output_details = raw_usage.get("output_tokens_details")
+        if output_details is not None:
+            if not isinstance(output_details, Mapping):
+                return None
+            if "reasoning_tokens" in output_details:
+                reasoning_tokens = output_details.get("reasoning_tokens")
+                if reasoning_tokens is not None and (
+                    isinstance(reasoning_tokens, bool)
+                    or not isinstance(reasoning_tokens, int)
+                    or reasoning_tokens < 0
+                    or reasoning_tokens > output_tokens
+                ):
+                    return None
+
+        return DeepSeekUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
+            reasoning_tokens=reasoning_tokens,
         )
 
     def _finalize_deepseek_chat_response(
@@ -791,11 +903,50 @@ class DeepSeekAdapter(LLMAdapterBase):
             capture_reasoning=capture_reasoning,
         )
         self._store_reasoning_replay(chat_response, response)
-        return self._finalize_chat_response(
+        self._prepare_structured_output_response(
             chat_response,
-            effective_schema=effective_schema,
-            response_model=response_model,
+            effective_schema,
+            response_model,
         )
+        self._apply_response_pricing(chat_response)
+        return chat_response
+
+    def _apply_response_pricing(self, chat_response: ChatResponse) -> None:
+        """Apply only verifiable DeepSeek time-of-use standard estimates."""
+        chat_response.currency = None
+        chat_response.cost_input = None
+        chat_response.cost_output = None
+        chat_response.cost_total = None
+
+        usage = chat_response.usage
+        if usage is None or not isinstance(usage, Usage):
+            return
+
+        dispatch_time = _DEEPSEEK_DISPATCH_TIME.get() or _utc_now()
+        pricing = pricing_for_dispatch(dispatch_time)
+        if (
+            not isinstance(pricing, DeepSeekFlashPricing)
+            or not pricing.is_valid()
+            or self.model != "deepseek-flash"
+            or self.model_spec is None
+        ):
+            return
+
+        if isinstance(usage, DeepSeekUsage) and usage.cached_tokens is not None:
+            uncached_tokens = usage.input_tokens - usage.cached_tokens
+            chat_response.cost_input = (
+                usage.cached_tokens * pricing.cache_hit_input_per_token
+                + uncached_tokens * pricing.cache_miss_input_per_token
+            )
+        chat_response.cost_output = usage.output_tokens * pricing.output_per_token
+        chat_response.currency = "USD"
+        if (
+            chat_response.cost_input is not None
+            and chat_response.cost_output is not None
+        ):
+            chat_response.cost_total = (
+                chat_response.cost_input + chat_response.cost_output
+            )
 
     def _store_reasoning_replay(
         self,
@@ -846,4 +997,4 @@ class DeepSeekAdapter(LLMAdapterBase):
         return replay_items
 
 
-__all__ = ["DeepSeekAdapter"]
+__all__ = ["DeepSeekAdapter", "DeepSeekUsage"]

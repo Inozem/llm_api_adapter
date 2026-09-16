@@ -8,6 +8,13 @@ from typing import Any
 
 from llm_api_adapter.llm_registry.llm_registry import OrganizationModelMetadata
 
+from .cache_pricing import (
+    DeepSeekFlashPricing,
+    OFF_PEAK_PRICING,
+    PEAK_PRICING,
+    pricing_for_dispatch,
+)
+
 
 def _load_organization_data() -> dict[str, Any]:
     resource = files(__package__).joinpath("organizations/deepseek.json")
@@ -25,4 +32,11 @@ MODEL_METADATA = OrganizationModelMetadata(
 )
 
 
-__all__ = ["MODEL_METADATA", "ORGANIZATION_DATA"]
+__all__ = [
+    "DeepSeekFlashPricing",
+    "MODEL_METADATA",
+    "OFF_PEAK_PRICING",
+    "ORGANIZATION_DATA",
+    "PEAK_PRICING",
+    "pricing_for_dispatch",
+]

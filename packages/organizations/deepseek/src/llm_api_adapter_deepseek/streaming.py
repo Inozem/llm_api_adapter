@@ -29,6 +29,7 @@ class DeepSeekResponsesStreamState(_StreamState):
     terminal_event: Optional[str] = None
     terminal_detail: Optional[str] = None
     usage: Optional[Usage] = None
+    raw_usage: Optional[dict[str, Any]] = None
     next_output_index: int = 0
 
 
@@ -83,6 +84,7 @@ class DeepSeekResponsesStreamParser:
         usage = cls._normalize_usage(raw_usage)
         if usage is not None:
             state.usage = usage
+            state.raw_usage = dict(raw_usage)
             state.usage_tracker.record(state.chunk_buffer, usage)
 
         if event_type in cls.TERMINAL_EVENTS:
@@ -513,7 +515,7 @@ class DeepSeekResponsesStreamParser:
             }
         )
         if state.usage is not None:
-            response["usage"] = {
+            response["usage"] = state.raw_usage or {
                 "input_tokens": state.usage.input_tokens,
                 "output_tokens": state.usage.output_tokens,
                 "total_tokens": state.usage.total_tokens,
@@ -564,6 +566,8 @@ class DeepSeekResponsesStreamParser:
             isinstance(value, bool) or not isinstance(value, int) or value < 0
             for value in values
         ):
+            return None
+        if values[2] != values[0] + values[1]:
             return None
         return Usage(
             input_tokens=values[0],
