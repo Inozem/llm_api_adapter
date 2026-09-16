@@ -32,6 +32,7 @@ from .clients.sync_client import (
     DEEPSEEK_RESPONSES_URL,
     DeepSeekResponsesSyncClient,
 )
+from .clients.async_client import DeepSeekResponsesAsyncClient
 
 
 @dataclass(frozen=True)
@@ -56,12 +57,21 @@ class DeepSeekAdapter(LLMAdapterBase):
         repr=False,
         compare=False,
     )
+    _async_client: DeepSeekResponsesAsyncClient = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         super().__post_init__()
         self._client = DeepSeekResponsesSyncClient(
             api_key=self.api_key,
             transport=self.transport,
+            endpoint=self.endpoint,
+        )
+        self._async_client = DeepSeekResponsesAsyncClient(
+            api_key=self.api_key,
             endpoint=self.endpoint,
         )
 
@@ -132,23 +142,38 @@ class DeepSeekAdapter(LLMAdapterBase):
         *,
         capture_reasoning: bool = False,
     ) -> ChatResponse:
-        """Asynchronous request support is completed in T012."""
-        del (
-            messages,
-            max_tokens,
-            temperature,
-            top_p,
-            reasoning_level,
-            timeout_s,
-            tools,
-            tool_choice,
-            parallel_tool_calls,
-            previous_response,
-            json_schema,
-            response_model,
-            capture_reasoning,
+        """Create one normalized response through Core's async transport."""
+        prepared = self._prepare_responses_parameters(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            reasoning_level=reasoning_level,
+            tools=tools,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            previous_response=previous_response,
+            json_schema=json_schema,
+            response_model=response_model,
+            capture_reasoning=capture_reasoning,
         )
-        raise NotImplementedError("DeepSeek async support is implemented in T012")
+        try:
+            response = await self._async_client.create(
+                model=self.model,
+                timeout=timeout_s,
+                **prepared.parameters,
+            )
+            return self._finalize_deepseek_chat_response(
+                response,
+                effective_schema=prepared.effective_schema,
+                response_model=prepared.response_model,
+                capture_reasoning=prepared.capture_reasoning,
+            )
+        except LLMAPIError as error:
+            self.handle_error(error)
+        except Exception as error:
+            error_message = getattr(error, "text", None) or str(error)
+            self.handle_error(error=error, error_message=error_message)
 
     def stream_chat(
         self,
