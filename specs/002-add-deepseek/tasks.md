@@ -132,7 +132,7 @@ and unavailable pricing remains unavailable.
 
 ### Tests for User Story 4
 
-- [ ] T029 [P] [US4] Add failing document preflight and usage/cost cases for `DocumentPart`, non-image files, missing or malformed usage, cached/reasoning token details, and peak/off-peak UTC dispatch times in `packages/organizations/deepseek/tests/test_deepseek_adapter.py`.
+- [X] T029 [P] [US4] Add failing document preflight and usage/cost cases for `DocumentPart`, non-image files, missing or malformed usage, cached/reasoning token details, and peak/off-peak UTC dispatch times in `packages/organizations/deepseek/tests/test_deepseek_adapter.py`.
 - [ ] T030 [P] [US4] Write the installed-distribution non-live file boundary test proving that document input cannot start a DeepSeek request in `packages/organizations/deepseek/tests/e2e/test_file_contract.py`.
 
 ### Implementation for User Story 4

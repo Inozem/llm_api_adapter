@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
@@ -22,6 +23,7 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
         sys.path.insert(0, source)
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
+import llm_api_adapter_deepseek.adapter as deepseek_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.errors.llm_api_error import (
     JSONSchemaError,
@@ -46,7 +48,7 @@ from llm_api_adapter.models.messages.chat_message import (
     ToolMessage,
     UserMessage,
 )
-from llm_api_adapter.models.messages.file_parts import ImagePart
+from llm_api_adapter.models.messages.file_parts import DocumentPart, FilePart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools import ToolCall, ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
@@ -175,6 +177,13 @@ def _response() -> dict[str, Any]:
             "total_tokens": 25,
         },
     }
+
+
+def _response_with_usage(usage: Any) -> dict[str, Any]:
+    """Return a completed response with a caller-controlled usage payload."""
+    response = _response()
+    response["usage"] = usage
+    return response
 
 
 def _function_call_response() -> dict[str, Any]:
@@ -1272,3 +1281,175 @@ def test_deepseek_preserves_flat_http_details_and_nested_stream_errors():
     ):
         with pytest.raises(LLMAPIRateLimitError, match="DeepSeek stream rate limit"):
             handler(event)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "file_part",
+    [
+        DocumentPart(url="https://example.test/reference.pdf"),
+        DocumentPart(data=b"%PDF-deepseek", media_type="application/pdf"),
+        FilePart(url="https://example.test/reference.txt", media_type="text/plain"),
+        FilePart(data=b"plain text", media_type="text/plain"),
+    ],
+)
+def test_deepseek_rejects_documents_and_non_image_files_before_transport(
+    deepseek_runtime,
+    file_part,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.raises(ValueError, match="DocumentPart|FilePart|non-image|file input"):
+        adapter.chat(
+            messages=[UserMessage("Read this attachment.", files=[file_part])],
+        )
+
+    assert transport.requests == []
+
+
+def _deepseek_usage_response() -> dict[str, Any]:
+    return _response_with_usage(
+        {
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 25},
+            "output_tokens": 40,
+            "output_tokens_details": {"reasoning_tokens": 15},
+            "total_tokens": 140,
+        },
+    )
+
+
+def _freeze_deepseek_dispatch_time(
+    monkeypatch,
+    dispatch_time: datetime,
+) -> None:
+    """Provide a deterministic UTC clock seam for time-of-use pricing tests."""
+    monkeypatch.setattr(
+        deepseek_adapter_module,
+        "_utc_now",
+        lambda: dispatch_time,
+        raising=False,
+    )
+
+
+@pytest.mark.unit
+def test_deepseek_retains_valid_cached_and_reasoning_usage_details(
+    deepseek_runtime,
+):
+    adapter = _deepseek_facade()
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        _deepseek_usage_response(),
+    )
+
+    response = adapter.chat(messages=[UserMessage("Report token details.")])
+
+    assert response.usage is not None
+    assert response.usage.input_tokens == 100
+    assert response.usage.output_tokens == 40
+    assert response.usage.total_tokens == 140
+    assert response.usage.cached_tokens == 25
+    assert response.usage.reasoning_tokens == 15
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("dispatch_time", "expected_input", "expected_output", "expected_total"),
+    [
+        (
+            datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc),
+            (25 * 0.006 + 75 * 0.3) / 1_000_000,
+            40 * 1.2 / 1_000_000,
+            (25 * 0.006 + 75 * 0.3 + 40 * 1.2) / 1_000_000,
+        ),
+        (
+            datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc),
+            (25 * 0.003 + 75 * 0.15) / 1_000_000,
+            40 * 0.6 / 1_000_000,
+            (25 * 0.003 + 75 * 0.15 + 40 * 0.6) / 1_000_000,
+        ),
+    ],
+)
+def test_deepseek_prices_valid_usage_at_peak_and_off_peak_utc_dispatch(
+    deepseek_runtime,
+    monkeypatch,
+    dispatch_time,
+    expected_input,
+    expected_output,
+    expected_total,
+):
+    _freeze_deepseek_dispatch_time(monkeypatch, dispatch_time)
+    adapter = _deepseek_facade()
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        _deepseek_usage_response(),
+    )
+
+    response = adapter.chat(messages=[UserMessage("Price this request.")])
+
+    assert response.currency == "USD"
+    assert response.cost_input == pytest.approx(expected_input)
+    assert response.cost_output == pytest.approx(expected_output)
+    assert response.cost_total == pytest.approx(expected_total)
+
+
+@pytest.mark.unit
+def test_deepseek_leaves_cost_unset_when_usage_is_missing(deepseek_runtime):
+    response_payload = _response()
+    response_payload.pop("usage")
+    adapter = _deepseek_facade()
+    adapter.adapter._client._sync_transport = FakeSyncTransport(response_payload)
+
+    response = adapter.chat(messages=[UserMessage("No usage please.")])
+
+    assert response.usage is None
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {},
+        {
+            "input_tokens": -1,
+            "output_tokens": 40,
+            "total_tokens": 39,
+        },
+        {
+            "input_tokens": 100.5,
+            "output_tokens": 40,
+            "total_tokens": 140.5,
+        },
+        {
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 101},
+            "output_tokens": 40,
+            "total_tokens": 140,
+        },
+        {
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "output_tokens_details": {"reasoning_tokens": -1},
+            "total_tokens": 140,
+        },
+        {
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "total_tokens": 999,
+        },
+    ],
+)
+def test_deepseek_leaves_cost_unset_for_malformed_usage(deepseek_runtime, usage):
+    adapter = _deepseek_facade()
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        _response_with_usage(usage),
+    )
+
+    response = adapter.chat(messages=[UserMessage("Validate usage.")])
+
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
