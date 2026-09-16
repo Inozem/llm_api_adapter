@@ -54,7 +54,7 @@ simulated Responses API results, and verify normalized sync, async, and stream o
 
 ### Tests for User Story 1
 
-- [ ] T007 [P] [US1] Write failing distribution and plugin-contract tests for the version range, transport extras, entry point, plugin API version, and `deepseek` registration in `packages/organizations/deepseek/tests/test_package_scaffold.py`.
+- [X] T007 [P] [US1] Write failing distribution and plugin-contract tests for the version range, transport extras, entry point, plugin API version, and `deepseek` registration in `packages/organizations/deepseek/tests/test_package_scaffold.py`.
 - [ ] T008 [P] [US1] Write failing mocked facade tests for normal text `chat()`, `achat()`, `stream_chat()`, and `astream_chat()` Responses behavior, callbacks, completion, cancellation, and malformed terminal events in `packages/organizations/deepseek/tests/test_deepseek_adapter.py`.
 
 ### Implementation for User Story 1
