@@ -126,7 +126,8 @@ with mocked requests and verify registry-derived behavior and warnings.
 - **FR-001**: The SDK MUST provide one facade that selects an adapter using organization, model,
   API key, an optional service provider, and a documented synchronous transport choice.
 - **FR-002**: The SDK MUST support OpenAI, Anthropic, and Google as built-in organizations and
-  MUST support Mistral, xAI, Qwen, and Kimi through separately installable organization packages.
+  MUST support Mistral, xAI, Qwen, Kimi, and DeepSeek through separately installable organization
+  packages.
 - **FR-003**: The SDK MUST accept typed messages and supported OpenAI-style message dictionaries,
   including mixed input, and normalize system, user, assistant, and tool-result turns.
 - **FR-004**: The SDK MUST expose synchronous and asynchronous completed-chat operations and
@@ -213,6 +214,7 @@ boundary. The following current differences are externally observable and must r
 | xAI package | Provides the common contract through its supported response capability. Public PDF URLs and PDF bytes have distinct documented attachment handling. Provider-side continuation is accepted but not sent. |
 | Qwen package | Requires an explicit workspace setting for every operation and supports only its documented endpoint region. It rejects PDF input before request submission. |
 | Kimi package | Supports image bytes and data URIs within its documented boundary, but rejects public image URLs and all PDF document forms before request submission. Provider-side continuation is accepted but not sent. |
+| DeepSeek package | Supports only its documented canonical model and capability matrix. It rejects direct PDF/document and non-image file input before request submission. A reasoned continuation may use opaque response metadata from a matching prior DeepSeek response; that metadata is never rendered, included in debug output, or logged. |
 
 Model-specific tool-choice and reasoning restrictions remain registry-derived contract behavior.
 They must reject or warn according to the applicable common request rule rather than silently
@@ -229,6 +231,8 @@ substitute a different caller intent.
   provider-returned normalized request to invoke it; the SDK does not execute application tools.
 - **Completed response**: The normalized outcome of a chat or completed stream, including visible
   content and optional metadata, parsed output, usage, cost, tools, reasoning, or terminal state.
+  A documented provider may retain opaque transport-only metadata for continuation, but it never
+  becomes visible content, reasoning, debug output, or logged data.
 - **Model specification**: Verified organization-owned metadata describing limits, standard rates,
   reasoning, and exact compatibility restrictions for a model.
 
