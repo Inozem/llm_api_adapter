@@ -115,7 +115,7 @@ only the published matrix.
 - [X] T025 [US3] Implement opt-in visible reasoning, opaque `deepseek.reasoning_replay` storage in `ChatResponse.provider_data`, and local validation/replay only from a matching DeepSeek `previous_response`, without server-side continuation IDs, rendering, debug representation, or logging in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/adapter.py`.
 - [X] T026 [US3] Extend the DeepSeek SSE parser for reasoning, response terminal states, fragmented function calls, usage, opaque continuation material, and failed/cancelled streams in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/streaming.py`.
 - [X] T027 [US3] Map documented DeepSeek 400/401/402/422/429/500/503 Responses failures to existing normalized errors, with no adapter retry loop, in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/clients/sync_client.py` and `packages/organizations/deepseek/src/llm_api_adapter_deepseek/clients/async_client.py`.
-- [ ] T028 [US3] Run the model discovery, adapter capability-boundary, transport-parity, and mocked stream evidence in `packages/organizations/deepseek/tests/test_capability_discovery.py` and `packages/organizations/deepseek/tests/test_deepseek_adapter.py` for the documented contract only.
+- [X] T028 [US3] Run the model discovery, adapter capability-boundary, transport-parity, and mocked stream evidence in `packages/organizations/deepseek/tests/test_capability_discovery.py` and `packages/organizations/deepseek/tests/test_deepseek_adapter.py` for the documented contract only.
 
 **Checkpoint**: Every published DeepSeek capability has deterministic evidence, and unsupported modes are rejected before a provider call.
 
