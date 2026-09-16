@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 import sys
 from typing import Any, Iterator, Mapping
@@ -21,7 +22,7 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
-from llm_api_adapter.errors.llm_api_error import LLMAPIClientError
+from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIError
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
 from llm_api_adapter.llms.transports import (
     JSONResponse,
@@ -29,9 +30,50 @@ from llm_api_adapter.llms.transports import (
     SyncTransport,
     TransportRequest,
 )
-from llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
+from llm_api_adapter.models.messages.chat_message import (
+    AIMessage,
+    Prompt,
+    UserMessage,
+)
+from llm_api_adapter.models.messages.file_parts import ImagePart
+from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+
+WEATHER_TOOL = ToolSpec(
+    name="get_weather",
+    description="Return the current weather for a city.",
+    json_schema={
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+        "additionalProperties": False,
+    },
+)
+
+FLAT_OBJECT_SCHEMA = {
+    "type": "object",
+    "properties": {"answer": {"type": "string"}},
+    "required": ["answer"],
+    "additionalProperties": False,
+}
+
+
+@dataclass(frozen=True)
+class StructuredAnswer:
+    """Pydantic-compatible response model without a test dependency."""
+
+    answer: str
+
+    @classmethod
+    def model_json_schema(cls) -> dict[str, Any]:
+        return FLAT_OBJECT_SCHEMA
+
+    @classmethod
+    def model_validate(cls, value: dict[str, Any], **kwargs: Any) -> "StructuredAnswer":
+        del kwargs
+        return cls(answer=value["answer"])
 
 
 @dataclass
@@ -121,6 +163,46 @@ def _response() -> dict[str, Any]:
     }
 
 
+def _function_call_response() -> dict[str, Any]:
+    response = _response()
+    response["output"] = [
+        {
+            "type": "function_call",
+            "id": "fc-deepseek-weather",
+            "call_id": "call-deepseek-weather",
+            "name": "get_weather",
+            "arguments": '{"city":"Haifa"}',
+            "status": "completed",
+        },
+    ]
+    return response
+
+
+def _structured_response() -> dict[str, Any]:
+    response = _response()
+    response["output"][0]["content"][0]["text"] = '{"answer":"ok"}'
+    return response
+
+
+def _reasoning_response() -> dict[str, Any]:
+    response = _response()
+    response["output"] = [
+        {
+            "type": "reasoning",
+            "id": "rs-deepseek-replay",
+            "summary": [
+                {"type": "summary_text", "text": "Internal summary."},
+            ],
+            "content": [
+                {"type": "reasoning_text", "text": "Internal details."},
+            ],
+            "reasoning_content": "opaque-reasoning-replay-sentinel",
+        },
+        response["output"][0],
+    ]
+    return response
+
+
 def _stream_events() -> list[SSEEvent]:
     response = _response()
     response["id"] = "stream-deepseek-flash"
@@ -194,6 +276,220 @@ def _deepseek_facade() -> UniversalLLMAPIAdapter:
         model="deepseek-flash",
         api_key="deepseek-test-key",
     )
+
+
+@pytest.mark.integration
+def test_chat_maps_responses_function_tools_and_normalizes_tool_calls(
+    deepseek_runtime,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_function_call_response())
+    adapter.adapter._client._sync_transport = transport
+
+    response = adapter.chat(
+        messages=[UserMessage("What is the weather in Haifa?")],
+        tools=[WEATHER_TOOL],
+        tool_choice="get_weather",
+    )
+
+    assert response.tool_calls is not None
+    assert [(call.name, call.arguments, call.call_id) for call in response.tool_calls] == [
+        ("get_weather", {"city": "Haifa"}, "call-deepseek-weather"),
+    ]
+    assert transport.requests[0].payload["tools"] == [
+        {
+            "type": "function",
+            "name": "get_weather",
+            "description": "Return the current weather for a city.",
+            "parameters": WEATHER_TOOL.json_schema,
+        },
+    ]
+    assert transport.requests[0].payload["tool_choice"] == {
+        "type": "function",
+        "name": "get_weather",
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("tool_choice", "expected"),
+    [
+        ("auto", "auto"),
+        ("none", "none"),
+        ("any", "required"),
+        ("get_weather", {"type": "function", "name": "get_weather"}),
+    ],
+)
+def test_chat_maps_each_supported_responses_tool_choice(
+    deepseek_runtime,
+    tool_choice,
+    expected,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    adapter.chat(
+        messages=[UserMessage("Use the weather tool.")],
+        tools=[WEATHER_TOOL],
+        tool_choice=tool_choice,
+    )
+
+    assert transport.requests[0].payload["tool_choice"] == expected
+
+
+@pytest.mark.integration
+def test_chat_maps_portable_json_schema_and_pydantic_output(deepseek_runtime):
+    adapter = _deepseek_facade()
+
+    schema_transport = FakeSyncTransport(_structured_response())
+    adapter.adapter._client._sync_transport = schema_transport
+    schema_response = adapter.chat(
+        messages=[UserMessage("Reply as JSON.")],
+        json_schema=FLAT_OBJECT_SCHEMA,
+    )
+
+    assert schema_response.parsed_json == {"answer": "ok"}
+    assert schema_transport.requests[0].payload["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "response",
+            "schema": FLAT_OBJECT_SCHEMA,
+        },
+    }
+
+    model_transport = FakeSyncTransport(_structured_response())
+    adapter.adapter._client._sync_transport = model_transport
+    model_response = adapter.chat(
+        messages=[UserMessage("Reply as a typed answer.")],
+        response_model=StructuredAnswer,
+    )
+
+    assert model_response.parsed_json == {"answer": "ok"}
+    assert model_response.parsed_model == StructuredAnswer(answer="ok")
+    assert model_transport.requests[0].payload["text"]["format"]["schema"] == (
+        StructuredAnswer.model_json_schema()
+    )
+
+
+@pytest.mark.integration
+def test_chat_maps_image_url_and_data_parts_without_file_upload(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    adapter.chat(
+        messages=[
+            UserMessage(
+                "Describe both images.",
+                files=[
+                    ImagePart(url="https://example.test/image.png"),
+                    ImagePart(data=b"image", media_type="image/png"),
+                ],
+            ),
+        ],
+    )
+
+    assert transport.requests[0].payload["input"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe both images."},
+                {
+                    "type": "input_image",
+                    "image_url": "https://example.test/image.png",
+                },
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,aW1hZ2U=",
+                },
+            ],
+        },
+    ]
+
+
+@pytest.mark.integration
+def test_reasoning_capture_is_opt_in_and_replay_stays_opaque(deepseek_runtime):
+    adapter = _deepseek_facade()
+    first_transport = FakeSyncTransport(_reasoning_response())
+    adapter.adapter._client._sync_transport = first_transport
+
+    first_response = adapter.chat(
+        messages=[UserMessage("Solve this carefully.")],
+        reasoning_level="high",
+        capture_reasoning=True,
+    )
+
+    assert first_response.content == "Hello from DeepSeek."
+    assert [event.text for event in first_response.reasoning_events] == [
+        "Internal summary.",
+        "Internal details.",
+    ]
+    assert first_response.provider_data is not None
+    replay = first_response.provider_data["deepseek.reasoning_replay"]
+    assert "opaque-reasoning-replay-sentinel" in json.dumps(replay)
+    assert "opaque-reasoning-replay-sentinel" not in (first_response.content or "")
+    assert "opaque-reasoning-replay-sentinel" not in repr(first_response)
+
+    second_transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = second_transport
+    second_response = adapter.chat(
+        messages=[
+            UserMessage("Solve this carefully."),
+            AIMessage(content=first_response.content or ""),
+            UserMessage("Now continue."),
+        ],
+        reasoning_level="high",
+        previous_response=first_response,
+    )
+
+    second_payload = second_transport.requests[0].payload
+    assert "previous_response_id" not in second_payload
+    assert "opaque-reasoning-replay-sentinel" in json.dumps(second_payload)
+    assert "opaque-reasoning-replay-sentinel" not in (second_response.content or "")
+    assert "opaque-reasoning-replay-sentinel" not in repr(second_response)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("parallel_tool_calls", [False, True])
+def test_explicit_parallel_tool_control_fails_before_http(
+    deepseek_runtime,
+    parallel_tool_calls,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.raises(NotImplementedError, match="parallel_tool_calls"):
+        adapter.chat(
+            messages=[UserMessage("Use the weather tool.")],
+            tools=[WEATHER_TOOL],
+            parallel_tool_calls=parallel_tool_calls,
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+def test_unverified_model_capability_fails_before_http(deepseek_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="deepseek",
+        model="deepseek-flash-latest",
+        api_key="deepseek-test-key",
+    )
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.raises(
+        (LLMAPIError, NotImplementedError),
+        match="not verified|capability|supported",
+    ):
+        adapter.chat(
+            messages=[UserMessage("Use the weather tool.")],
+            tools=[WEATHER_TOOL],
+        )
+
+    assert transport.requests == []
 
 
 @pytest.mark.integration
