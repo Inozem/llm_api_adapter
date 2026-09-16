@@ -33,6 +33,10 @@ from .clients.sync_client import (
     DeepSeekResponsesSyncClient,
 )
 from .clients.async_client import DeepSeekResponsesAsyncClient
+from .streaming import (
+    DeepSeekResponsesStreamParser,
+    DeepSeekResponsesStreamState,
+)
 
 
 @dataclass(frozen=True)
@@ -198,29 +202,44 @@ class DeepSeekAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
-        """Streaming support is completed in T013."""
-        del (
-            messages,
-            max_tokens,
-            temperature,
-            top_p,
-            reasoning_level,
-            timeout_s,
-            tools,
-            tool_choice,
-            parallel_tool_calls,
-            previous_response,
-            json_schema,
-            response_model,
-            on_delta,
-            on_tool_call,
-            on_done,
-            buffer_chars,
-            on_chunk,
-            capture_reasoning,
-            on_reasoning,
+        """Stream visible Responses text through Core's sync lifecycle."""
+        prepared = self._prepare_responses_parameters(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            reasoning_level=reasoning_level,
+            tools=tools,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            previous_response=previous_response,
+            json_schema=json_schema,
+            response_model=response_model,
+            capture_reasoning=capture_reasoning,
         )
-        raise NotImplementedError("DeepSeek streaming support is implemented in T013")
+        state = DeepSeekResponsesStreamParser.new_state(
+            buffer_chars=buffer_chars,
+            capture_reasoning=prepared.capture_reasoning,
+        )
+        events = self._client.stream(
+            model=self.model,
+            timeout=timeout_s,
+            **prepared.parameters,
+        )
+        yield from self._run_sync_stream(
+            events,
+            state,
+            consume_event=self._consume_stream_event,
+            finalize_response=self._finalize_stream,
+            effective_schema=prepared.effective_schema,
+            response_model=prepared.response_model,
+            on_delta=on_delta,
+            on_tool_call=on_tool_call,
+            on_done=on_done,
+            on_chunk=on_chunk,
+            capture_reasoning=prepared.capture_reasoning,
+            on_reasoning=on_reasoning,
+        )
 
     async def astream_chat(
         self,
@@ -245,30 +264,101 @@ class DeepSeekAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
         on_reasoning: Optional[AsyncOnReasoning] = None,
     ) -> AsyncIterator[str]:
-        """Asynchronous streaming support is completed in T013."""
-        del (
-            messages,
-            max_tokens,
-            temperature,
-            top_p,
-            reasoning_level,
-            timeout_s,
-            tools,
-            tool_choice,
-            parallel_tool_calls,
-            previous_response,
-            json_schema,
-            response_model,
-            on_delta,
-            on_tool_call,
-            on_done,
-            buffer_chars,
-            on_chunk,
-            capture_reasoning,
-            on_reasoning,
+        """Stream visible Responses text through Core's async lifecycle."""
+        prepared = self._prepare_responses_parameters(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            reasoning_level=reasoning_level,
+            tools=tools,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            previous_response=previous_response,
+            json_schema=json_schema,
+            response_model=response_model,
+            capture_reasoning=capture_reasoning,
         )
-        raise NotImplementedError("DeepSeek streaming support is implemented in T013")
-        yield ""
+        state = DeepSeekResponsesStreamParser.new_state(
+            buffer_chars=buffer_chars,
+            capture_reasoning=prepared.capture_reasoning,
+        )
+        events = self._async_client.stream(
+            model=self.model,
+            timeout=timeout_s,
+            **prepared.parameters,
+        )
+        async for text in self._run_async_stream(
+            events,
+            state,
+            consume_event=self._consume_stream_event_async,
+            finalize_response=self._finalize_stream,
+            effective_schema=prepared.effective_schema,
+            response_model=prepared.response_model,
+            on_delta=on_delta,
+            on_tool_call=on_tool_call,
+            on_done=on_done,
+            on_chunk=on_chunk,
+            capture_reasoning=prepared.capture_reasoning,
+            on_reasoning=on_reasoning,
+        ):
+            yield text
+
+    def _consume_stream_event(
+        self,
+        event: Any,
+        state: DeepSeekResponsesStreamState,
+        *,
+        on_chunk: Optional[OnChunk],
+        on_delta: Optional[OnDelta],
+        on_reasoning: Optional[OnReasoning],
+    ) -> Iterator[str]:
+        del on_reasoning
+        delta = DeepSeekResponsesStreamParser.consume_event(event, state)
+        if delta is not None:
+            yield from self._emit_stream_chunks(
+                state.chunk_buffer.add(delta),
+                on_chunk,
+                on_delta,
+            )
+
+    async def _consume_stream_event_async(
+        self,
+        event: Any,
+        state: DeepSeekResponsesStreamState,
+        *,
+        on_chunk: Optional[AsyncOnChunk],
+        on_delta: Optional[AsyncOnDelta],
+        on_reasoning: Optional[AsyncOnReasoning],
+    ) -> AsyncIterator[str]:
+        del on_reasoning
+        delta = DeepSeekResponsesStreamParser.consume_event(event, state)
+        if delta is not None:
+            async for text in self._emit_async_stream_chunks(
+                state.chunk_buffer.add(delta),
+                on_chunk,
+                on_delta,
+            ):
+                yield text
+
+    def _finalize_stream(
+        self,
+        state: DeepSeekResponsesStreamState,
+        *,
+        capture_reasoning: bool,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        return self._finalize_stream_response(
+            DeepSeekResponsesStreamParser.finalize(
+                state,
+                model=self.model,
+                capture_reasoning=capture_reasoning,
+            ),
+            reasoning_collector=state.reasoning_collector,
+            effective_schema=effective_schema,
+            response_model=response_model,
+        )
 
     def _prepare_responses_parameters(
         self,

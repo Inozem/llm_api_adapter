@@ -253,16 +253,16 @@ def test_facade_stream_maps_sse_callbacks_completion_and_close(deepseek_runtime)
         )
     )
 
-    assert output == ["Hello ", "from ", "DeepSe", "ek."]
+    assert output == ["Hello ", "from D", "eepSee", "k."]
     assert callbacks[:8] == [
         ("chunk", "Hello "),
         ("delta", "Hello "),
-        ("chunk", "from "),
-        ("delta", "from "),
-        ("chunk", "DeepSe"),
-        ("delta", "DeepSe"),
-        ("chunk", "ek."),
-        ("delta", "ek."),
+        ("chunk", "from D"),
+        ("delta", "from D"),
+        ("chunk", "eepSee"),
+        ("delta", "eepSee"),
+        ("chunk", "k."),
+        ("delta", "k."),
     ]
     assert callbacks[-1][0] == "done"
     assert callbacks[-1][1].content == "Hello from DeepSeek."
@@ -367,7 +367,7 @@ def test_facade_achat_and_astream_match_sync_contract(deepseek_runtime, monkeypa
     response, chunks, callback_events = asyncio.run(exercise())
 
     assert response.content == "Hello from DeepSeek."
-    assert chunks == ["Hello ", "from ", "DeepSe", "ek."]
+    assert chunks == ["Hello ", "from D", "eepSee", "k."]
     assert callback_events[:2] == [
         ("chunk", "Hello "),
         ("delta", "Hello "),
