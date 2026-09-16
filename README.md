@@ -420,7 +420,7 @@ The SDK allows you to easily switch between LLM providers and specify the model 
 - **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.5` and `grok-4.6`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
 - **Qwen**: Install with `pip install "llm-api-adapter[qwen]"`. Fixed model IDs are `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`; every operation requires an explicit Frankfurt `workspace_id`. See the [Qwen package README](packages/organizations/qwen/README.md) for its capability boundary, including unsupported PDF input.
 - **Kimi**: Install with `pip install "llm-api-adapter[kimi]"`. Fixed model IDs are `kimi-k3` and `kimi-k2.6`; image bytes/data URIs are supported, while public image URLs and all PDF `DocumentPart` forms are rejected before HTTP. See the [Kimi package README](packages/organizations/kimi/README.md) for reasoning, cache-pricing, and data-handling details.
-- **DeepSeek**: Install with `pip install "llm-api-adapter[deepseek]"`, or install `llm-api-adapter-deepseek` directly. The package currently exposes the canonical `deepseek` organization entry point; see the [DeepSeek package README](packages/organizations/deepseek/README.md) for installation and discovery behavior.
+- **DeepSeek**: Install with `pip install "llm-api-adapter[deepseek]"`, or install `llm-api-adapter-deepseek` directly. The package exposes only the verified `deepseek-flash` model through the official Responses API, with text, tools, portable structured output, reasoning, streaming, and image URL/bytes/data-URI input. Documents, generic files, OCR, upload, and conversion are rejected before HTTP. See the [DeepSeek package README](packages/organizations/deepseek/README.md) for its compatibility matrix, continuation privacy, usage/cost boundary, and official references.
 
 Example:
 
@@ -780,6 +780,13 @@ For OpenAI models that use the Responses API (o-series and newer GPT models), th
 
 For Anthropic, Google, and xAI, the parameter is accepted but ignored — context is carried entirely through the `messages` list regardless. The xAI package also does not expose its provider-specific `store` option; see its README for data-retention details.
 
+DeepSeek is also stateless and does not send `previous_response_id`. Its
+package uses `previous_response` only to carry matching opaque reasoning replay
+metadata while the caller continues to send the complete `messages` history.
+That metadata is not rendered, serialized, represented, or logged; visible
+reasoning remains opt-in through `capture_reasoning=True`. See the
+[DeepSeek continuation and privacy contract](packages/organizations/deepseek/README.md#history-and-continuation-privacy).
+
 If you omit `previous_response`, the call works normally; you just won't get the stateful-session benefit on OpenAI Responses API models.
 
 ## Structured Output
@@ -1048,6 +1055,12 @@ does not fetch public image URLs. `ImagePart(url=...)` is rejected before HTTP;
 use `ImagePart(data=..., media_type="image/...")` instead. See the
 [Kimi package README](packages/organizations/kimi/README.md#history-images-files-and-data-handling).
 
+DeepSeek `deepseek-flash` accepts user-message image URLs, bytes, and base64
+data URIs for JPEG, PNG, GIF, and WebP images. Its adapter rejects unsupported
+image forms before HTTP and enforces the provider's URL, inline-size, and
+per-request image-count limits. See the [DeepSeek image and file boundary](packages/organizations/deepseek/README.md#images-and-the-file-boundary)
+and the [official Vision guide](https://api-docs.deepseek.com/guides/vision/).
+
 > **Note:** `ImagePart` is supported in v0.5.0; `DocumentPart` is introduced in v0.5.1. Google already supports audio input, but `AudioPart` is postponed because Anthropic does not support audio and OpenAI uses a separate audio API, so there is no common provider-neutral contract yet.
 
 ## Document Input
@@ -1092,12 +1105,12 @@ For bytes, the adapter sends the PDF as base64 data in the provider-specific req
 
 ### File type support
 
-| File type | Anthropic | OpenAI (< gpt-5) | OpenAI (gpt-5+) | Google |
-|-----------|-----------|------------------|-----------------|--------|
-| ImagePart (URL) | ✅ | ✅ | ✅ | ✅ |
-| ImagePart (bytes) | ✅ | ✅ | ✅ | ✅ |
-| DocumentPart (URL) | ✅ | ❌ | ✅ | ✅ |
-| DocumentPart (bytes) | ✅ | ✅ | ✅ | ✅ |
+| File type | Anthropic | OpenAI (< gpt-5) | OpenAI (gpt-5+) | Google | Qwen | Kimi | DeepSeek |
+|-----------|-----------|------------------|-----------------|--------|------|------|----------|
+| ImagePart (URL) | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| ImagePart (bytes) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| DocumentPart (URL) | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| DocumentPart (bytes) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 
 Qwen 0.1.0 supports images, but rejects every `DocumentPart` URL or byte before
 HTTP: PDF and OCR input are outside its package contract. See the
@@ -1108,6 +1121,12 @@ Files API exposes extracted text rather than a Chat Completions attachment, so
 it cannot meet the same bytes-and-URL contract without hidden URL retrieval.
 The adapter does not upload or delete files for Kimi. See the
 [Kimi package README](packages/organizations/kimi/README.md#history-images-files-and-data-handling).
+
+DeepSeek 0.1.0 rejects every `DocumentPart`, generic non-image `FilePart`,
+OCR/upload/conversion route, and unsupported image form before either client
+is called. It does not fetch document URLs, upload files, process PDFs locally,
+or silently fall back to another endpoint or model. See the [DeepSeek package
+file boundary](packages/organizations/deepseek/README.md#images-and-the-file-boundary).
 
 ## Token Usage and Pricing
 
@@ -1131,10 +1150,10 @@ rates are both applied to the entire request.
 - If the provider does not report `usage`, the adapter does not estimate tokens
   locally. `usage`, `currency`, and `cost_*` remain `None`.
 
-The estimate covers bundled standard text input/output rates only. It excludes
-cached input, cache write/storage, batch, flex, priority, modality-specific,
-provider-hosted tool, and negotiated-volume charges. Do not use it to reconcile
-a provider invoice.
+For providers with one static registry tier, the estimate covers bundled
+standard text input/output rates only. It excludes cached input, cache
+write/storage, batch, flex, priority, modality-specific, provider-hosted tool,
+and negotiated-volume charges. Do not use it to reconcile a provider invoice.
 
 Kimi is the narrow exception when the provider reports an explicit
 `usage.cached_tokens` split: its organization package applies registered
@@ -1143,6 +1162,16 @@ does not return that split, `cost_input` and `cost_total` stay unset rather than
 assuming all input was uncached. This does not enable Kimi caching; it only
 accounts for provider-reported usage. See the
 [Kimi package README](packages/organizations/kimi/README.md#usage-cache-aware-pricing-and-errors).
+
+DeepSeek `deepseek-flash` is another package-local exception. Its Responses
+usage reports `input_tokens_details.cached_tokens` and
+`output_tokens_details.reasoning_tokens`; the package applies the verified
+cache-hit/cache-miss and UTC peak/off-peak rates only when those values and the
+dispatch window are valid. Missing or inconsistent usage leaves the relevant
+cost fields unavailable. DeepSeek context caching is provider-managed and the
+estimate is not an invoice. See the [DeepSeek usage and pricing
+boundary](packages/organizations/deepseek/README.md#usage-and-standard-rate-estimates)
+and the [official pricing table](https://api-docs.deepseek.com/quick_start/pricing/).
 
 ### Token Usage and Pricing Example
 

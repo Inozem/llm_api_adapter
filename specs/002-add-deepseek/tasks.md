@@ -139,7 +139,7 @@ and unavailable pricing remains unavailable.
 
 - [X] T031 [US4] Reject every `DocumentPart`, non-image file, OCR/upload/conversion route, unsupported image form, and unverified file capability before either client is invoked in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/adapter.py`.
 - [X] T032 [US4] Add package-local validated Flash peak/off-peak UTC rate selection and provider-reported usage normalization; missing, negative, non-integer, or inconsistent usage and every unverifiable rate must leave each relevant cost value unset in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/cache_pricing.py` and `packages/organizations/deepseek/src/llm_api_adapter_deepseek/adapter.py`.
-- [ ] T033 [US4] Publish the single-model compatibility matrix, image/file boundary, no-document behavior, continuation privacy, standard-rate-not-invoice wording, and official-source links in `packages/organizations/deepseek/README.md` and `README.md`.
+- [X] T033 [US4] Publish the single-model compatibility matrix, image/file boundary, no-document behavior, continuation privacy, standard-rate-not-invoice wording, and official-source links in `packages/organizations/deepseek/README.md` and `README.md`.
 - [ ] T034 [US4] Run and make green the document, usage, cost, and installed-file-boundary checks in `packages/organizations/deepseek/tests/test_deepseek_adapter.py` and `packages/organizations/deepseek/tests/e2e/test_file_contract.py` without setting a DeepSeek credential.
 
 **Checkpoint**: The package makes neither a hidden document-processing promise nor a fabricated cost claim.
