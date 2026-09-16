@@ -30,6 +30,22 @@ python -m pip install -r tests/requirements-test.txt
 python -m pip install -e .
 ```
 
+## Spec Kit workflow
+
+Spec Kit's bundled scripts, templates, and agent commands are local tooling.
+Initialize or restore them from the repository root before using the
+task-to-issues skill:
+
+```powershell
+specify init --here --force --integration codex --script ps
+```
+
+Commit feature artifacts under `specs/` and the project-specific
+`.agents/skills/speckit-taskstoissues/SKILL.md`. Do not commit the generated
+`.specify/` directory or other bundled Spec Kit agent skills. The
+`speckit-taskstoissues` skill requires a locally initialized `.specify/`
+directory and a feature `tasks.md` before it can create GitHub issues.
+
 ## Deterministic test suite
 
 Unit tests are offline. Integration tests use mocked HTTP and provider-shaped responses. Neither suite requires provider credentials or makes paid API calls.
@@ -186,7 +202,7 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
 
 - Keep README focused on the public package contract, installation, and user-facing examples.
 - Keep contributor setup, test commands, provider-key rules, CI details, and release procedures in this guide.
-- Update the relevant documentation when public behavior, provider mappings, or test workflows change. Keep `docs/architecture.json` minimal and place topical details in its linked detail files.
+- Update the relevant documentation when public behavior, provider mappings, or test workflows change. Keep the baseline specification focused on externally observable contracts and record stable component boundaries and flows in its living architecture artifact.
 - When structured-output behavior changes, update the README's portable-profile contract, the organization-package READMEs, and deterministic conformance tests together. Do not claim arbitrary JSON Schema compatibility.
 - Examples must not require credentials merely to import. Live calls should be explicit and documented.
 - When code or project artifacts change, run `graphify update .` and review the resulting diff.
