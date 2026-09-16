@@ -47,3 +47,20 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 "llm_api_adapter_deepseek" = ["py.typed", "registry/organizations/*.json"]
+
+[tool.pytest.ini_options]
+markers = [
+  "unit: unit tests (no network, pure logic, mocks)",
+  "integration: integration tests (mocked HTTP, no real organizations)",
+  "e2e: end-to-end tests (real LLM organizations)",
+  "e2e_builtin: aggregate end-to-end tests for all built-in core organizations",
+  "e2e_openai: end-to-end tests for the built-in OpenAI organization",
+  "e2e_anthropic: end-to-end tests for the built-in Anthropic organization",
+  "e2e_google: end-to-end tests for the built-in Google organization",
+  "e2e_mistral: end-to-end tests for the external Mistral organization package",
+  "e2e_xai: end-to-end tests for the external xAI organization package",
+  "e2e_kimi: end-to-end tests for the external Kimi organization package",
+  "e2e_qwen: end-to-end tests for the external Qwen organization package",
+  "e2e_deepseek: end-to-end tests for the external DeepSeek organization package",
+  "e2e_feature(name): capability required by a parametrized Core E2E scenario",
+]

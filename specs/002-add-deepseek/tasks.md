@@ -25,7 +25,7 @@ experience to that same package.
 
 - [X] T001 Create the `llm-api-adapter-deepseek` 0.1.0 distribution skeleton, Core `>=0.9.6,<1.0.0` dependency, forwarded `async`/`httpx` extras, and `deepseek` entry point in `packages/organizations/deepseek/pyproject.toml`, `packages/organizations/deepseek/MANIFEST.in`, `packages/organizations/deepseek/LICENSE`, `packages/organizations/deepseek/README.md`, `packages/organizations/deepseek/src/llm_api_adapter_deepseek/__init__.py`, `packages/organizations/deepseek/src/llm_api_adapter_deepseek/py.typed`, `packages/organizations/deepseek/src/llm_api_adapter_deepseek/clients/__init__.py`, and `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/__init__.py`.
 - [X] T002 [P] Create the E2E source-checkout test bootstrap and empty credential-free test layout in `packages/organizations/deepseek/tests/e2e/conftest.py`, `packages/organizations/deepseek/tests/test_package_scaffold.py`, `packages/organizations/deepseek/tests/test_capability_discovery.py`, and `packages/organizations/deepseek/tests/test_deepseek_adapter.py`.
-- [ ] T003 Register the `e2e_deepseek` marker alongside the existing organization markers in `pytest.ini` and `packages/organizations/deepseek/pyproject.toml`.
+- [X] T003 Register the `e2e_deepseek` marker alongside the existing organization markers in `pytest.ini` and `packages/organizations/deepseek/pyproject.toml`.
 - [ ] T004 [P] Record only sanitized, official DeepSeek Flash capability and response examples—never a key, raw reasoning, or tool arguments—in `packages/organizations/deepseek/tests/fixtures/deepseek_capability_discovery.py`.
 
 ---
