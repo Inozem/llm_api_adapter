@@ -1,3 +1,6 @@
-"""DeepSeek HTTP clients."""
+"""DeepSeek HTTP clients built on Core transport contracts."""
 
-__all__: list[str] = []
+from .sync_client import DeepSeekResponsesSyncClient, DeepSeekSyncClient
+
+
+__all__ = ["DeepSeekResponsesSyncClient", "DeepSeekSyncClient"]

@@ -269,9 +269,7 @@ def test_facade_stream_maps_sse_callbacks_completion_and_close(deepseek_runtime)
     assert callbacks[-1][1].response_id == "stream-deepseek-flash"
     assert transport.sse_closed is True
     assert transport.requests[0].payload["stream"] is True
-    assert transport.requests[0].payload["stream_options"] == {
-        "include_usage": True,
-    }
+    assert "stream_options" not in transport.requests[0].payload
 
 
 @pytest.mark.integration
@@ -386,9 +384,7 @@ def test_facade_achat_and_astream_match_sync_contract(deepseek_runtime, monkeypa
         {"role": "user", "content": "Hello"},
     ]
     assert requests[1]["payload"]["stream"] is True
-    assert requests[1]["payload"]["stream_options"] == {
-        "include_usage": True,
-    }
+    assert "stream_options" not in requests[1]["payload"]
 
 
 @pytest.mark.integration
