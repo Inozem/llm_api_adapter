@@ -22,7 +22,11 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
-from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIError
+from llm_api_adapter.errors.llm_api_error import (
+    JSONSchemaError,
+    LLMAPIClientError,
+    LLMAPIError,
+)
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
 from llm_api_adapter.llms.transports import (
     JSONResponse,
@@ -33,10 +37,11 @@ from llm_api_adapter.llms.transports import (
 from llm_api_adapter.models.messages.chat_message import (
     AIMessage,
     Prompt,
+    ToolMessage,
     UserMessage,
 )
 from llm_api_adapter.models.messages.file_parts import ImagePart
-from llm_api_adapter.models.tools import ToolSpec
+from llm_api_adapter.models.tools import ToolCall, ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
@@ -339,6 +344,48 @@ def test_chat_maps_each_supported_responses_tool_choice(
 
 
 @pytest.mark.integration
+def test_chat_maps_function_call_history_and_normal_tool_result(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    adapter.chat(
+        messages=[
+            UserMessage("What is the weather in Haifa?"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        name="get_weather",
+                        arguments={"city": "Haifa"},
+                        call_id="call-deepseek-weather",
+                    ),
+                ],
+            ),
+            ToolMessage(
+                content='{"forecast":"sunny"}',
+                tool_call_id="call-deepseek-weather",
+            ),
+        ],
+    )
+
+    assert transport.requests[0].payload["input"] == [
+        {"role": "user", "content": "What is the weather in Haifa?"},
+        {
+            "type": "function_call",
+            "call_id": "call-deepseek-weather",
+            "name": "get_weather",
+            "arguments": '{"city": "Haifa"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-deepseek-weather",
+            "output": '{"forecast":"sunny"}',
+        },
+    ]
+
+
+@pytest.mark.integration
 def test_chat_maps_portable_json_schema_and_pydantic_output(deepseek_runtime):
     adapter = _deepseek_facade()
 
@@ -370,6 +417,26 @@ def test_chat_maps_portable_json_schema_and_pydantic_output(deepseek_runtime):
     assert model_transport.requests[0].payload["text"]["format"]["schema"] == (
         StructuredAnswer.model_json_schema()
     )
+
+
+@pytest.mark.unit
+def test_chat_rejects_nonportable_json_schema_before_http(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_structured_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.raises(JSONSchemaError, match="Core portable profile"):
+        adapter.chat(
+            messages=[UserMessage("Reply as JSON.")],
+            json_schema={
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": [],
+                "additionalProperties": False,
+            },
+        )
+
+    assert transport.requests == []
 
 
 @pytest.mark.integration

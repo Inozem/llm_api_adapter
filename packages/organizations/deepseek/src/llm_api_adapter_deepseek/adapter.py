@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from typing import Any, AsyncIterator, Iterator, List, Optional
 
 from llm_api_adapter.adapters.base_adapter import (
@@ -18,13 +19,20 @@ from llm_api_adapter.adapters.base_adapter import (
     OnReasoning,
     OnToolCall,
 )
+from llm_api_adapter.adapters.structured_output import (
+    validate_core_portable_schema,
+)
 from llm_api_adapter.errors.llm_api_error import (
     InvalidToolSchemaError,
     LLMAPIClientError,
     LLMAPIError,
-    ToolChoiceError,
 )
-from llm_api_adapter.models.messages.chat_message import Message, Messages, Prompt
+from llm_api_adapter.models.messages.chat_message import (
+    AIMessage,
+    Message,
+    Messages,
+    Prompt,
+)
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools import ToolSpec
 
@@ -377,7 +385,8 @@ class DeepSeekAdapter(LLMAdapterBase):
         capture_reasoning: bool,
     ) -> _PreparedResponsesRequest:
         """Normalize Core messages and supported text-request parameters."""
-        del previous_response, parallel_tool_calls
+        del previous_response
+        self._validate_capability_preflight(parallel_tool_calls)
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
         request_context = self._prepare_chat_request(
             messages,
@@ -387,8 +396,14 @@ class DeepSeekAdapter(LLMAdapterBase):
             response_model,
         )
         normalized_messages = request_context.normalized_messages
+        effective_schema = request_context.effective_schema
+        if effective_schema is not None:
+            effective_schema = validate_core_portable_schema(
+                effective_schema,
+                provider="deepseek",
+        )
         parameters: dict[str, Any] = {
-            "input": normalized_messages.to_openai_responses_input(),
+            "input": self._to_deepseek_responses_input(normalized_messages),
             "max_output_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
@@ -406,12 +421,12 @@ class DeepSeekAdapter(LLMAdapterBase):
             ).provider_value
             if isinstance(provider_value, str):
                 parameters["reasoning"] = {"effort": provider_value}
-        if request_context.effective_schema is not None:
+        if effective_schema is not None:
             parameters["text"] = {
                 "format": {
                     "type": "json_schema",
                     "name": "response",
-                    "schema": request_context.effective_schema,
+                    "schema": effective_schema,
                 },
             }
         return _PreparedResponsesRequest(
@@ -419,10 +434,58 @@ class DeepSeekAdapter(LLMAdapterBase):
                 key: value for key, value in parameters.items() if value is not None
             },
             normalized_messages=normalized_messages,
-            effective_schema=request_context.effective_schema,
+            effective_schema=effective_schema,
             response_model=request_context.response_model,
             capture_reasoning=capture_reasoning,
         )
+
+    def _validate_capability_preflight(
+        self,
+        parallel_tool_calls: Optional[bool],
+    ) -> None:
+        """Reject DeepSeek modes outside the verified package contract."""
+        if self.model_spec is None:
+            raise NotImplementedError(
+                f"DeepSeek model {self.model!r} is not verified for supported "
+                "capabilities",
+            )
+        if parallel_tool_calls is not None:
+            raise NotImplementedError(
+                "DeepSeek Responses does not support explicit parallel_tool_calls",
+            )
+
+    @staticmethod
+    def _to_deepseek_responses_input(messages: Messages) -> list[dict[str, Any]]:
+        """Serialize an application-controlled Responses tool round-trip."""
+        input_items: list[dict[str, Any]] = []
+        for message in messages.items:
+            if isinstance(message, Prompt):
+                continue
+            if isinstance(message, AIMessage):
+                if message.content:
+                    input_items.append(
+                        {"role": "assistant", "content": message.content},
+                    )
+                for tool_call in message.tool_calls or []:
+                    if not tool_call.call_id:
+                        raise ValueError(
+                            "DeepSeek function_call history requires a non-empty "
+                            "call_id",
+                        )
+                    input_items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tool_call.call_id,
+                            "name": tool_call.name,
+                            "arguments": json.dumps(
+                                tool_call.arguments,
+                                ensure_ascii=False,
+                            ),
+                        },
+                    )
+                continue
+            input_items.extend(message.to_openai_responses_input())
+        return input_items
 
     @staticmethod
     def _map_tools(tools: Optional[List[ToolSpec]]) -> Optional[list[dict[str, Any]]]:
