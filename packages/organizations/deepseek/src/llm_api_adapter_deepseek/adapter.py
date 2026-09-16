@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 import json
-from typing import Any, AsyncIterator, Iterator, List, Optional
+from typing import Any, AsyncIterator, Iterator, List, Mapping, Optional
 
 from llm_api_adapter.adapters.base_adapter import (
     AsyncOnChunk,
@@ -27,6 +28,7 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPIClientError,
     LLMAPIError,
 )
+from llm_api_adapter.errors.config_errors import LLMConfigError
 from llm_api_adapter.models.messages.chat_message import (
     AIMessage,
     Message,
@@ -45,6 +47,9 @@ from .streaming import (
     DeepSeekResponsesStreamParser,
     DeepSeekResponsesStreamState,
 )
+
+
+_REASONING_REPLAY_KEY = "deepseek.reasoning_replay"
 
 
 @dataclass(frozen=True)
@@ -385,8 +390,8 @@ class DeepSeekAdapter(LLMAdapterBase):
         capture_reasoning: bool,
     ) -> _PreparedResponsesRequest:
         """Normalize Core messages and supported text-request parameters."""
-        del previous_response
         self._validate_capability_preflight(parallel_tool_calls)
+        reasoning_replay = self._replay_from_previous_response(previous_response)
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
         request_context = self._prepare_chat_request(
             messages,
@@ -403,7 +408,10 @@ class DeepSeekAdapter(LLMAdapterBase):
                 provider="deepseek",
         )
         parameters: dict[str, Any] = {
-            "input": self._to_deepseek_responses_input(normalized_messages),
+            "input": self._to_deepseek_responses_input(
+                normalized_messages,
+                reasoning_replay=reasoning_replay,
+            ),
             "max_output_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
@@ -454,14 +462,84 @@ class DeepSeekAdapter(LLMAdapterBase):
                 "DeepSeek Responses does not support explicit parallel_tool_calls",
             )
 
+    def _replay_from_previous_response(
+        self,
+        previous_response: Optional[ChatResponse],
+    ) -> tuple[dict[str, Any], ...]:
+        """Return validated opaque reasoning items from one prior DeepSeek reply."""
+        if previous_response is None:
+            return ()
+        provider_data = previous_response.provider_data
+        if not isinstance(provider_data, Mapping):
+            return ()
+        replay = provider_data.get(_REASONING_REPLAY_KEY)
+        if replay is None:
+            return ()
+        if not isinstance(replay, Mapping):
+            raise LLMConfigError(
+                detail="DeepSeek previous_response contains invalid reasoning replay data",
+            )
+        if previous_response.model != self.model:
+            raise LLMConfigError(
+                detail="DeepSeek previous_response model does not match this request",
+            )
+        if replay.get("model") != self.model:
+            raise LLMConfigError(
+                detail="DeepSeek reasoning replay model does not match this request",
+            )
+        if replay.get("response_id") != previous_response.response_id:
+            raise LLMConfigError(
+                detail="DeepSeek reasoning replay does not match previous_response",
+            )
+        return self._validate_reasoning_replay_items(replay.get("items"))
+
     @staticmethod
-    def _to_deepseek_responses_input(messages: Messages) -> list[dict[str, Any]]:
+    def _validate_reasoning_replay_items(value: Any) -> tuple[dict[str, Any], ...]:
+        """Permit only normalized Responses reasoning input items to be replayed."""
+        if not isinstance(value, list) or not value:
+            raise LLMConfigError(
+                detail="DeepSeek reasoning replay must contain reasoning items",
+            )
+        replay_items: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, Mapping) or item.get("type") != "reasoning":
+                raise LLMConfigError(
+                    detail="DeepSeek reasoning replay contains an invalid item",
+                )
+            raw_content = item.get("content")
+            if not isinstance(raw_content, list) or not raw_content:
+                raise LLMConfigError(
+                    detail="DeepSeek reasoning replay item has invalid content",
+                )
+            content: list[dict[str, str]] = []
+            for part in raw_content:
+                if (
+                    not isinstance(part, Mapping)
+                    or part.get("type") != "reasoning_text"
+                    or not isinstance(part.get("text"), str)
+                    or not part["text"]
+                ):
+                    raise LLMConfigError(
+                        detail="DeepSeek reasoning replay contains invalid reasoning text",
+                    )
+                content.append({"type": "reasoning_text", "text": part["text"]})
+            replay_items.append({"type": "reasoning", "content": content})
+        return tuple(replay_items)
+
+    @staticmethod
+    def _to_deepseek_responses_input(
+        messages: Messages,
+        *,
+        reasoning_replay: tuple[dict[str, Any], ...] = (),
+    ) -> list[dict[str, Any]]:
         """Serialize an application-controlled Responses tool round-trip."""
         input_items: list[dict[str, Any]] = []
+        last_assistant_start: Optional[int] = None
         for message in messages.items:
             if isinstance(message, Prompt):
                 continue
             if isinstance(message, AIMessage):
+                last_assistant_start = len(input_items)
                 if message.content:
                     input_items.append(
                         {"role": "assistant", "content": message.content},
@@ -485,6 +563,17 @@ class DeepSeekAdapter(LLMAdapterBase):
                     )
                 continue
             input_items.extend(message.to_openai_responses_input())
+        if reasoning_replay:
+            if last_assistant_start is None:
+                raise LLMConfigError(
+                    detail=(
+                        "DeepSeek reasoning replay requires the matching prior "
+                        "assistant message in the supplied history"
+                    ),
+                )
+            input_items[last_assistant_start:last_assistant_start] = deepcopy(
+                list(reasoning_replay),
+            )
         return input_items
 
     @staticmethod
@@ -545,14 +634,64 @@ class DeepSeekAdapter(LLMAdapterBase):
         capture_reasoning: bool,
     ) -> ChatResponse:
         """Parse and run Core structured-output/pricing finalization."""
+        chat_response = self._parse_response(
+            response,
+            capture_reasoning=capture_reasoning,
+        )
+        self._store_reasoning_replay(chat_response, response)
         return self._finalize_chat_response(
-            self._parse_response(
-                response,
-                capture_reasoning=capture_reasoning,
-            ),
+            chat_response,
             effective_schema=effective_schema,
             response_model=response_model,
         )
+
+    def _store_reasoning_replay(
+        self,
+        chat_response: ChatResponse,
+        response: Mapping[str, Any],
+    ) -> None:
+        """Keep continuation material opaque and outside visible response fields."""
+        items = self._reasoning_replay_items(response.get("output"))
+        if not items:
+            return
+        chat_response.provider_data = {
+            _REASONING_REPLAY_KEY: {
+                "model": chat_response.model or self.model,
+                "response_id": chat_response.response_id,
+                "items": items,
+            },
+        }
+
+    @staticmethod
+    def _reasoning_replay_items(raw_output: Any) -> list[dict[str, Any]]:
+        """Extract only replayable reasoning text from a Responses output array."""
+        if not isinstance(raw_output, list):
+            return []
+        replay_items: list[dict[str, Any]] = []
+        for item in raw_output:
+            if not isinstance(item, Mapping) or item.get("type") != "reasoning":
+                continue
+            content: list[dict[str, str]] = []
+            raw_content = item.get("content")
+            if isinstance(raw_content, list):
+                for part in raw_content:
+                    if (
+                        isinstance(part, Mapping)
+                        and part.get("type") == "reasoning_text"
+                        and isinstance(part.get("text"), str)
+                        and part["text"]
+                    ):
+                        content.append(
+                            {"type": "reasoning_text", "text": part["text"]},
+                        )
+            legacy_reasoning_content = item.get("reasoning_content")
+            if isinstance(legacy_reasoning_content, str) and legacy_reasoning_content:
+                content.append(
+                    {"type": "reasoning_text", "text": legacy_reasoning_content},
+                )
+            if content:
+                replay_items.append({"type": "reasoning", "content": content})
+        return replay_items
 
 
 __all__ = ["DeepSeekAdapter"]

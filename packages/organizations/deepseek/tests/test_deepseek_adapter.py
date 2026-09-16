@@ -27,6 +27,7 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPIClientError,
     LLMAPIError,
 )
+from llm_api_adapter.errors.config_errors import LLMConfigError
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
 from llm_api_adapter.llms.transports import (
     JSONResponse,
@@ -41,6 +42,7 @@ from llm_api_adapter.models.messages.chat_message import (
     UserMessage,
 )
 from llm_api_adapter.models.messages.file_parts import ImagePart
+from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools import ToolCall, ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -515,6 +517,125 @@ def test_reasoning_capture_is_opt_in_and_replay_stays_opaque(deepseek_runtime):
     assert "opaque-reasoning-replay-sentinel" in json.dumps(second_payload)
     assert "opaque-reasoning-replay-sentinel" not in (second_response.content or "")
     assert "opaque-reasoning-replay-sentinel" not in repr(second_response)
+
+
+@pytest.mark.integration
+def test_reasoning_replay_is_saved_when_visible_capture_is_disabled(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_reasoning_response())
+    adapter.adapter._client._sync_transport = transport
+
+    response = adapter.chat(
+        messages=[UserMessage("Solve this carefully.")],
+        reasoning_level="high",
+    )
+
+    assert response.reasoning_events == []
+    assert response.provider_data is not None
+    assert "opaque-reasoning-replay-sentinel" in json.dumps(response.provider_data)
+    assert "opaque-reasoning-replay-sentinel" not in (response.content or "")
+    assert "opaque-reasoning-replay-sentinel" not in repr(response)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "previous_response",
+    [
+        ChatResponse(
+            model="deepseek-v4-pro",
+            response_id="resp-other-model",
+            provider_data={
+                "deepseek.reasoning_replay": {
+                    "model": "deepseek-v4-pro",
+                    "response_id": "resp-other-model",
+                    "items": [
+                        {
+                            "type": "reasoning",
+                            "content": [
+                                {
+                                    "type": "reasoning_text",
+                                    "text": "opaque-other-model",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        ),
+        ChatResponse(
+            model="deepseek-flash",
+            response_id="resp-current",
+            provider_data={
+                "deepseek.reasoning_replay": {
+                    "model": "deepseek-flash",
+                    "response_id": "resp-different",
+                    "items": [
+                        {
+                            "type": "reasoning",
+                            "content": [
+                                {
+                                    "type": "reasoning_text",
+                                    "text": "opaque-mismatch",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        ),
+    ],
+)
+def test_reasoning_replay_requires_a_matching_previous_response(
+    deepseek_runtime,
+    previous_response,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.raises(LLMConfigError, match="previous_response|model"):
+        adapter.chat(
+            messages=[UserMessage("Continue.")],
+            previous_response=previous_response,
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+def test_reasoning_replay_requires_prior_assistant_history(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+    previous_response = ChatResponse(
+        model="deepseek-flash",
+        response_id="resp-deepseek-flash",
+        provider_data={
+            "deepseek.reasoning_replay": {
+                "model": "deepseek-flash",
+                "response_id": "resp-deepseek-flash",
+                "items": [
+                    {
+                        "type": "reasoning",
+                        "content": [
+                            {
+                                "type": "reasoning_text",
+                                "text": "opaque-replay",
+                            },
+                        ],
+                    },
+                ],
+            },
+        },
+    )
+
+    with pytest.raises(LLMConfigError, match="assistant message"):
+        adapter.chat(
+            messages=[UserMessage("Continue.")],
+            previous_response=previous_response,
+        )
+
+    assert transport.requests == []
 
 
 @pytest.mark.unit
