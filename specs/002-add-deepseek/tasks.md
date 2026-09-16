@@ -37,7 +37,7 @@ experience to that same package.
 
 - [X] T004 Add failing backward-compatibility and opaque-metadata cases for absent, populated, and provider-neutral `ChatResponse.provider_data`; a populated replay sentinel must not appear in `repr(response)`, `content`, or `reasoning_events` in `tests/unit/models/responses/test_chat_response.py`.
 - [X] T005 Implement `provider_data` as an optional opaque mapping declared with `field(default=None, repr=False)`, absent for providers that do not use it and without changing existing response behavior, in `src/llm_api_adapter/models/responses/chat_response.py`.
-- [ ] T006 Set the Core distribution version to `0.9.6` in `pyproject.toml` so the locally developed 0.1.0 organization package can require its released Core contract.
+- [X] T006 Set the Core distribution version to `0.9.6` in `pyproject.toml` so the locally developed 0.1.0 organization package can require its released Core contract.
 
 **Checkpoint**: The package can depend on Core 0.9.6, and response metadata safely carries transport-only continuation state.
 
