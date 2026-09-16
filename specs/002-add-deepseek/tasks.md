@@ -104,7 +104,7 @@ only the published matrix.
 
 ### Tests for User Story 3
 
-- [ ] T020 [P] [US3] Write failing capability-matrix and exact-model discovery tests for `deepseek-flash`, aliases, limits, thinking modes, and explicit unsupported entries in `packages/organizations/deepseek/tests/test_capability_discovery.py`.
+- [X] T020 [P] [US3] Write failing capability-matrix and exact-model discovery tests for `deepseek-flash`, aliases, limits, thinking modes, and explicit unsupported entries in `packages/organizations/deepseek/tests/test_capability_discovery.py`.
 - [ ] T021 [P] [US3] Add failing mocked Responses contract cases for tools and tool choices, portable JSON Schema/Pydantic output, image URL/data input, reasoning capture and continuation replay that stays absent from visible response fields and `repr`, explicit parallel control rejection, and pre-HTTP capability failures in `packages/organizations/deepseek/tests/test_deepseek_adapter.py`.
 - [ ] T022 [P] [US3] Write the bounded live facade contract for only declared DeepSeek Flash capabilities in `packages/organizations/deepseek/tests/e2e/test_live_contract.py`.
 
