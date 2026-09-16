@@ -326,7 +326,11 @@ class DeepSeekAdapter(LLMAdapterBase):
         on_delta: Optional[OnDelta],
         on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
-        del on_reasoning
+        self._record_deepseek_reasoning_event(
+            event,
+            state,
+            on_reasoning=on_reasoning,
+        )
         delta = DeepSeekResponsesStreamParser.consume_event(event, state)
         if delta is not None:
             yield from self._emit_stream_chunks(
@@ -344,7 +348,11 @@ class DeepSeekAdapter(LLMAdapterBase):
         on_delta: Optional[AsyncOnDelta],
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
-        del on_reasoning
+        await self._record_deepseek_reasoning_event_async(
+            event,
+            state,
+            on_reasoning=on_reasoning,
+        )
         delta = DeepSeekResponsesStreamParser.consume_event(event, state)
         if delta is not None:
             async for text in self._emit_async_stream_chunks(
@@ -362,7 +370,7 @@ class DeepSeekAdapter(LLMAdapterBase):
         effective_schema: Optional[dict],
         response_model: Optional[Any],
     ) -> ChatResponse:
-        return self._finalize_stream_response(
+        chat_response = self._finalize_stream_response(
             DeepSeekResponsesStreamParser.finalize(
                 state,
                 model=self.model,
@@ -371,6 +379,56 @@ class DeepSeekAdapter(LLMAdapterBase):
             reasoning_collector=state.reasoning_collector,
             effective_schema=effective_schema,
             response_model=response_model,
+        )
+        self._store_reasoning_replay(chat_response, state.final_response or {})
+        return chat_response
+
+    def _record_deepseek_reasoning_event(
+        self,
+        event: Any,
+        state: DeepSeekResponsesStreamState,
+        *,
+        on_reasoning: Optional[OnReasoning],
+    ) -> None:
+        if state.terminal_event is not None:
+            return
+        if state.reasoning_collector is None or state.reasoning_response is None:
+            return
+        reasoning = DeepSeekResponsesStreamParser.reasoning_delta(event)
+        if reasoning is None:
+            return
+        text, kind = reasoning
+        self._record_reasoning_event(
+            state.reasoning_response,
+            state.reasoning_collector,
+            text,
+            capture_reasoning=True,
+            kind=kind,
+            on_reasoning=on_reasoning,
+        )
+
+    async def _record_deepseek_reasoning_event_async(
+        self,
+        event: Any,
+        state: DeepSeekResponsesStreamState,
+        *,
+        on_reasoning: Optional[AsyncOnReasoning],
+    ) -> None:
+        if state.terminal_event is not None:
+            return
+        if state.reasoning_collector is None or state.reasoning_response is None:
+            return
+        reasoning = DeepSeekResponsesStreamParser.reasoning_delta(event)
+        if reasoning is None:
+            return
+        text, kind = reasoning
+        await self._record_async_reasoning_event(
+            state.reasoning_response,
+            state.reasoning_collector,
+            text,
+            capture_reasoning=True,
+            kind=kind,
+            on_reasoning=on_reasoning,
         )
 
     def _prepare_responses_parameters(
@@ -406,7 +464,7 @@ class DeepSeekAdapter(LLMAdapterBase):
             effective_schema = validate_core_portable_schema(
                 effective_schema,
                 provider="deepseek",
-        )
+            )
         parameters: dict[str, Any] = {
             "input": self._to_deepseek_responses_input(
                 normalized_messages,

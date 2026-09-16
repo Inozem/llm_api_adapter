@@ -910,6 +910,228 @@ def test_stream_without_terminal_response_is_a_client_error(deepseek_runtime):
 
 
 @pytest.mark.integration
+def test_stream_reconstructs_fragmented_function_call_and_usage(
+    deepseek_runtime,
+):
+    adapter = _deepseek_facade()
+    response = {
+        "object": "response",
+        "id": "stream-function-call",
+        "model": "deepseek-flash",
+        "status": "completed",
+        "output": [],
+    }
+    events = [
+        SSEEvent(
+            event="response.created",
+            data={
+                "type": "response.created",
+                "response": {
+                    "object": "response",
+                    "id": response["id"],
+                    "model": response["model"],
+                    "status": "in_progress",
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.usage",
+            data={
+                "type": "response.usage",
+                "usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "total_tokens": 10,
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.output_item.added",
+            data={
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc-stream",
+                    "call_id": "call-stream",
+                    "name": "get_weather",
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.function_call_arguments.delta",
+            data={
+                "type": "response.function_call_arguments.delta",
+                "output_index": 0,
+                "item_id": "fc-stream",
+                "delta": '{"city":',
+            },
+        ),
+        SSEEvent(
+            event="response.function_call_arguments.delta",
+            data={
+                "type": "response.function_call_arguments.delta",
+                "output_index": 0,
+                "item_id": "fc-stream",
+                "delta": '"Haifa"}',
+            },
+        ),
+        SSEEvent(
+            event="response.output_item.done",
+            data={
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc-stream",
+                    "call_id": "call-stream",
+                    "name": "get_weather",
+                    "status": "completed",
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.completed",
+            data={"type": "response.completed", "response": response},
+        ),
+    ]
+    transport = FakeSyncTransport({}, stream_events=events)
+    adapter.adapter._client._sync_transport = transport
+    completed = []
+    tool_calls = []
+
+    assert list(
+        adapter.stream_chat(
+            messages=[UserMessage("What is the weather?")],
+            on_tool_call=tool_calls.append,
+            on_done=completed.append,
+        )
+    ) == []
+    assert [(call.name, call.arguments, call.call_id) for call in tool_calls] == [
+        ("get_weather", {"city": "Haifa"}, "call-stream"),
+    ]
+    assert completed[0].usage is not None
+    assert completed[0].usage.total_tokens == 10
+
+
+@pytest.mark.integration
+def test_stream_captures_reasoning_and_keeps_replay_opaque(deepseek_runtime):
+    adapter = _deepseek_facade()
+    response = {
+        "object": "response",
+        "id": "stream-reasoning",
+        "model": "deepseek-flash",
+        "status": "completed",
+        "output": [],
+    }
+    events = [
+        SSEEvent(
+            event="response.created",
+            data={
+                "type": "response.created",
+                "response": {
+                    "object": "response",
+                    "id": response["id"],
+                    "model": response["model"],
+                    "status": "in_progress",
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.reasoning_summary_text.delta",
+            data={
+                "type": "response.reasoning_summary_text.delta",
+                "output_index": 0,
+                "delta": "Plan. ",
+            },
+        ),
+        SSEEvent(
+            event="response.reasoning_text.delta",
+            data={
+                "type": "response.reasoning_text.delta",
+                "output_index": 0,
+                "delta": "opaque detail",
+            },
+        ),
+        SSEEvent(
+            event="response.output_text.delta",
+            data={
+                "type": "response.output_text.delta",
+                "delta": "Done.",
+            },
+        ),
+        SSEEvent(
+            event="response.completed",
+            data={"type": "response.completed", "response": response},
+        ),
+    ]
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        {},
+        stream_events=events,
+    )
+    reasoning_events = []
+    completed = []
+
+    assert list(
+        adapter.stream_chat(
+            messages=[UserMessage("Solve this.")],
+            capture_reasoning=True,
+            on_reasoning=reasoning_events.append,
+            on_done=completed.append,
+        )
+    ) == ["Done."]
+    assert [event.text for event in reasoning_events] == [
+        "Plan. ",
+        "opaque detail",
+    ]
+    assert completed[0].content == "Done."
+    assert completed[0].provider_data is not None
+    assert "opaque detail" in json.dumps(completed[0].provider_data)
+    assert "opaque detail" not in (completed[0].content or "")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("terminal_event", ["response.incomplete", "response.failed", "response.cancelled"])
+def test_stream_rejects_non_completed_terminal_states(
+    deepseek_runtime,
+    terminal_event,
+):
+    adapter = _deepseek_facade()
+    response = {
+        "object": "response",
+        "id": f"stream-{terminal_event}",
+        "model": "deepseek-flash",
+        "status": terminal_event.removeprefix("response."),
+        "output": [],
+    }
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        {},
+        stream_events=[
+            SSEEvent(
+                event="response.output_text.delta",
+                data={
+                    "type": "response.output_text.delta",
+                    "delta": "partial",
+                },
+            ),
+            SSEEvent(
+                event=terminal_event,
+                data={"type": terminal_event, "response": response},
+            ),
+        ],
+    )
+    completed = []
+    with pytest.raises(LLMAPIClientError):
+        list(
+            adapter.stream_chat(
+                messages=[UserMessage("Hello")],
+                on_done=completed.append,
+            )
+        )
+    assert completed == []
+
+
+@pytest.mark.integration
 def test_async_stream_cancellation_closes_resources_and_skips_completion(
     deepseek_runtime,
     monkeypatch,
