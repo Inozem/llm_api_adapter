@@ -47,7 +47,7 @@ The package will reuse the Core facade, plugin registry, transports, message and
 | Shared contract, isolated organization behavior | DeepSeek endpoint, headers, wire payloads, SSE, error parsing, files, pricing schedule, and reasoning encoding live exclusively in the external package. | Pass |
 | Registry and abstraction first | Core adds only the known-package record and optional extra; the package contributes lazy metadata, exact model facts, and closed request rules. No model-prefix inference or Core DeepSeek branch is introduced. | Pass |
 | Deterministic contract evidence | Package-local facade tests, Core discovery tests, transport parity, compatibility matrix, and bounded E2E are planned before release. | Pass |
-| Lightweight, safe extensibility | No new runtime dependency, SDK, deployment backend, retry loop, persisted data, or credential-bearing fixture is introduced. | Pass |
+| Lightweight, safe extensibility | No new runtime dependency, SDK, deployment backend, retry loop, persisted data, or credential-bearing test data is introduced. | Pass |
 
 ### Post-design gate
 
@@ -104,7 +104,6 @@ packages/organizations/deepseek/
 │   ├── clients/{__init__.py,sync_client.py,async_client.py}
 │   └── registry/{__init__.py,organizations/deepseek.json,cache_pricing.py}
 └── tests/
-    ├── fixtures/deepseek_capability_discovery.py
     ├── e2e/{conftest.py,test_live_contract.py,test_file_contract.py}
     └── {test_package_scaffold.py,test_capability_discovery.py,test_deepseek_adapter.py}
 
