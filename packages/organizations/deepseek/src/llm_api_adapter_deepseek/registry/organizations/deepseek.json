@@ -1,0 +1,21 @@
+{
+  "currency": "USD",
+  "models": {
+    "deepseek-flash": {
+      "limits": {
+        "context_window_tokens": 1000000,
+        "max_output_tokens": 384000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.3,
+          "output_per_1m": 1.2
+        }
+      ],
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "high", "max"]
+      }
+    }
+  }
+}

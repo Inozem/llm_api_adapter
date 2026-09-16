@@ -59,7 +59,7 @@ simulated Responses API results, and verify normalized sync, async, and stream o
 
 ### Implementation for User Story 1
 
-- [ ] T009 [US1] Define the initial `deepseek-flash` model metadata and its first-party registration surface in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/organizations/deepseek.json`, `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/__init__.py`, and `packages/organizations/deepseek/src/llm_api_adapter_deepseek/plugin.py`.
+- [X] T009 [US1] Define the initial `deepseek-flash` model metadata and its first-party registration surface in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/organizations/deepseek.json`, `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/__init__.py`, and `packages/organizations/deepseek/src/llm_api_adapter_deepseek/plugin.py`.
 - [ ] T010 [US1] Implement the official Responses API synchronous client, authorization headers, core transport selection, request serialization, SSE event iteration, and normalized non-retry error boundary in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/clients/sync_client.py`.
 - [ ] T011 [US1] Implement DeepSeek message-to-Responses text request mapping and normalized synchronous `chat()` finalization in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/adapter.py`.
 - [ ] T012 [US1] Implement the official Responses API asynchronous client and normalized `achat()` path using the Core optional async transport in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/clients/async_client.py` and `packages/organizations/deepseek/src/llm_api_adapter_deepseek/adapter.py`.
