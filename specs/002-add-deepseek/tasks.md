@@ -80,7 +80,7 @@ organization remains unknown.
 
 ### Tests for User Story 2
 
-- [ ] T015 [US2] Add failing Core discovery cases for known-but-uninstalled `deepseek`, unknown organizations, and successful installed entry-point discovery in `tests/unit/test_organization_plugins.py`.
+- [X] T015 [US2] Add failing Core discovery cases for known-but-uninstalled `deepseek`, unknown organizations, and successful installed entry-point discovery in `tests/unit/test_organization_plugins.py`.
 
 ### Implementation for User Story 2
 
