@@ -436,6 +436,15 @@ def test_core_declares_the_kimi_optional_extra():
 
 
 @pytest.mark.unit
+def test_core_declares_the_deepseek_optional_extra_without_base_dependency():
+    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"deepseek"' in pyproject.split("keywords =", 1)[1].split("]", 1)[0]
+    assert 'deepseek = ["llm-api-adapter-deepseek>=0.1.0,<0.2.0"]' in pyproject
+    assert 'dependencies = ["llm-api-adapter-deepseek' not in pyproject
+
+
+@pytest.mark.unit
 def test_builtin_organization_does_not_load_external_plugins(
     monkeypatch,
     isolated_plugin_runtime,

@@ -84,7 +84,7 @@ organization remains unknown.
 
 ### Implementation for User Story 2
 
-- [ ] T016 [US2] Add the `deepseek` optional extra, DeepSeek keyword, and exact 0.1.x package range without adding it to base dependencies in `pyproject.toml`.
+- [X] T016 [US2] Add the `deepseek` optional extra, DeepSeek keyword, and exact 0.1.x package range without adding it to base dependencies in `pyproject.toml`.
 - [ ] T017 [US2] Register `deepseek` as the known optional `llm-api-adapter-deepseek` package so existing lazy discovery emits the actionable missing-package error only for this known organization in `src/llm_api_adapter/organization_registry.py`.
 - [ ] T018 [US2] Document the Core optional-extra and direct-install routes, plus the known-versus-unknown selection result, in `README.md` and `packages/organizations/deepseek/README.md`.
 - [ ] T019 [US2] Verify the Core-only missing-package and isolated Core-plus-package discovery journeys described by `tests/unit/test_organization_plugins.py` and `specs/002-add-deepseek/quickstart.md`.
