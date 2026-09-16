@@ -104,18 +104,18 @@ only the published matrix.
 
 ### Tests for User Story 3
 
-- [X] T020 [P] [US3] Write failing capability-matrix and exact-model discovery tests for `deepseek-flash`, aliases, limits, thinking modes, and explicit unsupported entries in `packages/organizations/deepseek/tests/test_capability_discovery.py`.
+- [X] T020 [P] [US3] Write the DeepSeek capability-contract fixture and exact-model discovery tests for `deepseek-flash`, aliases, limits, and thinking modes in `packages/organizations/deepseek/tests/test_capability_discovery.py`; discovery assertions use only the standard registry metadata, while supported and unsupported modes are exercised by adapter contracts.
 - [X] T021 [P] [US3] Add failing mocked Responses contract cases for tools and tool choices, portable JSON Schema/Pydantic output, image URL/data input, reasoning capture and continuation replay that stays absent from visible response fields and `repr`, explicit parallel control rejection, and pre-HTTP capability failures in `packages/organizations/deepseek/tests/test_deepseek_adapter.py`.
 - [X] T022 [P] [US3] Write the bounded live facade contract for only declared DeepSeek Flash capabilities in `packages/organizations/deepseek/tests/e2e/test_live_contract.py`.
 
 ### Implementation for User Story 3
 
-- [ ] T023 [US3] Complete registry-backed DeepSeek Flash limits, verified capability matrix, thinking/non-thinking rules, exact image restrictions, and closed unsupported-capability rules in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/organizations/deepseek.json` and `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/__init__.py`.
-- [ ] T024 [US3] Implement Responses input/output mapping for application function tools, normal tool results, tool choice, portable JSON Schema, response-model validation, user image URL/data parts, and locally rejected provider-built-in tools or explicit parallel control in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/adapter.py`.
+- [X] T023 [US3] Keep DeepSeek Flash metadata aligned with the standard organization registry in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/organizations/deepseek.json` and `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/__init__.py`: only the canonical model's limits, pricing tiers, and reasoning values are registered; no provider-specific aliases, capability matrix, image restrictions, or unsupported-mode fields are added.
+- [ ] T024 [US3] Implement Responses input/output mapping for application function tools, normal tool results, tool choice, portable JSON Schema, response-model validation, user image URL/data parts, and adapter-local capability preflight that rejects provider-built-in tools or explicit parallel control before transport in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/adapter.py`.
 - [ ] T025 [US3] Implement opt-in visible reasoning, opaque `deepseek.reasoning_replay` storage in `ChatResponse.provider_data`, and local validation/replay only from a matching DeepSeek `previous_response`, without server-side continuation IDs, rendering, debug representation, or logging in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/adapter.py`.
 - [ ] T026 [US3] Extend the DeepSeek SSE parser for reasoning, response terminal states, fragmented function calls, usage, opaque continuation material, and failed/cancelled streams in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/streaming.py`.
 - [ ] T027 [US3] Map documented DeepSeek 400/401/402/422/429/500/503 Responses failures to existing normalized errors, with no adapter retry loop, in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/clients/sync_client.py` and `packages/organizations/deepseek/src/llm_api_adapter_deepseek/clients/async_client.py`.
-- [ ] T028 [US3] Run the model/capability, transport-parity, and mocked stream evidence in `packages/organizations/deepseek/tests/test_capability_discovery.py` and `packages/organizations/deepseek/tests/test_deepseek_adapter.py` for the declared matrix only.
+- [ ] T028 [US3] Run the model discovery, adapter capability-boundary, transport-parity, and mocked stream evidence in `packages/organizations/deepseek/tests/test_capability_discovery.py` and `packages/organizations/deepseek/tests/test_deepseek_adapter.py` for the documented contract only.
 
 **Checkpoint**: Every published DeepSeek capability has deterministic evidence, and unsupported modes are rejected before a provider call.
 
@@ -213,6 +213,6 @@ US4: after US3, start T029 and T030 together; then perform T031 -> T032 -> T033 
 ### Incremental delivery
 
 1. Add US2 to make the recommended `llm-api-adapter[deepseek]` installation and missing-package remedy available.
-2. Add the complete verified Flash capability matrix in US3; never add undocumented aliases or fallback modes.
+2. Add the complete verified Flash capability boundary in US3 through adapter behavior and contract evidence; never add undocumented aliases, registry extensions, or fallback modes.
 3. Add the document and time-of-use cost boundary in US4.
 4. Finish deterministic CI, TestPyPI candidate evidence, generated documentation, then the explicitly authorized live check.

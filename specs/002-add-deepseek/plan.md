@@ -31,7 +31,8 @@ The package will reuse the Core facade, plugin registry, transports, message and
 - Direct official API only; use the Responses API because it supports the portable JSON Schema profile and images for the selected model.
 - Canonical public model ID is `deepseek-flash`; retired aliases and the retiring `deepseek-v4-pro` are not public registry entries.
 - Direct PDF/document and non-image Files API inputs are rejected before either sync or async transport is called.
-- Model-specific limits, pricing policy, reasoning mapping, and request restrictions are registry-backed or package-local data, never model-name conditionals in adapters.
+- The organization registry keeps the standard Core schema only: model limits, pricing tiers, and reasoning values. It does not gain provider-specific aliases, capability matrices, image limits, or unsupported-mode fields.
+- The published capability boundary is a package contract enforced by adapter preflight and deterministic adapter tests; it never broadens through alias or model-prefix inference.
 - Fixtures, diagnostics, and documentation contain neither API keys nor raw reasoning/tool payloads. Reasoning remains opt-in for visible observability.
 - Pull requests are deterministic and credential-free; paid E2E runs only in the post-publish release-candidate workflow.
 
@@ -45,7 +46,7 @@ The package will reuse the Core facade, plugin registry, transports, message and
 | --- | --- | --- |
 | Stable provider-neutral public contract | `UniversalLLMAPIAdapter` constructor and request signatures remain unchanged. The additive `ChatResponse.provider_data` is used only by `previous_response` continuation and receives full compatibility coverage. | Pass |
 | Shared contract, isolated organization behavior | DeepSeek endpoint, headers, wire payloads, SSE, error parsing, files, pricing schedule, and reasoning encoding live exclusively in the external package. | Pass |
-| Registry and abstraction first | Core adds only the known-package record and optional extra; the package contributes lazy metadata, exact model facts, and closed request rules. No model-prefix inference or Core DeepSeek branch is introduced. | Pass |
+| Registry and abstraction first | Core adds only the known-package record and optional extra; the package contributes lazy metadata in the standard registry schema and enforces its capability contract in package-local adapter behavior. No model-prefix inference or Core DeepSeek branch is introduced. | Pass |
 | Deterministic contract evidence | Package-local facade tests, Core discovery tests, transport parity, compatibility matrix, and bounded E2E are planned before release. | Pass |
 | Lightweight, safe extensibility | No new runtime dependency, SDK, deployment backend, retry loop, persisted data, or credential-bearing test data is introduced. | Pass |
 
@@ -58,7 +59,7 @@ The Phase 0 and Phase 1 artifacts retain all five gates. The only shared-model c
 1. **Use `deepseek-flash` and the official Responses API only.** It is the verified model/API pair with the largest compatible capability set: text, async, Responses SSE, application function tools, JSON Schema structured output, reasoning, and image input. Chat Completions is not used as a fallback because its JSON mode cannot meet the portable structured-output contract.
 2. **Keep the Core facade and plugin boundary unchanged.** Core `0.9.6` advertises the extra and turns `organization="deepseek"` into the existing actionable not-installed error until plugin discovery succeeds. The plugin provides the adapter and its model registry lazily.
 3. **Represent reasoned continuation as opaque response metadata.** The package stores DeepSeek-required reasoning replay material in `ChatResponse.provider_data`; the field is an optional opaque mapping declared with `repr=False`. A following call receives it only through the existing `previous_response` object while the caller retains normal message history. It never sends a provider `previous_response_id`, displays this material as visible text or reasoning, includes it in a debug representation or public serialization, or logs it. This is additive and keeps provider protocol data separate from the portable message body.
-4. **Reject documents and unsupported capabilities locally.** No OCR, file upload, file conversion, endpoint fallback, provider-built-in tool, or automatic retry is introduced. Unsupported model/capability combinations fail before outbound HTTP whenever the adapter can identify them.
+4. **Keep registry metadata standard and reject unsupported capabilities locally.** The organization JSON and registry loader use the same Core metadata shape as other organization packages. No OCR, file upload, file conversion, endpoint fallback, provider-built-in tool, or automatic retry is introduced. The DeepSeek capability boundary is documented and enforced by adapter preflight and contract tests; unsupported combinations fail before outbound HTTP whenever the adapter can identify them.
 5. **Use a package-local time-of-use pricing extension.** DeepSeek Flash has published peak/off-peak rates that cannot be represented by Core's static token tier alone. The package records both verified schedules and calculates a standard estimate using the UTC request-dispatch time. It exposes the rate basis in documentation; it never calls the result an invoice. Missing usage, an unavailable schedule, or malformed usage leaves cost fields unset.
 
 ## Project Structure

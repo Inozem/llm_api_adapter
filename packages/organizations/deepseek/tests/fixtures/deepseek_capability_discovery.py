@@ -1,9 +1,9 @@
 """Reviewed DeepSeek Flash capability-discovery expectations.
 
 The record is deliberately credential-free and contains only the public model
-boundary that the package is expected to publish.  Provider aliases and
-unsupported request forms stay explicit so a later registry change cannot
-silently broaden the adapter contract.
+boundary that the package is expected to publish. Provider aliases and
+unsupported request forms stay explicit so later adapter work cannot silently
+broaden the contract.
 """
 
 from __future__ import annotations

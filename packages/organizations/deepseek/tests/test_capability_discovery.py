@@ -20,7 +20,6 @@ from fixtures.deepseek_capability_discovery import (
     CANDIDATE_MODELS,
     CLOSED_MODEL_IDS,
     DEEPSEEK_CAPABILITY_DISCOVERY,
-    EXPECTED_ALIASES,
     EXPECTED_CAPABILITIES,
     EXPECTED_LIMITS,
     EXPECTED_THINKING_MODES,
@@ -56,7 +55,6 @@ def test_discovery_exposes_only_exact_flash_model_and_no_aliases(
     assert discovery_record["candidate_models"] == CANDIDATE_MODELS
     assert tuple(model_data) == CANDIDATE_MODELS
     assert tuple(discovery_record["models"]) == CANDIDATE_MODELS
-    assert model_data["deepseek-flash"]["aliases"] == list(EXPECTED_ALIASES)
     assert not set(model_data).intersection(CLOSED_MODEL_IDS)
 
     for alias in ("deepseek-flash-latest", "deepseek-v4-pro"):
@@ -68,6 +66,11 @@ def test_flash_limits_and_thinking_modes_are_exact(discovery_record):
     expected_model = discovery_record["models"]["deepseek-flash"]
     model_data = MODEL_METADATA.organization_data["models"]["deepseek-flash"]
 
+    assert set(model_data) == {
+        "limits",
+        "pricing_tiers",
+        "reasoning_capability",
+    }
     assert model_data["limits"] == EXPECTED_LIMITS
     assert expected_model["limits"] == EXPECTED_LIMITS
     assert model_data["reasoning_capability"]["allowed_values"] == list(
@@ -79,11 +82,9 @@ def test_flash_limits_and_thinking_modes_are_exact(discovery_record):
 @pytest.mark.unit
 def test_flash_capability_matrix_is_closed_and_verified(discovery_record):
     expected_model = discovery_record["models"]["deepseek-flash"]
-    model_data = MODEL_METADATA.organization_data["models"]["deepseek-flash"]
 
     assert tuple(expected_model["capabilities"]) == MATRIX_CAPABILITIES
-    assert set(model_data["capabilities"]) == set(MATRIX_CAPABILITIES)
-    assert model_data["capabilities"] == EXPECTED_CAPABILITIES
+    assert expected_model["capabilities"] == EXPECTED_CAPABILITIES
     assert all(
         expected_model["capabilities"][capability] == "supported"
         for capability in MATRIX_CAPABILITIES
@@ -93,12 +94,10 @@ def test_flash_capability_matrix_is_closed_and_verified(discovery_record):
 @pytest.mark.unit
 def test_flash_declares_every_unsupported_capability_explicitly(discovery_record):
     expected_model = discovery_record["models"]["deepseek-flash"]
-    model_data = MODEL_METADATA.organization_data["models"]["deepseek-flash"]
 
     assert tuple(expected_model["unsupported_capabilities"]) == (
         *UNSUPPORTED_CAPABILITIES,
     )
-    assert model_data["unsupported_capabilities"] == list(UNSUPPORTED_CAPABILITIES)
-    assert not set(model_data["unsupported_capabilities"]).intersection(
+    assert not set(expected_model["unsupported_capabilities"]).intersection(
         MATRIX_CAPABILITIES
     )

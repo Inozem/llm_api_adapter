@@ -1,4 +1,4 @@
-"""Package-local, validated model metadata for DeepSeek."""
+"""Package-local, validated model metadata for the DeepSeek organization."""
 
 from __future__ import annotations
 

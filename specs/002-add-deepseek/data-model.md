@@ -42,9 +42,9 @@ This feature stores no application data. The following in-memory and package-met
 | canonical ID | `deepseek-flash` only. |
 | limits | Verified positive context and maximum-output limits. Input plus output must fit the context limit. |
 | pricing | Verified published peak/off-peak USD input, cached-input, and output rates; no static Core rate is silently substituted. |
-| reasoning capability | Exact documented thinking/non-thinking mapping in registry-backed metadata. |
-| request rules | Only closed, validated request restrictions: no inferred alias/prefix behavior. |
-| capability record | Maps each public mode/capability to supported or explicitly rejected evidence. |
+| reasoning capability | Exact documented thinking/non-thinking mapping in standard registry metadata. |
+| request rules | Adapter-local preflight enforces closed request restrictions; no inferred alias/prefix behavior. |
+| capability record | The published compatibility matrix is represented by contract documentation and test fixtures, then enforced by adapter behavior; it is not an extension to the generic registry JSON schema. |
 
 **Lifecycle**: Loaded lazily with the plugin. An unregistered model remains usable only under the existing Core unknown-model behavior; it receives no DeepSeek-specific capability, pricing, reasoning, or request-rule inference.
 
