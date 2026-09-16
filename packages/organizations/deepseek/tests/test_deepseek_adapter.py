@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from typing import Any, Iterator, Mapping
 
 import pytest
@@ -24,7 +25,11 @@ import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.errors.llm_api_error import (
     JSONSchemaError,
+    LLMAPIAuthorizationError,
     LLMAPIClientError,
+    LLMAPIRateLimitError,
+    LLMAPIServerError,
+    LLMAPIUsageLimitError,
     LLMAPIError,
 )
 from llm_api_adapter.errors.config_errors import LLMConfigError
@@ -46,6 +51,8 @@ from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools import ToolCall, ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter_deepseek.clients.async_client import DeepSeekResponsesAsyncClient
+from llm_api_adapter_deepseek.clients.sync_client import DeepSeekResponsesSyncClient
 
 
 WEATHER_TOOL = ToolSpec(
@@ -1181,3 +1188,87 @@ def test_async_stream_cancellation_closes_resources_and_skips_completion(
     asyncio.run(cancel_stream())
     assert stream_closed is True
     assert completed == []
+
+
+def _deepseek_http_error(status_code: int, payload: Any) -> SimpleNamespace:
+    """Build a credential-free HTTP error with the transport response shape."""
+    return SimpleNamespace(
+        response=SimpleNamespace(
+            status_code=status_code,
+            json=lambda: payload,
+            text="",
+        )
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status_code", "error_code", "expected_error"),
+    [
+        (400, "invalid_format", LLMAPIClientError),
+        (401, "authentication_error", LLMAPIAuthorizationError),
+        (402, "insufficient_balance", LLMAPIUsageLimitError),
+        (422, "invalid_parameters", LLMAPIClientError),
+        (429, "rate_limit_reached", LLMAPIRateLimitError),
+        (500, "server_error", LLMAPIServerError),
+        (503, "server_overloaded", LLMAPIServerError),
+    ],
+)
+def test_deepseek_maps_documented_http_failures_for_sync_and_async_clients(
+    status_code: int,
+    error_code: str,
+    expected_error: type[LLMAPIError],
+):
+    error = _deepseek_http_error(
+        status_code,
+        {"error": {"code": error_code, "message": "DeepSeek test failure"}},
+    )
+
+    assert DeepSeekResponsesSyncClient._http_error_details(error) == (
+        status_code,
+        error_code,
+        "DeepSeek test failure",
+    )
+    for handler in (
+        DeepSeekResponsesSyncClient._handle_http_error,
+        DeepSeekResponsesAsyncClient._handle_http_error,
+    ):
+        with pytest.raises(expected_error, match="DeepSeek test failure"):
+            handler(error)
+
+
+@pytest.mark.unit
+def test_deepseek_preserves_flat_http_details_and_nested_stream_errors():
+    error = _deepseek_http_error(
+        400,
+        {
+            "code": "invalid_format",
+            "error": "Request body is malformed",
+        },
+    )
+
+    assert DeepSeekResponsesSyncClient._http_error_details(error) == (
+        400,
+        "invalid_format",
+        "Request body is malformed",
+    )
+    with pytest.raises(LLMAPIClientError, match="Request body is malformed"):
+        DeepSeekResponsesSyncClient._handle_http_error(error)
+
+    event = SSEEvent(
+        event="error",
+        data={
+            "response": {
+                "error": {
+                    "code": "rate_limit_reached",
+                    "message": "DeepSeek stream rate limit",
+                }
+            }
+        },
+    )
+    for handler in (
+        DeepSeekResponsesSyncClient._handle_stream_error,
+        DeepSeekResponsesAsyncClient._handle_stream_error,
+    ):
+        with pytest.raises(LLMAPIRateLimitError, match="DeepSeek stream rate limit"):
+            handler(event)

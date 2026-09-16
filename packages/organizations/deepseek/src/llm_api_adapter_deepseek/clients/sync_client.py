@@ -108,7 +108,11 @@ class DeepSeekResponsesSyncClient:
         """Extract status, provider code, and useful detail from an HTTP error."""
         response = getattr(error, "response", None)
         raw_status = getattr(response, "status_code", None)
-        status_code = raw_status if isinstance(raw_status, int) else None
+        status_code = (
+            raw_status
+            if isinstance(raw_status, int) and not isinstance(raw_status, bool)
+            else None
+        )
 
         payload: Mapping[str, Any] = {}
         if response is not None:
@@ -148,7 +152,17 @@ class DeepSeekResponsesSyncClient:
     def _handle_stream_error(cls, event: SSEEvent) -> None:
         """Map a provider error event through Core's normalized hierarchy."""
         payload = event.data if isinstance(event.data, Mapping) else {}
-        error_data = payload.get("error", payload)
+        response_data = payload.get("response")
+        response_error = (
+            response_data.get("error")
+            if isinstance(response_data, Mapping)
+            else None
+        )
+        error_data = payload.get("error")
+        if not isinstance(error_data, Mapping):
+            error_data = response_error
+        if not isinstance(error_data, Mapping):
+            error_data = payload
         if not isinstance(error_data, Mapping):
             raise LLMAPIClientError(
                 detail="DeepSeek Responses stream returned an invalid error event",
@@ -174,8 +188,8 @@ class DeepSeekResponsesSyncClient:
         detail: str,
     ) -> None:
         """Map documented DeepSeek failures without introducing retries."""
-        normalized_type = (error_type or "").lower()
-        normalized_detail = detail.lower()
+        normalized_type = (error_type or "").strip().lower()
+        normalized_detail = detail.strip().lower()
 
         if status_code in {401, 403} or normalized_type in {
             "authentication_error",
