@@ -1,6 +1,8 @@
 # Quickstart: Validate the DeepSeek Release Candidate
 
-This guide validates the planned Core `0.9.6` and DeepSeek `0.1.0` integration. It intentionally separates safe deterministic checks from paid live checks.
+This guide validates the planned Core `0.9.6` and independently versioned
+`llm-api-adapter-deepseek` `0.1.0` integration. It intentionally separates safe
+deterministic checks from paid live checks.
 
 ## 1. Deterministic development environment
 
@@ -11,6 +13,10 @@ python -m pip install -r tests/requirements-test.txt
 python -m pip install -e ".[async,httpx]"
 python -m pip install -e "packages/organizations/deepseek[async,httpx]"
 ```
+
+These commands are credential-free. Do not set `DEEPSEEK_API_KEY` for the
+deterministic suite; the mocked transports and discovery checks must never make
+provider requests or incur charges.
 
 Run the Core discovery/extra and CI-selection checks, then the package's credential-free unit and mocked-integration suites:
 
@@ -37,11 +43,21 @@ python -m build
 python -m build packages/organizations/deepseek
 ```
 
-Install the generated wheels into a clean virtual environment with the matching Core `deepseek`, `async`, and `httpx` extras. Verify that the package discovers through `UniversalLLMAPIAdapter` without importing package modules from the repository checkout. Repeat the missing-package case with only the Core wheel; the error must recommend the exact DeepSeek distribution.
+Install the generated wheels into a clean virtual environment with the matching
+Core `deepseek`, `async`, and `httpx` extras. Verify that the package discovers
+through `UniversalLLMAPIAdapter` without importing package modules from the
+repository checkout. Repeat the missing-package case with only the Core wheel;
+the error must recommend the exact DeepSeek distribution. Core and the
+DeepSeek package are released independently, so keep the candidate pair exact
+(`0.9.6` with `0.1.0`) and never substitute an older TestPyPI artifact.
 
 ## 3. Release-candidate E2E (maintainer authorized)
 
-Do not run live calls in a pull request or local deterministic suite. After the protected release-candidate workflow has published exact TestPyPI candidates, the dedicated post-publish DeepSeek job installs only those candidate versions, sets `DEEPSEEK_API_KEY` from CI secrets, verifies plugin discovery, and runs:
+Do not run live calls in a pull request or local deterministic suite. Only a
+maintainer-authorized post-publish job may use `DEEPSEEK_API_KEY`, supplied from
+GitHub Actions Secrets after exact TestPyPI candidates have been published. The
+dedicated DeepSeek job installs only those candidate versions, verifies plugin
+discovery, and runs:
 
 ```powershell
 python -m pytest -v --import-mode=importlib -m e2e_deepseek
