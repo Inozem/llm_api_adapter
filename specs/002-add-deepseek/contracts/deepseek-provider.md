@@ -16,7 +16,7 @@ The existing facade remains the only public entry point:
 UniversalLLMAPIAdapter(
     organization="deepseek",
     model="deepseek-flash",
-    api_key=..., 
+    api_key=...
 )
 ```
 
