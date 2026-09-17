@@ -7,18 +7,10 @@ file path without changing the reviewed discovery record.
 
 from __future__ import annotations
 
-from pathlib import Path
-import sys
-
 import pytest
 
 
-TEST_ROOT = Path(__file__).resolve().parent
-if str(TEST_ROOT) not in sys.path:
-    sys.path.insert(0, str(TEST_ROOT))
-
-
-from fixtures.kimi_capability_discovery import (
+from packages.organizations.kimi.tests.fixtures.kimi_capability_discovery import (
     CANDIDATE_MODELS,
     KIMI_CAPABILITY_DISCOVERY,
     KIMI_CHAT_COMPLETION_RESPONSE,

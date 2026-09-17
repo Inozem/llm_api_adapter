@@ -12,11 +12,15 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
 CORE_SOURCE = REPOSITORY_ROOT / "src"
 PACKAGE_SOURCE = PACKAGE_ROOT / "src"
-for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
+for source in (
+    str(PACKAGE_SOURCE),
+    str(CORE_SOURCE),
+    str(REPOSITORY_ROOT),
+):
     if source not in sys.path:
         sys.path.insert(0, source)
 
-from fixtures.deepseek_capability_discovery import (
+from packages.organizations.deepseek.tests.fixtures.deepseek_capability_discovery import (
     CANDIDATE_MODELS,
     CLOSED_MODEL_IDS,
     DEEPSEEK_CAPABILITY_DISCOVERY,
