@@ -151,7 +151,7 @@ and unavailable pricing remains unavailable.
 **Purpose**: Wire the provider into deterministic and post-publish release evidence, refresh
 repository documentation, and verify the exact release artifacts.
 
-- [ ] T035 [P] Add the DeepSeek profile with capability gates that skip unsupported generic scenarios rather than weakening them in `tests/e2e/conftest.py`.
+- [X] T035 [P] Add the DeepSeek profile with capability gates that skip unsupported generic scenarios rather than weakening them in `tests/e2e/conftest.py`.
 - [ ] T036 [P] Add deterministic selection coverage asserting that only DeepSeek changes select its candidate and `e2e_deepseek` lane in `tests/unit/test_ci_e2e_lane_selection.py`.
 - [ ] T037 Implement DeepSeek path, package, shared-Core, and E2E-lane detection in `.github/scripts/select_e2e_lanes.py`.
 - [ ] T038 Create the credential-free pull-request DeepSeek package workflow in `.github/workflows/ci-deepseek-dev.yml`.
