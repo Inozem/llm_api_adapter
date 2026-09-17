@@ -83,6 +83,9 @@ unsupported-input errors.
 3. **Given** a portable JSON Schema or compatible response model, **When** a completed response is
    valid, **Then** the SDK exposes parsed JSON and, for a response model, the validated typed
    result; invalid or incompatible output raises the documented client-side schema error.
+4. **Given** DeepSeek is selected and a message contains a PDF, another document, or a non-image
+   file part, **When** the request is submitted, **Then** the optional package rejects it before
+   invoking either transport and does not attempt OCR, upload, conversion, or fallback.
 
 ---
 
@@ -214,7 +217,21 @@ boundary. The following current differences are externally observable and must r
 | xAI package | Provides the common contract through its supported response capability. Public PDF URLs and PDF bytes have distinct documented attachment handling. Provider-side continuation is accepted but not sent. |
 | Qwen package | Requires an explicit workspace setting for every operation and supports only its documented endpoint region. It rejects PDF input before request submission. |
 | Kimi package | Supports image bytes and data URIs within its documented boundary, but rejects public image URLs and all PDF document forms before request submission. Provider-side continuation is accepted but not sent. |
-| DeepSeek package | Supports only its documented canonical model and capability matrix. It rejects direct PDF/document and non-image file input before request submission. A reasoned continuation may use opaque response metadata from a matching prior DeepSeek response; that metadata is never rendered, included in debug output, or logged. |
+| DeepSeek package (`llm-api-adapter-deepseek`) | Optional package; the Core base installation does not import it. It supports only its documented canonical model and capability matrix, and rejects direct PDF/document and non-image file input before request submission. A reasoned continuation may use opaque response metadata from a matching prior DeepSeek response; that metadata is never rendered, included in debug output, or logged. |
+
+For the DeepSeek package, all `DocumentPart` values and non-image `FilePart` values are rejected
+by local capability validation before either the synchronous or asynchronous client is invoked.
+No provider request, URL fetch, file upload, OCR, conversion, or automatic fallback may occur for
+those inputs. A known-but-uninstalled `deepseek` selection remains distinct from an unknown
+organization and reports the documented optional-package installation remedy.
+
+When a reasoned DeepSeek continuation is requested, the adapter may consume only the matching
+prior response's opaque `ChatResponse.provider_data["deepseek.reasoning_replay"]` together with the
+caller's complete normal message history. This transport-only metadata MUST NOT be yielded as
+visible text or reasoning, rendered, included in `repr` or debug output, serialized as visible
+content, logged, or persisted. Missing or mismatched replay data is a local compatibility error
+when the selected DeepSeek mode requires it; the adapter never invents reasoning or sends a
+server-side continuation identifier.
 
 Model-specific tool-choice and reasoning restrictions remain registry-derived contract behavior.
 They must reject or warn according to the applicable common request rule rather than silently
