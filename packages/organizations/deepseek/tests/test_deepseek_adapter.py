@@ -1,0 +1,1493 @@
+"""Credential-free facade contracts for DeepSeek's Responses API adapter."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import json
+import logging
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+from typing import Any, Iterator, Mapping
+
+import pytest
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
+CORE_SOURCE = REPOSITORY_ROOT / "src"
+PACKAGE_SOURCE = PACKAGE_ROOT / "src"
+for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
+    if source not in sys.path:
+        sys.path.insert(0, source)
+
+import llm_api_adapter.adapters.base_adapter as base_adapter_module
+import llm_api_adapter_deepseek.adapter as deepseek_adapter_module
+import llm_api_adapter.universal_adapter as universal_module
+from llm_api_adapter.errors.llm_api_error import (
+    JSONSchemaError,
+    LLMAPIAuthorizationError,
+    LLMAPIClientError,
+    LLMAPIRateLimitError,
+    LLMAPIServerError,
+    LLMAPIUsageLimitError,
+    LLMAPIError,
+)
+from llm_api_adapter.errors.config_errors import LLMConfigError
+from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
+from llm_api_adapter.llms.transports import (
+    JSONResponse,
+    SSEEvent,
+    SyncTransport,
+    TransportRequest,
+)
+from llm_api_adapter.models.messages.chat_message import (
+    AIMessage,
+    Prompt,
+    ToolMessage,
+    UserMessage,
+)
+from llm_api_adapter.models.messages.file_parts import DocumentPart, FilePart, ImagePart
+from llm_api_adapter.models.responses.chat_response import ChatResponse
+from llm_api_adapter.models.tools import ToolCall, ToolSpec
+from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter_deepseek.clients.async_client import DeepSeekResponsesAsyncClient
+from llm_api_adapter_deepseek.clients.sync_client import DeepSeekResponsesSyncClient
+
+
+WEATHER_TOOL = ToolSpec(
+    name="get_weather",
+    description="Return the current weather for a city.",
+    json_schema={
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+        "additionalProperties": False,
+    },
+)
+
+FLAT_OBJECT_SCHEMA = {
+    "type": "object",
+    "properties": {"answer": {"type": "string"}},
+    "required": ["answer"],
+    "additionalProperties": False,
+}
+
+
+@dataclass(frozen=True)
+class StructuredAnswer:
+    """Pydantic-compatible response model without a test dependency."""
+
+    answer: str
+
+    @classmethod
+    def model_json_schema(cls) -> dict[str, Any]:
+        return FLAT_OBJECT_SCHEMA
+
+    @classmethod
+    def model_validate(cls, value: dict[str, Any], **kwargs: Any) -> "StructuredAnswer":
+        del kwargs
+        return cls(answer=value["answer"])
+
+
+@dataclass
+class FakeSyncTransport(SyncTransport):
+    """Transport double that exposes requests and closes stream iterators."""
+
+    response: Any
+    stream_events: list[SSEEvent] = field(default_factory=list)
+    requests: list[TransportRequest] = field(default_factory=list)
+    sse_closed: bool = False
+
+    def post_json(
+        self,
+        request: TransportRequest,
+        *,
+        http_error_handler=None,
+    ) -> JSONResponse:
+        del http_error_handler
+        self.requests.append(request)
+        return JSONResponse(self.response)
+
+    def post_multipart(
+        self,
+        request: TransportRequest,
+        form,
+        *,
+        http_error_handler=None,
+    ) -> JSONResponse:
+        del request, form, http_error_handler
+        raise AssertionError("DeepSeek text contract must not upload files")
+
+    def post_sse(
+        self,
+        request: TransportRequest,
+        *,
+        http_error_handler=None,
+        stream_error_handler=None,
+    ) -> Iterator[SSEEvent]:
+        del http_error_handler
+        self.requests.append(request)
+
+        def events() -> Iterator[SSEEvent]:
+            try:
+                for event in self.stream_events:
+                    payload = event.data if isinstance(event.data, Mapping) else {}
+                    if (
+                        stream_error_handler is not None
+                        and (
+                            event.event == "error"
+                            or payload.get("type") == "error"
+                        )
+                    ):
+                        stream_error_handler(event)
+                    yield event
+            finally:
+                self.sse_closed = True
+
+        return events()
+
+
+def _response() -> dict[str, Any]:
+    """Return a completed official Responses API envelope."""
+    return {
+        "object": "response",
+        "id": "resp-deepseek-flash",
+        "model": "deepseek-flash",
+        "created_at": 1_774_274_151,
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "Hello from DeepSeek.",
+                    },
+                ],
+            },
+        ],
+        "usage": {
+            "input_tokens": 20,
+            "output_tokens": 5,
+            "total_tokens": 25,
+        },
+    }
+
+
+def _response_with_usage(usage: Any) -> dict[str, Any]:
+    """Return a completed response with a caller-controlled usage payload."""
+    response = _response()
+    response["usage"] = usage
+    return response
+
+
+def _function_call_response() -> dict[str, Any]:
+    response = _response()
+    response["output"] = [
+        {
+            "type": "function_call",
+            "id": "fc-deepseek-weather",
+            "call_id": "call-deepseek-weather",
+            "name": "get_weather",
+            "arguments": '{"city":"Haifa"}',
+            "status": "completed",
+        },
+    ]
+    return response
+
+
+def _structured_response() -> dict[str, Any]:
+    response = _response()
+    response["output"][0]["content"][0]["text"] = '{"answer":"ok"}'
+    return response
+
+
+def _reasoning_response() -> dict[str, Any]:
+    response = _response()
+    response["output"] = [
+        {
+            "type": "reasoning",
+            "id": "rs-deepseek-replay",
+            "summary": [
+                {"type": "summary_text", "text": "Internal summary."},
+            ],
+            "content": [
+                {"type": "reasoning_text", "text": "Internal details."},
+            ],
+            "reasoning_content": "opaque-reasoning-replay-sentinel",
+        },
+        response["output"][0],
+    ]
+    return response
+
+
+def _stream_events() -> list[SSEEvent]:
+    response = _response()
+    response["id"] = "stream-deepseek-flash"
+    return [
+        SSEEvent(
+            event="response.created",
+            data={
+                "type": "response.created",
+                "response": {
+                    "id": response["id"],
+                    "model": "deepseek-flash",
+                    "object": "response",
+                    "status": "in_progress",
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.output_text.delta",
+            data={
+                "type": "response.output_text.delta",
+                "delta": "Hello ",
+            },
+        ),
+        SSEEvent(
+            event="response.output_text.delta",
+            data={
+                "type": "response.output_text.delta",
+                "delta": "from ",
+            },
+        ),
+        SSEEvent(
+            event="response.output_text.delta",
+            data={
+                "type": "response.output_text.delta",
+                "delta": "DeepSeek.",
+            },
+        ),
+        SSEEvent(
+            event="response.completed",
+            data={"type": "response.completed", "response": response},
+        ),
+    ]
+
+
+@pytest.fixture
+def deepseek_runtime(monkeypatch):
+    """Register the package plugin against isolated Core registries."""
+    from llm_api_adapter_deepseek.plugin import PLUGIN
+
+    model_registry = RegistrySpec()
+    assert PLUGIN.model_metadata is not None
+    assert (
+        model_registry.register_organization_metadata(PLUGIN.model_metadata) is True
+    )
+
+    service_provider_registry = ServiceProviderRegistry()
+    PLUGIN.register(service_provider_registry)
+    monkeypatch.setattr(universal_module, "LLM_REGISTRY", model_registry)
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        service_provider_registry,
+    )
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", model_registry)
+    return model_registry
+
+
+def _deepseek_facade() -> UniversalLLMAPIAdapter:
+    return UniversalLLMAPIAdapter(
+        organization="deepseek",
+        model="deepseek-flash",
+        api_key="deepseek-test-key",
+    )
+
+
+@pytest.mark.integration
+def test_chat_maps_responses_function_tools_and_normalizes_tool_calls(
+    deepseek_runtime,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_function_call_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.warns(UserWarning, match="DeepSeek disables reasoning"):
+        response = adapter.chat(
+            messages=[UserMessage("What is the weather in Haifa?")],
+            tools=[WEATHER_TOOL],
+            tool_choice="get_weather",
+        )
+
+    assert response.tool_calls is not None
+    assert [(call.name, call.arguments, call.call_id) for call in response.tool_calls] == [
+        ("get_weather", {"city": "Haifa"}, "call-deepseek-weather"),
+    ]
+    assert transport.requests[0].payload["tools"] == [
+        {
+            "type": "function",
+            "name": "get_weather",
+            "description": "Return the current weather for a city.",
+            "parameters": WEATHER_TOOL.json_schema,
+        },
+    ]
+    assert transport.requests[0].payload["tool_choice"] == {
+        "type": "function",
+        "name": "get_weather",
+    }
+    assert transport.requests[0].payload["reasoning"] == {"effort": "none"}
+
+
+@pytest.mark.integration
+def test_named_tool_choice_disables_explicit_reasoning_with_a_warning(
+    deepseek_runtime,
+    caplog,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_function_call_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with caplog.at_level(logging.WARNING, logger=deepseek_adapter_module.__name__):
+        with pytest.warns(
+            UserWarning,
+            match="DeepSeek disables reasoning",
+        ):
+            adapter.chat(
+                messages=[UserMessage("What is the weather in Haifa?")],
+                tools=[WEATHER_TOOL],
+                tool_choice="get_weather",
+                reasoning_level="high",
+            )
+
+    assert transport.requests[0].payload["reasoning"] == {"effort": "none"}
+    assert "DeepSeek disables reasoning" in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("tool_choice", "expected"),
+    [
+        ("auto", "auto"),
+        ("none", "none"),
+        ("any", "required"),
+        ("get_weather", {"type": "function", "name": "get_weather"}),
+    ],
+)
+def test_chat_maps_each_supported_responses_tool_choice(
+    deepseek_runtime,
+    tool_choice,
+    expected,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    if tool_choice == "get_weather":
+        with pytest.warns(UserWarning, match="DeepSeek disables reasoning"):
+            adapter.chat(
+                messages=[UserMessage("Use the weather tool.")],
+                tools=[WEATHER_TOOL],
+                tool_choice=tool_choice,
+            )
+    else:
+        adapter.chat(
+            messages=[UserMessage("Use the weather tool.")],
+            tools=[WEATHER_TOOL],
+            tool_choice=tool_choice,
+        )
+
+    assert transport.requests[0].payload["tool_choice"] == expected
+
+
+@pytest.mark.integration
+def test_chat_maps_function_call_history_and_normal_tool_result(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.warns(UserWarning, match="DeepSeek disables reasoning"):
+        adapter.chat(
+            messages=[
+                UserMessage("What is the weather in Haifa?"),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            name="get_weather",
+                            arguments={"city": "Haifa"},
+                            call_id="call-deepseek-weather",
+                        ),
+                    ],
+                ),
+                ToolMessage(
+                    content='{"forecast":"sunny"}',
+                    tool_call_id="call-deepseek-weather",
+                ),
+            ],
+        )
+
+    assert transport.requests[0].payload["input"] == [
+        {"role": "user", "content": "What is the weather in Haifa?"},
+        {
+            "type": "function_call",
+            "call_id": "call-deepseek-weather",
+            "name": "get_weather",
+            "arguments": '{"city": "Haifa"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-deepseek-weather",
+            "output": '{"forecast":"sunny"}',
+        },
+    ]
+    assert transport.requests[0].payload["reasoning"] == {"effort": "none"}
+
+
+@pytest.mark.integration
+def test_chat_maps_portable_json_schema_and_pydantic_output(deepseek_runtime):
+    adapter = _deepseek_facade()
+
+    schema_transport = FakeSyncTransport(_structured_response())
+    adapter.adapter._client._sync_transport = schema_transport
+    schema_response = adapter.chat(
+        messages=[UserMessage("Reply as JSON.")],
+        json_schema=FLAT_OBJECT_SCHEMA,
+    )
+
+    assert schema_response.parsed_json == {"answer": "ok"}
+    assert schema_transport.requests[0].payload["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "response",
+            "schema": FLAT_OBJECT_SCHEMA,
+        },
+    }
+
+    model_transport = FakeSyncTransport(_structured_response())
+    adapter.adapter._client._sync_transport = model_transport
+    model_response = adapter.chat(
+        messages=[UserMessage("Reply as a typed answer.")],
+        response_model=StructuredAnswer,
+    )
+
+    assert model_response.parsed_json == {"answer": "ok"}
+    assert model_response.parsed_model == StructuredAnswer(answer="ok")
+    assert model_transport.requests[0].payload["text"]["format"]["schema"] == (
+        StructuredAnswer.model_json_schema()
+    )
+
+
+@pytest.mark.unit
+def test_chat_rejects_nonportable_json_schema_before_http(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_structured_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.raises(JSONSchemaError, match="Core portable profile"):
+        adapter.chat(
+            messages=[UserMessage("Reply as JSON.")],
+            json_schema={
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": [],
+                "additionalProperties": False,
+            },
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.integration
+def test_chat_maps_image_url_and_data_parts_without_file_upload(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    adapter.chat(
+        messages=[
+            UserMessage(
+                "Describe both images.",
+                files=[
+                    ImagePart(url="https://example.test/image.png"),
+                    ImagePart(data=b"image", media_type="image/png"),
+                ],
+            ),
+        ],
+    )
+
+    assert transport.requests[0].payload["input"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe both images."},
+                {
+                    "type": "input_image",
+                    "image_url": "https://example.test/image.png",
+                },
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,aW1hZ2U=",
+                },
+            ],
+        },
+    ]
+
+
+@pytest.mark.integration
+def test_reasoning_capture_is_opt_in_and_replay_stays_opaque(deepseek_runtime):
+    adapter = _deepseek_facade()
+    first_transport = FakeSyncTransport(_reasoning_response())
+    adapter.adapter._client._sync_transport = first_transport
+
+    first_response = adapter.chat(
+        messages=[UserMessage("Solve this carefully.")],
+        reasoning_level="high",
+        capture_reasoning=True,
+    )
+
+    assert first_response.content == "Hello from DeepSeek."
+    assert [event.text for event in first_response.reasoning_events] == [
+        "Internal summary.",
+        "Internal details.",
+    ]
+    assert first_response.provider_data is not None
+    replay = first_response.provider_data["deepseek.reasoning_replay"]
+    assert "opaque-reasoning-replay-sentinel" in json.dumps(replay)
+    assert "opaque-reasoning-replay-sentinel" not in (first_response.content or "")
+    assert "opaque-reasoning-replay-sentinel" not in repr(first_response)
+
+    second_transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = second_transport
+    second_response = adapter.chat(
+        messages=[
+            UserMessage("Solve this carefully."),
+            AIMessage(content=first_response.content or ""),
+            UserMessage("Now continue."),
+        ],
+        reasoning_level="high",
+        previous_response=first_response,
+    )
+
+    second_payload = second_transport.requests[0].payload
+    assert "previous_response_id" not in second_payload
+    assert "opaque-reasoning-replay-sentinel" in json.dumps(second_payload)
+    assert "opaque-reasoning-replay-sentinel" not in (second_response.content or "")
+    assert "opaque-reasoning-replay-sentinel" not in repr(second_response)
+
+
+@pytest.mark.integration
+def test_reasoning_replay_is_saved_when_visible_capture_is_disabled(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_reasoning_response())
+    adapter.adapter._client._sync_transport = transport
+
+    response = adapter.chat(
+        messages=[UserMessage("Solve this carefully.")],
+        reasoning_level="high",
+    )
+
+    assert response.reasoning_events == []
+    assert response.provider_data is not None
+    assert "opaque-reasoning-replay-sentinel" in json.dumps(response.provider_data)
+    assert "opaque-reasoning-replay-sentinel" not in (response.content or "")
+    assert "opaque-reasoning-replay-sentinel" not in repr(response)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "previous_response",
+    [
+        ChatResponse(
+            model="deepseek-v4-pro",
+            response_id="resp-other-model",
+            provider_data={
+                "deepseek.reasoning_replay": {
+                    "model": "deepseek-v4-pro",
+                    "response_id": "resp-other-model",
+                    "items": [
+                        {
+                            "type": "reasoning",
+                            "content": [
+                                {
+                                    "type": "reasoning_text",
+                                    "text": "opaque-other-model",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        ),
+        ChatResponse(
+            model="deepseek-flash",
+            response_id="resp-current",
+            provider_data={
+                "deepseek.reasoning_replay": {
+                    "model": "deepseek-flash",
+                    "response_id": "resp-different",
+                    "items": [
+                        {
+                            "type": "reasoning",
+                            "content": [
+                                {
+                                    "type": "reasoning_text",
+                                    "text": "opaque-mismatch",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        ),
+    ],
+)
+def test_reasoning_replay_requires_a_matching_previous_response(
+    deepseek_runtime,
+    previous_response,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.raises(LLMConfigError, match="previous_response|model"):
+        adapter.chat(
+            messages=[UserMessage("Continue.")],
+            previous_response=previous_response,
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+def test_reasoning_replay_requires_prior_assistant_history(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+    previous_response = ChatResponse(
+        model="deepseek-flash",
+        response_id="resp-deepseek-flash",
+        provider_data={
+            "deepseek.reasoning_replay": {
+                "model": "deepseek-flash",
+                "response_id": "resp-deepseek-flash",
+                "items": [
+                    {
+                        "type": "reasoning",
+                        "content": [
+                            {
+                                "type": "reasoning_text",
+                                "text": "opaque-replay",
+                            },
+                        ],
+                    },
+                ],
+            },
+        },
+    )
+
+    with pytest.raises(LLMConfigError, match="assistant message"):
+        adapter.chat(
+            messages=[UserMessage("Continue.")],
+            previous_response=previous_response,
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("parallel_tool_calls", [False, True])
+def test_explicit_parallel_tool_control_fails_before_http(
+    deepseek_runtime,
+    parallel_tool_calls,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.raises(NotImplementedError, match="parallel_tool_calls"):
+        adapter.chat(
+            messages=[UserMessage("Use the weather tool.")],
+            tools=[WEATHER_TOOL],
+            parallel_tool_calls=parallel_tool_calls,
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+def test_unverified_model_capability_fails_before_http(deepseek_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="deepseek",
+        model="deepseek-flash-latest",
+        api_key="deepseek-test-key",
+    )
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.raises(
+        (LLMAPIError, NotImplementedError),
+        match="not verified|capability|supported",
+    ):
+        adapter.chat(
+            messages=[UserMessage("Use the weather tool.")],
+            tools=[WEATHER_TOOL],
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.integration
+def test_facade_chat_maps_text_to_responses_and_normalizes_output(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    response = adapter.chat(
+        messages=[Prompt("Be concise."), UserMessage("Hello")],
+        max_tokens=12,
+        temperature=0.5,
+        top_p=0.8,
+        timeout_s=3.0,
+    )
+
+    assert response.content == "Hello from DeepSeek."
+    assert response.response_id == "resp-deepseek-flash"
+    assert response.usage is not None
+    assert response.usage.total_tokens == 25
+    assert len(transport.requests) == 1
+    request = transport.requests[0]
+    assert request.url.endswith("/responses")
+    assert request.headers_dict() == {
+        "Authorization": "Bearer deepseek-test-key",
+        "Content-Type": "application/json",
+    }
+    assert request.payload == {
+        "model": "deepseek-flash",
+        "input": [{"role": "user", "content": "Hello"}],
+        "max_output_tokens": 12,
+        "temperature": 0.5,
+        "top_p": 0.8,
+        "instructions": "Be concise.",
+    }
+    assert request.timeout == 3.0
+
+
+@pytest.mark.integration
+def test_facade_stream_maps_sse_callbacks_completion_and_close(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport({}, stream_events=_stream_events())
+    adapter.adapter._client._sync_transport = transport
+    callbacks: list[tuple[str, Any]] = []
+
+    output = list(
+        adapter.stream_chat(
+            messages=[Prompt("Be concise."), UserMessage("Hello")],
+            max_tokens=12,
+            temperature=0.5,
+            top_p=0.8,
+            timeout_s=3.0,
+            buffer_chars=6,
+            on_chunk=lambda chunk: callbacks.append(("chunk", chunk.text)),
+            on_delta=lambda text: callbacks.append(("delta", text)),
+            on_done=lambda response: callbacks.append(("done", response)),
+        )
+    )
+
+    assert output == ["Hello ", "from D", "eepSee", "k."]
+    assert callbacks[:8] == [
+        ("chunk", "Hello "),
+        ("delta", "Hello "),
+        ("chunk", "from D"),
+        ("delta", "from D"),
+        ("chunk", "eepSee"),
+        ("delta", "eepSee"),
+        ("chunk", "k."),
+        ("delta", "k."),
+    ]
+    assert callbacks[-1][0] == "done"
+    assert callbacks[-1][1].content == "Hello from DeepSeek."
+    assert callbacks[-1][1].response_id == "stream-deepseek-flash"
+    assert transport.sse_closed is True
+    assert transport.requests[0].payload["stream"] is True
+    assert "stream_options" not in transport.requests[0].payload
+
+
+@pytest.mark.integration
+def test_facade_achat_and_astream_match_sync_contract(deepseek_runtime, monkeypatch):
+    from llm_api_adapter_deepseek.clients import async_client as async_client_module
+
+    requests: list[dict[str, Any]] = []
+
+    async def fake_async_request(
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float | None,
+        http_error_handler,
+    ) -> dict[str, Any]:
+        del http_error_handler
+        requests.append(
+            {
+                "url": url,
+                "headers": headers,
+                "payload": payload,
+                "timeout": timeout,
+            }
+        )
+        return _response()
+
+    def fake_async_stream_request(
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float | None,
+        http_error_handler,
+        stream_error_handler,
+    ):
+        del http_error_handler, stream_error_handler
+        requests.append(
+            {
+                "url": url,
+                "headers": headers,
+                "payload": payload,
+                "timeout": timeout,
+            }
+        )
+
+        async def events():
+            for event in _stream_events():
+                yield event
+
+        return events()
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = _deepseek_facade()
+
+    async def exercise():
+        response = await adapter.achat(
+            messages=[Prompt("Be concise."), UserMessage("Hello")],
+            max_tokens=12,
+            temperature=0.5,
+            top_p=0.8,
+            timeout_s=3.0,
+        )
+        callback_events: list[tuple[str, Any]] = []
+
+        async def on_chunk(chunk):
+            callback_events.append(("chunk", chunk.text))
+
+        async def on_delta(text):
+            callback_events.append(("delta", text))
+
+        async def on_done(done_response):
+            callback_events.append(("done", done_response))
+
+        chunks = []
+        async for text in adapter.astream_chat(
+            messages=[Prompt("Be concise."), UserMessage("Hello")],
+            max_tokens=12,
+            temperature=0.5,
+            top_p=0.8,
+            timeout_s=3.0,
+            buffer_chars=6,
+            on_chunk=on_chunk,
+            on_delta=on_delta,
+            on_done=on_done,
+        ):
+            chunks.append(text)
+        return response, chunks, callback_events
+
+    response, chunks, callback_events = asyncio.run(exercise())
+
+    assert response.content == "Hello from DeepSeek."
+    assert chunks == ["Hello ", "from D", "eepSee", "k."]
+    assert callback_events[:2] == [
+        ("chunk", "Hello "),
+        ("delta", "Hello "),
+    ]
+    assert callback_events[-1][0] == "done"
+    assert callback_events[-1][1].content == "Hello from DeepSeek."
+    assert len(requests) == 2
+    assert requests[0]["url"].endswith("/responses")
+    assert requests[0]["headers"]["Authorization"] == (
+        "Bearer deepseek-test-key"
+    )
+    assert requests[0]["payload"]["model"] == "deepseek-flash"
+    assert requests[0]["payload"]["input"] == [
+        {"role": "user", "content": "Hello"},
+    ]
+    assert requests[1]["payload"]["stream"] is True
+    assert "stream_options" not in requests[1]["payload"]
+
+
+@pytest.mark.integration
+def test_stream_close_before_terminal_event_skips_completion(deepseek_runtime):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport({}, stream_events=_stream_events())
+    adapter.adapter._client._sync_transport = transport
+    completed = []
+    stream = adapter.stream_chat(
+        messages=[UserMessage("Hello")],
+        on_done=completed.append,
+    )
+
+    assert next(stream) == "Hello "
+    stream.close()
+
+    assert transport.sse_closed is True
+    assert completed == []
+
+
+@pytest.mark.integration
+def test_stream_without_terminal_response_is_a_client_error(deepseek_runtime):
+    adapter = _deepseek_facade()
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        {},
+        stream_events=_stream_events()[:-1],
+    )
+    completed = []
+
+    with pytest.raises(LLMAPIClientError):
+        list(
+            adapter.stream_chat(
+                messages=[UserMessage("Hello")],
+                on_done=completed.append,
+            )
+        )
+
+    assert completed == []
+
+
+@pytest.mark.integration
+def test_stream_reconstructs_fragmented_function_call_and_usage(
+    deepseek_runtime,
+):
+    adapter = _deepseek_facade()
+    response = {
+        "object": "response",
+        "id": "stream-function-call",
+        "model": "deepseek-flash",
+        "status": "completed",
+        "output": [],
+    }
+    events = [
+        SSEEvent(
+            event="response.created",
+            data={
+                "type": "response.created",
+                "response": {
+                    "object": "response",
+                    "id": response["id"],
+                    "model": response["model"],
+                    "status": "in_progress",
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.usage",
+            data={
+                "type": "response.usage",
+                "usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "total_tokens": 10,
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.output_item.added",
+            data={
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc-stream",
+                    "call_id": "call-stream",
+                    "name": "get_weather",
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.function_call_arguments.delta",
+            data={
+                "type": "response.function_call_arguments.delta",
+                "output_index": 0,
+                "item_id": "fc-stream",
+                "delta": '{"city":',
+            },
+        ),
+        SSEEvent(
+            event="response.function_call_arguments.delta",
+            data={
+                "type": "response.function_call_arguments.delta",
+                "output_index": 0,
+                "item_id": "fc-stream",
+                "delta": '"Haifa"}',
+            },
+        ),
+        SSEEvent(
+            event="response.output_item.done",
+            data={
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc-stream",
+                    "call_id": "call-stream",
+                    "name": "get_weather",
+                    "status": "completed",
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.completed",
+            data={"type": "response.completed", "response": response},
+        ),
+    ]
+    transport = FakeSyncTransport({}, stream_events=events)
+    adapter.adapter._client._sync_transport = transport
+    completed = []
+    tool_calls = []
+
+    assert list(
+        adapter.stream_chat(
+            messages=[UserMessage("What is the weather?")],
+            on_tool_call=tool_calls.append,
+            on_done=completed.append,
+        )
+    ) == []
+    assert [(call.name, call.arguments, call.call_id) for call in tool_calls] == [
+        ("get_weather", {"city": "Haifa"}, "call-stream"),
+    ]
+    assert completed[0].usage is not None
+    assert completed[0].usage.total_tokens == 10
+
+
+@pytest.mark.integration
+def test_stream_captures_reasoning_and_keeps_replay_opaque(deepseek_runtime):
+    adapter = _deepseek_facade()
+    response = {
+        "object": "response",
+        "id": "stream-reasoning",
+        "model": "deepseek-flash",
+        "status": "completed",
+        "output": [],
+    }
+    events = [
+        SSEEvent(
+            event="response.created",
+            data={
+                "type": "response.created",
+                "response": {
+                    "object": "response",
+                    "id": response["id"],
+                    "model": response["model"],
+                    "status": "in_progress",
+                },
+            },
+        ),
+        SSEEvent(
+            event="response.reasoning_summary_text.delta",
+            data={
+                "type": "response.reasoning_summary_text.delta",
+                "output_index": 0,
+                "delta": "Plan. ",
+            },
+        ),
+        SSEEvent(
+            event="response.reasoning_text.delta",
+            data={
+                "type": "response.reasoning_text.delta",
+                "output_index": 0,
+                "delta": "opaque detail",
+            },
+        ),
+        SSEEvent(
+            event="response.output_text.delta",
+            data={
+                "type": "response.output_text.delta",
+                "delta": "Done.",
+            },
+        ),
+        SSEEvent(
+            event="response.completed",
+            data={"type": "response.completed", "response": response},
+        ),
+    ]
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        {},
+        stream_events=events,
+    )
+    reasoning_events = []
+    completed = []
+
+    assert list(
+        adapter.stream_chat(
+            messages=[UserMessage("Solve this.")],
+            capture_reasoning=True,
+            on_reasoning=reasoning_events.append,
+            on_done=completed.append,
+        )
+    ) == ["Done."]
+    assert [event.text for event in reasoning_events] == [
+        "Plan. ",
+        "opaque detail",
+    ]
+    assert completed[0].content == "Done."
+    assert completed[0].provider_data is not None
+    assert "opaque detail" in json.dumps(completed[0].provider_data)
+    assert "opaque detail" not in (completed[0].content or "")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("terminal_event", ["response.incomplete", "response.failed", "response.cancelled"])
+def test_stream_rejects_non_completed_terminal_states(
+    deepseek_runtime,
+    terminal_event,
+):
+    adapter = _deepseek_facade()
+    response = {
+        "object": "response",
+        "id": f"stream-{terminal_event}",
+        "model": "deepseek-flash",
+        "status": terminal_event.removeprefix("response."),
+        "output": [],
+    }
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        {},
+        stream_events=[
+            SSEEvent(
+                event="response.output_text.delta",
+                data={
+                    "type": "response.output_text.delta",
+                    "delta": "partial",
+                },
+            ),
+            SSEEvent(
+                event=terminal_event,
+                data={"type": terminal_event, "response": response},
+            ),
+        ],
+    )
+    completed = []
+    with pytest.raises(LLMAPIClientError):
+        list(
+            adapter.stream_chat(
+                messages=[UserMessage("Hello")],
+                on_done=completed.append,
+            )
+        )
+    assert completed == []
+
+
+@pytest.mark.integration
+def test_async_stream_cancellation_closes_resources_and_skips_completion(
+    deepseek_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_deepseek.clients import async_client as async_client_module
+
+    stream_closed = False
+    stream_entered = asyncio.Event()
+    never = asyncio.Event()
+
+    def fake_async_stream_request(url: str, **kwargs: Any):
+        del url, kwargs
+
+        async def events():
+            nonlocal stream_closed
+            try:
+                events = _stream_events()
+                yield events[0]
+                yield events[1]
+                stream_entered.set()
+                await never.wait()
+            finally:
+                stream_closed = True
+
+        return events()
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = _deepseek_facade()
+    completed = []
+
+    async def cancel_stream():
+        stream = adapter.astream_chat(
+            messages=[UserMessage("Hello")],
+            on_done=completed.append,
+        )
+        assert await stream.__anext__() == "Hello "
+        pending_chunk = asyncio.create_task(stream.__anext__())
+        await stream_entered.wait()
+        pending_chunk.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending_chunk
+
+    asyncio.run(cancel_stream())
+    assert stream_closed is True
+    assert completed == []
+
+
+def _deepseek_http_error(status_code: int, payload: Any) -> SimpleNamespace:
+    """Build a credential-free HTTP error with the transport response shape."""
+    return SimpleNamespace(
+        response=SimpleNamespace(
+            status_code=status_code,
+            json=lambda: payload,
+            text="",
+        )
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status_code", "error_code", "expected_error"),
+    [
+        (400, "invalid_format", LLMAPIClientError),
+        (401, "authentication_error", LLMAPIAuthorizationError),
+        (402, "insufficient_balance", LLMAPIUsageLimitError),
+        (422, "invalid_parameters", LLMAPIClientError),
+        (429, "rate_limit_reached", LLMAPIRateLimitError),
+        (500, "server_error", LLMAPIServerError),
+        (503, "server_overloaded", LLMAPIServerError),
+    ],
+)
+def test_deepseek_maps_documented_http_failures_for_sync_and_async_clients(
+    status_code: int,
+    error_code: str,
+    expected_error: type[LLMAPIError],
+):
+    error = _deepseek_http_error(
+        status_code,
+        {"error": {"code": error_code, "message": "DeepSeek test failure"}},
+    )
+
+    assert DeepSeekResponsesSyncClient._http_error_details(error) == (
+        status_code,
+        error_code,
+        "DeepSeek test failure",
+    )
+    for handler in (
+        DeepSeekResponsesSyncClient._handle_http_error,
+        DeepSeekResponsesAsyncClient._handle_http_error,
+    ):
+        with pytest.raises(expected_error, match="DeepSeek test failure"):
+            handler(error)
+
+
+@pytest.mark.unit
+def test_deepseek_preserves_flat_http_details_and_nested_stream_errors():
+    error = _deepseek_http_error(
+        400,
+        {
+            "code": "invalid_format",
+            "error": "Request body is malformed",
+        },
+    )
+
+    assert DeepSeekResponsesSyncClient._http_error_details(error) == (
+        400,
+        "invalid_format",
+        "Request body is malformed",
+    )
+    with pytest.raises(LLMAPIClientError, match="Request body is malformed"):
+        DeepSeekResponsesSyncClient._handle_http_error(error)
+
+    event = SSEEvent(
+        event="error",
+        data={
+            "response": {
+                "error": {
+                    "code": "rate_limit_reached",
+                    "message": "DeepSeek stream rate limit",
+                }
+            }
+        },
+    )
+    for handler in (
+        DeepSeekResponsesSyncClient._handle_stream_error,
+        DeepSeekResponsesAsyncClient._handle_stream_error,
+    ):
+        with pytest.raises(LLMAPIRateLimitError, match="DeepSeek stream rate limit"):
+            handler(event)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "file_part",
+    [
+        DocumentPart(url="https://example.test/reference.pdf"),
+        DocumentPart(data=b"%PDF-deepseek", media_type="application/pdf"),
+        FilePart(url="https://example.test/reference.txt", media_type="text/plain"),
+        FilePart(data=b"plain text", media_type="text/plain"),
+    ],
+)
+def test_deepseek_rejects_documents_and_non_image_files_before_transport(
+    deepseek_runtime,
+    file_part,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with pytest.raises(ValueError, match="DocumentPart|FilePart|non-image|file input"):
+        adapter.chat(
+            messages=[UserMessage("Read this attachment.", files=[file_part])],
+        )
+
+    assert transport.requests == []
+
+
+def _deepseek_usage_response() -> dict[str, Any]:
+    return _response_with_usage(
+        {
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 25},
+            "output_tokens": 40,
+            "output_tokens_details": {"reasoning_tokens": 15},
+            "total_tokens": 140,
+        },
+    )
+
+
+def _freeze_deepseek_dispatch_time(
+    monkeypatch,
+    dispatch_time: datetime,
+) -> None:
+    """Provide a deterministic UTC clock seam for time-of-use pricing tests."""
+    monkeypatch.setattr(
+        deepseek_adapter_module,
+        "_utc_now",
+        lambda: dispatch_time,
+        raising=False,
+    )
+
+
+@pytest.mark.unit
+def test_deepseek_retains_valid_cached_and_reasoning_usage_details(
+    deepseek_runtime,
+):
+    adapter = _deepseek_facade()
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        _deepseek_usage_response(),
+    )
+
+    response = adapter.chat(messages=[UserMessage("Report token details.")])
+
+    assert response.usage is not None
+    assert response.usage.input_tokens == 100
+    assert response.usage.output_tokens == 40
+    assert response.usage.total_tokens == 140
+    assert response.usage.cached_tokens == 25
+    assert response.usage.reasoning_tokens == 15
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("dispatch_time", "expected_input", "expected_output", "expected_total"),
+    [
+        (
+            datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc),
+            (25 * 0.006 + 75 * 0.3) / 1_000_000,
+            40 * 1.2 / 1_000_000,
+            (25 * 0.006 + 75 * 0.3 + 40 * 1.2) / 1_000_000,
+        ),
+        (
+            datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc),
+            (25 * 0.003 + 75 * 0.15) / 1_000_000,
+            40 * 0.6 / 1_000_000,
+            (25 * 0.003 + 75 * 0.15 + 40 * 0.6) / 1_000_000,
+        ),
+    ],
+)
+def test_deepseek_prices_valid_usage_at_peak_and_off_peak_utc_dispatch(
+    deepseek_runtime,
+    monkeypatch,
+    dispatch_time,
+    expected_input,
+    expected_output,
+    expected_total,
+):
+    _freeze_deepseek_dispatch_time(monkeypatch, dispatch_time)
+    adapter = _deepseek_facade()
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        _deepseek_usage_response(),
+    )
+
+    response = adapter.chat(messages=[UserMessage("Price this request.")])
+
+    assert response.currency == "USD"
+    assert response.cost_input == pytest.approx(expected_input)
+    assert response.cost_output == pytest.approx(expected_output)
+    assert response.cost_total == pytest.approx(expected_total)
+
+
+@pytest.mark.unit
+def test_deepseek_leaves_cost_unset_when_usage_is_missing(deepseek_runtime):
+    response_payload = _response()
+    response_payload.pop("usage")
+    adapter = _deepseek_facade()
+    adapter.adapter._client._sync_transport = FakeSyncTransport(response_payload)
+
+    response = adapter.chat(messages=[UserMessage("No usage please.")])
+
+    assert response.usage is None
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {},
+        {
+            "input_tokens": -1,
+            "output_tokens": 40,
+            "total_tokens": 39,
+        },
+        {
+            "input_tokens": 100.5,
+            "output_tokens": 40,
+            "total_tokens": 140.5,
+        },
+        {
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 101},
+            "output_tokens": 40,
+            "total_tokens": 140,
+        },
+        {
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "output_tokens_details": {"reasoning_tokens": -1},
+            "total_tokens": 140,
+        },
+        {
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "total_tokens": 999,
+        },
+    ],
+)
+def test_deepseek_leaves_cost_unset_for_malformed_usage(deepseek_runtime, usage):
+    adapter = _deepseek_facade()
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        _response_with_usage(usage),
+    )
+
+    response = adapter.chat(messages=[UserMessage("Validate usage.")])
+
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None

@@ -1130,3 +1130,48 @@ def test_apply_pricing_without_usage_does_nothing():
     assert response.cost_input is None
     assert response.cost_output is None
     assert response.cost_total is None
+
+
+@pytest.mark.unit
+def test_chat_response_provider_data_defaults_to_none_for_backward_compatibility():
+    response = ChatResponse(content="visible answer")
+
+    assert response.provider_data is None
+
+
+@pytest.mark.unit
+def test_chat_response_accepts_provider_neutral_opaque_data():
+    provider_data = {
+        "example_provider": {
+            "continuation": "opaque-value",
+        },
+    }
+
+    response = ChatResponse(provider_data=provider_data)
+
+    assert response.provider_data == provider_data
+
+
+@pytest.mark.unit
+def test_chat_response_provider_data_stays_out_of_visible_fields_and_repr():
+    opaque_replay = "opaque-replay-sentinel"
+    reasoning_events = [
+        ReasoningEvent("Visible reasoning", "summary", 0, 0.0, 0.0),
+    ]
+    response = ChatResponse(
+        content="Visible answer",
+        reasoning_events=reasoning_events,
+        provider_data={"deepseek": {"reasoning_replay": opaque_replay}},
+    )
+
+    assert response.provider_data == {
+        "deepseek": {"reasoning_replay": opaque_replay},
+    }
+    assert response.content == "Visible answer"
+    assert response.reasoning_events == reasoning_events
+
+    rendered = repr(response)
+    assert "provider_data" not in rendered
+    assert opaque_replay not in rendered
+    assert opaque_replay not in response.content
+    assert all(opaque_replay not in event.text for event in response.reasoning_events)

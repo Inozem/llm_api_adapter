@@ -173,3 +173,10 @@ CLAUDE.md
 graphify-out/
 .claude/settings.json
 .mcp.json
+
+# Spec Kit is installed locally; keep only feature specifications and our
+# task-to-issues skill under version control.
+/.specify/
+/.agents/skills/*
+!/.agents/skills/speckit-taskstoissues/
+!/.agents/skills/speckit-taskstoissues/**

@@ -42,8 +42,8 @@ class TransportRequest:
     """
 
     url: str
-    headers: Mapping[str, str] = field(default_factory=dict)
-    payload: Any = None
+    headers: Mapping[str, str] = field(default_factory=dict, repr=False)
+    payload: Any = field(default=None, repr=False)
     timeout: Optional[float] = None
 
     def __post_init__(self) -> None:

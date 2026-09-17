@@ -49,6 +49,10 @@ KNOWN_ORGANIZATION_PACKAGES = {
         organization="xai",
         distribution="llm-api-adapter-xai",
     ),
+    "deepseek": KnownOrganizationPackage(
+        organization="deepseek",
+        distribution="llm-api-adapter-deepseek",
+    ),
 }
 
 

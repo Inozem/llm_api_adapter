@@ -189,6 +189,36 @@ def test_qwen_package_changes_select_candidate_and_e2e_lane():
 
 
 @pytest.mark.unit
+def test_deepseek_package_changes_select_only_its_candidate_and_e2e_lane():
+    selection = _SELECTOR.select_e2e_lanes(
+        ["packages/organizations/deepseek/src/llm_api_adapter_deepseek/adapter.py"]
+    )
+
+    assert selection.core is False
+    assert selection.deepseek is True
+    assert selection.deepseek_e2e is True
+    assert selection.kimi_e2e is False
+    assert selection.mistral_e2e is False
+    assert selection.xai_e2e is False
+    assert selection.qwen_e2e is False
+
+
+@pytest.mark.unit
+def test_deepseek_package_e2e_changes_select_only_its_live_lane():
+    selection = _SELECTOR.select_e2e_lanes(
+        ["packages/organizations/deepseek/tests/e2e/test_live_contract.py"]
+    )
+
+    assert selection.core is False
+    assert selection.deepseek is False
+    assert selection.deepseek_e2e is True
+    assert selection.kimi_e2e is False
+    assert selection.mistral_e2e is False
+    assert selection.xai_e2e is False
+    assert selection.qwen_e2e is False
+
+
+@pytest.mark.unit
 def test_kimi_package_changes_select_only_its_candidate_and_e2e_lane():
     selection = _SELECTOR.select_e2e_lanes(
         ["packages/organizations/kimi/src/llm_api_adapter_kimi/adapter.py"]
@@ -258,6 +288,33 @@ def test_kimi_candidate_e2e_job_uses_only_kimi_credentials_and_candidates():
 
 
 @pytest.mark.unit
+def test_deepseek_candidate_e2e_job_uses_only_deepseek_credentials_and_candidates():
+    workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
+    job = workflow.split("  post-publish-deepseek-e2e:\n", maxsplit=1)[1]
+
+    assert "needs.changes.outputs.deepseek_e2e == 'true'" in job
+    assert "needs.publish-core-testpypi.result == 'success'" in job
+    assert "needs.publish-core-testpypi.result == 'skipped'" in job
+    assert "needs.publish-deepseek-testpypi.result == 'success'" in job
+    assert "needs.publish-deepseek-testpypi.result == 'skipped'" in job
+    assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in job
+    assert "llm-api-adapter[async,httpx]==${CORE_CANDIDATE_VERSION}" in job
+    assert (
+        "llm-api-adapter-deepseek[async,httpx]==${DEEPSEEK_CANDIDATE_VERSION}"
+        in job
+    )
+    assert "organization='deepseek'" in job
+    assert "model='deepseek-flash'" in job
+    assert "pytest -v --import-mode=importlib -m e2e_deepseek" in job
+    assert (
+        "--rootdir=. tests/e2e packages/organizations/deepseek/tests/e2e"
+        in job
+    )
+    assert "KIMI_API_KEY" not in job
+    assert "QWEN_API_KEY" not in job
+
+
+@pytest.mark.unit
 def test_post_publish_e2e_jobs_use_importlib_collection_mode():
     workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
 
@@ -269,6 +326,7 @@ def test_post_publish_e2e_jobs_use_importlib_collection_mode():
         "e2e_mistral",
         "e2e_xai",
         "e2e_qwen",
+        "e2e_deepseek",
     ):
         assert f"pytest -v --import-mode=importlib -m {marker}" in workflow
 
@@ -319,3 +377,31 @@ def test_kimi_deterministic_and_tag_workflows_cover_unit_and_integration_tests()
     assert '"kimi-v*"' in main_workflow
     assert "test-kimi:" in main_workflow
     assert "publish-kimi-pypi:" in main_workflow
+
+
+@pytest.mark.unit
+def test_deepseek_deterministic_workflows_cover_unit_and_integration_tests():
+    workflow_dir = _REPOSITORY_ROOT / ".github" / "workflows"
+
+    for filename in ("ci-deepseek-dev.yml", "ci-deepseek-main.yml"):
+        workflow = (workflow_dir / filename).read_text(encoding="utf-8")
+        assert "packages/organizations/deepseek/**" in workflow
+        assert (
+            "pytest -v --ignore=packages/organizations/deepseek/tests/e2e "
+            "-m unit packages/organizations/deepseek/tests"
+        ) in workflow
+        assert (
+            "pytest -v --ignore=packages/organizations/deepseek/tests/e2e "
+            "-m integration packages/organizations/deepseek/tests"
+        ) in workflow
+        assert "e2e_deepseek" not in workflow
+        assert "secrets." not in workflow
+
+    dev_workflow = (workflow_dir / "ci-dev.yml").read_text(encoding="utf-8")
+    assert ".github/workflows/ci-deepseek-dev.yml" in dev_workflow
+    assert ".github/workflows/ci-deepseek-main.yml" in dev_workflow
+
+    main_workflow = (workflow_dir / "ci-main.yml").read_text(encoding="utf-8")
+    assert '"deepseek-v*"' in main_workflow
+    assert "test-deepseek:" in main_workflow
+    assert "publish-deepseek-pypi:" in main_workflow

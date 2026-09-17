@@ -9,6 +9,7 @@ on:
       - "xai-v*"
       - "kimi-v*"
       - "qwen-v*"
+      - "deepseek-v*"
     paths-ignore:
       - "packages/**"
       - ".github/workflows/ci-mistral-dev.yml"
@@ -19,6 +20,8 @@ on:
       - ".github/workflows/ci-kimi-main.yml"
       - ".github/workflows/ci-qwen-dev.yml"
       - ".github/workflows/ci-qwen-main.yml"
+      - ".github/workflows/ci-deepseek-dev.yml"
+      - ".github/workflows/ci-deepseek-main.yml"
   pull_request:
     branches: ["main"]
     paths-ignore:
@@ -31,6 +34,8 @@ on:
       - ".github/workflows/ci-kimi-main.yml"
       - ".github/workflows/ci-qwen-dev.yml"
       - ".github/workflows/ci-qwen-main.yml"
+      - ".github/workflows/ci-deepseek-dev.yml"
+      - ".github/workflows/ci-deepseek-main.yml"
 
 permissions:
   contents: read
@@ -38,7 +43,7 @@ permissions:
 jobs:
   test:
     name: Test (main, Python ${{ matrix.python-version }})
-    if: ${{ !startsWith(github.ref, 'refs/tags/mistral-v') && !startsWith(github.ref, 'refs/tags/xai-v') && !startsWith(github.ref, 'refs/tags/kimi-v') && !startsWith(github.ref, 'refs/tags/qwen-v') }}
+    if: ${{ !startsWith(github.ref, 'refs/tags/mistral-v') && !startsWith(github.ref, 'refs/tags/xai-v') && !startsWith(github.ref, 'refs/tags/kimi-v') && !startsWith(github.ref, 'refs/tags/qwen-v') && !startsWith(github.ref, 'refs/tags/deepseek-v') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -65,7 +70,7 @@ jobs:
   test-gate:
     name: Test (main)
     runs-on: ubuntu-latest
-    needs: [test, test-mistral, test-xai, test-kimi, test-qwen]
+    needs: [test, test-mistral, test-xai, test-kimi, test-qwen, test-deepseek]
     if: ${{ always() }}
 
     steps:
@@ -93,6 +98,11 @@ jobs:
 
           if [ "${{ needs.test-qwen.result }}" != "success" ] && [ "${{ needs.test-qwen.result }}" != "skipped" ]; then
             echo "Qwen deterministic tests failed."
+            exit 1
+          fi
+
+          if [ "${{ needs.test-deepseek.result }}" != "success" ] && [ "${{ needs.test-deepseek.result }}" != "skipped" ]; then
+            echo "DeepSeek deterministic tests failed."
             exit 1
           fi
 
@@ -212,6 +222,36 @@ jobs:
 
       - name: Run Qwen integration tests
         run: pytest -v --ignore=packages/organizations/qwen/tests/e2e -m integration packages/organizations/qwen/tests
+
+  test-deepseek:
+    name: Test DeepSeek package (main, Python ${{ matrix.python-version }})
+    if: ${{ startsWith(github.ref, 'refs/tags/deepseek-v') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install core, DeepSeek plugin, and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/requirements-test.txt
+          pip install -e ".[async,httpx]"
+          pip install -e "packages/organizations/deepseek[async,httpx]"
+
+      - name: Run DeepSeek unit tests
+        run: pytest -v --ignore=packages/organizations/deepseek/tests/e2e -m unit packages/organizations/deepseek/tests
+
+      - name: Run DeepSeek integration tests
+        run: pytest -v --ignore=packages/organizations/deepseek/tests/e2e -m integration packages/organizations/deepseek/tests
 
   publish-core-pypi:
     name: Publish core to PyPI
@@ -345,4 +385,31 @@ jobs:
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: packages/organizations/qwen/dist/
+          verbose: true
+
+  publish-deepseek-pypi:
+    name: Publish DeepSeek package to PyPI
+    runs-on: ubuntu-latest
+    needs: test-deepseek
+    if: ${{ startsWith(github.ref, 'refs/tags/deepseek-v') }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Build DeepSeek distribution
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build packages/organizations/deepseek
+
+      - name: Publish DeepSeek package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: packages/organizations/deepseek/dist/
           verbose: true
