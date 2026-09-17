@@ -14,6 +14,8 @@ on:
       - ".github/workflows/ci-kimi-main.yml"
       - ".github/workflows/ci-qwen-dev.yml"
       - ".github/workflows/ci-qwen-main.yml"
+      - ".github/workflows/ci-deepseek-dev.yml"
+      - ".github/workflows/ci-deepseek-main.yml"
   pull_request:
     branches: ["dev"]
     paths-ignore:
@@ -27,6 +29,8 @@ on:
       - ".github/workflows/ci-kimi-main.yml"
       - ".github/workflows/ci-qwen-dev.yml"
       - ".github/workflows/ci-qwen-main.yml"
+      - ".github/workflows/ci-deepseek-dev.yml"
+      - ".github/workflows/ci-deepseek-main.yml"
 
 permissions:
   contents: read
