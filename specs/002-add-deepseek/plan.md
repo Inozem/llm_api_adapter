@@ -18,7 +18,7 @@ The package will reuse the Core facade, plugin registry, transports, message and
 
 **Storage**: N/A. The adapter holds request-local stream and continuation state only; it does not persist conversations, files, API responses, or reasoning.
 
-**Testing**: `pytest` deterministic unit/mocked-integration suites; Core 3.10 coverage remains at least 90%. Merging the reviewed candidate into protected `dev` automatically publishes changed candidates to TestPyPI and runs the bounded DeepSeek E2E lane using only `DEEPSEEK_API_KEY`. A separate final manual handoff checks only that the key exists in the maintainer environment and provides the command; the maintainer, not automation, elects to execute that extra paid call.
+**Testing**: `pytest` deterministic unit/mocked-integration suites; Core 3.10 coverage remains at least 90%. Before a reviewed candidate is promoted to protected `dev`, the maintainer runs the bounded DeepSeek E2E command handed off after a presence-only `DEEPSEEK_API_KEY` preflight. A passing sanitized result permits promotion. The `dev` merge then automatically publishes changed candidates to TestPyPI and runs the same bounded lane against the published artifacts using only GitHub Actions Secrets.
 
 **Target Platform**: OS-independent Python library distributed through PyPI.
 
@@ -34,7 +34,7 @@ The package will reuse the Core facade, plugin registry, transports, message and
 - The organization registry keeps the standard Core schema only: model limits, pricing tiers, and reasoning values. It does not gain provider-specific aliases, capability matrices, image limits, or unsupported-mode fields.
 - The published capability boundary is a package contract enforced by adapter preflight and deterministic adapter tests; it never broadens through alias or model-prefix inference.
 - Fixtures, diagnostics, and documentation contain neither API keys nor raw reasoning/tool payloads. Reasoning remains opt-in for visible observability.
-- Pull requests are deterministic and credential-free; paid E2E runs only in the post-publish release-candidate workflow.
+- Pull-request matrices are deterministic and credential-free. Paid E2E runs only as a maintainer-controlled pre-promotion check and in the post-publish release-candidate workflow.
 
 **Scale/Scope**: One new known optional organization, one provider package, one canonical model, four public request modes, and one dedicated CI/E2E lane.
 

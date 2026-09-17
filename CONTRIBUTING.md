@@ -155,7 +155,7 @@ paid `chat()` request plus one paid `achat()` request for that selected model
 per configured provider. The HTTPX requests reserve 512 generated tokens so
 models that think by default still have room for visible text.
 
-For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage. The Mistral, xAI, Qwen, Kimi, and DeepSeek package workflows run their respective unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
+For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, apply every affected provider's documented pre-promotion gate and record only sanitized results. After those checks pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage. The Mistral, xAI, Qwen, Kimi, and DeepSeek package workflows run their respective unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
 
 Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change selects the affected independent OpenAI, Anthropic, and Google E2E lanes. A shared Core dependency additionally runs the Mistral, xAI, Qwen, Kimi, and DeepSeek lanes; a provider-specific built-in adapter, client, or registry change runs only that Core organization lane. Shared E2E infrastructure runs every applicable lane. Each core lane receives only its own API key; `e2e_builtin` is not used in CI. A Mistral, xAI, Qwen, Kimi, or DeepSeek package change publishes only that organization package and runs its corresponding lane. Each lane installs the exact TestPyPI versions through the matching optional extra, verifies plugin discovery when needed, then makes provider calls. Core and organization packages are independently versioned: use the versions declared in the root `pyproject.toml` and the changed package's `pyproject.toml`; release-specific target pairs belong in the relevant quickstart or release notes. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
 
@@ -255,8 +255,9 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
    ```
 
 4. Open or update the pull request to `main`. Wait for review and the deterministic main CI to pass.
-5. The maintainer opens and merges a staging pull request containing that exact candidate commit into protected `dev`. The dev release workflow publishes only changed distributions to TestPyPI, then runs the E2E lanes affected by those changes. Core organization lanes run independently; provide the matching key for each through CI Secrets only. The current synchronous scenarios may exercise every registered model of that lane.
-6. After the E2E jobs pass, the maintainer manually installs the changed package set from TestPyPI. For Mistral, verify the public installation path:
+5. Run each affected provider's documented maintainer-controlled pre-promotion E2E gate. Verify only the required environment variables are present, never place credentials in commands, and record only sanitized results; do not promote the candidate if a required gate fails.
+6. The maintainer opens and merges a staging pull request containing that exact candidate commit into protected `dev`. The dev release workflow publishes only changed distributions to TestPyPI, then runs the E2E lanes affected by those changes. Core organization lanes run independently; provide the matching key for each through CI Secrets only. The current synchronous scenarios may exercise every registered model of that lane.
+7. After the E2E jobs pass, the maintainer manually installs the changed package set from TestPyPI. For Mistral, verify the public installation path:
 
    ```bash
    pip install --index-url https://test.pypi.org/simple/ \\
@@ -295,8 +296,8 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
    ```
 
    Then verify the changed behavior, critical flows, and absence of regressions.
-7. Merge the already verified pull request into `main`.
-8. After the pull request is merged, create one final tag for each changed distribution: `v<core-version>` for the core package, `mistral-v<mistral-version>` for Mistral, `xai-v<xai-version>` for xAI, `kimi-v<kimi-version>` for Kimi, and `deepseek-v<deepseek-version>` for DeepSeek. The tags may point to the same commit. The main workflow publishes only the distribution selected by its tag.
+8. Merge the already verified pull request into `main`.
+9. After the pull request is merged, create one final tag for each changed distribution: `v<core-version>` for the core package, `mistral-v<mistral-version>` for Mistral, `xai-v<xai-version>` for xAI, `kimi-v<kimi-version>` for Kimi, and `deepseek-v<deepseek-version>` for DeepSeek. The tags may point to the same commit. The main workflow publishes only the distribution selected by its tag.
 
 The post-publish E2E job is a release-candidate gate, not a general development check. Keep it out of pull-request jobs and Python-version matrices so paid provider calls remain bounded.
 

@@ -162,7 +162,7 @@ repository documentation, and verify the exact release artifacts.
 - [X] T043 Refresh and review the generated repository relationships after all source and documentation work with `graphify update .`, updating `docs/architecture.json`, `docs/organization_packages.json`, `docs/registry.json`, `docs/adapters.json`, `docs/messages.json`, `docs/errors.json`, and `docs/ci_cd.json` only when the generated output changes.
 - [X] T044 Run every credential-free command in `specs/002-add-deepseek/quickstart.md`, including Core discovery, package unit/integration evidence, and DeepSeek selector checks.
 - [X] T045 Build Core and DeepSeek wheels from `pyproject.toml` and `packages/organizations/deepseek/pyproject.toml`, then perform the clean-environment installation checks specified in `specs/002-add-deepseek/quickstart.md` without importing from the checkout.
-- [ ] T046 After the protected `dev` post-publish workflow creates the exact TestPyPI candidates, verify only that `DEEPSEEK_API_KEY` is present in the final execution environment (never display its value), then provide `python -m pytest -v --import-mode=importlib -m e2e_deepseek packages/organizations/deepseek/tests/e2e/test_live_contract.py` for maintainer invocation. The test reads the key from the environment; record only sanitized results after the maintainer runs it. This manual check supplements the automatic `dev` E2E gate.
+- [ ] T046 Before promoting the exact reviewed candidate through a staging pull request to protected `dev`, verify only that `DEEPSEEK_API_KEY` is present in the maintainer environment (never display its value), then provide `python -m pytest -v --import-mode=importlib -m e2e_deepseek packages/organizations/deepseek/tests/e2e/test_live_contract.py` for maintainer invocation. The test reads the key from the environment; record only sanitized results after the maintainer runs it. Promote only after it passes; the automatic `dev` TestPyPI E2E lane remains the independent post-publish gate.
 - [X] T047 Review the final release diff for Core/package version alignment, baseline-contract alignment, generated-artifact drift, unintended public-facade changes, raw reasoning/tool data, and secrets across `pyproject.toml`, `packages/organizations/deepseek/`, `.github/`, `docs/`, `specs/001-baseline-contract/`, and `specs/002-add-deepseek/`.
 
 ---
@@ -177,7 +177,7 @@ repository documentation, and verify the exact release artifacts.
 - **US2 (Phase 4)** depends on the foundation; it adds the optional Core extra and known-missing diagnostic without changing the facade work from US1.
 - **US3 (Phase 5)** depends on US1's Responses implementation and the opaque response metadata from Phase 2.
 - **US4 (Phase 6)** depends on US3's adapter capability preflight and normalization paths.
-- **Polish (Phase 7)** follows all selected user-story work. T046 requires separate maintainer authorization and runs only after TestPyPI candidates exist.
+- **Polish (Phase 7)** follows all selected user-story work. T046 requires separate maintainer authorization and completes before promotion to `dev`; the resulting TestPyPI E2E is a separate post-publish CI gate.
 
 ### User-story dependency graph
 

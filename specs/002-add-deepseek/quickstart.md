@@ -51,21 +51,15 @@ the error must recommend the exact DeepSeek distribution. Core and the
 DeepSeek package are released independently, so keep the candidate pair exact
 (`0.9.6` with `0.1.0`) and never substitute an older TestPyPI artifact.
 
-## 3. Release-candidate E2E (protected `dev` gate and manual handoff)
+## 3. Maintainer-controlled E2E before promotion to `dev`
 
-Do not run live calls in a pull request or local deterministic suite. Once a
-maintainer merges the reviewed candidate into protected `dev`,
-`ci-dev-release.yml` automatically publishes only the changed Core/organization
-distributions to TestPyPI. When DeepSeek or shared Core changes, its dedicated
-post-publish job installs the exact candidate versions, verifies plugin discovery,
-and runs the bounded DeepSeek lane with `DEEPSEEK_API_KEY` supplied only through
-GitHub Actions Secrets.
-
-The E2E test reads `DEEPSEEK_API_KEY` directly from its environment. Do not put a
-key in a command, test argument, log, or result. If a maintainer requests an
-additional final manual check after the TestPyPI candidates exist, perform this
-preflight at the final handoff. It verifies only that the key is present and
-prints the command; it does **not** run the paid test:
+Do not run live calls in a pull request or local deterministic suite. After the
+deterministic checks and wheel installation checks pass, but **before** the
+reviewed candidate is promoted through a staging pull request to protected
+`dev`, perform this final handoff. The E2E test reads `DEEPSEEK_API_KEY` directly
+from its environment. Do not put a key in a command, test argument, log, or
+result. The preflight verifies only that the key is present and prints the
+command; it does **not** run the paid test:
 
 ```powershell
 if ([string]::IsNullOrWhiteSpace($env:DEEPSEEK_API_KEY)) {
@@ -77,10 +71,22 @@ Write-Output 'DEEPSEEK_API_KEY is configured. Run this command yourself:'
 Write-Output $e2eCommand
 ```
 
-The maintainer decides whether to run the displayed command; this optional manual
-check supplements rather than replaces the automatic `dev` post-publish gate.
+The maintainer runs the displayed command and records only a sanitized result. A
+passing result is required before promoting the exact candidate commit to `dev`.
 The bounded live profile exercises only `deepseek-flash` and only declared
-features. It excludes document input. Before final PyPI tags, a maintainer
-performs the same explicit candidate installation and verifies the documented
-public install path, text/tool/structured response, image boundary, reasoning
-continuation, and absence of credential or reasoning leakage.
+features. It excludes document input.
+
+## 4. Post-publish TestPyPI gate
+
+Once the staging pull request is merged into protected `dev`,
+`ci-dev-release.yml` automatically publishes only the changed Core/organization
+distributions to TestPyPI. When DeepSeek or shared Core changes, its dedicated
+post-publish job installs the exact candidate versions, verifies plugin discovery,
+and runs the same bounded DeepSeek lane with `DEEPSEEK_API_KEY` supplied only
+through GitHub Actions Secrets. This independent second gate verifies the
+published artifacts; it does not replace the pre-promotion check.
+
+Before final PyPI tags, a maintainer performs the documented public TestPyPI
+installation and verifies the public install path, text/tool/structured response,
+image boundary, reasoning continuation, and absence of credential or reasoning
+leakage.
