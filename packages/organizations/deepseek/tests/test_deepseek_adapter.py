@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -309,11 +310,12 @@ def test_chat_maps_responses_function_tools_and_normalizes_tool_calls(
     transport = FakeSyncTransport(_function_call_response())
     adapter.adapter._client._sync_transport = transport
 
-    response = adapter.chat(
-        messages=[UserMessage("What is the weather in Haifa?")],
-        tools=[WEATHER_TOOL],
-        tool_choice="get_weather",
-    )
+    with pytest.warns(UserWarning, match="DeepSeek disables reasoning"):
+        response = adapter.chat(
+            messages=[UserMessage("What is the weather in Haifa?")],
+            tools=[WEATHER_TOOL],
+            tool_choice="get_weather",
+        )
 
     assert response.tool_calls is not None
     assert [(call.name, call.arguments, call.call_id) for call in response.tool_calls] == [
@@ -331,6 +333,32 @@ def test_chat_maps_responses_function_tools_and_normalizes_tool_calls(
         "type": "function",
         "name": "get_weather",
     }
+    assert transport.requests[0].payload["reasoning"] == {"effort": "none"}
+
+
+@pytest.mark.integration
+def test_named_tool_choice_disables_explicit_reasoning_with_a_warning(
+    deepseek_runtime,
+    caplog,
+):
+    adapter = _deepseek_facade()
+    transport = FakeSyncTransport(_function_call_response())
+    adapter.adapter._client._sync_transport = transport
+
+    with caplog.at_level(logging.WARNING, logger=deepseek_adapter_module.__name__):
+        with pytest.warns(
+            UserWarning,
+            match="DeepSeek disables reasoning",
+        ):
+            adapter.chat(
+                messages=[UserMessage("What is the weather in Haifa?")],
+                tools=[WEATHER_TOOL],
+                tool_choice="get_weather",
+                reasoning_level="high",
+            )
+
+    assert transport.requests[0].payload["reasoning"] == {"effort": "none"}
+    assert "DeepSeek disables reasoning" in caplog.text
 
 
 @pytest.mark.integration
@@ -352,11 +380,19 @@ def test_chat_maps_each_supported_responses_tool_choice(
     transport = FakeSyncTransport(_response())
     adapter.adapter._client._sync_transport = transport
 
-    adapter.chat(
-        messages=[UserMessage("Use the weather tool.")],
-        tools=[WEATHER_TOOL],
-        tool_choice=tool_choice,
-    )
+    if tool_choice == "get_weather":
+        with pytest.warns(UserWarning, match="DeepSeek disables reasoning"):
+            adapter.chat(
+                messages=[UserMessage("Use the weather tool.")],
+                tools=[WEATHER_TOOL],
+                tool_choice=tool_choice,
+            )
+    else:
+        adapter.chat(
+            messages=[UserMessage("Use the weather tool.")],
+            tools=[WEATHER_TOOL],
+            tool_choice=tool_choice,
+        )
 
     assert transport.requests[0].payload["tool_choice"] == expected
 
@@ -367,25 +403,26 @@ def test_chat_maps_function_call_history_and_normal_tool_result(deepseek_runtime
     transport = FakeSyncTransport(_response())
     adapter.adapter._client._sync_transport = transport
 
-    adapter.chat(
-        messages=[
-            UserMessage("What is the weather in Haifa?"),
-            AIMessage(
-                content="",
-                tool_calls=[
-                    ToolCall(
-                        name="get_weather",
-                        arguments={"city": "Haifa"},
-                        call_id="call-deepseek-weather",
-                    ),
-                ],
-            ),
-            ToolMessage(
-                content='{"forecast":"sunny"}',
-                tool_call_id="call-deepseek-weather",
-            ),
-        ],
-    )
+    with pytest.warns(UserWarning, match="DeepSeek disables reasoning"):
+        adapter.chat(
+            messages=[
+                UserMessage("What is the weather in Haifa?"),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            name="get_weather",
+                            arguments={"city": "Haifa"},
+                            call_id="call-deepseek-weather",
+                        ),
+                    ],
+                ),
+                ToolMessage(
+                    content='{"forecast":"sunny"}',
+                    tool_call_id="call-deepseek-weather",
+                ),
+            ],
+        )
 
     assert transport.requests[0].payload["input"] == [
         {"role": "user", "content": "What is the weather in Haifa?"},
@@ -401,6 +438,7 @@ def test_chat_maps_function_call_history_and_normal_tool_result(deepseek_runtime
             "output": '{"forecast":"sunny"}',
         },
     ]
+    assert transport.requests[0].payload["reasoning"] == {"effort": "none"}
 
 
 @pytest.mark.integration

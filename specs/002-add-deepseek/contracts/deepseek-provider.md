@@ -30,7 +30,7 @@ If the integration is known to Core but not installed, construction raises the e
 | Streaming | Supported through `stream_chat()` and `astream_chat()` with normal Core callback, buffering, close, cancellation, and finalization semantics. |
 | Conversation history | Caller retains full normal message history; provider server-side continuation IDs are never sent. |
 | Reasoning | Supported through registry-resolved thinking settings. Required opaque replay material is carried only by a matching `previous_response`; visible reasoning remains opt-in. |
-| Application tools | Function tools, normal tool results, and auto/none/required/named selection are supported. Explicit parallel-call control is rejected. Provider built-in tools are unsupported. |
+| Application tools | Function tools, normal tool results, and auto/none/required/named selection are supported. Named selection and tool-result continuation force `reasoning_level="none"` with a warning because DeepSeek thinking rejects that function-tool combination. Explicit parallel-call control is rejected. Provider built-in tools are unsupported. |
 | Structured output | Core portable raw JSON Schema and Pydantic response models use the official Responses JSON Schema feature and Core final validation. |
 | Images | Verified user-message image URL/data input forms are supported within official media and size limits. |
 | Documents/files | Every `DocumentPart`, non-image file, OCR/upload path, and automatic conversion is rejected before transport. |

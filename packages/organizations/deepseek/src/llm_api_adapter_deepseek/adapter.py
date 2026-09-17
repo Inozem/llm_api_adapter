@@ -9,8 +9,10 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import logging
 from typing import Any, AsyncIterator, Iterator, List, Mapping, Optional
 from urllib.parse import urlparse
+import warnings
 
 from llm_api_adapter.adapters.base_adapter import (
     AsyncOnChunk,
@@ -39,6 +41,7 @@ from llm_api_adapter.models.messages.chat_message import (
     Message,
     Messages,
     Prompt,
+    ToolMessage,
     UserMessage,
 )
 from llm_api_adapter.models.messages.file_parts import ImagePart
@@ -71,6 +74,7 @@ _DEEPSEEK_DISPATCH_TIME: ContextVar[Optional[datetime]] = ContextVar(
     "deepseek_dispatch_time",
     default=None,
 )
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -520,6 +524,11 @@ class DeepSeekAdapter(LLMAdapterBase):
             response_model,
         )
         normalized_messages = request_context.normalized_messages
+        reasoning_level = self._reasoning_level_for_function_tool_request(
+            request_context.normalized_tool_choice,
+            normalized_messages,
+            reasoning_level,
+        )
         self._validate_deepseek_file_inputs(normalized_messages)
         effective_schema = request_context.effective_schema
         if effective_schema is not None:
@@ -566,6 +575,47 @@ class DeepSeekAdapter(LLMAdapterBase):
             response_model=request_context.response_model,
             capture_reasoning=capture_reasoning,
         )
+
+    def _reasoning_level_for_function_tool_request(
+        self,
+        normalized_tool_choice: Optional[str],
+        messages: Messages,
+        reasoning_level: Optional[str | int],
+    ) -> Optional[str | int]:
+        """Disable DeepSeek thinking throughout a named-function tool loop.
+
+        DeepSeek rejects a named function choice while its default thinking mode
+        is active, and requires reasoning text when a later tool-result request
+        re-enters thinking mode. This is a provider protocol restriction, so
+        preserve the portable tool loop and make the required mode change here.
+        """
+        named_tool_choice = normalized_tool_choice not in {
+            None,
+            "auto",
+            "none",
+            "any",
+        }
+        has_tool_result = any(
+            isinstance(message, ToolMessage)
+            for message in messages.items
+        )
+        if not named_tool_choice and not has_tool_result:
+            return reasoning_level
+
+        resolved_level = (
+            self._resolve_reasoning_level(reasoning_level).provider_value
+            if reasoning_level is not None
+            else None
+        )
+        if resolved_level != "none":
+            message = (
+                "DeepSeek disables reasoning (reasoning_level='none') for a "
+                "named tool_choice or tool-result continuation because its "
+                "thinking mode rejects that function-tool combination."
+            )
+            warnings.warn(message, UserWarning, stacklevel=3)
+            logger.warning(message)
+        return "none"
 
     @staticmethod
     def _validate_deepseek_file_inputs(messages: Messages) -> None:

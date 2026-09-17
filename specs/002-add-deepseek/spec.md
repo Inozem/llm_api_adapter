@@ -163,7 +163,10 @@ complete or missing usage; verify documented errors and availability of cost dat
   behavior for every DeepSeek model/mode combination declared in the compatibility matrix.
 - **FR-009**: Tools, structured output, reasoning, image input, continuation, and pricing MUST be
   exposed only for the DeepSeek model combinations that explicitly declare support; an
-  undeclared capability MUST not be silently emulated, weakened, or routed to another model.
+  undeclared capability MUST not be silently emulated, weakened, or routed to another model. A
+  named application `tool_choice` and its tool-result continuation MUST force
+  `reasoning_level="none"` with a warning because the DeepSeek thinking mode rejects that
+  provider function-tool combination.
 - **FR-010**: The initial DeepSeek release MUST reject direct PDF and other unsupported document
   inputs clearly before provider submission. It MUST NOT add client-side document processing,
   automatic fallback, or an undocumented compatibility route.

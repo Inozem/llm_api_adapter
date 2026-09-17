@@ -70,7 +70,7 @@ official Responses API and keeps the public Core request shape unchanged.
 | --- | --- |
 | Text `chat()` / `achat()` | Supported |
 | Sync and async streaming | Supported |
-| Application function tools | Supported; provider-built-in tools are rejected |
+| Application function tools | Supported; named tool selection and tool-result continuation force `reasoning_level="none"` and emit a warning because DeepSeek thinking rejects that function-tool combination. Provider-built-in tools are rejected. |
 | Portable JSON Schema and Pydantic output | Supported |
 | Reasoning | Supported levels: `none`, `low`, `high`, `max`; visible reasoning is opt-in |
 | Images | User-message URL, bytes, and base64 data URI; JPEG, PNG, GIF, and WebP only |
