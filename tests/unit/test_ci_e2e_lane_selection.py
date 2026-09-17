@@ -306,6 +306,10 @@ def test_deepseek_candidate_e2e_job_uses_only_deepseek_credentials_and_candidate
     assert "organization='deepseek'" in job
     assert "model='deepseek-flash'" in job
     assert "pytest -v --import-mode=importlib -m e2e_deepseek" in job
+    assert (
+        "--rootdir=. tests/e2e packages/organizations/deepseek/tests/e2e"
+        in job
+    )
     assert "KIMI_API_KEY" not in job
     assert "QWEN_API_KEY" not in job
 

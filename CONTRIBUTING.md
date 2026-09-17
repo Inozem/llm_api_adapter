@@ -101,6 +101,24 @@ The full E2E marker runs the scenarios under `tests/e2e/`. The synchronous featu
 python -m pytest -v -m e2e
 ```
 
+### Standard for a new organization package
+
+Every new optional organization package must use the shared E2E architecture, not a separate
+provider-only substitute:
+
+1. Add a named organization profile and marker to the Core E2E infrastructure. Declare exactly
+   the portable capabilities that the package supports; Core tests then run every applicable
+   scenario and deselect only explicitly unsupported ones.
+2. Add package-local E2E tests only for provider-specific protocol behavior, model variants, and
+   explicit rejection boundaries that the shared scenarios cannot express.
+3. Make the provider's maintainer and post-publish release commands collect both `tests/e2e` and
+   `packages/organizations/<organization>/tests/e2e` with that provider's marker. Run the lane
+   against the exact candidate artifacts, outside pull-request matrices, with only that provider's
+   key.
+
+An unsupported capability must be declared and gated; it is not a reason to omit the rest of the
+Core contract. A failing, costly, or flaky supported scenario must be fixed rather than excluded.
+
 The required environment variables are:
 
 - `OPENAI_API_KEY`
@@ -138,12 +156,14 @@ Run DeepSeek's targeted external-package profile only after installing the
 DeepSeek package and deliberately configuring its key:
 
 ```bash
-python -m pytest -v -m e2e_deepseek
+python -m pytest -v --import-mode=importlib -m e2e_deepseek --rootdir=. tests/e2e packages/organizations/deepseek/tests/e2e
 ```
 
-It validates only the canonical `deepseek-flash` profile and excludes direct
-document input. The package-local DeepSeek suite and the Core discovery/selector
-checks remain credential-free; never add `DEEPSEEK_API_KEY` to those commands.
+It runs every applicable shared and package-local E2E contract for the canonical
+`deepseek-flash` profile. Direct document-input scenarios are excluded by the
+declared capability gate because DeepSeek does not support them. The package-local
+DeepSeek suite and the Core discovery/selector checks remain credential-free;
+never add `DEEPSEEK_API_KEY` to those commands.
 
 `test_json_schema.py` makes one portable structured-output request for every configured registered model. It must return the exact expected JSON without a refusal or incomplete state; advertised structured-output support is not skipped after the request.
 

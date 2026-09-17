@@ -67,7 +67,7 @@ This research selects a direct official API implementation for Core `0.9.6` and 
 
 **Decision**: Map documented 400/401/402/422/429/500/503 responses to the existing normalized client, authentication, usage-limit, rate-limit, and server error families. Do not add adapter retries. Test transient retry only through the existing maintainer-controlled E2E harness.
 
-**Rationale**: DeepSeek's [error-code guide](https://api-docs.deepseek.com/quick_start/error_codes/) and [rate-limit guide](https://api-docs.deepseek.com/quick_start/rate_limit/) distinguish client errors from retryable operational failures. The constitution prohibits unapproved automatic retry behavior. Deterministic fixtures will cover all mappings and SSE failures; release candidate E2E is bounded to one dedicated lane with the DeepSeek secret.
+**Rationale**: DeepSeek's [error-code guide](https://api-docs.deepseek.com/quick_start/error_codes/) and [rate-limit guide](https://api-docs.deepseek.com/quick_start/rate_limit/) distinguish client errors from retryable operational failures. The constitution prohibits unapproved automatic retry behavior. Deterministic fixtures will cover all mappings and SSE failures; release-candidate E2E runs every applicable DeepSeek contract in one dedicated lane with the DeepSeek secret.
 
 **Alternatives considered**:
 

@@ -17,7 +17,7 @@
 
 ### Session 2026-09-17
 
-- Q: How is the final paid DeepSeek check authorized and run? → A: Before promoting the reviewed candidate to protected `dev`, verify only that `DEEPSEEK_API_KEY` is present in the maintainer environment, present the exact test command, and let the maintainer run the bounded local E2E check. Promote only after its sanitized result passes. The subsequent `dev` merge independently triggers the post-publish TestPyPI workflow and its bounded DeepSeek E2E lane automatically. Both checks read the key from their environment; no command, log, or result may reveal the key.
+- Q: How is the final paid DeepSeek check authorized and run? → A: Before promoting the reviewed candidate to protected `dev`, verify only that `DEEPSEEK_API_KEY` is present in the maintainer environment, present the exact test command, and let the maintainer run every applicable shared and package-local DeepSeek E2E contract. Promote only after its sanitized result passes. The subsequent `dev` merge independently triggers the post-publish TestPyPI workflow and its full applicable DeepSeek E2E lane automatically. Both checks read the key from their environment; no command, log, or result may reveal the key.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -175,9 +175,9 @@ complete or missing usage; verify documented errors and availability of cost dat
   feature.
 - **FR-013**: Each DeepSeek model/capability combination declared as supported MUST pass the
   shared conformance evidence, deterministic behavior checks for both supported synchronous
-  transport choices, and the focused authorized live verification required for release. A merge
+  transport choices, and the full applicable authorized E2E verification required for release. A merge
   into protected `dev` MUST publish the changed candidates to TestPyPI and run the affected
-  bounded E2E lane using `DEEPSEEK_API_KEY` from GitHub Actions Secrets. Before that promotion,
+  full applicable DeepSeek E2E lane using `DEEPSEEK_API_KEY` from GitHub Actions Secrets. Before that promotion,
   tooling MUST check only whether the variable is present in the maintainer environment, then
   provide the precise E2E command for maintainer invocation; the test MUST consume the key from
   the environment and MUST NOT display it.

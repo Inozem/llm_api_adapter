@@ -66,15 +66,16 @@ if ([string]::IsNullOrWhiteSpace($env:DEEPSEEK_API_KEY)) {
     throw "DEEPSEEK_API_KEY is not configured in this environment."
 }
 
-$e2eCommand = 'python -m pytest -v --import-mode=importlib -m e2e_deepseek packages/organizations/deepseek/tests/e2e/test_live_contract.py'
+$e2eCommand = 'python -m pytest -v --import-mode=importlib -m e2e_deepseek --rootdir=. tests/e2e packages/organizations/deepseek/tests/e2e'
 Write-Output 'DEEPSEEK_API_KEY is configured. Run this command yourself:'
 Write-Output $e2eCommand
 ```
 
 The maintainer runs the displayed command and records only a sanitized result. A
 passing result is required before promoting the exact candidate commit to `dev`.
-The bounded live profile exercises only `deepseek-flash` and only declared
-features. It excludes document input.
+The full applicable DeepSeek E2E suite exercises the shared facade and package
+contracts for `deepseek-flash`. Document-input scenarios are excluded by the
+declared capability gate.
 
 ## 4. Post-publish TestPyPI gate
 
@@ -82,7 +83,7 @@ Once the staging pull request is merged into protected `dev`,
 `ci-dev-release.yml` automatically publishes only the changed Core/organization
 distributions to TestPyPI. When DeepSeek or shared Core changes, its dedicated
 post-publish job installs the exact candidate versions, verifies plugin discovery,
-and runs the same bounded DeepSeek lane with `DEEPSEEK_API_KEY` supplied only
+and runs the same full applicable DeepSeek E2E lane with `DEEPSEEK_API_KEY` supplied only
 through GitHub Actions Secrets. This independent second gate verifies the
 published artifacts; it does not replace the pre-promotion check.
 

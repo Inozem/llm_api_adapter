@@ -731,4 +731,4 @@ jobs:
           python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='deepseek', model='deepseek-flash', api_key='test-key')"
 
       - name: Run DeepSeek E2E tests
-        run: pytest -v --import-mode=importlib -m e2e_deepseek
+        run: pytest -v --import-mode=importlib -m e2e_deepseek --rootdir=. tests/e2e packages/organizations/deepseek/tests/e2e

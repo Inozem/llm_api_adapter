@@ -18,7 +18,7 @@ The package will reuse the Core facade, plugin registry, transports, message and
 
 **Storage**: N/A. The adapter holds request-local stream and continuation state only; it does not persist conversations, files, API responses, or reasoning.
 
-**Testing**: `pytest` deterministic unit/mocked-integration suites; Core 3.10 coverage remains at least 90%. Before a reviewed candidate is promoted to protected `dev`, the maintainer runs the bounded DeepSeek E2E command handed off after a presence-only `DEEPSEEK_API_KEY` preflight. A passing sanitized result permits promotion. The `dev` merge then automatically publishes changed candidates to TestPyPI and runs the same bounded lane against the published artifacts using only GitHub Actions Secrets.
+**Testing**: `pytest` deterministic unit/mocked-integration suites; Core 3.10 coverage remains at least 90%. Before a reviewed candidate is promoted to protected `dev`, the maintainer runs every applicable shared and package-local DeepSeek E2E contract after a presence-only `DEEPSEEK_API_KEY` preflight. A passing sanitized result permits promotion. The `dev` merge then automatically publishes changed candidates to TestPyPI and runs the same full applicable lane against the published artifacts using only GitHub Actions Secrets.
 
 **Target Platform**: OS-independent Python library distributed through PyPI.
 
@@ -47,7 +47,7 @@ The package will reuse the Core facade, plugin registry, transports, message and
 | Stable provider-neutral public contract | `UniversalLLMAPIAdapter` constructor and request signatures remain unchanged. The additive `ChatResponse.provider_data` is used only by `previous_response` continuation and receives full compatibility coverage. | Pass |
 | Shared contract, isolated organization behavior | DeepSeek endpoint, headers, wire payloads, SSE, error parsing, files, pricing schedule, and reasoning encoding live exclusively in the external package. | Pass |
 | Registry and abstraction first | Core adds only the known-package record and optional extra; the package contributes lazy metadata in the standard registry schema and enforces its capability contract in package-local adapter behavior. No model-prefix inference or Core DeepSeek branch is introduced. | Pass |
-| Deterministic contract evidence | Package-local facade tests, Core discovery tests, transport parity, compatibility matrix, and bounded E2E are planned before release. | Pass |
+| Deterministic contract evidence | Package-local facade tests, Core discovery tests, transport parity, compatibility matrix, and every applicable DeepSeek E2E contract are planned before release. | Pass |
 | Lightweight, safe extensibility | No new runtime dependency, SDK, deployment backend, retry loop, persisted data, or credential-bearing test data is introduced. | Pass |
 
 ### Post-design gate

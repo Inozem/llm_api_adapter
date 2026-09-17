@@ -181,6 +181,11 @@ with mocked requests and verify registry-derived behavior and warnings.
 - **FR-020**: Optional organization packages MUST document any public capability difference that
   changes the common contract, including required operation settings and unsupported message-file,
   tool, reasoning, continuation, or structured-output forms.
+- **FR-021**: Every newly added optional organization package MUST declare a named Core E2E
+  organization profile and marker. The profile MUST state its supported common capabilities so the
+  shared Core E2E suite runs every applicable scenario and deselects only scenarios the package
+  explicitly declares unsupported. Provider-specific behavior and rejection boundaries MUST have
+  additional package-local tests; they MUST NOT replace the shared Core E2E evidence.
 
 ### Contract Boundaries
 
@@ -207,6 +212,23 @@ with mocked requests and verify registry-derived behavior and warnings.
 
 The common contract applies to every installed organization within its documented capability
 boundary. The following current differences are externally observable and must remain explicit.
+
+### E2E Standard for New Organization Packages
+
+Every new optional organization package uses the same two-layer E2E evidence:
+
+1. A named profile and marker in the shared Core E2E infrastructure exercise every applicable
+   portable facade contract, including the supported synchronous, asynchronous, streaming, tool,
+   structured-output, image, error-normalization, and HTTPX paths.
+2. Package-local E2E tests exercise only provider-specific protocol behavior, model variants, and
+   explicit capability boundaries that cannot be expressed as a portable Core scenario.
+
+The profile's declared capability set is the only basis for excluding a shared scenario. A missing
+implementation, flaky result, or cost concern is not a valid exclusion. The organization release
+lane MUST select its marker and collect both the shared Core E2E directory and that package's E2E
+directory. It runs only after the exact candidate distributions are installed and the provider key
+is supplied through the maintainer environment or CI secret; it is never part of a pull-request
+matrix.
 
 | Organization | Supported contract boundary |
 | --- | --- |
@@ -264,11 +286,16 @@ substitute a different caller intent.
   completed tool calls are delivered before the final completion callback in contract tests.
 - **SC-003**: Contract tests cover all four public request modes—synchronous, asynchronous,
   synchronous streaming, and asynchronous streaming—for every core organization and each
-  installed organization package's supported conformance scope.
+  installed organization package's supported conformance scope. New organization packages provide
+  this evidence through their shared Core E2E profile, with package-local E2E only for behavior
+  outside the portable shared scenarios.
 - **SC-004**: For a response without provider usage, 100% of contract-test results leave usage and
   cost fields unavailable rather than producing an estimated value.
 - **SC-005**: A caller attempting each documented invalid common input receives a public validation
   error before an outbound organization request in contract tests.
+- **SC-006**: Each new organization release lane runs all and only the shared Core E2E scenarios
+  applicable to its declared capability profile, together with its package-local E2E scenarios,
+  against the exact candidate artifacts before release promotion.
 
 ## Assumptions
 
