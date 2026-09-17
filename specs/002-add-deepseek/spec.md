@@ -15,6 +15,10 @@
 - Q: Which verified DeepSeek model set must 0.1.0 support? → A: Models with the greatest common-Core compatibility, selected through official verification.
 - Q: What minimum functionality is required for a selected DeepSeek model before the 0.1.0 release? → A: Select the model with the maximum officially verified functionality; unsupported functions remain explicit.
 
+### Session 2026-09-17
+
+- Q: How is the final paid DeepSeek check authorized and run? → A: Merging the reviewed candidate into protected `dev` triggers the post-publish TestPyPI workflow and its bounded DeepSeek E2E lane automatically. For an explicitly requested manual final check, verify only that `DEEPSEEK_API_KEY` is present in the execution environment, present the exact test command to the maintainer, and let the maintainer invoke it. The test reads the key from its environment; no command, log, or result may reveal the key.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Use DeepSeek through the common facade (Priority: P1)
@@ -171,7 +175,12 @@ complete or missing usage; verify documented errors and availability of cost dat
   feature.
 - **FR-013**: Each DeepSeek model/capability combination declared as supported MUST pass the
   shared conformance evidence, deterministic behavior checks for both supported synchronous
-  transport choices, and the focused authorized live verification required for release.
+  transport choices, and the focused authorized live verification required for release. A merge
+  into protected `dev` MUST publish the changed candidates to TestPyPI and run the affected
+  bounded E2E lane using `DEEPSEEK_API_KEY` from GitHub Actions Secrets. At final manual
+  handoff, tooling MUST check only whether that variable is present, then provide the precise
+  E2E command for maintainer invocation; the test MUST consume the key from the environment and
+  MUST NOT display it.
 - **FR-014**: The release documentation MUST state installation, verified model support,
   capability limitations, direct-document rejection, and the boundary between standard estimates
   and provider invoices.

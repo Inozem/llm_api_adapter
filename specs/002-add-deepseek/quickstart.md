@@ -51,16 +51,36 @@ the error must recommend the exact DeepSeek distribution. Core and the
 DeepSeek package are released independently, so keep the candidate pair exact
 (`0.9.6` with `0.1.0`) and never substitute an older TestPyPI artifact.
 
-## 3. Release-candidate E2E (maintainer authorized)
+## 3. Release-candidate E2E (protected `dev` gate and manual handoff)
 
-Do not run live calls in a pull request or local deterministic suite. Only a
-maintainer-authorized post-publish job may use `DEEPSEEK_API_KEY`, supplied from
-GitHub Actions Secrets after exact TestPyPI candidates have been published. The
-dedicated DeepSeek job installs only those candidate versions, verifies plugin
-discovery, and runs:
+Do not run live calls in a pull request or local deterministic suite. Once a
+maintainer merges the reviewed candidate into protected `dev`,
+`ci-dev-release.yml` automatically publishes only the changed Core/organization
+distributions to TestPyPI. When DeepSeek or shared Core changes, its dedicated
+post-publish job installs the exact candidate versions, verifies plugin discovery,
+and runs the bounded DeepSeek lane with `DEEPSEEK_API_KEY` supplied only through
+GitHub Actions Secrets.
+
+The E2E test reads `DEEPSEEK_API_KEY` directly from its environment. Do not put a
+key in a command, test argument, log, or result. If a maintainer requests an
+additional final manual check after the TestPyPI candidates exist, perform this
+preflight at the final handoff. It verifies only that the key is present and
+prints the command; it does **not** run the paid test:
 
 ```powershell
-python -m pytest -v --import-mode=importlib -m e2e_deepseek
+if ([string]::IsNullOrWhiteSpace($env:DEEPSEEK_API_KEY)) {
+    throw "DEEPSEEK_API_KEY is not configured in this environment."
+}
+
+$e2eCommand = 'python -m pytest -v --import-mode=importlib -m e2e_deepseek packages/organizations/deepseek/tests/e2e/test_live_contract.py'
+Write-Output 'DEEPSEEK_API_KEY is configured. Run this command yourself:'
+Write-Output $e2eCommand
 ```
 
-The bounded live profile exercises only `deepseek-flash` and only declared features. It excludes document input. Before final PyPI tags, a maintainer performs the same explicit candidate installation and verifies the documented public install path, text/tool/structured response, image boundary, reasoning continuation, and absence of credential or reasoning leakage.
+The maintainer decides whether to run the displayed command; this optional manual
+check supplements rather than replaces the automatic `dev` post-publish gate.
+The bounded live profile exercises only `deepseek-flash` and only declared
+features. It excludes document input. Before final PyPI tags, a maintainer
+performs the same explicit candidate installation and verifies the documented
+public install path, text/tool/structured response, image boundary, reasoning
+continuation, and absence of credential or reasoning leakage.

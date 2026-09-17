@@ -18,7 +18,7 @@ The package will reuse the Core facade, plugin registry, transports, message and
 
 **Storage**: N/A. The adapter holds request-local stream and continuation state only; it does not persist conversations, files, API responses, or reasoning.
 
-**Testing**: `pytest` deterministic unit/mocked-integration suites; Core 3.10 coverage remains at least 90%. One bounded, maintainer-authorized post-publish DeepSeek E2E lane uses only `DEEPSEEK_API_KEY`.
+**Testing**: `pytest` deterministic unit/mocked-integration suites; Core 3.10 coverage remains at least 90%. Merging the reviewed candidate into protected `dev` automatically publishes changed candidates to TestPyPI and runs the bounded DeepSeek E2E lane using only `DEEPSEEK_API_KEY`. A separate final manual handoff checks only that the key exists in the maintainer environment and provides the command; the maintainer, not automation, elects to execute that extra paid call.
 
 **Target Platform**: OS-independent Python library distributed through PyPI.
 
