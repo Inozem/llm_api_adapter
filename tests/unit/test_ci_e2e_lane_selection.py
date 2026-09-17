@@ -349,3 +349,22 @@ def test_kimi_deterministic_and_tag_workflows_cover_unit_and_integration_tests()
     assert '"kimi-v*"' in main_workflow
     assert "test-kimi:" in main_workflow
     assert "publish-kimi-pypi:" in main_workflow
+
+
+@pytest.mark.unit
+def test_deepseek_deterministic_workflows_cover_unit_and_integration_tests():
+    workflow_dir = _REPOSITORY_ROOT / ".github" / "workflows"
+
+    for filename in ("ci-deepseek-dev.yml", "ci-deepseek-main.yml"):
+        workflow = (workflow_dir / filename).read_text(encoding="utf-8")
+        assert "packages/organizations/deepseek/**" in workflow
+        assert (
+            "pytest -v --ignore=packages/organizations/deepseek/tests/e2e "
+            "-m unit packages/organizations/deepseek/tests"
+        ) in workflow
+        assert (
+            "pytest -v --ignore=packages/organizations/deepseek/tests/e2e "
+            "-m integration packages/organizations/deepseek/tests"
+        ) in workflow
+        assert "e2e_deepseek" not in workflow
+        assert "secrets." not in workflow

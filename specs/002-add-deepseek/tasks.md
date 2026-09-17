@@ -155,7 +155,7 @@ repository documentation, and verify the exact release artifacts.
 - [X] T036 [P] Add deterministic selection coverage asserting that only DeepSeek changes select its candidate and `e2e_deepseek` lane in `tests/unit/test_ci_e2e_lane_selection.py`.
 - [X] T037 Implement DeepSeek path, package, shared-Core, and E2E-lane detection in `.github/scripts/select_e2e_lanes.py`.
 - [X] T038 Create the credential-free pull-request DeepSeek package workflow in `.github/workflows/ci-deepseek-dev.yml`.
-- [ ] T039 Create the DeepSeek main-branch package validation workflow in `.github/workflows/ci-deepseek-main.yml`.
+- [X] T039 Create the DeepSeek main-branch package validation workflow in `.github/workflows/ci-deepseek-main.yml`.
 - [ ] T040 Add DeepSeek change filters and workflow dispatch to `.github/workflows/ci-dev.yml` and `.github/workflows/ci-main.yml`, then add TestPyPI publication, exact candidate installation, `DEEPSEEK_API_KEY` validation, plugin discovery, and the bounded `e2e_deepseek` post-publish job to `.github/workflows/ci-dev-release.yml`.
 - [ ] T041 Update the contributor and release guidance for independently versioned DeepSeek artifacts and the credential boundary in `CONTRIBUTING.md` and `specs/002-add-deepseek/quickstart.md`.
 - [ ] T042 Update the living baseline contract with the DeepSeek optional package, its direct-document rejection boundary, and opaque continuation metadata that is never rendered or logged in `specs/001-baseline-contract/spec.md`.
