@@ -56,7 +56,6 @@ The package deliberately exposes fixed model IDs, not moving aliases:
 | Capability | Supported models |
 | --- | --- |
 | Text chat, sync/async streaming, application function tools, JSON Schema/Pydantic output, image URLs or bytes, and PDF URLs or bytes | Both models |
-| `reasoning_level` | `grok-4.5`: `low`–`high`; `grok-4.6`: `low`–`xhigh` |
 
 For `grok-4.5` and `grok-4.6`, xAI cannot disable reasoning: a requested
 `"none"` is mapped to the documented minimum and produces a warning.
