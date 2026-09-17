@@ -189,6 +189,36 @@ def test_qwen_package_changes_select_candidate_and_e2e_lane():
 
 
 @pytest.mark.unit
+def test_deepseek_package_changes_select_only_its_candidate_and_e2e_lane():
+    selection = _SELECTOR.select_e2e_lanes(
+        ["packages/organizations/deepseek/src/llm_api_adapter_deepseek/adapter.py"]
+    )
+
+    assert selection.core is False
+    assert selection.deepseek is True
+    assert selection.deepseek_e2e is True
+    assert selection.kimi_e2e is False
+    assert selection.mistral_e2e is False
+    assert selection.xai_e2e is False
+    assert selection.qwen_e2e is False
+
+
+@pytest.mark.unit
+def test_deepseek_package_e2e_changes_select_only_its_live_lane():
+    selection = _SELECTOR.select_e2e_lanes(
+        ["packages/organizations/deepseek/tests/e2e/test_live_contract.py"]
+    )
+
+    assert selection.core is False
+    assert selection.deepseek is False
+    assert selection.deepseek_e2e is True
+    assert selection.kimi_e2e is False
+    assert selection.mistral_e2e is False
+    assert selection.xai_e2e is False
+    assert selection.qwen_e2e is False
+
+
+@pytest.mark.unit
 def test_kimi_package_changes_select_only_its_candidate_and_e2e_lane():
     selection = _SELECTOR.select_e2e_lanes(
         ["packages/organizations/kimi/src/llm_api_adapter_kimi/adapter.py"]
