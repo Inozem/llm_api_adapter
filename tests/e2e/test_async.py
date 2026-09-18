@@ -27,6 +27,7 @@ SIMPLE_SCHEMA = {
         "age": {"type": "integer"},
     },
     "required": ["name", "age"],
+    "additionalProperties": False,
 }
 
 KUDIBLOID_COUNTS = {7: 479}

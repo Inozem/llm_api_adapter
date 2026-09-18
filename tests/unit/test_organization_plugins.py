@@ -228,6 +228,73 @@ def test_known_xai_organization_is_installable_before_its_package_is_available(
 
 
 @pytest.mark.unit
+def test_known_deepseek_organization_is_distinct_from_unknown_and_loads_lazily(
+    monkeypatch,
+    isolated_plugin_runtime,
+):
+    for module_name in (
+        "llm_api_adapter_deepseek.plugin",
+        "llm_api_adapter_deepseek",
+    ):
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    installed_entry_points: list[FakeEntryPoint] = []
+
+    def get_entry_points(*, group: str):
+        assert group == ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP
+        return tuple(installed_entry_points)
+
+    monkeypatch.setattr(registry_module, "entry_points", get_entry_points)
+
+    with pytest.raises(ValueError, match="Unsupported organization: deepseek-like"):
+        UniversalLLMAPIAdapter(
+            organization="deepseek-like",
+            model="deepseek-flash",
+            api_key="test-key",
+        )
+
+    with pytest.raises(OrganizationNotInstalledError) as raised:
+        UniversalLLMAPIAdapter(
+            organization="deepseek",
+            model="deepseek-flash",
+            api_key="test-key",
+        )
+
+    assert str(raised.value) == (
+        "Organization 'deepseek' is not installed. "
+        "Install it with: pip install llm-api-adapter-deepseek"
+    )
+    assert "llm_api_adapter_deepseek" not in sys.modules
+
+    entry_point = FakeEntryPoint(
+        name="deepseek",
+        value="test_plugins.deepseek:PLUGIN",
+        plugin=_test_plugin(
+            organization="deepseek",
+            model_metadata=_organization_model_metadata("deepseek"),
+        ),
+    )
+    installed_entry_points.append(entry_point)
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="deepseek",
+        model="test-model",
+        api_key="test-key",
+    )
+
+    assert isinstance(adapter.adapter, PluginTestAdapter)
+    assert adapter.adapter.company == adapter.adapter.service_provider == "deepseek"
+    assert adapter.adapter.model_spec is not None
+    assert resolve_model_spec(
+        isolated_plugin_runtime[2],
+        "deepseek",
+        "test-model",
+    ) is adapter.adapter.model_spec
+    assert entry_point.load_calls == 1
+    assert "llm_api_adapter_deepseek" not in sys.modules
+
+
+@pytest.mark.unit
 def test_known_kimi_organization_is_distinct_from_unknown_and_loads_lazily(
     monkeypatch,
     isolated_plugin_runtime,
@@ -366,6 +433,15 @@ def test_core_declares_the_kimi_optional_extra():
     pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert 'kimi = ["llm-api-adapter-kimi>=0.1.0,<0.2.0"]' in pyproject
+
+
+@pytest.mark.unit
+def test_core_declares_the_deepseek_optional_extra_without_base_dependency():
+    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"deepseek"' in pyproject.split("keywords =", 1)[1].split("]", 1)[0]
+    assert 'deepseek = ["llm-api-adapter-deepseek>=0.1.0,<0.2.0"]' in pyproject
+    assert 'dependencies = ["llm-api-adapter-deepseek' not in pyproject
 
 
 @pytest.mark.unit

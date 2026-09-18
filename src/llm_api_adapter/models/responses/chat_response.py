@@ -102,6 +102,7 @@ class ChatResponse:
     parsed_json: Optional[dict] = None
     parsed_model: Optional[Any] = None
     reasoning_events: List[ReasoningEvent] = field(default_factory=list)
+    provider_data: Optional[dict] = field(default=None, repr=False)
 
     @classmethod
     def from_openai_response(cls, api_response: dict) -> "ChatResponse":

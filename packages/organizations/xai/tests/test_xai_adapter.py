@@ -688,6 +688,17 @@ def test_chat_warns_when_grok_45_cannot_disable_reasoning(xai_runtime):
 
 
 @pytest.mark.unit
+def test_chat_maps_xhigh_reasoning_for_grok_45(xai_runtime):
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.5")
+    transport = FakeSyncTransport(_response(model="grok-4.5"))
+    adapter._client._sync_transport = transport
+
+    adapter.chat(messages=[UserMessage("Hello")], reasoning_level="xhigh")
+
+    assert transport.requests[0].payload["reasoning"] == {"effort": "xhigh"}
+
+
+@pytest.mark.unit
 def test_chat_prefers_exact_xai_reported_cost(xai_runtime):
     adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
     api_response = _response(model="grok-4.6")

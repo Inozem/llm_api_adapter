@@ -57,6 +57,7 @@ _QWEN_PORTABLE_E2E_FEATURES = frozenset(
     }
 )
 _KIMI_PORTABLE_E2E_FEATURES = _QWEN_PORTABLE_E2E_FEATURES
+_DEEPSEEK_PORTABLE_E2E_FEATURES = _PORTABLE_E2E_FEATURES - {"document_input"}
 
 
 class E2EOrganization(dict):
@@ -120,6 +121,14 @@ _QWEN_E2E_PROFILE = E2EOrganizationProfile(
     missing_api_key_is_usage_error=True,
     operation_kwargs_env=(("workspace_id", "QWEN_WORKSPACE_ID"),),
 )
+_DEEPSEEK_E2E_PROFILE = E2EOrganizationProfile(
+    name="deepseek",
+    organization_names=("deepseek",),
+    supported_features=_DEEPSEEK_PORTABLE_E2E_FEATURES,
+    distribution="llm-api-adapter-deepseek",
+    api_key_is_required=True,
+    missing_api_key_is_usage_error=True,
+)
 _E2E_PROFILE_PARAMS = (
     pytest.param(
         _OPENAI_E2E_PROFILE,
@@ -156,6 +165,11 @@ _E2E_PROFILE_PARAMS = (
         id="qwen",
         marks=pytest.mark.e2e_qwen,
     ),
+    pytest.param(
+        _DEEPSEEK_E2E_PROFILE,
+        id="deepseek",
+        marks=pytest.mark.e2e_deepseek,
+    ),
 )
 
 load_dotenv()
@@ -168,6 +182,7 @@ API_KEY_ENV = {
     "xai": os.getenv("XAI_API_KEY"),
     "kimi": os.getenv("KIMI_API_KEY"),
     "qwen": os.getenv("QWEN_API_KEY"),
+    "deepseek": os.getenv("DEEPSEEK_API_KEY"),
 }
 
 
@@ -209,6 +224,7 @@ def get_e2e_organization_profile(name: str) -> E2EOrganizationProfile:
             _XAI_E2E_PROFILE,
             _KIMI_E2E_PROFILE,
             _QWEN_E2E_PROFILE,
+            _DEEPSEEK_E2E_PROFILE,
         )
     }
     try:

@@ -100,6 +100,23 @@ def test_transport_request_owns_an_immutable_headers_snapshot():
 
 
 @pytest.mark.unit
+def test_transport_request_repr_excludes_headers_and_payload():
+    request = TransportRequest(
+        url="https://example.test/messages",
+        headers={"Authorization": "Bearer secret-sentinel"},
+        payload={"reasoning": "private-payload-sentinel"},
+        timeout=2.5,
+    )
+
+    rendered = repr(request)
+
+    assert "secret-sentinel" not in rendered
+    assert "private-payload-sentinel" not in rendered
+    assert "headers" not in rendered
+    assert "payload" not in rendered
+
+
+@pytest.mark.unit
 def test_sync_transport_contract_carries_json_and_sse_operations():
     transport = StubSyncTransport()
     request = TransportRequest(url="https://example.test", payload={"ok": True})
