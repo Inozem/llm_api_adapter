@@ -1,0 +1,483 @@
+"""Credential-free facade and transport contracts for the Z.ai adapter."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+from pathlib import Path
+import sys
+from typing import Any, Iterator, Mapping
+
+import pytest
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
+CORE_SOURCE = REPOSITORY_ROOT / "src"
+PACKAGE_SOURCE = PACKAGE_ROOT / "src"
+for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
+    if source not in sys.path:
+        sys.path.insert(0, source)
+
+import llm_api_adapter.adapters.base_adapter as base_adapter_module
+import llm_api_adapter.universal_adapter as universal_module
+from llm_api_adapter.errors.llm_api_error import (
+    LLMAPIAuthorizationError,
+    LLMAPIRateLimitError,
+    LLMAPIServerError,
+)
+from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
+from llm_api_adapter.llms.transports import (
+    JSONResponse,
+    SSEEvent,
+    SyncTransport,
+    TransportRequest,
+)
+from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+
+MODEL = "glm-5.3-flash"
+
+
+@dataclass
+class FakeSyncTransport(SyncTransport):
+    """Transport double that records requests and closes SSE iterators."""
+
+    response: Any
+    error: Exception | None = None
+    stream_events: list[SSEEvent] = field(default_factory=list)
+    requests: list[TransportRequest] = field(default_factory=list)
+    sse_closed: bool = False
+
+    def post_json(
+        self,
+        request: TransportRequest,
+        *,
+        http_error_handler=None,
+    ) -> JSONResponse:
+        self.requests.append(request)
+        if self.error is not None:
+            assert http_error_handler is not None
+            http_error_handler(self.error)
+        return JSONResponse(self.response)
+
+    def post_multipart(
+        self,
+        request: TransportRequest,
+        form,
+        *,
+        http_error_handler=None,
+    ) -> JSONResponse:
+        del request, form, http_error_handler
+        raise AssertionError("Z.ai Chat Completions must not upload files")
+
+    def post_sse(
+        self,
+        request: TransportRequest,
+        *,
+        http_error_handler=None,
+        stream_error_handler=None,
+    ) -> Iterator[SSEEvent]:
+        del http_error_handler
+        self.requests.append(request)
+
+        def events() -> Iterator[SSEEvent]:
+            try:
+                for event in self.stream_events:
+                    payload = event.data if isinstance(event.data, Mapping) else {}
+                    if (
+                        stream_error_handler is not None
+                        and (
+                            event.event == "error"
+                            or payload.get("type") == "error"
+                        )
+                    ):
+                        stream_error_handler(event)
+                    yield event
+            finally:
+                self.sse_closed = True
+
+        return events()
+
+
+class FakeHTTPResponse:
+    def __init__(self, status_code: int, payload: dict[str, Any]) -> None:
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+class FakeHTTPError(Exception):
+    def __init__(self, status_code: int, payload: dict[str, Any]) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.response = FakeHTTPResponse(status_code, payload)
+
+
+def zai_response(
+    *,
+    prompt_tokens: int = 19,
+    completion_tokens: int = 13,
+    cached_tokens: int | None = None,
+) -> dict[str, Any]:
+    usage: dict[str, Any] = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+    if cached_tokens is not None:
+        usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+    return {
+        "id": "cmpl-zai-test",
+        "object": "chat.completion",
+        "created": 1_789_721_600,
+        "model": MODEL,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "Z.ai test."},
+                "finish_reason": "stop",
+            },
+        ],
+        "usage": usage,
+    }
+
+
+def zai_stream_events() -> list[SSEEvent]:
+    metadata = {
+        "id": "cmpl-zai-stream",
+        "created": 1_789_721_600,
+        "model": MODEL,
+    }
+    return [
+        SSEEvent(
+            event=None,
+            data={
+                **metadata,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": ""},
+                        "finish_reason": None,
+                    },
+                ],
+            },
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                **metadata,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": "First reason. ",
+                            "content": "Hello ",
+                        },
+                        "finish_reason": None,
+                    },
+                ],
+            },
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                **metadata,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "world"},
+                        "finish_reason": "stop",
+                    },
+                ],
+            },
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                **metadata,
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 19,
+                    "completion_tokens": 13,
+                    "total_tokens": 32,
+                },
+            },
+        ),
+        SSEEvent(event=None, data="[DONE]", done=True),
+    ]
+
+
+@pytest.fixture
+def zai_runtime(monkeypatch):
+    from llm_api_adapter_zai.plugin import PLUGIN
+
+    model_registry = RegistrySpec()
+    assert PLUGIN.model_metadata is not None
+    assert model_registry.register_organization_metadata(PLUGIN.model_metadata) is True
+
+    service_provider_registry = ServiceProviderRegistry()
+    PLUGIN.register(service_provider_registry)
+    monkeypatch.setattr(universal_module, "LLM_REGISTRY", model_registry)
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        service_provider_registry,
+    )
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", model_registry)
+    return model_registry
+
+
+@pytest.mark.integration
+def test_zai_facade_chat_uses_official_endpoint_and_normalizes_response(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat(
+        [UserMessage("Hello")],
+        max_tokens=64,
+        timeout_s=12.5,
+    )
+
+    assert response.content == "Z.ai test."
+    assert response.response_id == "cmpl-zai-test"
+    assert response.model == MODEL
+    assert response.usage is not None
+    assert response.usage.total_tokens == 32
+
+    request = transport.requests[0]
+    assert request.url == "https://api.z.ai/api/paas/v4/chat/completions"
+    assert request.headers_dict() == {
+        "Authorization": "Bearer zai-test-key",
+        "Content-Type": "application/json",
+    }
+    assert request.timeout == 12.5
+    assert request.payload["model"] == MODEL
+    assert request.payload["messages"] == [{"role": "user", "content": "Hello"}]
+    assert request.payload["max_tokens"] == 64
+    assert "stream" not in request.payload
+
+
+@pytest.mark.integration
+def test_zai_sync_stream_reconstructs_deltas_and_usage(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport({}, stream_events=zai_stream_events())
+    adapter.adapter._sync_transport = transport
+    completed = []
+
+    output = list(
+        adapter.stream_chat(
+            [UserMessage("Hello")],
+            max_tokens=64,
+            capture_reasoning=True,
+            on_done=completed.append,
+        )
+    )
+
+    assert output == ["Hello ", "world"]
+    assert completed[0].content == "Hello world"
+    assert completed[0].usage is not None
+    assert completed[0].usage.total_tokens == 32
+    assert [event.text for event in completed[0].reasoning_events] == [
+        "First reason. ",
+    ]
+    assert transport.requests[0].url == (
+        "https://api.z.ai/api/paas/v4/chat/completions"
+    )
+    assert transport.requests[0].payload["stream"] is True
+    assert transport.sse_closed is True
+
+
+def test_zai_httpx_async_chat_matches_sync_request_contract(zai_runtime, monkeypatch):
+    from llm_api_adapter_zai.clients import async_client as async_client_module
+
+    requests = []
+
+    async def fake_async_request(url, **kwargs):
+        requests.append((url, kwargs))
+        return zai_response()
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+
+    response = asyncio.run(
+        adapter.achat(
+            [UserMessage("Hello")],
+            max_tokens=64,
+            timeout_s=12.5,
+        )
+    )
+
+    assert response.content == "Z.ai test."
+    assert response.usage is not None
+    assert response.usage.total_tokens == 32
+    assert requests[0][0] == "https://api.z.ai/api/paas/v4/chat/completions"
+    assert requests[0][1]["headers"] == {
+        "Authorization": "Bearer zai-test-key",
+        "Content-Type": "application/json",
+    }
+    assert requests[0][1]["payload"] == {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": 64,
+    }
+    assert requests[0][1]["timeout"] == 12.5
+
+
+def test_zai_httpx_async_stream_matches_sync_sse_lifecycle(
+    zai_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_zai.clients import async_client as async_client_module
+
+    requests = []
+    stream_closed = False
+
+    def fake_async_stream_request(url, **kwargs):
+        requests.append((url, kwargs))
+
+        async def events():
+            nonlocal stream_closed
+            try:
+                for event in zai_stream_events():
+                    yield event
+            finally:
+                stream_closed = True
+
+        return events()
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    completed = []
+
+    async def collect() -> list[str]:
+        output = []
+        async for text in adapter.astream_chat(
+            [UserMessage("Hello")],
+            max_tokens=64,
+            capture_reasoning=True,
+            on_done=completed.append,
+        ):
+            output.append(text)
+        return output
+
+    output = asyncio.run(collect())
+
+    assert output == ["Hello ", "world"]
+    assert completed[0].content == "Hello world"
+    assert completed[0].usage is not None
+    assert completed[0].usage.total_tokens == 32
+    assert stream_closed is True
+    assert requests[0][0] == "https://api.z.ai/api/paas/v4/chat/completions"
+    assert requests[0][1]["payload"]["stream"] is True
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_type", "expected_error"),
+    [
+        (401, "authentication_error", LLMAPIAuthorizationError),
+        (429, "rate_limit_error", LLMAPIRateLimitError),
+        (500, "api_error", LLMAPIServerError),
+    ],
+)
+def test_zai_normalizes_chat_completions_http_failures(
+    zai_runtime,
+    status_code,
+    error_type,
+    expected_error,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        {},
+        error=FakeHTTPError(
+            status_code,
+            {"error": {"type": error_type, "message": "Z.ai failure"}},
+        ),
+    )
+
+    with pytest.raises(expected_error, match="Z.ai failure"):
+        adapter.chat([UserMessage("Hello")])
+
+
+def test_zai_stream_error_is_mapped_and_closes_resources(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(
+        {},
+        stream_events=[
+            SSEEvent(
+                event="error",
+                data={
+                    "error": {
+                        "type": "rate_limit_error",
+                        "message": "Z.ai stream rate limit",
+                    },
+                },
+            ),
+        ],
+    )
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(LLMAPIRateLimitError, match="Z.ai stream rate limit"):
+        list(adapter.stream_chat([UserMessage("Hello")]))
+
+    assert transport.sse_closed is True
+
+
+@pytest.mark.integration
+def test_zai_reports_usage_and_verified_usd_costs(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        zai_response(prompt_tokens=100, completion_tokens=40, cached_tokens=25),
+    )
+
+    response = adapter.chat([UserMessage("Price this request")])
+
+    assert response.usage is not None
+    assert response.usage.input_tokens == 100
+    assert response.usage.output_tokens == 40
+    assert response.usage.total_tokens == 140
+    assert response.usage.cached_tokens == 25
+    assert response.currency == "USD"
+    assert response.cost_input == pytest.approx(
+        (25 * 0.03 + 75 * 0.15) / 1_000_000,
+    )
+    assert response.cost_output == pytest.approx(40 * 0.50 / 1_000_000)
+    assert response.cost_total == pytest.approx(
+        response.cost_input + response.cost_output,
+    )
