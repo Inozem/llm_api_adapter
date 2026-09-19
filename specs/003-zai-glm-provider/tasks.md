@@ -46,7 +46,7 @@ registers Flash and mocked sync/async/stream responses normalize through the exi
 - [X] T009 [P] [US1] Write closed model-metadata tests in `packages/organizations/zai/tests/fixtures/zai_capability_discovery.py` and `packages/organizations/zai/tests/test_capability_discovery.py` for exact Flash ID, 1,000,000/131,072 limits, USD rates, and `low`/`high`/`max` reasoning.
 - [X] T010 [P] [US1] Write mocked facade, sync, async, SSE, HTTPX-parity, error, and usage tests in `packages/organizations/zai/tests/test_zai_adapter.py`.
 - [X] T011 [US1] Implement Flash registry metadata and standard pricing in `packages/organizations/zai/src/llm_api_adapter_zai/registry/organizations/zai.json` and `packages/organizations/zai/src/llm_api_adapter_zai/registry/__init__.py`.
-- [ ] T012 [US1] Implement the versioned `OrganizationPlugin`, model metadata export, and `zai` factory registration in `packages/organizations/zai/src/llm_api_adapter_zai/plugin.py`.
+- [X] T012 [US1] Implement the versioned `OrganizationPlugin`, model metadata export, and `zai` factory registration in `packages/organizations/zai/src/llm_api_adapter_zai/plugin.py`.
 - [ ] T013 [US1] Implement official endpoint construction, bearer auth, requests dispatch, response parsing, and normalized errors in `packages/organizations/zai/src/llm_api_adapter_zai/clients/sync_client.py`.
 - [ ] T014 [US1] Implement equivalent async dispatch, parsing, cancellation, and cleanup in `packages/organizations/zai/src/llm_api_adapter_zai/clients/async_client.py`.
 - [ ] T015 [US1] Implement SSE delta parsing, tool-delta accumulation, visible-text isolation, and final response assembly in `packages/organizations/zai/src/llm_api_adapter_zai/streaming.py`.
