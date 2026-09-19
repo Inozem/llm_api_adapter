@@ -23,7 +23,7 @@ package-local boundary E2E, and focused authorized live verification.
 
 **Purpose**: Complete the Core discovery and E2E-profile prerequisites that block every story.
 
-- [ ] T003 Update Core version, Z.ai keyword, and optional `zai` extra in `pyproject.toml` without adding `llm-api-adapter-zai` to base dependencies.
+- [X] T003 Update Core version, Z.ai keyword, and optional `zai` extra in `pyproject.toml` without adding `llm-api-adapter-zai` to base dependencies.
 - [ ] T004 Add the `zai` known-package record and `llm-api-adapter-zai` installation remedy in `src/llm_api_adapter/organization_registry.py`.
 - [ ] T005 Add Core regression coverage for Z.ai's absent-package error, lazy discovery, and optional extra in `tests/unit/test_organization_plugins.py`.
 - [ ] T006 Mark shared portable JSON-schema scenarios with `e2e_feature("structured_output")` in `tests/e2e/test_json_schema.py`.
