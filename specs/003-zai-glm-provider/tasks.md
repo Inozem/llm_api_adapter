@@ -14,8 +14,8 @@ package-local boundary E2E, and focused authorized live verification.
 
 **Purpose**: Create the independently versioned provider-package skeleton.
 
-- [ ] T001 Create package metadata in `packages/organizations/zai/pyproject.toml` with version `0.1.0`, Core range `>=0.9.7,<1.0.0`, forwarded `async`/`httpx` extras, and the `zai` entry point.
-- [ ] T002 Create distributable package files in `packages/organizations/zai/MANIFEST.in`, `packages/organizations/zai/LICENSE`, `packages/organizations/zai/README.md`, `packages/organizations/zai/src/llm_api_adapter_zai/__init__.py`, `packages/organizations/zai/src/llm_api_adapter_zai/py.typed`, and `packages/organizations/zai/src/llm_api_adapter_zai/clients/__init__.py`.
+- [X] T001 Create package metadata in `packages/organizations/zai/pyproject.toml` with version `0.1.0`, Core range `>=0.9.7,<1.0.0`, forwarded `async`/`httpx` extras, and the `zai` entry point.
+- [X] T002 Create distributable package files in `packages/organizations/zai/MANIFEST.in`, `packages/organizations/zai/LICENSE`, `packages/organizations/zai/README.md`, `packages/organizations/zai/src/llm_api_adapter_zai/__init__.py`, `packages/organizations/zai/src/llm_api_adapter_zai/py.typed`, and `packages/organizations/zai/src/llm_api_adapter_zai/clients/__init__.py`.
 
 ---
 
