@@ -26,7 +26,7 @@ package-local boundary E2E, and focused authorized live verification.
 - [X] T003 Update Core version, Z.ai keyword, and optional `zai` extra in `pyproject.toml` without adding `llm-api-adapter-zai` to base dependencies.
 - [X] T004 Add the `zai` known-package record and `llm-api-adapter-zai` installation remedy in `src/llm_api_adapter/organization_registry.py`.
 - [X] T005 Add Core regression coverage for Z.ai's absent-package error, lazy discovery, and optional extra in `tests/unit/test_organization_plugins.py`.
-- [ ] T006 Mark shared portable JSON-schema scenarios with `e2e_feature("structured_output")` in `tests/e2e/test_json_schema.py`.
+- [X] T006 Mark shared portable JSON-schema scenarios with `e2e_feature("structured_output")` in `tests/e2e/test_json_schema.py`.
 - [ ] T007 Add the `e2e_zai` marker, `ZAI_API_KEY`, and a named explicit Z.ai capability profile in `pytest.ini` and `tests/e2e/conftest.py`.
 
 **Checkpoint**: Core distinguishes absent Z.ai from an unknown organization, and shared E2E can

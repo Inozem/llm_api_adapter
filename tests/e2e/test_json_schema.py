@@ -22,6 +22,7 @@ _PORTABLE_NESTED_OBJECT_SCHEMA = {
 
 
 @pytest.mark.e2e
+@pytest.mark.e2e_feature("structured_output")
 def test_json_schema_returns_structured_output_for_every_configured_model(
     subtests,
     iter_organization_models,
