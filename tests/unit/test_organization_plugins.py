@@ -295,6 +295,73 @@ def test_known_deepseek_organization_is_distinct_from_unknown_and_loads_lazily(
 
 
 @pytest.mark.unit
+def test_known_zai_organization_is_distinct_from_unknown_and_loads_lazily(
+    monkeypatch,
+    isolated_plugin_runtime,
+):
+    for module_name in (
+        "llm_api_adapter_zai.plugin",
+        "llm_api_adapter_zai",
+    ):
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    installed_entry_points: list[FakeEntryPoint] = []
+
+    def get_entry_points(*, group: str):
+        assert group == ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP
+        return tuple(installed_entry_points)
+
+    monkeypatch.setattr(registry_module, "entry_points", get_entry_points)
+
+    with pytest.raises(ValueError, match="Unsupported organization: zai-like"):
+        UniversalLLMAPIAdapter(
+            organization="zai-like",
+            model="glm-5.3-flash",
+            api_key="test-key",
+        )
+
+    with pytest.raises(OrganizationNotInstalledError) as raised:
+        UniversalLLMAPIAdapter(
+            organization="zai",
+            model="glm-5.3-flash",
+            api_key="test-key",
+        )
+
+    assert str(raised.value) == (
+        "Organization 'zai' is not installed. "
+        "Install it with: pip install llm-api-adapter-zai"
+    )
+    assert "llm_api_adapter_zai" not in sys.modules
+
+    entry_point = FakeEntryPoint(
+        name="zai",
+        value="test_plugins.zai:PLUGIN",
+        plugin=_test_plugin(
+            organization="zai",
+            model_metadata=_organization_model_metadata("zai"),
+        ),
+    )
+    installed_entry_points.append(entry_point)
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model="test-model",
+        api_key="test-key",
+    )
+
+    assert isinstance(adapter.adapter, PluginTestAdapter)
+    assert adapter.adapter.company == adapter.adapter.service_provider == "zai"
+    assert adapter.adapter.model_spec is not None
+    assert resolve_model_spec(
+        isolated_plugin_runtime[2],
+        "zai",
+        "test-model",
+    ) is adapter.adapter.model_spec
+    assert entry_point.load_calls == 1
+    assert "llm_api_adapter_zai" not in sys.modules
+
+
+@pytest.mark.unit
 def test_known_kimi_organization_is_distinct_from_unknown_and_loads_lazily(
     monkeypatch,
     isolated_plugin_runtime,
@@ -442,6 +509,15 @@ def test_core_declares_the_deepseek_optional_extra_without_base_dependency():
     assert '"deepseek"' in pyproject.split("keywords =", 1)[1].split("]", 1)[0]
     assert 'deepseek = ["llm-api-adapter-deepseek>=0.1.0,<0.2.0"]' in pyproject
     assert 'dependencies = ["llm-api-adapter-deepseek' not in pyproject
+
+
+@pytest.mark.unit
+def test_core_declares_the_zai_optional_extra_without_base_dependency():
+    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"zai"' in pyproject.split("keywords =", 1)[1].split("]", 1)[0]
+    assert 'zai = ["llm-api-adapter-zai>=0.1.0,<0.2.0"]' in pyproject
+    assert 'dependencies = ["llm-api-adapter-zai' not in pyproject
 
 
 @pytest.mark.unit
