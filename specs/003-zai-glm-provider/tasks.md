@@ -42,7 +42,7 @@ select only the profile's declared capability set.
 **Independent Test**: With Core `0.9.7` and only the Z.ai package installed, plugin discovery
 registers Flash and mocked sync/async/stream responses normalize through the existing facade.
 
-- [ ] T008 [P] [US1] Write package-layout, dependency-range, forwarded-extra, and entry-point tests in `packages/organizations/zai/tests/test_package_scaffold.py`.
+- [X] T008 [P] [US1] Write package-layout, dependency-range, forwarded-extra, and entry-point tests in `packages/organizations/zai/tests/test_package_scaffold.py`.
 - [ ] T009 [P] [US1] Write closed model-metadata tests in `packages/organizations/zai/tests/fixtures/zai_capability_discovery.py` and `packages/organizations/zai/tests/test_capability_discovery.py` for exact Flash ID, 1,000,000/131,072 limits, USD rates, and `low`/`high`/`max` reasoning.
 - [ ] T010 [P] [US1] Write mocked facade, sync, async, SSE, HTTPX-parity, error, and usage tests in `packages/organizations/zai/tests/test_zai_adapter.py`.
 - [ ] T011 [US1] Implement Flash registry metadata and standard pricing in `packages/organizations/zai/src/llm_api_adapter_zai/registry/organizations/zai.json` and `packages/organizations/zai/src/llm_api_adapter_zai/registry/__init__.py`.
