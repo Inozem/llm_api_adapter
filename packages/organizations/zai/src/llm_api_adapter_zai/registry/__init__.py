@@ -8,6 +8,8 @@ from typing import Any
 
 from llm_api_adapter.llm_registry.llm_registry import OrganizationModelMetadata
 
+from .cache_pricing import CACHE_PRICING, ZaiCachePricing
+
 
 def _load_organization_data() -> dict[str, Any]:
     resource = files(__package__).joinpath("organizations/zai.json")
@@ -25,4 +27,9 @@ MODEL_METADATA = OrganizationModelMetadata(
 )
 
 
-__all__ = ["MODEL_METADATA", "ORGANIZATION_DATA"]
+__all__ = [
+    "CACHE_PRICING",
+    "MODEL_METADATA",
+    "ORGANIZATION_DATA",
+    "ZaiCachePricing",
+]

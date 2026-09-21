@@ -50,7 +50,7 @@ registers Flash and mocked sync/async/stream responses normalize through the exi
 - [X] T013 [US1] Implement official endpoint construction, bearer auth, requests dispatch, response parsing, and normalized errors in `packages/organizations/zai/src/llm_api_adapter_zai/clients/sync_client.py`.
 - [X] T014 [US1] Implement equivalent async dispatch, parsing, cancellation, and cleanup in `packages/organizations/zai/src/llm_api_adapter_zai/clients/async_client.py`.
 - [X] T015 [US1] Implement SSE delta parsing, tool-delta accumulation, visible-text isolation, and final response assembly in `packages/organizations/zai/src/llm_api_adapter_zai/streaming.py`.
-- [ ] T016 [US1] Implement the facade-compatible Z.ai adapter using existing model registry and transport contracts in `packages/organizations/zai/src/llm_api_adapter_zai/adapter.py`.
+- [X] T016 [US1] Implement the facade-compatible Z.ai adapter using existing model registry and transport contracts in `packages/organizations/zai/src/llm_api_adapter_zai/adapter.py`.
 - [ ] T017 [US1] Run deterministic package and Core discovery suites from `specs/003-zai-glm-provider/quickstart.md` and resolve failures in `packages/organizations/zai/tests/` and `tests/unit/test_organization_plugins.py`.
 
 **Checkpoint**: The minimal Z.ai package is independently installable and returns normalized Flash
