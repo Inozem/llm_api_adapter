@@ -816,3 +816,142 @@ def test_zai_reports_usage_and_verified_usd_costs(zai_runtime):
     assert response.cost_total == pytest.approx(
         response.cost_input + response.cost_output,
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("cached_tokens", "expected_input_rate"),
+    [
+        (100, 0.03),
+        (0, 0.15),
+    ],
+    ids=["all-cache-hit", "all-cache-miss"],
+)
+def test_zai_prices_cache_hit_and_cache_miss_rates(
+    zai_runtime,
+    cached_tokens,
+    expected_input_rate,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        zai_response(
+            prompt_tokens=100,
+            completion_tokens=40,
+            cached_tokens=cached_tokens,
+        ),
+    )
+
+    response = adapter.chat([UserMessage("Price this request")])
+
+    assert response.usage is not None
+    assert response.usage.cached_tokens == cached_tokens
+    assert response.cost_input == pytest.approx(
+        100 * expected_input_rate / 1_000_000,
+    )
+    assert response.cost_output == pytest.approx(40 * 0.50 / 1_000_000)
+    assert response.cost_total == pytest.approx(
+        response.cost_input + response.cost_output,
+    )
+
+
+@pytest.mark.unit
+def test_zai_uses_standard_miss_pricing_when_cache_split_is_missing(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        zai_response(prompt_tokens=100, completion_tokens=40),
+    )
+
+    response = adapter.chat([UserMessage("Price without cache details")])
+
+    assert response.usage is not None
+    assert response.usage.cached_tokens is None
+    assert response.cost_input == pytest.approx(100 * 0.15 / 1_000_000)
+    assert response.cost_output == pytest.approx(40 * 0.50 / 1_000_000)
+    assert response.cost_total == pytest.approx(
+        response.cost_input + response.cost_output,
+    )
+
+
+@pytest.mark.unit
+def test_zai_leaves_cost_unset_when_usage_is_missing(zai_runtime):
+    payload = zai_response()
+    payload.pop("usage")
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(payload)
+
+    response = adapter.chat([UserMessage("No usage please")])
+
+    assert response.usage is None
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {},
+        {"prompt_tokens": 100, "completion_tokens": 40},
+        {
+            "prompt_tokens": "100",
+            "completion_tokens": 40,
+            "total_tokens": 140,
+        },
+        {"prompt_tokens": -1, "completion_tokens": 40, "total_tokens": 39},
+        {"prompt_tokens": 100, "completion_tokens": 40, "total_tokens": 999},
+    ],
+)
+def test_zai_leaves_cost_unset_for_malformed_usage(zai_runtime, usage):
+    payload = zai_response()
+    payload["usage"] = usage
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(payload)
+
+    response = adapter.chat([UserMessage("Validate usage")])
+
+    assert response.usage is None
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cached_tokens", [True, "25", -1, 101])
+def test_zai_does_not_apply_cache_discount_for_invalid_cache_tokens(
+    zai_runtime,
+    cached_tokens,
+):
+    payload = zai_response(prompt_tokens=100, completion_tokens=40)
+    payload["usage"]["prompt_tokens_details"] = {
+        "cached_tokens": cached_tokens,
+    }
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(payload)
+
+    response = adapter.chat([UserMessage("Ignore malformed cache details")])
+
+    assert response.usage is not None
+    assert response.usage.cached_tokens is None
+    assert response.cost_input == pytest.approx(100 * 0.15 / 1_000_000)
+    assert response.cost_output == pytest.approx(40 * 0.50 / 1_000_000)
