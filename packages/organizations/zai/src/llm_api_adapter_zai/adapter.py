@@ -473,6 +473,8 @@ class ZaiAdapter(LLMAdapterBase):
             for value in values
         ):
             return None
+        if values[2] != values[0] + values[1]:
+            return None
         return Usage(
             input_tokens=values[0],
             output_tokens=values[1],
@@ -519,13 +521,12 @@ class ZaiAdapter(LLMAdapterBase):
     ) -> tuple[Any, dict[str, Any]]:
         """Validate Core inputs and serialize the official Z.ai wire shape."""
 
+        self._validate_capability_preflight(
+            parallel_tool_calls=parallel_tool_calls,
+        )
         if json_schema is not None or response_model is not None:
             raise NotImplementedError(
                 "Z.ai glm-5.3-flash does not support portable structured output",
-            )
-        if parallel_tool_calls is not None:
-            raise NotImplementedError(
-                "Z.ai parallel_tool_calls control is not implemented",
             )
 
         request_context = self._prepare_chat_request(
@@ -559,6 +560,23 @@ class ZaiAdapter(LLMAdapterBase):
             )
         self._apply_reasoning_options(payload, reasoning_level)
         return request_context, payload
+
+    def _validate_capability_preflight(
+        self,
+        *,
+        parallel_tool_calls: Optional[bool],
+    ) -> None:
+        """Reject requests outside the closed Z.ai capability profile."""
+
+        if self.model_spec is None:
+            raise NotImplementedError(
+                f"Z.ai model {self.model!r} is not verified for supported "
+                "capabilities",
+            )
+        if parallel_tool_calls is not None:
+            raise NotImplementedError(
+                "Z.ai parallel_tool_calls control is not implemented",
+            )
 
     @staticmethod
     def _map_tools(tools: Optional[list[ToolSpec]]) -> Optional[list[dict[str, Any]]]:
@@ -705,6 +723,8 @@ class ZaiAdapter(LLMAdapterBase):
             for value in values
         ):
             return None
+        if values[2] != values[0] + values[1]:
+            return None
 
         cached_tokens: int | None = None
         details = raw_usage.get("prompt_tokens_details")
@@ -747,14 +767,17 @@ class ZaiAdapter(LLMAdapterBase):
             return
         if usage.cached_tokens is None:
             return
-        uncached_tokens = usage.input_tokens - usage.cached_tokens
-        chat_response.currency = "USD"
-        chat_response.cost_input = (
-            usage.cached_tokens * pricing.cache_hit_input_per_token
-            + uncached_tokens * pricing.cache_miss_input_per_token
+        estimate = pricing.calculate(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached_tokens=usage.cached_tokens,
         )
-        chat_response.cost_output = usage.output_tokens * pricing.output_per_token
-        chat_response.cost_total = chat_response.cost_input + chat_response.cost_output
+        if estimate is None:
+            return
+        chat_response.currency = "USD"
+        chat_response.cost_input = estimate.input_cost
+        chat_response.cost_output = estimate.output_cost
+        chat_response.cost_total = estimate.total_cost
 
 
 __all__ = ["ZaiAdapter", "ZaiUsage"]

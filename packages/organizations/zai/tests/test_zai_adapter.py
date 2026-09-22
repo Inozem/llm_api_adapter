@@ -46,6 +46,7 @@ from llm_api_adapter.models.tools.tool_call import ToolCall
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter_zai.registry import ZaiCachePricing
 
 
 MODEL = "glm-5.3-flash"
@@ -955,3 +956,61 @@ def test_zai_does_not_apply_cache_discount_for_invalid_cache_tokens(
     assert response.usage.cached_tokens is None
     assert response.cost_input == pytest.approx(100 * 0.15 / 1_000_000)
     assert response.cost_output == pytest.approx(40 * 0.50 / 1_000_000)
+
+
+@pytest.mark.unit
+def test_zai_cache_pricing_calculates_only_validated_token_splits():
+    pricing = ZaiCachePricing(
+        cache_hit_input_per_token=0.03 / 1_000_000,
+        cache_miss_input_per_token=0.15 / 1_000_000,
+        output_per_token=0.50 / 1_000_000,
+    )
+
+    estimate = pricing.calculate(
+        input_tokens=100,
+        output_tokens=40,
+        cached_tokens=25,
+    )
+
+    assert estimate is not None
+    assert estimate.input_cost == pytest.approx(
+        (25 * 0.03 + 75 * 0.15) / 1_000_000,
+    )
+    assert estimate.output_cost == pytest.approx(40 * 0.50 / 1_000_000)
+    assert estimate.total_cost == pytest.approx(
+        estimate.input_cost + estimate.output_cost,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "cached_tokens",
+    [None, True, "25", -1, 101],
+)
+def test_zai_cache_pricing_returns_no_estimate_for_invalid_split(cached_tokens):
+    pricing = ZaiCachePricing(
+        cache_hit_input_per_token=0.03 / 1_000_000,
+        cache_miss_input_per_token=0.15 / 1_000_000,
+        output_per_token=0.50 / 1_000_000,
+    )
+
+    assert pricing.calculate(
+        input_tokens=100,
+        output_tokens=40,
+        cached_tokens=cached_tokens,
+    ) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "rates",
+    [
+        (-1.0, 0.15, 0.50),
+        (float("nan"), 0.15, 0.50),
+        (0.03, float("inf"), 0.50),
+        (True, 0.15, 0.50),
+    ],
+)
+def test_zai_cache_pricing_rejects_invalid_rates(rates):
+    with pytest.raises(ValueError, match="finite non-negative"):
+        ZaiCachePricing(*rates)
