@@ -67,7 +67,7 @@ rejected locally before an outbound provider call.
 rejection of unlisted models, schemas, tool modes, reasoning levels, and file forms.
 
 - [X] T018 [P] [US2] Add pre-transport rejection tests for schemas, response models, unsupported `tool_choice`, invalid reasoning levels, unknown models, documents, and unverified combinations in `packages/organizations/zai/tests/test_zai_adapter.py`.
-- [ ] T019 [P] [US2] Add payload and normalization tests for auto-only tools with at most 128 declarations, tool-result history, separate reasoning events, and image URL/data-URL parts in `packages/organizations/zai/tests/test_zai_adapter.py`.
+- [X] T019 [P] [US2] Add payload and normalization tests for auto-only tools with at most 128 declarations, tool-result history, separate reasoning events, and image URL/data-URL parts in `packages/organizations/zai/tests/test_zai_adapter.py`.
 - [ ] T020 [P] [US2] Add cache-hit/cache-miss pricing and malformed/incomplete-usage tests in `packages/organizations/zai/tests/test_zai_adapter.py`.
 - [ ] T021 [US2] Implement validated cached-input pricing without changing the Core registry schema in `packages/organizations/zai/src/llm_api_adapter_zai/registry/cache_pricing.py`.
 - [ ] T022 [US2] Implement exact-model validation, tool/reasoning rules, structured-output and document rejection, image serialization, and usage/cost handling in `packages/organizations/zai/src/llm_api_adapter_zai/adapter.py`.

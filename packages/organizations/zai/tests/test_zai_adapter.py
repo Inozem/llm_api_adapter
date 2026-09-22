@@ -36,8 +36,13 @@ from llm_api_adapter.llms.transports import (
     SyncTransport,
     TransportRequest,
 )
-from llm_api_adapter.models.messages.chat_message import UserMessage
-from llm_api_adapter.models.messages.file_parts import DocumentPart
+from llm_api_adapter.models.messages.chat_message import (
+    AIMessage,
+    ToolMessage,
+    UserMessage,
+)
+from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
+from llm_api_adapter.models.tools.tool_call import ToolCall
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -397,6 +402,166 @@ def test_zai_rejects_unverified_tool_combination_before_http(
     assert transport.requests == []
 
 
+@pytest.mark.unit
+def test_zai_maps_auto_tools_at_the_128_declaration_limit(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+    tools = [
+        ToolSpec(name=f"tool_{index}", json_schema={"type": "object"})
+        for index in range(128)
+    ]
+
+    adapter.chat(
+        [UserMessage("Choose a tool")],
+        tools=tools,
+        tool_choice="auto",
+    )
+
+    request = transport.requests[0]
+    assert request.payload["tool_choice"] == "auto"
+    assert len(request.payload["tools"]) == 128
+    assert request.payload["tools"][0] == {
+        "type": "function",
+        "function": {
+            "name": "tool_0",
+            "parameters": {"type": "object"},
+        },
+    }
+
+
+@pytest.mark.unit
+def test_zai_rejects_more_than_128_tools_before_http(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+    tools = [
+        ToolSpec(name=f"tool_{index}", json_schema={"type": "object"})
+        for index in range(129)
+    ]
+
+    with pytest.raises(ValueError, match="at most 128"):
+        adapter.chat([UserMessage("Choose a tool")], tools=tools)
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+def test_zai_preserves_tool_result_history_in_openai_payload(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+
+    adapter.chat(
+        [
+            UserMessage("What is the weather in Paris?"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        name="get_weather",
+                        arguments={"city": "Paris"},
+                        call_id="call-1",
+                    ),
+                ],
+            ),
+            ToolMessage(
+                content='{"temperature_c": 18}',
+                tool_call_id="call-1",
+            ),
+            UserMessage("Now summarize it."),
+        ],
+        tools=[WEATHER_TOOL],
+        tool_choice="auto",
+    )
+
+    assert transport.requests[0].payload["messages"] == [
+        {"role": "user", "content": "What is the weather in Paris?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Paris"}',
+                    },
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": '{"temperature_c": 18}',
+        },
+        {"role": "user", "content": "Now summarize it."},
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("image", "expected_url"),
+    [
+        (
+            ImagePart(url="https://example.test/cat.png"),
+            "https://example.test/cat.png",
+        ),
+        (
+            ImagePart(url="data:image/png;base64,aW1hZ2U="),
+            "data:image/png;base64,aW1hZ2U=",
+        ),
+        (
+            ImagePart(data=b"image", media_type="image/png"),
+            "data:image/png;base64,aW1hZ2U=",
+        ),
+    ],
+    ids=["url", "data-url", "bytes-as-data-url"],
+)
+def test_zai_serializes_image_url_and_data_url_parts(
+    zai_runtime,
+    image,
+    expected_url,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+
+    adapter.chat(
+        [UserMessage("Describe this image", files=[image])],
+    )
+
+    assert transport.requests[0].payload["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this image"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": expected_url},
+                },
+            ],
+        },
+    ]
+
+
 @pytest.mark.integration
 def test_zai_facade_chat_uses_official_endpoint_and_normalizes_response(zai_runtime):
     adapter = UniversalLLMAPIAdapter(
@@ -442,6 +607,7 @@ def test_zai_sync_stream_reconstructs_deltas_and_usage(zai_runtime):
     transport = FakeSyncTransport({}, stream_events=zai_stream_events())
     adapter.adapter._sync_transport = transport
     completed = []
+    reasoning = []
 
     output = list(
         adapter.stream_chat(
@@ -449,6 +615,7 @@ def test_zai_sync_stream_reconstructs_deltas_and_usage(zai_runtime):
             max_tokens=64,
             capture_reasoning=True,
             on_done=completed.append,
+            on_reasoning=reasoning.append,
         )
     )
 
@@ -459,6 +626,8 @@ def test_zai_sync_stream_reconstructs_deltas_and_usage(zai_runtime):
     assert [event.text for event in completed[0].reasoning_events] == [
         "First reason. ",
     ]
+    assert [event.text for event in reasoning] == ["First reason. "]
+    assert all("First reason." not in text for text in output)
     assert transport.requests[0].url == (
         "https://api.z.ai/api/paas/v4/chat/completions"
     )
