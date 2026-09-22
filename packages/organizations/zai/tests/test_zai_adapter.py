@@ -21,10 +21,13 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
+from llm_api_adapter.errors.config_errors import LLMReasoningLevelError
 from llm_api_adapter.errors.llm_api_error import (
     LLMAPIAuthorizationError,
+    LLMAPIError,
     LLMAPIRateLimitError,
     LLMAPIServerError,
+    ToolChoiceError,
 )
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
 from llm_api_adapter.llms.transports import (
@@ -34,11 +37,26 @@ from llm_api_adapter.llms.transports import (
     TransportRequest,
 )
 from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.models.messages.file_parts import DocumentPart
+from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 MODEL = "glm-5.3-flash"
+WEATHER_TOOL = ToolSpec(
+    name="get_weather",
+    description="Return the weather for a city.",
+    json_schema={
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+    },
+)
+
+
+class DummyResponseModel:
+    """Response-model stand-in; Z.ai rejects portable response models locally."""
 
 
 @dataclass
@@ -229,6 +247,154 @@ def zai_runtime(monkeypatch):
     )
     monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", model_registry)
     return model_registry
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("request_kwargs", "error_type", "message"),
+    [
+        (
+            {"json_schema": {"type": "object", "properties": {}}},
+            NotImplementedError,
+            "structured output",
+        ),
+        (
+            {"response_model": DummyResponseModel},
+            NotImplementedError,
+            "structured output",
+        ),
+    ],
+)
+def test_zai_rejects_structured_output_before_http(
+    zai_runtime,
+    request_kwargs,
+    error_type,
+    message,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(error_type, match=message):
+        adapter.chat([UserMessage("Return JSON")], **request_kwargs)
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+def test_zai_rejects_non_auto_tool_choice_before_http(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(ToolChoiceError, match="tool_choice|auto"):
+        adapter.chat(
+            [UserMessage("Use the weather tool")],
+            tools=[WEATHER_TOOL],
+            tool_choice="none",
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+def test_zai_rejects_invalid_reasoning_level_before_http(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(LLMReasoningLevelError, match="low|high|max"):
+        adapter.chat(
+            [UserMessage("Explain the answer")],
+            reasoning_level="medium",
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+def test_zai_rejects_unknown_model_capability_before_http(zai_runtime):
+    with pytest.warns(UserWarning, match="not verified"):
+        adapter = UniversalLLMAPIAdapter(
+            organization="zai",
+            model="glm-5.3-flashx",
+            api_key="zai-test-key",
+        )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(
+        (LLMAPIError, NotImplementedError),
+        match="not verified|capability|supported",
+    ):
+        adapter.chat(
+            [UserMessage("Use the weather tool")],
+            tools=[WEATHER_TOOL],
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "document",
+    [
+        DocumentPart(url="https://example.test/brief.pdf"),
+        DocumentPart(data=b"%PDF-1.7", media_type="application/pdf"),
+    ],
+    ids=["url", "bytes"],
+)
+def test_zai_rejects_document_parts_before_http(zai_runtime, document):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(ValueError, match="DocumentPart|document"):
+        adapter.chat(
+            [UserMessage("Summarize this document", files=[document])],
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("parallel_tool_calls", [False, True])
+def test_zai_rejects_unverified_tool_combination_before_http(
+    zai_runtime,
+    parallel_tool_calls,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(NotImplementedError, match="parallel_tool_calls"):
+        adapter.chat(
+            [UserMessage("Use the weather tool")],
+            tools=[WEATHER_TOOL],
+            parallel_tool_calls=parallel_tool_calls,
+        )
+
+    assert transport.requests == []
 
 
 @pytest.mark.integration

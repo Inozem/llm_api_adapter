@@ -51,7 +51,7 @@ registers Flash and mocked sync/async/stream responses normalize through the exi
 - [X] T014 [US1] Implement equivalent async dispatch, parsing, cancellation, and cleanup in `packages/organizations/zai/src/llm_api_adapter_zai/clients/async_client.py`.
 - [X] T015 [US1] Implement SSE delta parsing, tool-delta accumulation, visible-text isolation, and final response assembly in `packages/organizations/zai/src/llm_api_adapter_zai/streaming.py`.
 - [X] T016 [US1] Implement the facade-compatible Z.ai adapter using existing model registry and transport contracts in `packages/organizations/zai/src/llm_api_adapter_zai/adapter.py`.
-- [ ] T017 [US1] Run deterministic package and Core discovery suites from `specs/003-zai-glm-provider/quickstart.md` and resolve failures in `packages/organizations/zai/tests/` and `tests/unit/test_organization_plugins.py`.
+- [X] T017 [US1] Run deterministic package and Core discovery suites from `specs/003-zai-glm-provider/quickstart.md` and resolve failures in `packages/organizations/zai/tests/` and `tests/unit/test_organization_plugins.py`.
 
 **Checkpoint**: The minimal Z.ai package is independently installable and returns normalized Flash
 chat, async, and streaming results without another provider package.
@@ -66,7 +66,7 @@ rejected locally before an outbound provider call.
 **Independent Test**: Mocked transports prove declared supported behavior and pre-transport
 rejection of unlisted models, schemas, tool modes, reasoning levels, and file forms.
 
-- [ ] T018 [P] [US2] Add pre-transport rejection tests for schemas, response models, unsupported `tool_choice`, invalid reasoning levels, unknown models, documents, and unverified combinations in `packages/organizations/zai/tests/test_zai_adapter.py`.
+- [X] T018 [P] [US2] Add pre-transport rejection tests for schemas, response models, unsupported `tool_choice`, invalid reasoning levels, unknown models, documents, and unverified combinations in `packages/organizations/zai/tests/test_zai_adapter.py`.
 - [ ] T019 [P] [US2] Add payload and normalization tests for auto-only tools with at most 128 declarations, tool-result history, separate reasoning events, and image URL/data-URL parts in `packages/organizations/zai/tests/test_zai_adapter.py`.
 - [ ] T020 [P] [US2] Add cache-hit/cache-miss pricing and malformed/incomplete-usage tests in `packages/organizations/zai/tests/test_zai_adapter.py`.
 - [ ] T021 [US2] Implement validated cached-input pricing without changing the Core registry schema in `packages/organizations/zai/src/llm_api_adapter_zai/registry/cache_pricing.py`.
