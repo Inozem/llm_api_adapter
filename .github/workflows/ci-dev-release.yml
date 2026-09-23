@@ -633,7 +633,7 @@ jobs:
 
       - name: Verify xAI plugin discovery
         run: |
-          python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='xai', model='grok-4.6', api_key='test-key')"
+          python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='xai', model='grok-4.7', api_key='test-key')"
 
       - name: Run xAI E2E tests
         run: pytest -v --import-mode=importlib -m e2e_xai
