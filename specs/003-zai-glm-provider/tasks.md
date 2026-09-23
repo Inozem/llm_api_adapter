@@ -88,7 +88,7 @@ provider `0.1.0` as a coordinated release train.
 **Independent Test**: A clean TestPyPI environment resolves the Z.ai extra, discovers the plugin,
 and runs `e2e_zai` against exact candidate artifacts with only `ZAI_API_KEY`.
 
-- [ ] T026 [P] [US3] Add Z.ai candidate and E2E-lane fields, outputs, and path selection in `.github/scripts/select_e2e_lanes.py`.
+- [X] T026 [P] [US3] Add Z.ai candidate and E2E-lane fields, outputs, and path selection in `.github/scripts/select_e2e_lanes.py`.
 - [ ] T027 [P] [US3] Add deterministic Z.ai lane-selection and credential-isolation tests in `tests/unit/test_ci_e2e_lane_selection.py`.
 - [ ] T028 [P] [US3] Add credential-free Python 3.10–3.14 package validation in `.github/workflows/ci-zai-dev.yml`.
 - [ ] T029 [P] [US3] Add credential-free main-branch package validation in `.github/workflows/ci-zai-main.yml`.
