@@ -1,14 +1,3 @@
-<!--
-Sync Impact Report
-- Version change: 0.1.0 -> 0.2.0
-- Modified principles: IV. Deterministic Contract Evidence ->
-  IV. Deterministic Contract Evidence and Baseline Profiles;
-  Change Analysis and Delivery Discipline
-- Added sections: Canonical Baseline Contract
-- Removed sections: none
-- Follow-up TODOs: none
--->
-
 # llm-api-adapter Constitution
 
 ## Core Principles
@@ -56,6 +45,12 @@ shared request, response, streaming, tools, structured-output, transport, or reg
 MUST cover all affected organization implementations and sync/async paths. Real E2E tests are
 paid verification: they MUST run only with explicit manual authorization or in the designated
 post-publish provider-specific CI lane.
+
+An explicitly authorized manual E2E run before merge is a preflight only; it MUST NOT satisfy a
+provider's final release gate. The final gate MUST run after the staging pull request has merged
+to `dev`, against exact TestPyPI candidate artifacts in a clean environment, through the
+provider-specific post-publish lane, with only that provider's credential. It MUST cover every
+applicable shared Core and package-local E2E scenario before the candidate is promoted to `main`.
 
 `specs/001-baseline-contract/spec.md` is the canonical specification of the SDK's stable,
 externally observable provider-neutral contract. Every new optional organization package MUST
@@ -126,7 +121,11 @@ artifacts or sensitive data. User-visible behavior, provider mappings, configura
 or packaging changes MUST update the matching README, contributor guide, baseline specification,
 and living architecture artifact when those artifacts are in scope. Releases use protected pull
 requests, independently versioned distributions, TestPyPI candidates, and bounded
-provider-specific E2E lanes.
+provider-specific E2E lanes. A staging pull request merges into `dev` only after deterministic
+review evidence. Its post-publish workflow then publishes the changed candidate artifacts,
+installs them cleanly from TestPyPI, verifies plugin discovery, and runs the provider-specific
+full E2E lane before promotion to `main`. Candidate artifacts that do not yet exist in TestPyPI
+leave this final gate pending; a local build or pre-merge manual E2E does not replace it.
 
 ## Governance
 
@@ -143,4 +142,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.2.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-09-18
+**Version**: 0.3.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-09-23
