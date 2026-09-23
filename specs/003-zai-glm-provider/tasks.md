@@ -71,7 +71,7 @@ rejection of unlisted models, schemas, tool modes, reasoning levels, and file fo
 - [X] T020 [P] [US2] Add cache-hit/cache-miss pricing and malformed/incomplete-usage tests in `packages/organizations/zai/tests/test_zai_adapter.py`.
 - [X] T021 [US2] Implement validated cached-input pricing without changing the Core registry schema in `packages/organizations/zai/src/llm_api_adapter_zai/registry/cache_pricing.py`.
 - [X] T022 [US2] Implement exact-model validation, tool/reasoning rules, structured-output and document rejection, image serialization, and usage/cost handling in `packages/organizations/zai/src/llm_api_adapter_zai/adapter.py`.
-- [ ] T023 [US2] Publish the complete capability matrix and exclusions in `packages/organizations/zai/README.md` and `packages/organizations/zai/tests/fixtures/zai_capability_discovery.py`.
+- [X] T023 [US2] Publish the complete capability matrix and exclusions in `packages/organizations/zai/README.md` and `packages/organizations/zai/tests/fixtures/zai_capability_discovery.py`.
 - [ ] T024 [US2] Add Z.ai provider-specific live tool, reasoning, image URL/data-URL, structured-output-rejection, document-gate, and cache-usage scenarios in `packages/organizations/zai/tests/e2e/conftest.py`, `packages/organizations/zai/tests/e2e/test_live_contract.py`, and `packages/organizations/zai/tests/e2e/test_capability_boundaries.py`.
 - [ ] T025 [US2] Run the `e2e_zai` shared and package-local collection from `specs/003-zai-glm-provider/quickstart.md` with maintainer-authorized `ZAI_API_KEY`; keep documents rejected unless both direct forms pass.
 

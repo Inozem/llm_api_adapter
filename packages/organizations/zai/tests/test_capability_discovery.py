@@ -24,9 +24,12 @@ from packages.organizations.zai.tests.fixtures.zai_capability_discovery import (
     CANDIDATE_MODELS,
     CLOSED_MODEL_IDS,
     EXPECTED_LIMITS,
+    EXPECTED_CAPABILITIES,
     EXPECTED_PRICING_PER_1M_USD,
     EXPECTED_PRICING_TIER,
     EXPECTED_THINKING_MODES,
+    MATRIX_CAPABILITIES,
+    UNSUPPORTED_CAPABILITIES,
     ZAI_CAPABILITY_DISCOVERY,
 )
 from llm_api_adapter.llm_registry.llm_registry import (
@@ -83,3 +86,27 @@ def test_flash_limits_pricing_and_reasoning_modes_are_exact(discovery_record):
         EXPECTED_THINKING_MODES
     )
     assert expected_model["reasoning_modes"] == EXPECTED_THINKING_MODES
+
+
+@pytest.mark.unit
+def test_flash_capability_matrix_is_closed_and_verified(discovery_record):
+    expected_model = discovery_record["models"]["glm-5.3-flash"]
+
+    assert tuple(expected_model["capabilities"]) == MATRIX_CAPABILITIES
+    assert expected_model["capabilities"] == EXPECTED_CAPABILITIES
+    assert all(
+        expected_model["capabilities"][capability] == "supported"
+        for capability in MATRIX_CAPABILITIES
+    )
+
+
+@pytest.mark.unit
+def test_flash_declares_every_unsupported_capability_explicitly(discovery_record):
+    expected_model = discovery_record["models"]["glm-5.3-flash"]
+
+    assert tuple(expected_model["unsupported_capabilities"]) == (
+        *UNSUPPORTED_CAPABILITIES,
+    )
+    assert not set(expected_model["unsupported_capabilities"]).intersection(
+        MATRIX_CAPABILITIES
+    )

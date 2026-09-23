@@ -20,7 +20,6 @@ from llm_api_adapter.adapters.base_adapter import (
     OnToolCall,
     _StreamState,
 )
-from llm_api_adapter.errors.config_errors import LLMReasoningLevelError
 from llm_api_adapter.errors.llm_api_error import (
     LLMAPIClientError,
     LLMAPIError,
@@ -45,9 +44,6 @@ from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from .clients import ZaiAsyncClient, ZaiSyncClient
 from .registry import CACHE_PRICING
 from .streaming import ZaiStreamAssembler, assemble_zai_response
-
-
-_SUPPORTED_REASONING_LEVELS = frozenset({"low", "high", "max"})
 
 
 @dataclass
@@ -639,23 +635,21 @@ class ZaiAdapter(LLMAdapterBase):
             )
         return max_tokens
 
-    @staticmethod
     def _apply_reasoning_options(
+        self,
         payload: dict[str, Any],
         reasoning_level: Optional[str | int],
     ) -> None:
         if reasoning_level is None:
             return
-        if (
-            not isinstance(reasoning_level, str)
-            or reasoning_level not in _SUPPORTED_REASONING_LEVELS
-        ):
-            allowed = ", ".join(sorted(_SUPPORTED_REASONING_LEVELS))
-            raise LLMReasoningLevelError(
-                detail=f"Z.ai reasoning_level must be one of: {allowed}",
-            )
+
+        provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
+        if provider_value is None:
+            return
+        if not isinstance(provider_value, str):
+            raise TypeError("Z.ai reasoning resolution must produce a string")
         payload["thinking"] = {"type": "enabled"}
-        payload["reasoning_effort"] = reasoning_level
+        payload["reasoning_effort"] = provider_value
 
     @staticmethod
     def _parse_response(

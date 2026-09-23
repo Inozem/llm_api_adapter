@@ -28,6 +28,34 @@ EXPECTED_PRICING_TIER: Final = {
     "output_per_1m": EXPECTED_PRICING_PER_1M_USD["output"],
 }
 
+MATRIX_CAPABILITIES: Final = (
+    "endpoint",
+    "reasoning",
+    "tools",
+    "image_bytes",
+    "image_url",
+    "streaming",
+    "usage",
+)
+UNSUPPORTED_CAPABILITIES: Final = (
+    "json_schema",
+    "response_model",
+    "document_bytes",
+    "document_url",
+    "non_image_file",
+    "ocr",
+    "file_upload",
+    "provider_builtin_tools",
+    "parallel_tool_calls",
+    "server_continuation_id",
+    "arbitrary_endpoint",
+    "deployments",
+    "video",
+)
+EXPECTED_CAPABILITIES: Final = {
+    capability: "supported" for capability in MATRIX_CAPABILITIES
+}
+
 
 ZAI_CAPABILITY_DISCOVERY: Final = {
     "recorded_on": "2026-09-18",
@@ -43,6 +71,8 @@ ZAI_CAPABILITY_DISCOVERY: Final = {
             "limits": EXPECTED_LIMITS,
             "pricing_per_1m_usd": EXPECTED_PRICING_PER_1M_USD,
             "reasoning_modes": EXPECTED_THINKING_MODES,
+            "capabilities": EXPECTED_CAPABILITIES,
+            "unsupported_capabilities": UNSUPPORTED_CAPABILITIES,
         },
     },
 }

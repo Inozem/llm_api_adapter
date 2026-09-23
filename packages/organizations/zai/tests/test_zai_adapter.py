@@ -312,7 +312,7 @@ def test_zai_rejects_non_auto_tool_choice_before_http(zai_runtime):
 
 
 @pytest.mark.unit
-def test_zai_rejects_invalid_reasoning_level_before_http(zai_runtime):
+def test_zai_maps_canonical_reasoning_level_before_http(zai_runtime):
     adapter = UniversalLLMAPIAdapter(
         organization="zai",
         model=MODEL,
@@ -321,10 +321,29 @@ def test_zai_rejects_invalid_reasoning_level_before_http(zai_runtime):
     transport = FakeSyncTransport(zai_response())
     adapter.adapter._sync_transport = transport
 
-    with pytest.raises(LLMReasoningLevelError, match="low|high|max"):
+    adapter.chat(
+        [UserMessage("Explain the answer")],
+        reasoning_level="medium",
+    )
+
+    assert transport.requests[0].payload["thinking"] == {"type": "enabled"}
+    assert transport.requests[0].payload["reasoning_effort"] == "high"
+
+
+@pytest.mark.unit
+def test_zai_rejects_unknown_reasoning_level_before_http(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(LLMReasoningLevelError, match="Unknown reasoning level"):
         adapter.chat(
             [UserMessage("Explain the answer")],
-            reasoning_level="medium",
+            reasoning_level="unsupported",
         )
 
     assert transport.requests == []

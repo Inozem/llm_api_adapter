@@ -50,26 +50,30 @@ print(response.content)
 
 ## Supported model and capabilities
 
-The 0.1.0 release exposes the fixed model ID `glm-5.3-flash`, selected for the
-broadest verified compatibility with the current Core baseline.
+The package deliberately exposes one exact, verified model ID:
+`glm-5.3-flash`.
 
 | Capability | `glm-5.3-flash` |
 | --- | --- |
-| Text chat; sync/async streaming | Supported |
+| Text chat; sync/async streaming | Supported through the official Chat Completions endpoint |
 | Application function tools | `tool_choice="auto"` only; at most 128 declarations |
-| Reasoning | `low`, `high`, `max`; kept separate from visible text |
-| Image input | URL and data-URL/bytes forms within the validation boundary |
-| Portable JSON Schema / response model | Unsupported; rejected before HTTP |
-| Documents and generic files | Unsupported until both direct forms pass the live gate |
-
-The adapter uses only `POST https://api.z.ai/api/paas/v4/chat/completions` with
-Bearer authentication from `ZAI_API_KEY`. Unsupported models and capabilities
-are rejected before transport when locally decidable; arbitrary endpoints,
-deployments, uploads, OCR, retries, and continuation are not supported.
+| Reasoning | Core `reasoning_level` is mapped to Z.ai effort; kept separate from visible text |
+| Image input | User-message URL, bytes, and data-URL forms |
+| Usage and pricing | Valid provider usage only; USD standard-rate estimates |
+| Portable JSON Schema / Pydantic output | Unsupported; rejected before HTTP |
+| Documents and generic files | Unsupported; rejected before HTTP |
+| Deployments, uploads, OCR, retries, continuation, and video | Unsupported |
 
 The model has a 1,000,000-token context window and 131,072-token output limit.
 Official standard rates are USD per million tokens: input `$0.15`, cached input
-`$0.03`, and output `$0.50`. Missing or malformed usage is not estimated.
+`$0.03`, and output `$0.50`. Missing or malformed usage is not estimated; a
+cache discount is applied only when the reported cached-token split is valid.
+
+Unknown, retired, aliased, or unverified model IDs are not inferred. Unsupported
+tool choices, parallel-tool control, provider-built-in tools, and every
+`DocumentPart` URL or byte form fail locally before the transport is called.
+The adapter accepts only the official endpoint and the `ZAI_API_KEY` bearer
+credential.
 
 See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
 for the shared API contract and transport behavior.
