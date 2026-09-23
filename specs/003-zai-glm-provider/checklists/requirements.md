@@ -33,4 +33,37 @@
 
 ## Notes
 
-- Initial Z.ai API and model details are deliberately deferred to planning, where they must be verified against official Z.ai documentation.
+- Initial Z.ai API and model details were verified against official documentation during planning and
+  are now reflected in the package registry, capability matrix, and tests.
+
+## Implementation Coverage Review
+
+Reviewed after deterministic validation and the authorized Z.ai E2E run. Every functional
+requirement has implementation evidence plus a test, documentation entry, or explicit exclusion.
+
+| Requirement | Evidence | Result |
+| --- | --- | --- |
+| FR-001 | `packages/organizations/zai/pyproject.toml`; `test_package_scaffold.py` | Covered |
+| FR-002 | Core `organization_registry.py`; `test_organization_plugins.py` | Covered |
+| FR-003 | Official endpoint clients in `clients/`; facade tests in `test_zai_adapter.py` | Covered |
+| FR-004 | `README.md` capability matrix; registry fixture and discovery tests | Covered |
+| FR-005 / FR-005a | Optional `zai` extra; adapter preflight; explicit unsupported matrix; `research.md` and USD registry pricing | Covered |
+| FR-006 | Adapter, streaming, usage, error, sync/async, and mocked transport tests | Covered |
+| FR-007 | Local structured-output rejection in `adapter.py`; deterministic and boundary E2E tests | Covered |
+| FR-008 | Package unit/integration suites and Core discovery/lane suites; T036 passed | Covered |
+| FR-009 | Shared E2E profile and marker, transport-parity tests, and T025 authorized live evidence | Covered; final candidate gate pending T033 |
+| FR-010 | Closed model registry, local endpoint/capability validation, README exclusions, and rejection tests | Covered |
+
+| Success criterion | Evidence | Result |
+| --- | --- | --- |
+| SC-001 | Capability fixture, registry metadata, matrix, and discovery tests | Covered |
+| SC-002 | Shared profile plus T036 deterministic sync/async/stream/build validation | Covered |
+| SC-003 | Local Core/Z.ai builds passed; exact TestPyPI candidate install remains T033 | Pending external release gate |
+| SC-004 | Unsupported model, schema, tool, reasoning, and file-form rejection tests | Covered |
+| SC-005 | T025 authorized live verification passed; post-publish candidate rerun remains T033 | Pending external release gate |
+
+### Findings
+
+- No requirement-quality ambiguity or uncovered functional requirement was found.
+- T033 remains intentionally open until the staging merge publishes exact `0.9.7` and `0.1.0`
+  candidates to TestPyPI and the post-publish Z.ai lane completes.
