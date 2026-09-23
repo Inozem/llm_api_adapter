@@ -92,7 +92,7 @@ and runs `e2e_zai` against exact candidate artifacts with only `ZAI_API_KEY`.
 - [X] T027 [P] [US3] Add deterministic Z.ai lane-selection and credential-isolation tests in `tests/unit/test_ci_e2e_lane_selection.py`.
 - [X] T028 [P] [US3] Add credential-free Python 3.10–3.14 package validation in `.github/workflows/ci-zai-dev.yml`.
 - [X] T029 [P] [US3] Add credential-free main-branch package validation in `.github/workflows/ci-zai-main.yml`.
-- [ ] T030 [US3] Wire Z.ai paths, `zai-v*` tags, test gate, and independent PyPI publishing in `.github/workflows/ci-dev.yml` and `.github/workflows/ci-main.yml`.
+- [X] T030 [US3] Wire Z.ai paths, `zai-v*` tags, test gate, and independent PyPI publishing in `.github/workflows/ci-dev.yml` and `.github/workflows/ci-main.yml`.
 - [ ] T031 [US3] Add Z.ai version extraction, TestPyPI publishing, exact-candidate installation, plugin discovery, and `ZAI_API_KEY`-only E2E to `.github/workflows/ci-dev-release.yml`.
 - [ ] T032 [US3] Document the Core extra, Flash matrix, exclusions, pricing, and Z.ai release commands in `README.md`, `CONTRIBUTING.md`, and `packages/organizations/zai/README.md`.
 - [ ] T033 [US3] Build both distributions, install TestPyPI candidates cleanly, and run the full release command in `specs/003-zai-glm-provider/quickstart.md`.
