@@ -77,6 +77,7 @@ def test_flash_limits_pricing_and_reasoning_modes_are_exact(discovery_record):
         "limits",
         "pricing_tiers",
         "reasoning_capability",
+        "request_rules",
     }
     assert model_data["limits"] == EXPECTED_LIMITS
     assert expected_model["limits"] == EXPECTED_LIMITS
@@ -85,6 +86,12 @@ def test_flash_limits_pricing_and_reasoning_modes_are_exact(discovery_record):
     assert model_data["reasoning_capability"]["allowed_values"] == list(
         EXPECTED_THINKING_MODES
     )
+    assert model_data["request_rules"] == [
+        {
+            "handler": "restrict_tool_choice",
+            "arguments": {"allowed_values": ["auto"]},
+        }
+    ]
     assert expected_model["reasoning_modes"] == EXPECTED_THINKING_MODES
 
 

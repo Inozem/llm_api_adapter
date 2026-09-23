@@ -26,7 +26,7 @@ package-local boundary E2E, and focused authorized live verification.
 - [X] T003 Update Core version, Z.ai keyword, and optional `zai` extra in `pyproject.toml` without adding `llm-api-adapter-zai` to base dependencies.
 - [X] T004 Add the `zai` known-package record and `llm-api-adapter-zai` installation remedy in `src/llm_api_adapter/organization_registry.py`.
 - [X] T005 Add Core regression coverage for Z.ai's absent-package error, lazy discovery, and optional extra in `tests/unit/test_organization_plugins.py`.
-- [X] T006 Mark shared portable JSON-schema scenarios with `e2e_feature("structured_output")` in `tests/e2e/test_json_schema.py`.
+- [X] T006 Mark shared portable JSON-schema scenarios with `e2e_feature("structured_output")` in `tests/e2e/test_json_schema.py` and `tests/e2e/test_async.py`.
 - [X] T007 Add the `e2e_zai` marker, `ZAI_API_KEY`, and a named explicit Z.ai capability profile in `pytest.ini` and `tests/e2e/conftest.py`.
 
 **Checkpoint**: Core distinguishes absent Z.ai from an unknown organization, and shared E2E can
@@ -73,7 +73,7 @@ rejection of unlisted models, schemas, tool modes, reasoning levels, and file fo
 - [X] T022 [US2] Implement exact-model validation, tool/reasoning rules, structured-output and document rejection, image serialization, and usage/cost handling in `packages/organizations/zai/src/llm_api_adapter_zai/adapter.py`.
 - [X] T023 [US2] Publish the complete capability matrix and exclusions in `packages/organizations/zai/README.md` and `packages/organizations/zai/tests/fixtures/zai_capability_discovery.py`.
 - [X] T024 [US2] Add Z.ai provider-specific structured-output-rejection and document-gate scenarios in `packages/organizations/zai/tests/e2e/conftest.py` and `packages/organizations/zai/tests/e2e/test_capability_boundaries.py`; shared Core E2E tests cover the supported baseline capabilities.
-- [ ] T025 [US2] Run the `e2e_zai` shared and package-local collection from `specs/003-zai-glm-provider/quickstart.md` with maintainer-authorized `ZAI_API_KEY`; keep documents rejected unless both direct forms pass.
+- [X] T025 [US2] Run the `e2e_zai` shared and package-local collection from `specs/003-zai-glm-provider/quickstart.md` with maintainer-authorized `ZAI_API_KEY`; keep documents rejected unless both direct forms pass.
 
 **Checkpoint**: The matrix, adapter preflight, deterministic tests, and E2E profile agree, and no
 unsupported request reaches the provider transport.

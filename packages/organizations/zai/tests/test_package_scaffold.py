@@ -32,6 +32,7 @@ def test_zai_package_layout_contains_distributable_files():
         PACKAGE_ROOT / "README.md",
         PACKAGE_SOURCE / "llm_api_adapter_zai" / "__init__.py",
         PACKAGE_SOURCE / "llm_api_adapter_zai" / "py.typed",
+        PACKAGE_SOURCE / "llm_api_adapter_zai" / "request_rules.py",
         PACKAGE_SOURCE / "llm_api_adapter_zai" / "clients" / "__init__.py",
     )
 

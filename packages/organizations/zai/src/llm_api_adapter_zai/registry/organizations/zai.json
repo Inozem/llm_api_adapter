@@ -15,7 +15,13 @@
       ],
       "reasoning_capability": {
         "allowed_values": ["low", "high", "max"]
-      }
+      },
+      "request_rules": [
+        {
+          "handler": "restrict_tool_choice",
+          "arguments": {"allowed_values": ["auto"]}
+        }
+      ]
     }
   }
 }

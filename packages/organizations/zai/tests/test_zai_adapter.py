@@ -312,6 +312,25 @@ def test_zai_rejects_non_auto_tool_choice_before_http(zai_runtime):
 
 
 @pytest.mark.unit
+def test_core_e2e_selects_auto_tool_choice_from_zai_registry(
+    zai_runtime,
+    monkeypatch,
+):
+    from tests.e2e import harness as e2e_harness
+
+    monkeypatch.setattr(e2e_harness, "LLM_REGISTRY", zai_runtime)
+
+    assert (
+        e2e_harness.select_tool_choice_for_model(
+            "zai",
+            MODEL,
+            WEATHER_TOOL.name,
+        )
+        == "auto"
+    )
+
+
+@pytest.mark.unit
 def test_zai_maps_canonical_reasoning_level_before_http(zai_runtime):
     adapter = UniversalLLMAPIAdapter(
         organization="zai",
