@@ -68,6 +68,7 @@ def _assert_usage_and_pricing(response):
 
 @pytest.mark.asyncio
 @pytest.mark.e2e
+@pytest.mark.e2e_feature("structured_output")
 async def test_async_chat_returns_structured_response_and_pricing(
     subtests,
     configured_async_e2e_models,

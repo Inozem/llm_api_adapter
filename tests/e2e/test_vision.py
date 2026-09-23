@@ -20,6 +20,11 @@ def test_vision_bytes_returns_non_empty_response(
         with subtests.test(provider=p["name"], model=model):
             adapter = e2e_adapter(p, model)
             msg = UserMessage(_PROMPT, files=[ImagePart(data=vision_image_bytes, media_type="image/png")])
-            resp = chat_with_retry(adapter, messages=[msg], max_tokens=150)
+            resp = chat_with_retry(
+                adapter,
+                messages=[msg],
+                max_tokens=1200,
+                reasoning_level="none",
+            )
             assert isinstance(resp.content, str)
             assert len(resp.content) > 0

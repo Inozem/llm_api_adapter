@@ -122,6 +122,67 @@ def test_runner_warns_and_logs_once_for_non_default_values(caplog):
 
 
 @pytest.mark.unit
+def test_runner_keeps_conditional_parameters_when_the_condition_matches():
+    request_rules = RequestRules(
+        rules=(
+            RequestRule(
+                handler=RequestRuleRegistry.DROP_PARAMETER_UNLESS,
+                arguments={
+                    "path": "temperature",
+                    "condition_path": "reasoning.effort",
+                    "allowed_values": ["none"],
+                    "default": 1.0,
+                },
+            ),
+        )
+    )
+
+    transformed, diagnostics = apply_request_rules(
+        {"reasoning": {"effort": "none"}, "temperature": 0.2},
+        request_rules,
+        model="gpt-6-sol",
+    )
+
+    assert transformed == {"reasoning": {"effort": "none"}, "temperature": 0.2}
+    assert diagnostics == ()
+
+
+@pytest.mark.unit
+def test_runner_omits_conditional_parameters_when_the_condition_does_not_match():
+    request_rules = RequestRules(
+        rules=(
+            RequestRule(
+                handler=RequestRuleRegistry.DROP_PARAMETER_UNLESS,
+                arguments={
+                    "path": "temperature",
+                    "condition_path": "reasoning.effort",
+                    "allowed_values": ["none"],
+                    "default": 1.0,
+                },
+            ),
+        )
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        transformed, diagnostics = apply_request_rules(
+            {"reasoning": {"effort": "medium"}, "temperature": 0.2},
+            request_rules,
+            model="gpt-6-sol",
+        )
+
+    assert transformed == {"reasoning": {"effort": "medium"}}
+    assert len(caught) == 1
+    assert diagnostics == (
+        AppliedRequestRule(
+            handler="drop_parameter_unless",
+            path="temperature",
+            warning_emitted=True,
+        ),
+    )
+
+
+@pytest.mark.unit
 def test_runner_uses_a_deep_copy_for_nested_parameter_paths():
     payload = {
         "generationConfig": {

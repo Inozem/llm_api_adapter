@@ -1,0 +1,27 @@
+{
+  "currency": "USD",
+  "models": {
+    "glm-5.3-flash": {
+      "limits": {
+        "context_window_tokens": 1000000,
+        "max_output_tokens": 131072
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.15,
+          "output_per_1m": 0.5
+        }
+      ],
+      "reasoning_capability": {
+        "allowed_values": ["low", "high", "max"]
+      },
+      "request_rules": [
+        {
+          "handler": "restrict_tool_choice",
+          "arguments": {"allowed_values": ["auto"]}
+        }
+      ]
+    }
+  }
+}

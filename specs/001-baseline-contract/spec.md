@@ -86,6 +86,10 @@ unsupported-input errors.
 4. **Given** DeepSeek is selected and a message contains a PDF, another document, or a non-image
    file part, **When** the request is submitted, **Then** the optional package rejects it before
    invoking either transport and does not attempt OCR, upload, conversion, or fallback.
+5. **Given** Z.ai is selected with `glm-5.3-flash` and a caller requests structured output,
+   a document or non-image file, a non-automatic tool choice, or parallel-tool control, **When**
+   the request is submitted, **Then** the optional package rejects it before invoking either
+   transport; supported text, image, automatic-tool, reasoning, and usage paths remain normalized.
 
 ---
 
@@ -129,8 +133,8 @@ with mocked requests and verify registry-derived behavior and warnings.
 - **FR-001**: The SDK MUST provide one facade that selects an adapter using organization, model,
   API key, an optional service provider, and a documented synchronous transport choice.
 - **FR-002**: The SDK MUST support OpenAI, Anthropic, and Google as built-in organizations and
-  MUST support Mistral, xAI, Qwen, Kimi, and DeepSeek through separately installable organization
-  packages.
+  MUST support Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai through separately installable
+  organization packages.
 - **FR-003**: The SDK MUST accept typed messages and supported OpenAI-style message dictionaries,
   including mixed input, and normalize system, user, assistant, and tool-result turns.
 - **FR-004**: The SDK MUST expose synchronous and asynchronous completed-chat operations and
@@ -240,6 +244,7 @@ matrix.
 | Qwen package | Requires an explicit workspace setting for every operation and supports only its documented endpoint region. It rejects PDF input before request submission. |
 | Kimi package | Supports image bytes and data URIs within its documented boundary, but rejects public image URLs and all PDF document forms before request submission. Provider-side continuation is accepted but not sent. |
 | DeepSeek package (`llm-api-adapter-deepseek`) | Optional package; the Core base installation does not import it. It supports only its documented canonical model and capability matrix, and rejects direct PDF/document and non-image file input before request submission. A reasoned continuation may use opaque response metadata from a matching prior DeepSeek response; that metadata is never rendered, included in debug output, or logged. |
+| Z.ai package (`llm-api-adapter-zai`) | Optional package; the Core base installation does not import it. It supports only verified `glm-5.3-flash` with text chat, synchronous/asynchronous streaming, image URL/bytes/data URLs, application function tools with `tool_choice="auto"` and at most 128 declarations, low/high/max reasoning, and valid provider usage. It rejects structured output, documents and non-image files, provider-built-in tools, parallel-tool control, continuation, arbitrary endpoints, deployments, and video before request submission. |
 
 For the DeepSeek package, all `DocumentPart` values and non-image `FilePart` values are rejected
 by local capability validation before either the synchronous or asynchronous client is invoked.
@@ -254,6 +259,14 @@ visible text or reasoning, rendered, included in `repr` or debug output, seriali
 content, logged, or persisted. Missing or mismatched replay data is a local compatibility error
 when the selected DeepSeek mode requires it; the adapter never invents reasoning or sends a
 server-side continuation identifier.
+
+For the Z.ai package, `glm-5.3-flash` is the only verified public model. Structured-output
+requests, every `DocumentPart` and non-image `FilePart`, non-automatic tool choices, parallel-tool
+control, provider-built-in tools, continuation, arbitrary endpoints, deployments, and video are
+rejected by local capability validation before either transport is invoked. Image URL, image bytes,
+data-URL, automatic application-tool, reasoning, streaming, and valid-usage paths use the common
+normalized response contract. A known-but-uninstalled `zai` selection remains distinct from an
+unknown organization and reports the documented optional-package installation remedy.
 
 Model-specific tool-choice and reasoning restrictions remain registry-derived contract behavior.
 They must reject or warn according to the applicable common request rule rather than silently

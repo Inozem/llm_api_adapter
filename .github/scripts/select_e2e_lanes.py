@@ -53,6 +53,7 @@ _ORGANIZATION_E2E_PATHS = {
     "kimi": ("packages/organizations/kimi/tests/e2e/",),
     "qwen": ("packages/organizations/qwen/tests/e2e/",),
     "deepseek": ("packages/organizations/deepseek/tests/e2e/",),
+    "zai": ("packages/organizations/zai/tests/e2e/",),
 }
 _CORE_ORGANIZATION_PATHS = {
     "openai": (
@@ -109,11 +110,13 @@ class E2ELaneSelection:
     xai: bool
     qwen: bool
     deepseek: bool
+    zai: bool
     kimi_e2e: bool
     mistral_e2e: bool
     xai_e2e: bool
     qwen_e2e: bool
     deepseek_e2e: bool
+    zai_e2e: bool
 
     def github_outputs(self) -> dict[str, str]:
         return {
@@ -134,6 +137,8 @@ class E2ELaneSelection:
             "qwen_e2e": str(self.qwen_e2e).lower(),
             "deepseek": str(self.deepseek).lower(),
             "deepseek_e2e": str(self.deepseek_e2e).lower(),
+            "zai": str(self.zai).lower(),
+            "zai_e2e": str(self.zai_e2e).lower(),
         }
 
 
@@ -168,6 +173,7 @@ def select_e2e_lanes(changed_paths: Iterable[str]) -> E2ELaneSelection:
     xai = _organization_package_changed(paths, "xai")
     qwen = _organization_package_changed(paths, "qwen")
     deepseek = _organization_package_changed(paths, "deepseek")
+    zai = _organization_package_changed(paths, "zai")
     return E2ELaneSelection(
         core=core,
         shared_core=shared_core,
@@ -177,6 +183,7 @@ def select_e2e_lanes(changed_paths: Iterable[str]) -> E2ELaneSelection:
         xai=xai,
         qwen=qwen,
         deepseek=deepseek,
+        zai=zai,
         kimi_e2e=(
             shared_core
             or kimi
@@ -196,6 +203,12 @@ def select_e2e_lanes(changed_paths: Iterable[str]) -> E2ELaneSelection:
             or deepseek
             or e2e_harness
             or _matches(paths, _ORGANIZATION_E2E_PATHS["deepseek"])
+        ),
+        zai_e2e=(
+            shared_core
+            or zai
+            or e2e_harness
+            or _matches(paths, _ORGANIZATION_E2E_PATHS["zai"])
         ),
     )
 

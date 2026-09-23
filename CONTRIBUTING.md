@@ -128,6 +128,7 @@ The required environment variables are:
 - `XAI_API_KEY` (with the independently installed xAI package)
 - `KIMI_API_KEY` (with the independently installed Kimi package)
 - `DEEPSEEK_API_KEY` (with the independently installed DeepSeek package)
+- `ZAI_API_KEY` (with the independently installed Z.ai package)
 
 Run one built-in organization independently with its dedicated marker:
 
@@ -165,6 +166,19 @@ declared capability gate because DeepSeek does not support them. The package-loc
 DeepSeek suite and the Core discovery/selector checks remain credential-free;
 never add `DEEPSEEK_API_KEY` to those commands.
 
+Run Z.ai's targeted external-package profile only after installing the Z.ai
+package and deliberately configuring its key:
+
+```bash
+python -m pytest -v --import-mode=importlib -m e2e_zai --rootdir=. tests/e2e packages/organizations/zai/tests/e2e
+```
+
+It runs every applicable shared and package-local E2E contract for
+`glm-5.3-flash`. Portable structured output and all document forms are excluded
+by the declared capability gate and rejected locally. The deterministic Z.ai
+package suite and Core discovery/selector checks remain credential-free; never
+add `ZAI_API_KEY` to those commands.
+
 `test_json_schema.py` makes one portable structured-output request for every configured registered model. It must return the exact expected JSON without a refusal or incomplete state; advertised structured-output support is not skipped after the request.
 
 The heavyweight async suite uses one latest registered model for each provider
@@ -175,9 +189,9 @@ paid `chat()` request plus one paid `achat()` request for that selected model
 per configured provider. The HTTPX requests reserve 512 generated tokens so
 models that think by default still have room for visible text.
 
-For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, apply every affected provider's documented pre-promotion gate and record only sanitized results. After those checks pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage. The Mistral, xAI, Qwen, Kimi, and DeepSeek package workflows run their respective unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
+For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, apply every affected provider's documented pre-promotion gate and record only sanitized results. After those checks pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage. The Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai package workflows run their respective unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
 
-Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change selects the affected independent OpenAI, Anthropic, and Google E2E lanes. A shared Core dependency additionally runs the Mistral, xAI, Qwen, Kimi, and DeepSeek lanes; a provider-specific built-in adapter, client, or registry change runs only that Core organization lane. Shared E2E infrastructure runs every applicable lane. Each core lane receives only its own API key; `e2e_builtin` is not used in CI. A Mistral, xAI, Qwen, Kimi, or DeepSeek package change publishes only that organization package and runs its corresponding lane. Each lane installs the exact TestPyPI versions through the matching optional extra, verifies plugin discovery when needed, then makes provider calls. Core and organization packages are independently versioned: use the versions declared in the root `pyproject.toml` and the changed package's `pyproject.toml`; release-specific target pairs belong in the relevant quickstart or release notes. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
+Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change selects the affected independent OpenAI, Anthropic, and Google E2E lanes. A shared Core dependency additionally runs the Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai lanes; a provider-specific built-in adapter, client, or registry change runs only that Core organization lane. Shared E2E infrastructure runs every applicable lane. Each core lane receives only its own API key; `e2e_builtin` is not used in CI. A Mistral, xAI, Qwen, Kimi, DeepSeek, or Z.ai package change publishes only that organization package and runs its corresponding lane. Each lane installs the exact TestPyPI versions through the matching optional extra, verifies plugin discovery when needed, then makes provider calls. Core and organization packages are independently versioned: use the versions declared in the root `pyproject.toml` and the changed package's `pyproject.toml`; release-specific target pairs belong in the relevant quickstart or release notes. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
 
 ## Provider-key safety
 
@@ -209,6 +223,7 @@ organizations.
 | xAI | `packages/organizations/xai/src/llm_api_adapter_xai/registry/organizations/xai.json` | [Models](https://docs.x.ai/developers/models), [pricing](https://docs.x.ai/developers/pricing), and [reasoning](https://docs.x.ai/developers/model-capabilities/text/reasoning) |
 | Kimi | `packages/organizations/kimi/src/llm_api_adapter_kimi/registry/organizations/kimi.json` | [Models](https://platform.kimi.ai/docs/models), [Chat Completions API](https://platform.kimi.ai/docs/api/chat), and [pricing](https://platform.kimi.ai/docs/pricing/chat) |
 | DeepSeek | `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/organizations/deepseek.json` | [Models and pricing](https://api-docs.deepseek.com/quick_start/pricing/), [Responses API](https://api-docs.deepseek.com/guides/responses_api/), [Vision](https://api-docs.deepseek.com/guides/vision/), and [context caching](https://api-docs.deepseek.com/guides/kv_cache/) |
+| Z.ai | `packages/organizations/zai/src/llm_api_adapter_zai/registry/organizations/zai.json` | [Models](https://docs.z.ai/guides/overview/models), [Chat Completions API](https://docs.z.ai/api-reference/llm/chat-completion), and [pricing](https://docs.z.ai/guides/overview/pricing) |
 
 This verification excludes cache write/storage, batch, flex, priority,
 modality-specific, provider-hosted tool, and negotiated-volume charges. Kimi is
