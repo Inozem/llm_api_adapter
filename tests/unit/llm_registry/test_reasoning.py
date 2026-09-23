@@ -203,6 +203,23 @@ def test_openai_luna_has_verified_registry_metadata(registry):
 
 
 @pytest.mark.unit
+def test_anthropic_opus_5_5_has_verified_registry_metadata(registry):
+    model = _model(registry, "anthropic", "claude-opus-5-5")
+
+    assert model.limits.context_window_tokens == 1_000_000
+    assert model.limits.max_output_tokens == 128_000
+    assert model.reasoning_capability.allowed_values == (
+        "low", "medium", "high", "xhigh", "max",
+    )
+    assert model.is_adaptive_thinking is True
+    assert model.request_rules.allowed_tool_choice_modes == frozenset({"auto", "none"})
+    assert [
+        (tier.up_to_prompt_tokens, tier.in_per_token, tier.out_per_token)
+        for tier in model.pricing_tiers.tiers
+    ] == [(None, 4 / 1_000_000, 20 / 1_000_000)]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("reasoning_level", "expected_value"),
     [
