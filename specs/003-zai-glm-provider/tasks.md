@@ -104,7 +104,7 @@ extra and the candidate lane proves the release artifact.
 
 ## Phase 6: Polish and cross-cutting verification
 
-- [ ] T034 [P] Review `packages/organizations/zai/`, `README.md`, and `CONTRIBUTING.md` for API keys, raw reasoning, and raw tool arguments in fixtures, docs, logs, and diagnostics.
+- [X] T034 [P] Review `packages/organizations/zai/`, `README.md`, and `CONTRIBUTING.md` for API keys, raw reasoning, and raw tool arguments in fixtures, docs, logs, and diagnostics.
 - [ ] T035 [P] Refresh Z.ai-relevant architecture artifacts in `docs/architecture.json`, `docs/organization_packages.json`, `docs/registry.json`, `docs/adapters.json`, `docs/messages.json`, `docs/errors.json`, and `docs/ci_cd.json` when their generator records the provider surface.
 - [ ] T036 Run all deterministic Core and Z.ai suites from `specs/003-zai-glm-provider/quickstart.md`, inspect the diff, and resolve unintended artifacts before review.
 - [ ] T037 After deterministic and authorized live E2E evidence fixes the released capability profile, update `specs/001-baseline-contract/spec.md` with Z.ai as an optional organization package and its exact declared capability boundary.
