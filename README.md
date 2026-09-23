@@ -6,9 +6,9 @@
 
 ## Overview
 
-**llm-api-adapter** is a minimal, typed adapter for eight organizations: OpenAI, Anthropic, Google, Mistral, xAI, Qwen, Kimi, and DeepSeek. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching organizations means changing two arguments.
+**llm-api-adapter** is a minimal, typed adapter for nine organizations: OpenAI, Anthropic, Google, Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai. It provides one provider-neutral contract for messages, tools, structured output, multimodal input, errors, usage, cost, and streaming — with one runtime dependency and no provider SDKs or orchestration framework. Switching organizations means changing two arguments.
 
-**Note:** Mistral, xAI, Qwen, Kimi, and DeepSeek are installed separately with their optional extras.
+**Note:** Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai are installed separately with their optional extras.
 
 Supports Python 3.10–3.14.
 
@@ -53,7 +53,7 @@ Supports Python 3.10–3.14.
 | Unified error hierarchy   | ✓ | OpenAI-compatible | framework-specific | ✗ |
 | Sync streaming            | ✓ text-first | ✓ | ✓ | ✓ |
 | Async API                 | ✓ optional | ✓ | ✓ | ✓ |
-| Number of organizations   | 8 | 100+ | 50+ | 1 |
+| Number of organizations   | 9 | 100+ | 50+ | 1 |
 
 * `reasoning_level` is one application-level parameter, but the available levels, native mapping, and emitted reasoning content remain model/provider-dependent.
 
