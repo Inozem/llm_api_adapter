@@ -24,8 +24,9 @@ Async requests need HTTPX:
 pip install "llm-api-adapter[zai,async]"
 ```
 
-Use `"llm-api-adapter[zai,httpx]"` and `transport="httpx"` to opt into the
-HTTPX synchronous transport.
+Synchronous requests use `requests` by default. To opt into HTTPX for sync
+`chat()` and `stream_chat()`, install `"llm-api-adapter[zai,httpx]"` and pass
+`transport="httpx"`.
 
 ## Quick start
 
@@ -59,15 +60,10 @@ The package deliberately exposes one exact, verified model ID:
 | Application function tools | `tool_choice="auto"` only; at most 128 declarations |
 | Reasoning | Core `reasoning_level` is mapped to Z.ai effort; kept separate from visible text |
 | Image input | User-message URL, bytes, and data-URL forms |
-| Usage and pricing | Valid provider usage only; USD standard-rate estimates |
+| Usage | Valid provider usage only; missing or malformed usage is unavailable |
 | Portable JSON Schema / Pydantic output | Unsupported; rejected before HTTP |
 | Documents and generic files | Unsupported; rejected before HTTP |
 | Deployments, uploads, OCR, retries, continuation, and video | Unsupported |
-
-The model has a 1,000,000-token context window and 131,072-token output limit.
-Official standard rates are USD per million tokens: input `$0.15`, cached input
-`$0.03`, and output `$0.50`. Missing or malformed usage is not estimated; a
-cache discount is applied only when the reported cached-token split is valid.
 
 Unknown, retired, aliased, or unverified model IDs are not inferred. Unsupported
 tool choices, parallel-tool control, provider-built-in tools, and every

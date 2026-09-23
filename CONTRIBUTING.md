@@ -128,6 +128,7 @@ The required environment variables are:
 - `XAI_API_KEY` (with the independently installed xAI package)
 - `KIMI_API_KEY` (with the independently installed Kimi package)
 - `DEEPSEEK_API_KEY` (with the independently installed DeepSeek package)
+- `ZAI_API_KEY` (with the independently installed Z.ai package)
 
 Run one built-in organization independently with its dedicated marker:
 
@@ -164,6 +165,19 @@ It runs every applicable shared and package-local E2E contract for the canonical
 declared capability gate because DeepSeek does not support them. The package-local
 DeepSeek suite and the Core discovery/selector checks remain credential-free;
 never add `DEEPSEEK_API_KEY` to those commands.
+
+Run Z.ai's targeted external-package profile only after installing the Z.ai
+package and deliberately configuring its key:
+
+```bash
+python -m pytest -v --import-mode=importlib -m e2e_zai --rootdir=. tests/e2e packages/organizations/zai/tests/e2e
+```
+
+It runs every applicable shared and package-local E2E contract for
+`glm-5.3-flash`. Portable structured output and all document forms are excluded
+by the declared capability gate and rejected locally. The deterministic Z.ai
+package suite and Core discovery/selector checks remain credential-free; never
+add `ZAI_API_KEY` to those commands.
 
 `test_json_schema.py` makes one portable structured-output request for every configured registered model. It must return the exact expected JSON without a refusal or incomplete state; advertised structured-output support is not skipped after the request.
 
@@ -209,6 +223,7 @@ organizations.
 | xAI | `packages/organizations/xai/src/llm_api_adapter_xai/registry/organizations/xai.json` | [Models](https://docs.x.ai/developers/models), [pricing](https://docs.x.ai/developers/pricing), and [reasoning](https://docs.x.ai/developers/model-capabilities/text/reasoning) |
 | Kimi | `packages/organizations/kimi/src/llm_api_adapter_kimi/registry/organizations/kimi.json` | [Models](https://platform.kimi.ai/docs/models), [Chat Completions API](https://platform.kimi.ai/docs/api/chat), and [pricing](https://platform.kimi.ai/docs/pricing/chat) |
 | DeepSeek | `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/organizations/deepseek.json` | [Models and pricing](https://api-docs.deepseek.com/quick_start/pricing/), [Responses API](https://api-docs.deepseek.com/guides/responses_api/), [Vision](https://api-docs.deepseek.com/guides/vision/), and [context caching](https://api-docs.deepseek.com/guides/kv_cache/) |
+| Z.ai | `packages/organizations/zai/src/llm_api_adapter_zai/registry/organizations/zai.json` | [Models](https://docs.z.ai/guides/overview/models), [Chat Completions API](https://docs.z.ai/api-reference/llm/chat-completion), and [pricing](https://docs.z.ai/guides/overview/pricing) |
 
 This verification excludes cache write/storage, batch, flex, priority,
 modality-specific, provider-hosted tool, and negotiated-volume charges. Kimi is
