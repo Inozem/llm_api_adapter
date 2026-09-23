@@ -137,15 +137,22 @@ To use DeepSeek, install its optional organization package:
 pip install "llm-api-adapter[deepseek]"
 ```
 
+To use Z.ai / GLM, install its optional organization package:
+
+```bash
+pip install "llm-api-adapter[zai]"
+```
+
 The [Mistral package README](packages/organizations/mistral/README.md),
 [xAI package README](packages/organizations/xai/README.md),
 [Qwen package README](packages/organizations/qwen/README.md),
-[Kimi package README](packages/organizations/kimi/README.md), and
-[DeepSeek package README](packages/organizations/deepseek/README.md) list their
+[Kimi package README](packages/organizations/kimi/README.md),
+[DeepSeek package README](packages/organizations/deepseek/README.md), and
+[Z.ai package README](packages/organizations/zai/README.md) list their
 supported models and organization-specific behaviour. Direct installation of
-`llm-api-adapter-mistral`, `llm-api-adapter-xai`, or
-`llm-api-adapter-qwen`, `llm-api-adapter-kimi`, or
-`llm-api-adapter-deepseek` remains supported.
+`llm-api-adapter-mistral`, `llm-api-adapter-xai`,
+`llm-api-adapter-qwen`, `llm-api-adapter-kimi`,
+`llm-api-adapter-deepseek`, or `llm-api-adapter-zai` remains supported.
 
 **Core baseline and organization packages.** An organization enters Core when
 its supported models and adapter implement the complete provider-neutral
@@ -170,8 +177,8 @@ the optional `[httpx]` extra and pass `transport="httpx"`. The default remains
 `requests`; see the [HTTPX sync pilot guide](HTTPX_SYNC_PILOT.md).
 
 **Note:** You need an API key from each LLM provider you use, including
-Mistral, xAI, Qwen, Kimi, or DeepSeek when their optional packages are installed. Refer to the
-provider's documentation for API-key instructions.
+Mistral, xAI, Qwen, Kimi, DeepSeek, or Z.ai when their optional packages are
+installed. Refer to the provider's documentation for API-key instructions.
 
 
 ## Getting Started
@@ -411,7 +418,7 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 ### Using Different Providers and Models
 
-The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, xAI, Qwen, Kimi, and DeepSeek. Mistral, xAI, Qwen, Kimi, and DeepSeek require their corresponding optional extras.
+The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai. Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai require their corresponding optional extras.
 
 - **OpenAI**: You can use models like `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
 - **Anthropic**: Available models include `claude-fable-5-1`, `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
@@ -421,6 +428,7 @@ The SDK allows you to easily switch between LLM providers and specify the model 
 - **Qwen**: Install with `pip install "llm-api-adapter[qwen]"`. Fixed model IDs are `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`; every operation requires an explicit Frankfurt `workspace_id`. See the [Qwen package README](packages/organizations/qwen/README.md) for its capability boundary, including unsupported PDF input.
 - **Kimi**: Install with `pip install "llm-api-adapter[kimi]"`. Fixed model IDs are `kimi-k3` and `kimi-k2.6`; image bytes/data URIs are supported, while public image URLs and all PDF `DocumentPart` forms are rejected before HTTP. See the [Kimi package README](packages/organizations/kimi/README.md) for reasoning, cache-pricing, and data-handling details.
 - **DeepSeek**: Install with `pip install "llm-api-adapter[deepseek]"`, or install `llm-api-adapter-deepseek` directly. The package exposes only the verified `deepseek-flash` model through the official Responses API, with text, tools, portable structured output, reasoning, streaming, and image URL/bytes/data-URI input. Documents, generic files, OCR, upload, and conversion are rejected before HTTP. See the [DeepSeek package README](packages/organizations/deepseek/README.md) for its compatibility matrix, continuation privacy, usage/cost boundary, and official references.
+- **Z.ai**: Install with `pip install "llm-api-adapter[zai]"`, or install `llm-api-adapter-zai` directly. The package exposes only verified `glm-5.3-flash`, with text, tools, reasoning, streaming, and image URL/bytes/data-URI input. Portable structured output and documents are rejected before HTTP. See the [Z.ai package README](packages/organizations/zai/README.md) for its capability matrix and request boundaries.
 
 Example:
 
