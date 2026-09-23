@@ -53,6 +53,32 @@
         }
       ]
     },
+    "gpt-6-luna": {
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "medium", "high", "xhigh", "max"]
+      },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter_unless", "arguments": {"path": "top_p", "condition_path": "reasoning.effort", "allowed_values": ["none"], "default": 1.0}},
+        {"handler": "drop_parameter_unless", "arguments": {"path": "temperature", "condition_path": "reasoning.effort", "allowed_values": ["none"], "default": 1.0}}
+      ],
+      "limits": {
+        "context_window_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": 272000,
+          "input_per_1m": 0.1,
+          "output_per_1m": 0.5
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 0.2,
+          "output_per_1m": 0.75
+        }
+      ]
+    },
     "gpt-5.6-sol": {
       "reasoning_capability": {
         "allowed_values": ["none", "low", "medium", "high", "xhigh", "max"]

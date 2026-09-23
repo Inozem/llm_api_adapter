@@ -122,11 +122,15 @@ def test_openai_maps_unsupported_none_to_the_first_native_effort_for_gpt6_astra(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
-def test_openai_sol_keeps_sampling_when_reasoning_is_disabled(client_class):
+@pytest.mark.parametrize("model", ("gpt-6-sol", "gpt-6-luna"))
+def test_openai_gpt6_cost_models_keep_sampling_when_reasoning_is_disabled(
+    client_class,
+    model,
+):
     client = client_class(api_key="test_api_key")
 
     payload = client._prepare_responses_payload_for_model(
-        "gpt-6-sol",
+        model,
         {"reasoning_effort": "none", "temperature": 0.2, "top_p": 0.2},
     )
 
@@ -137,13 +141,17 @@ def test_openai_sol_keeps_sampling_when_reasoning_is_disabled(client_class):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
-def test_openai_sol_omits_sampling_when_reasoning_is_enabled(client_class):
+@pytest.mark.parametrize("model", ("gpt-6-sol", "gpt-6-luna"))
+def test_openai_gpt6_cost_models_omit_sampling_when_reasoning_is_enabled(
+    client_class,
+    model,
+):
     client = client_class(api_key="test_api_key")
 
     with _captured_warnings() as caught:
         warnings.simplefilter("always")
         payload = client._prepare_responses_payload_for_model(
-            "gpt-6-sol",
+            model,
             {"reasoning_effort": "medium", "temperature": 0.2, "top_p": 0.2},
         )
 
