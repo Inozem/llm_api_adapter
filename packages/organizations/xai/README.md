@@ -38,7 +38,7 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 adapter = UniversalLLMAPIAdapter(
     organization="xai",
-    model="grok-4.6",
+    model="grok-4.7",
     api_key=os.environ["XAI_API_KEY"],
 )
 
@@ -51,13 +51,13 @@ print(response.content)
 ## Supported models and capabilities
 
 The package deliberately exposes fixed model IDs, not moving aliases:
-`grok-4.5` and `grok-4.6`.
+`grok-4.7`, `grok-4.6`, and `grok-4.5`.
 
 | Capability | Supported models |
 | --- | --- |
-| Text chat, sync/async streaming, application function tools, JSON Schema/Pydantic output, image URLs or bytes, and PDF URLs or bytes | Both models |
+| Text chat, sync/async streaming, application function tools, JSON Schema/Pydantic output, image URLs or bytes, and PDF URLs or bytes | All three models |
 
-For `grok-4.5` and `grok-4.6`, xAI cannot disable reasoning: a requested
+For `grok-4.5`, `grok-4.6`, and `grok-4.7`, xAI cannot disable reasoning: a requested
 `"none"` is mapped to the documented minimum and produces a warning.
 
 ## Structured-output portability

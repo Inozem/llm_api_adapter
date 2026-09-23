@@ -157,6 +157,69 @@ def test_openai_astra_has_verified_registry_metadata(registry):
 
 
 @pytest.mark.unit
+def test_openai_sol_has_verified_registry_metadata(registry):
+    model = _model(registry, "openai", "gpt-6-sol")
+
+    assert model.limits.context_window_tokens == 1_050_000
+    assert model.limits.max_output_tokens == 128_000
+    assert model.reasoning_capability.allowed_values == (
+        "none", "low", "medium", "high", "xhigh", "max",
+    )
+    assert model.request_rules.api_variant == "responses"
+    assert [rule.handler for rule in model.request_rules.rules[1:]] == [
+        "drop_parameter_unless",
+        "drop_parameter_unless",
+    ]
+    assert [
+        (tier.up_to_prompt_tokens, tier.in_per_token, tier.out_per_token)
+        for tier in model.pricing_tiers.tiers
+    ] == [
+        (272_000, 2 / 1_000_000, 10 / 1_000_000),
+        (None, 4 / 1_000_000, 15 / 1_000_000),
+    ]
+
+
+@pytest.mark.unit
+def test_openai_luna_has_verified_registry_metadata(registry):
+    model = _model(registry, "openai", "gpt-6-luna")
+
+    assert model.limits.context_window_tokens == 1_050_000
+    assert model.limits.max_output_tokens == 128_000
+    assert model.reasoning_capability.allowed_values == (
+        "none", "low", "medium", "high", "xhigh", "max",
+    )
+    assert model.request_rules.api_variant == "responses"
+    assert [rule.handler for rule in model.request_rules.rules[1:]] == [
+        "drop_parameter_unless",
+        "drop_parameter_unless",
+    ]
+    assert [
+        (tier.up_to_prompt_tokens, tier.in_per_token, tier.out_per_token)
+        for tier in model.pricing_tiers.tiers
+    ] == [
+        (272_000, 0.1 / 1_000_000, 0.5 / 1_000_000),
+        (None, 0.2 / 1_000_000, 0.75 / 1_000_000),
+    ]
+
+
+@pytest.mark.unit
+def test_anthropic_opus_5_5_has_verified_registry_metadata(registry):
+    model = _model(registry, "anthropic", "claude-opus-5-5")
+
+    assert model.limits.context_window_tokens == 1_000_000
+    assert model.limits.max_output_tokens == 128_000
+    assert model.reasoning_capability.allowed_values == (
+        "low", "medium", "high", "xhigh", "max",
+    )
+    assert model.is_adaptive_thinking is True
+    assert model.request_rules.allowed_tool_choice_modes == frozenset({"auto", "none"})
+    assert [
+        (tier.up_to_prompt_tokens, tier.in_per_token, tier.out_per_token)
+        for tier in model.pricing_tiers.tiers
+    ] == [(None, 4 / 1_000_000, 20 / 1_000_000)]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("reasoning_level", "expected_value"),
     [

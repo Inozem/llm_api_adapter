@@ -23,6 +23,7 @@ class RequestRuleRegistry:
     SELECT_API_VARIANT: ClassVar[str] = "select_api_variant"
     RENAME_PARAMETER: ClassVar[str] = "rename_parameter"
     DROP_PARAMETER: ClassVar[str] = "drop_parameter"
+    DROP_PARAMETER_UNLESS: ClassVar[str] = "drop_parameter_unless"
     RESTRICT_TOOL_CHOICE: ClassVar[str] = "restrict_tool_choice"
 
     HANDLERS: ClassVar[frozenset[str]] = frozenset(
@@ -30,6 +31,7 @@ class RequestRuleRegistry:
             SELECT_API_VARIANT,
             RENAME_PARAMETER,
             DROP_PARAMETER,
+            DROP_PARAMETER_UNLESS,
             RESTRICT_TOOL_CHOICE,
         }
     )
@@ -38,6 +40,7 @@ class RequestRuleRegistry:
         RESTRICT_TOOL_CHOICE: 0,
         RENAME_PARAMETER: 1,
         DROP_PARAMETER: 2,
+        DROP_PARAMETER_UNLESS: 2,
     }
 
     organization_name: ClassVar[str] = "base"
@@ -47,6 +50,7 @@ class RequestRuleRegistry:
         frozenset()
     )
     droppable_parameter_defaults: ClassVar[Dict[str, Any]] = {}
+    conditional_parameter_paths: ClassVar[frozenset[str]] = frozenset()
     supported_tool_choice_modes: ClassVar[frozenset[str]] = frozenset()
 
     def validate_arguments(self, handler: str, arguments: Dict[str, Any]) -> None:
@@ -65,6 +69,8 @@ class RequestRuleRegistry:
             self._validate_parameter_rename(arguments)
         elif handler == self.DROP_PARAMETER:
             self._validate_parameter_drop(arguments)
+        elif handler == self.DROP_PARAMETER_UNLESS:
+            self._validate_conditional_parameter_drop(arguments)
         else:
             self._validate_tool_choice_restriction(arguments)
 
@@ -115,6 +121,47 @@ class RequestRuleRegistry:
         ):
             raise ValueError(f"unsupported request parameter path: {path!r}")
 
+    def _validate_conditional_parameter_drop(self, arguments: Dict[str, Any]) -> None:
+        required = {"path", "condition_path", "allowed_values"}
+        if set(arguments) not in (required, required | {"default"}):
+            raise ValueError(
+                "drop_parameter_unless arguments must contain path, condition_path, "
+                "allowed_values, and optional default"
+            )
+
+        self._validate_droppable_path(arguments["path"])
+        if "default" in arguments:
+            default = arguments["default"]
+            expected_default = self.droppable_parameter_defaults[arguments["path"]]
+            if isinstance(default, bool) or default != expected_default:
+                raise ValueError(
+                    "request rule default for "
+                    f"{arguments['path']!r} must be {expected_default!r}"
+                )
+
+        condition_path = arguments["condition_path"]
+        if (
+            not isinstance(condition_path, str)
+            or condition_path not in self.conditional_parameter_paths
+        ):
+            raise ValueError(
+                f"unsupported request rule condition path: {condition_path!r}"
+            )
+
+        allowed_values = arguments["allowed_values"]
+        if not isinstance(allowed_values, list) or not allowed_values:
+            raise ValueError(
+                "drop_parameter_unless.allowed_values must be a non-empty array"
+            )
+        if any(not isinstance(value, str) for value in allowed_values):
+            raise ValueError(
+                "drop_parameter_unless.allowed_values must contain only strings"
+            )
+        if len(set(allowed_values)) != len(allowed_values):
+            raise ValueError(
+                "drop_parameter_unless.allowed_values must not contain duplicates"
+            )
+
     def _validate_tool_choice_restriction(self, arguments: Dict[str, Any]) -> None:
         if set(arguments) != {"allowed_values"}:
             raise ValueError(
@@ -157,6 +204,7 @@ class OpenAIRequestRuleRegistry(SamplingRequestRuleRegistry):
         {
             RequestRuleRegistry.SELECT_API_VARIANT,
             RequestRuleRegistry.RENAME_PARAMETER,
+            RequestRuleRegistry.DROP_PARAMETER_UNLESS,
         }
     )
     supported_api_variants = frozenset({"chat_completions", "responses"})
@@ -169,6 +217,7 @@ class OpenAIRequestRuleRegistry(SamplingRequestRuleRegistry):
         **SamplingRequestRuleRegistry.droppable_parameter_defaults,
         "temperature": 1.0,
     }
+    conditional_parameter_paths = frozenset({"reasoning.effort"})
 
 
 class AnthropicRequestRuleRegistry(SamplingRequestRuleRegistry):
@@ -233,7 +282,10 @@ class RequestRule:
         """Return the payload paths that this rule reads or writes."""
         if self.handler == RequestRuleRegistry.RENAME_PARAMETER:
             return (self.arguments["from"], self.arguments["to"])
-        if self.handler == RequestRuleRegistry.DROP_PARAMETER:
+        if self.handler in {
+            RequestRuleRegistry.DROP_PARAMETER,
+            RequestRuleRegistry.DROP_PARAMETER_UNLESS,
+        }:
             return (self.arguments["path"],)
         return ()
 
@@ -349,7 +401,17 @@ def apply_request_rules(
             )
             continue
 
-        if rule.handler == RequestRuleRegistry.DROP_PARAMETER:
+        if rule.handler in {
+            RequestRuleRegistry.DROP_PARAMETER,
+            RequestRuleRegistry.DROP_PARAMETER_UNLESS,
+        }:
+            if rule.handler == RequestRuleRegistry.DROP_PARAMETER_UNLESS:
+                condition_value = _get_payload_path(
+                    transformed_payload,
+                    rule.arguments["condition_path"],
+                )
+                if condition_value in rule.arguments["allowed_values"]:
+                    continue
             path = rule.arguments["path"]
             value = _pop_payload_path(transformed_payload, path)
             if value is _MISSING:
@@ -380,6 +442,16 @@ def _pop_payload_path(payload: dict[str, Any], path: str) -> Any:
             return _MISSING
         target = nested
     return target.pop(leaf, _MISSING)
+
+
+def _get_payload_path(payload: Mapping[str, Any], path: str) -> Any:
+    """Read a dotted payload path without changing the copied payload."""
+    target: Any = payload
+    for part in path.split("."):
+        if not isinstance(target, Mapping) or part not in target:
+            return _MISSING
+        target = target[part]
+    return target
 
 
 def _warn_ignored_parameter(path: str, model: str) -> None:

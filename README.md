@@ -265,6 +265,11 @@ or `top_p`; the adapter omits both according to the same warning policy. Astra
 also cannot disable reasoning: `reasoning_level="none"` resolves to its lowest
 supported effort, `low`, with a `UserWarning`.
 
+`gpt-6-sol` and `gpt-6-luna` use the Responses API and support
+`reasoning_level="none"`. With any higher reasoning effort, OpenAI does not
+accept `temperature` or `top_p`; the adapter omits them using the same warning
+policy.
+
 ### Alternative Message Format
 
 In addition to the built-in message classes, the SDK also supports the standard OpenAI-style message format for quick adoption and compatibility:
@@ -420,11 +425,11 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai. Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai require their corresponding optional extras.
 
-- **OpenAI**: You can use models like `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
-- **Anthropic**: Available models include `claude-fable-5-1`, `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
+- **OpenAI**: You can use models like `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`.
+- **Anthropic**: Available models include `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
 - **Google**: Models such as `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite` can be used.
 - **Mistral**: Install with `pip install "llm-api-adapter[mistral]"`. Available models are `mistral-small-2603`, `mistral-medium-3-5`, and `mistral-large-2512`; see the [Mistral package README](packages/organizations/mistral/README.md) for Mistral-specific behaviour.
-- **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.5` and `grok-4.6`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
+- **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.7`, `grok-4.6`, and `grok-4.5`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
 - **Qwen**: Install with `pip install "llm-api-adapter[qwen]"`. Fixed model IDs are `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`; every operation requires an explicit Frankfurt `workspace_id`. See the [Qwen package README](packages/organizations/qwen/README.md) for its capability boundary, including unsupported PDF input.
 - **Kimi**: Install with `pip install "llm-api-adapter[kimi]"`. Fixed model IDs are `kimi-k3` and `kimi-k2.6`; image bytes/data URIs are supported, while public image URLs and all PDF `DocumentPart` forms are rejected before HTTP. See the [Kimi package README](packages/organizations/kimi/README.md) for reasoning, cache-pricing, and data-handling details.
 - **DeepSeek**: Install with `pip install "llm-api-adapter[deepseek]"`, or install `llm-api-adapter-deepseek` directly. The package exposes only the verified `deepseek-flash` model through the official Responses API, with text, tools, portable structured output, reasoning, streaming, and image URL/bytes/data-URI input. Documents, generic files, OCR, upload, and conversion are rejected before HTTP. See the [DeepSeek package README](packages/organizations/deepseek/README.md) for its compatibility matrix, continuation privacy, usage/cost boundary, and official references.
