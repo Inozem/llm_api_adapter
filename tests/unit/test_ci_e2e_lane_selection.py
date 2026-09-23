@@ -245,6 +245,38 @@ def test_kimi_package_e2e_changes_select_only_the_kimi_live_lane():
 
 
 @pytest.mark.unit
+def test_zai_package_changes_select_only_its_candidate_and_e2e_lane():
+    selection = _SELECTOR.select_e2e_lanes(
+        ["packages/organizations/zai/src/llm_api_adapter_zai/adapter.py"]
+    )
+
+    assert selection.core is False
+    assert selection.zai is True
+    assert selection.zai_e2e is True
+    assert selection.kimi_e2e is False
+    assert selection.mistral_e2e is False
+    assert selection.xai_e2e is False
+    assert selection.qwen_e2e is False
+    assert selection.deepseek_e2e is False
+
+
+@pytest.mark.unit
+def test_zai_package_e2e_changes_select_only_its_live_lane():
+    selection = _SELECTOR.select_e2e_lanes(
+        ["packages/organizations/zai/tests/e2e/test_capability_boundaries.py"]
+    )
+
+    assert selection.core is False
+    assert selection.zai is False
+    assert selection.zai_e2e is True
+    assert selection.kimi_e2e is False
+    assert selection.mistral_e2e is False
+    assert selection.xai_e2e is False
+    assert selection.qwen_e2e is False
+    assert selection.deepseek_e2e is False
+
+
+@pytest.mark.unit
 def test_qwen_candidate_e2e_job_uses_only_qwen_credentials_and_candidates():
     workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
     job = workflow.split("  post-publish-qwen-e2e:\n", maxsplit=1)[1]
@@ -312,6 +344,37 @@ def test_deepseek_candidate_e2e_job_uses_only_deepseek_credentials_and_candidate
     )
     assert "KIMI_API_KEY" not in job
     assert "QWEN_API_KEY" not in job
+
+
+@pytest.mark.unit
+def test_zai_candidate_e2e_job_uses_only_zai_credentials_and_candidates():
+    workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
+    job_name = "  post-publish-zai-e2e:\n"
+    if job_name not in workflow:
+        pytest.skip("Z.ai release-candidate E2E job is added in T031")
+
+    job = workflow.split(job_name, maxsplit=1)[1]
+    job = job.split("\n  post-publish-", maxsplit=1)[0]
+
+    assert "needs.changes.outputs.zai_e2e == 'true'" in job
+    assert "needs.publish-core-testpypi.result == 'success'" in job
+    assert "needs.publish-core-testpypi.result == 'skipped'" in job
+    assert "needs.publish-zai-testpypi.result == 'success'" in job
+    assert "needs.publish-zai-testpypi.result == 'skipped'" in job
+    assert "ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}" in job
+    assert "llm-api-adapter[async,httpx]==${CORE_CANDIDATE_VERSION}" in job
+    assert "llm-api-adapter-zai[async,httpx]==${ZAI_CANDIDATE_VERSION}" in job
+    assert "organization='zai'" in job
+    assert "model='glm-5.3-flash'" in job
+    assert "pytest -v --import-mode=importlib -m e2e_zai" in job
+    assert (
+        "--rootdir=. tests/e2e packages/organizations/zai/tests/e2e" in job
+    )
+    assert "KIMI_API_KEY" not in job
+    assert "MISTRAL_API_KEY" not in job
+    assert "XAI_API_KEY" not in job
+    assert "QWEN_API_KEY" not in job
+    assert "DEEPSEEK_API_KEY" not in job
 
 
 @pytest.mark.unit
