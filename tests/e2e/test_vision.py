@@ -23,7 +23,7 @@ def test_vision_bytes_returns_non_empty_response(
             resp = chat_with_retry(
                 adapter,
                 messages=[msg],
-                max_tokens=150,
+                max_tokens=1200,
                 reasoning_level="none",
             )
             assert isinstance(resp.content, str)
