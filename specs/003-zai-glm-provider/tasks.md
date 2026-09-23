@@ -95,7 +95,7 @@ and runs `e2e_zai` against exact candidate artifacts with only `ZAI_API_KEY`.
 - [X] T030 [US3] Wire Z.ai paths, `zai-v*` tags, test gate, and independent PyPI publishing in `.github/workflows/ci-dev.yml` and `.github/workflows/ci-main.yml`.
 - [X] T031 [US3] Add Z.ai version extraction, TestPyPI publishing, exact-candidate installation, plugin discovery, and `ZAI_API_KEY`-only E2E to `.github/workflows/ci-dev-release.yml`.
 - [X] T032 [US3] Document the Core extra, Flash matrix, exclusions, pricing, and Z.ai release commands in `README.md`, `CONTRIBUTING.md`, and `packages/organizations/zai/README.md`.
-- [ ] T033 [US3] Build both distributions, install TestPyPI candidates cleanly, and run the full release command in `specs/003-zai-glm-provider/quickstart.md`.
+- [X] T033 [US3] Build both distributions, install TestPyPI candidates cleanly, and run the full release command in `specs/003-zai-glm-provider/quickstart.md`.
 
 **Checkpoint**: The package can publish as `zai-v0.1.0`; Core `v0.9.7` advertises its compatible
 extra and the candidate lane proves the release artifact.
