@@ -32,12 +32,15 @@ jobs:
       qwen_e2e: ${{ steps.filter.outputs.qwen_e2e }}
       deepseek: ${{ steps.filter.outputs.deepseek }}
       deepseek_e2e: ${{ steps.filter.outputs.deepseek_e2e }}
+      zai: ${{ steps.filter.outputs.zai }}
+      zai_e2e: ${{ steps.filter.outputs.zai_e2e }}
       core_version: ${{ steps.versions.outputs.core }}
       kimi_version: ${{ steps.versions.outputs.kimi }}
       mistral_version: ${{ steps.versions.outputs.mistral }}
       xai_version: ${{ steps.versions.outputs.xai }}
       qwen_version: ${{ steps.versions.outputs.qwen }}
       deepseek_version: ${{ steps.versions.outputs.deepseek }}
+      zai_version: ${{ steps.versions.outputs.zai }}
 
     steps:
       - uses: actions/checkout@v4
@@ -58,18 +61,21 @@ jobs:
           xai_version="$(grep -m1 '^version = ' packages/organizations/xai/pyproject.toml | cut -d '"' -f 2)"
           qwen_version="$(grep -m1 '^version = ' packages/organizations/qwen/pyproject.toml | cut -d '"' -f 2)"
           deepseek_version="$(grep -m1 '^version = ' packages/organizations/deepseek/pyproject.toml | cut -d '"' -f 2)"
+          zai_version="$(grep -m1 '^version = ' packages/organizations/zai/pyproject.toml | cut -d '"' -f 2)"
           test -n "$core_version"
           test -n "$kimi_version"
           test -n "$mistral_version"
           test -n "$xai_version"
           test -n "$qwen_version"
           test -n "$deepseek_version"
+          test -n "$zai_version"
           echo "core=$core_version" >> "$GITHUB_OUTPUT"
           echo "kimi=$kimi_version" >> "$GITHUB_OUTPUT"
           echo "mistral=$mistral_version" >> "$GITHUB_OUTPUT"
           echo "xai=$xai_version" >> "$GITHUB_OUTPUT"
           echo "qwen=$qwen_version" >> "$GITHUB_OUTPUT"
           echo "deepseek=$deepseek_version" >> "$GITHUB_OUTPUT"
+          echo "zai=$zai_version" >> "$GITHUB_OUTPUT"
 
       - name: Detect changed distributions
         id: filter
@@ -245,6 +251,34 @@ jobs:
           password: ${{ secrets.TEST_PYPI_API_TOKEN }}
           repository-url: https://test.pypi.org/legacy/
           packages-dir: packages/organizations/deepseek/dist/
+          verbose: true
+
+  publish-zai-testpypi:
+    name: Publish Z.ai package to TestPyPI
+    needs: changes
+    if: ${{ needs.changes.outputs.zai == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Build Z.ai distribution
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build packages/organizations/zai
+
+      - name: Publish Z.ai package to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: packages/organizations/zai/dist/
           verbose: true
 
   post-publish-openai-e2e:
@@ -732,3 +766,65 @@ jobs:
 
       - name: Run DeepSeek E2E tests
         run: pytest -v --import-mode=importlib -m e2e_deepseek --rootdir=. tests/e2e packages/organizations/deepseek/tests/e2e
+
+  post-publish-zai-e2e:
+    name: Z.ai E2E tests (release candidate)
+    needs: [changes, publish-core-testpypi, publish-zai-testpypi]
+    if: >-
+      ${{
+        always() &&
+        (needs.changes.outputs.shared_core == 'true' || needs.changes.outputs.zai == 'true' || needs.changes.outputs.zai_e2e == 'true') &&
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped') &&
+        (needs.publish-zai-testpypi.result == 'success' || needs.publish-zai-testpypi.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    env:
+      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+      CORE_CANDIDATE_VERSION: ${{ needs.changes.outputs.core_version }}
+      ZAI_CANDIDATE_VERSION: ${{ needs.changes.outputs.zai_version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Require Z.ai API key
+        shell: bash
+        run: |
+          test -n "$ZAI_API_KEY" || {
+            echo "::error::ZAI_API_KEY is not configured."
+            exit 1
+          }
+
+      - name: Install test runner and candidate packages from TestPyPI
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/requirements-test.txt
+
+          for attempt in 1 2 3; do
+            if pip install --index-url https://test.pypi.org/simple/ \
+              --extra-index-url https://pypi.org/simple \
+              "llm-api-adapter[async,httpx]==${CORE_CANDIDATE_VERSION}" \
+              "llm-api-adapter-zai[async,httpx]==${ZAI_CANDIDATE_VERSION}"; then
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "Candidate packages are not available yet; retrying in 2 minutes."
+              sleep 120
+            fi
+          done
+
+          echo "Candidate packages were not available after 3 attempts."
+          exit 1
+
+      - name: Verify Z.ai plugin discovery
+        run: |
+          python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='zai', model='glm-5.3-flash', api_key='test-key')"
+
+      - name: Run Z.ai E2E tests
+        run: pytest -v --import-mode=importlib -m e2e_zai --rootdir=. tests/e2e packages/organizations/zai/tests/e2e
