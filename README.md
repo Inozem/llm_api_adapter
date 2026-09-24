@@ -154,12 +154,19 @@ supported models and organization-specific behaviour. Direct installation of
 `llm-api-adapter-qwen`, `llm-api-adapter-kimi`,
 `llm-api-adapter-deepseek`, or `llm-api-adapter-zai` remains supported.
 
-**Core baseline and organization packages.** An organization enters Core when
-its supported models and adapter implement the complete provider-neutral
-baseline: typed multi-turn messages and roles; sync/async chat and streaming;
-image and PDF input; tools; portable structured output; common sampling,
-output-limit, and timeout parameters; and normalized `ChatResponse`, errors,
-usage, and token pricing. The shared conformance suite verifies this contract.
+**Core baseline and organization packages.** An organization may be included
+in Core only when every included model and its adapter implement the complete
+provider-neutral baseline: typed multi-turn messages and roles; sync/async chat
+and streaming; image and PDF input; tools; portable structured output; common
+sampling, output-limit, and timeout parameters; and normalized `ChatResponse`,
+errors, usage, and token pricing. The shared conformance suite verifies this
+contract.
+
+Passing the baseline makes Core inclusion possible, not automatic. An
+organization may remain an optional package to keep the base installation
+small and its model updates and releases independent. Package placement alone
+does not imply a missing capability; each model's documented capability
+profile and tested exceptions describe its actual support.
 
 Optional organization packages own their adapters, registries, and
 provider-specific preprocessing. Mistral PDF input is one such extension: the

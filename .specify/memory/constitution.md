@@ -18,7 +18,11 @@ contract. Wire payloads, endpoints, authentication, provider error details, spec
 handling, and model-specific capabilities MUST remain in organization adapters, clients, or
 independently versioned organization packages. New core organizations MUST meet the established
 sync/async, streaming, message, tool, structured-output, file-input, response, usage, pricing,
-and error conformance baseline; incomplete support remains a plugin package.
+and error conformance baseline; incomplete support remains a plugin package. Full baseline
+conformance is necessary but does not require moving an organization into Core: a conformant
+organization MAY remain an independently versioned package for modular installation and release.
+Package placement MUST NOT be treated as evidence of missing capabilities; the exact-model
+capability profile and its tests define supported behavior and exceptions.
 
 Rationale: the facade and `LLMAdapterBase` remain predictable while providers can evolve
 independently.
