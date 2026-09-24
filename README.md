@@ -41,47 +41,14 @@ Supports Python 3.10–3.14.
 
 ## Why this library?
 
-|                           | llm-api-adapter | LiteLLM | LangChain | Provider SDK |
-|---------------------------|-----------------|---------|-----------|--------------|
-| Runtime dependencies      | 1 (`requests`) | broader gateway/SDK | broader framework | provider-specific |
-| Provider-neutral messages and response | ✓ | ✓ | ✓ | ✗ |
-| Unified tool calls        | ✓ | ✓ | ✓ | provider-specific |
-| Unified structured output | ✓ | ✓ | ✓ | provider-specific |
-| Unified image/PDF input   | ✓ | partial | ✓ | provider-specific |
-| Unified reasoning control | ✓* | ✓ | partial | ✗ |
-| Built-in per-response cost| ✓ | ✓ | via callbacks | ✗ |
-| Unified error hierarchy   | ✓ | OpenAI-compatible | framework-specific | ✗ |
-| Sync streaming            | ✓ text-first | ✓ | ✓ | ✓ |
-| Async API                 | ✓ optional | ✓ | ✓ | ✓ |
-| Number of organizations   | 9 | 100+ | 50+ | 1 |
+`llm-api-adapter` is for applications that call several supported models directly. `llm-api-adapter` provides typed messages and responses, registered model-specific request rules, normalized errors, and available usage and cost estimates on `ChatResponse`. `llm-api-adapter` does not provide a router, gateway, agent framework, or broad model coverage.
 
-* `reasoning_level` is one application-level parameter, but the available levels, native mapping, and emitted reasoning content remain model/provider-dependent.
+### Which library should you choose?
 
-This table is a positioning snapshot. Provider capabilities change independently, so the adapter promises a stable application-level contract rather than identical provider internals.
-
-**Small footprint.** The core has one runtime dependency: `requests`. It does not require OpenAI, Anthropic, or Google SDKs, an agent framework, a gateway, or a proxy. Pydantic is optional and is only needed for `response_model` validation.
-
-**One provider-neutral contract.** The same typed messages, `ToolSpec`, `ChatResponse`, `ImagePart`, and `DocumentPart` are converted to and from each provider's native wire format. Application code does not need provider-specific message, tool, or response parsing.
-
-**Model-aware reasoning control.** One `reasoning_level` parameter is accepted across supported providers without provider-specific kwargs. Verified model capabilities resolve the canonical level to a native effort or budget setting; exact availability and token semantics remain model-dependent.
-
-**Cost accounting, built-in.** Responses carry normalized usage and cost fields in the configured currency. When a provider reports an exact total that cannot be split safely, `cost_total` is set while `cost_input` and `cost_output` remain unset. Organization packages report separately metered, non-token charges as `CostLineItem` values in `cost_breakdown`.
-
-**Predictable errors.** One explicit exception hierarchy and provider-error mapping across supported organizations. `LLMAPIRateLimitError` means the same application-level condition whether you called OpenAI, Anthropic, Google, Mistral, or xAI.
-
-### Use this when
-
-- You call LLMs directly — no chains, no agents, no orchestration
-- You want a provider-neutral contract without adopting a framework or gateway
-- You need the same messages, tools, structured output, multimodal input, errors, and response fields across providers
-- You need unified reasoning control or per-request cost tracking with minimal dependencies
-
-### Use something else when
-
-- **LiteLLM** — you need providers beyond OpenAI, Anthropic/Claude, and Google, or a gateway/router layer with retries, fallbacks, load balancing, and observability
-- **AISuite** — you prefer an OpenAI-compatible client across more providers, or built-in agents, MCP, and automatic tool-execution abstractions
-- **LangChain** — you need chains, memory, RAG, agents, or a larger orchestration framework
-- **Provider SDK directly** — you use one provider and need an API or feature outside this SDK's provider-neutral contract
+- **[LiteLLM](https://docs.litellm.ai/docs/):** LiteLLM provides much broader model coverage, an OpenAI-style interface, routing, and a gateway. `llm-api-adapter` focuses on direct calls to a smaller model catalog and does not include routing or a gateway. For the compared releases, the [`llm-api-adapter` 0.9.7](https://pypi.org/project/llm-api-adapter/0.9.7/) universal wheel is 110 kB with one direct base dependency (`requests`); the [`litellm` 1.102.1](https://pypi.org/project/litellm/1.102.1/) Linux x86-64 wheel is 27.4 MB (about 249 times larger) with 14 direct base dependencies. LiteLLM uses the [OpenAI SDK](https://docs.litellm.ai/docs/providers/openai_compatible) to call OpenAI and OpenAI-compatible endpoints, but installs it as a [base dependency](https://pypi.org/pypi/litellm/1.102.1/json) even when you only call another provider; `llm-api-adapter` does not require provider SDKs. Wheel sizes exclude dependencies, direct counts exclude transitive dependencies and extras, and neither figure measures cold-start time. Choose LiteLLM when provider breadth or routing infrastructure matters more than a small direct-call client.
+- **[AISuite](https://github.com/andrewyng/aisuite):** AISuite provides an OpenAI-style interface, agents, and MCP integration. Some of its provider integrations rely on vendor SDKs (for example, [Anthropic](https://github.com/andrewyng/aisuite/blob/main/aisuite/providers/anthropic_provider.py) and [Mistral](https://github.com/andrewyng/aisuite/blob/main/aisuite/providers/mistral_provider.py)). `llm-api-adapter` provides its own typed messages and `ChatResponse`, plus registered model-specific request rules and cost fields on the response, without provider SDKs; it does not include agents or MCP integration. Choose AISuite when its OpenAI-shaped interface or agent features are more important than this model-aware direct-call contract.
+- **[LangChain](https://docs.langchain.com/oss/python/learn):** LangChain combines chat-model integrations with retrieval/RAG and agent components. Some of its provider integrations rely on vendor SDKs (for example, [OpenAI](https://github.com/langchain-ai/langchain/blob/master/libs/partners/openai/pyproject.toml) and [Anthropic](https://github.com/langchain-ai/langchain/blob/master/libs/partners/anthropic/pyproject.toml)). `llm-api-adapter` calls all nine supported organizations with `requests` and no provider SDKs, but does not implement retrieval or agent execution. Choose LangChain when your application needs those higher-level components.
+- **Provider SDK:** A provider's SDK gives direct access to that provider's native features. `llm-api-adapter` gives supported models a shared message, tool, response, error, and `reasoning_level` interface, but does not expose every native feature. Choose the provider SDK when you need an unsupported or newly released native feature.
 
 ## Features
 
