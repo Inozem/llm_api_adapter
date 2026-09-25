@@ -7,35 +7,35 @@
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - Trust Each Model's Capability Profile (Priority: P1)
+### User Story 1 - Declare Model Exceptions to the Baseline (Priority: P1)
 
-A maintainer can inspect a registered model and see which parts of the established Core contract it supports and which have a confirmed exception. An application developer can rely on those declarations when selecting a model.
+A maintainer can inspect a registered model's explicit exceptions to the established Core baseline. Every applicable behavior without a declared exception remains required by the baseline and is checked by its normal positive scenario.
 
-**Why this priority**: A missing declaration must not make a model appear conformant or silently remove required evidence.
+**Why this priority**: An undocumented provider deviation must fail the baseline check instead of silently removing evidence.
 
-**Independent Test**: Review every registered model against the existing baseline. Remove one status in a test profile and verify that the profile is rejected.
+**Independent Test**: Review every registered model's exception list. Verify that an empty list selects baseline-positive scenarios, a declared exception selects its documented exception scenario, and an invalid exception is rejected.
 
 **Acceptance Scenarios**:
 
-1. **Given** a registered model with confirmed support for a baseline capability, **When** its profile is inspected, **Then** the support decision explicitly names the canonical capability.
-2. **Given** a registered model with a confirmed exception, **When** its profile is inspected, **Then** the exact exception and expected unsupported or special behavior are explicit.
-3. **Given** a registered model whose status for a baseline capability is unknown or absent, **When** its profile is validated, **Then** validation fails instead of treating the capability as unsupported or skipping its checks.
+1. **Given** a first-party model with no exceptions, **When** its profile is inspected, **Then** it has an explicit empty exception list and baseline-positive checks remain selected for every applicable model-dependent capability.
+2. **Given** a first-party model with a confirmed exception, **When** its profile is inspected, **Then** the canonical capability ID and exact expected behavior are explicit.
+3. **Given** a model profile with an unknown, duplicate, always-on, or malformed exception, **When** the profile is validated, **Then** validation fails with the model and exception named.
 
 ---
 
 ### User Story 2 - Get Complete Common Contract Evidence (Priority: P1)
 
-A provider maintainer runs conformance and authorized live verification for a model. The applicable common scenarios are selected from that model's confirmed capability profile, with package-specific checks supplementing the common evidence.
+A provider maintainer runs conformance and authorized live verification for an exact model. Baseline-positive scenarios run by default; only that model's explicit exceptions route to checks of their documented behavior.
 
-**Why this priority**: Every model needs evidence for what it claims to support and for each declared exception, without manually maintained gaps in test selection.
+**Why this priority**: Every model needs evidence for the baseline and each declared exception, without manually maintained gaps in test selection.
 
-**Independent Test**: For representative built-in and external models, compare selected common scenarios with their profiles. Confirm that support selects a positive check, an exception selects a check of documented behavior, and an unknown status fails selection.
+**Independent Test**: For representative built-in and external models, compare selected scenarios with their exception lists. Confirm that an undeclared exception selects the baseline-positive check, a declared exception selects its documented check, and a missing profile or missing exception evidence fails selection.
 
 **Acceptance Scenarios**:
 
-1. **Given** a model that supports a baseline capability, **When** conformance or E2E selection is prepared, **Then** the applicable shared positive scenario is selected.
+1. **Given** a model has no declared exception for a baseline capability, **When** conformance or E2E selection is prepared, **Then** the applicable shared positive scenario is selected.
 2. **Given** a model with an explicit capability exception, **When** selection is prepared, **Then** its documented rejection or special behavior is checked by a shared or package-specific scenario.
-3. **Given** a package-specific scenario for a supported common capability, **When** package checks are selected, **Then** the applicable shared scenario remains selected.
+3. **Given** a package-specific exception scenario, **When** checks are selected, **Then** it replaces only the baseline-positive scenario for that exact exception; other applicable shared scenarios remain selected.
 4. **Given** a provider-specific CI line, **When** its tests are selected, **Then** line selection and credential access remain independently controlled and credentials remain unavailable to pull-request checks.
 
 ---
@@ -72,7 +72,8 @@ A release maintainer can verify that every supported external organization has c
 
 ### Edge Cases
 
-- A capability is omitted, unverified, or given an unrecognized status: the model profile is invalid; test selection cannot silently skip it.
+- A first-party model has no exception-list field: the profile is invalid. An applicable capability absent from a valid exception list still selects its baseline-positive check, so an undeclared deviation fails that check.
+- An exception names an unknown or always-on capability, is duplicated, or lacks verified behavior: validation fails.
 - A model declares an exception but neither common nor package-specific checks cover its documented outcome: validation identifies the evidence gap.
 - A package-specific test duplicates a common scenario: the common scenario is still required.
 - A provider reports cached tokens without enough total input usage to establish complete accounting, or reports inconsistent quantities: confirmed fields may be retained, but unconfirmed costs and a complete total are unavailable. A parsed, omitted input or output count remains `None`; an explicitly reported zero remains `0`. Direct `Usage` construction retains its existing zero defaults and first three positional arguments.
@@ -86,11 +87,11 @@ A release maintainer can verify that every supported external organization has c
 ### Functional Requirements
 
 - **FR-001**: Core 0.9.8 MUST reuse `specs/001-baseline-contract/spec.md` as the existing provider-neutral baseline and MUST NOT redefine its admission criteria in this feature. After implementation, the baseline's observable usage and pricing clauses MUST be synchronized with the additive 0.9.8 response behavior.
-- **FR-002**: The model registry MUST be the authoritative source for each registered model's confirmed baseline capabilities and exact exceptions. Package placement MUST NOT be used to infer capability support.
-- **FR-003**: Each applicable baseline capability in a registered model profile MUST have an explicit confirmed support or explicit exception status. An unknown, missing, or unrecognized status MUST invalidate the profile and MUST NOT authorize a skipped check.
+- **FR-002**: The model registry MUST be the authoritative source for each first-party model's explicit exceptions to the baseline. Package placement MUST NOT be used to infer exceptions.
+- **FR-003**: Every first-party exact-model profile MUST include an explicit exception list, which MAY be empty. Each listed exception MUST name one known `model-dependent` capability exactly once and include its expected behavior. An applicable capability absent from the exception list MUST retain its baseline-positive check; no omission may skip a check. A missing profile or malformed exception list MUST invalidate certification.
 - **FR-004**: Each explicit exception MUST identify the expected rejection or special behavior closely enough to verify it without weakening the shared baseline.
-- **FR-005**: Conformance and E2E scenario selection MUST derive applicable common checks for each model from its confirmed profile. Confirmed support MUST select a positive common check; an explicit exception MUST select a check of the documented outcome in the common or package-specific suite.
-- **FR-006**: Package-specific checks MUST supplement, and MUST NOT replace, applicable common checks. A declared capability or exception without appropriate verification MUST be reported as a coverage gap.
+- **FR-005**: Conformance and E2E scenario selection MUST select the baseline-positive check for each applicable model-dependent capability unless that exact model declares an exception; an exception MUST select a check of the documented outcome in the common or package-specific suite.
+- **FR-006**: A package-specific exception check MAY replace the baseline-positive check for the same model and capability only. It MUST NOT replace other applicable common checks. An exception without appropriate verification MUST be reported as a coverage gap.
 - **FR-007**: Selection of a provider's CI line and access to that provider's credentials MUST remain separate from model-capability-based scenario selection. Pull-request checks MUST remain deterministic and credential-free.
 - **FR-008**: The model registry MUST allow an optional, verified cached-input price for a model. A missing or unverified price MUST NOT be inferred from ordinary input pricing.
 - **FR-009**: Usage and cost reporting MUST distinguish provider-confirmed cached input from ordinary input, avoid double counting, and MUST NOT infer a cache hit or quantity from incomplete provider usage.
@@ -103,7 +104,7 @@ A release maintainer can verify that every supported external organization has c
 ### Key Entities
 
 - **Canonical baseline capability**: An externally observable behavior already defined by `specs/001-baseline-contract/spec.md`.
-- **Model capability profile**: A registered model's confirmed support decisions and exact exceptions against that baseline.
+- **Model exception profile**: A first-party model's explicit list of verified deviations from the baseline; absence of an exception means the baseline-positive check applies.
 - **Scenario evidence**: A positive common check or a check of an explicit rejection or special behavior; package-specific evidence is additional where required.
 - **Cached input usage**: The portion of input tokens explicitly reported by a provider as cached, with no locally assumed cache hit.
 - **Cached input price**: An optional verified rate or pricing rule applicable to confirmed cached input.
@@ -113,9 +114,9 @@ A release maintainer can verify that every supported external organization has c
 
 ### Measurable Outcomes
 
-- **SC-001**: Every first-party model included in the Core 0.9.8 and six external organization catalogues has an explicit, valid status for every applicable canonical baseline capability; removing any required status causes validation to fail. A legacy third-party plugin without a profile remains usable at runtime but cannot pass profile-based certification.
-- **SC-002**: For every tested model, 100% of confirmed supported capabilities select their applicable common positive scenarios, and 100% of explicit exceptions select a check of their documented outcome.
-- **SC-003**: No applicable common scenario is removed by the presence of a package-specific check; a missing scenario or unknown capability status fails deterministic validation.
+- **SC-001**: Every first-party model included in the Core 0.9.8 and six external organization catalogues has an explicit, valid exception list; removing that list or declaring an unknown/duplicate exception causes validation to fail. A legacy third-party plugin without a profile remains usable at runtime but cannot pass profile-based certification.
+- **SC-002**: For every tested model, 100% of applicable capabilities without a declared exception select their baseline-positive scenarios, and 100% of declared exceptions select a check of their documented outcome.
+- **SC-003**: An exception check replaces only the positive check for the same model and capability; all other applicable common scenarios remain selected. Missing exception evidence fails deterministic validation.
 - **SC-004**: Deterministic accounting examples with complete cached usage produce the expected quantity and cost without double counting. In partial provider-parsed usage, omitted input or output counts are `None` in the public `Usage` value, while explicit reported zero remains `0`; neither partial nor malformed usage produces a fabricated cache hit or complete total. Direct `Usage` construction remains compatible.
 - **SC-005**: Every supported external organization has matching identity and distribution name across the four existing metadata sources; a single missing entry or name mismatch is detected by a deterministic check.
 - **SC-006**: Existing caller-facing conformance and compatibility scenarios pass for all affected built-in and external organizations, including existing installation errors and both supported synchronous transport choices.

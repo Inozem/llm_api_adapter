@@ -14,7 +14,7 @@ Run these checks **after implementation**, from the actual repository root (`llm
 & .\.venv\Scripts\python.exe -m pytest -q -m unit tests/unit/llm_registry tests/unit/conformance tests/unit/test_organization_plugins.py
 ```
 
-Expected: every first-party registered model has a complete profile; a missing/unknown capability or missing evidence mapping fails a deterministic test. A legacy third-party plugin can still register without a profile, but a request to certify it through profile-based selection fails clearly. Package-local checks do not suppress applicable common checks.
+Expected: every first-party registered model has an explicit `capability_exceptions` list, including an empty list when it follows the baseline. Each unlisted capability selects its baseline-positive scenario; each declared exception selects its documented check. A missing profile, invalid exception, or missing evidence fails deterministically. A legacy third-party plugin can still register without a profile, but profile-based certification fails clearly. An exception check replaces only the positive scenario for that same capability.
 
 ## 2. Validate cached usage and prices
 
@@ -40,7 +40,7 @@ Expected: all known external organizations match their Core extras, package mani
 & .\.venv\Scripts\python.exe -m pytest --collect-only -q --import-mode=importlib -m e2e_zai tests/e2e
 ```
 
-Expected: model-specific positive and exception scenarios are collected according to registered profiles; unknown profile states fail collection instead of silently deselecting tests. Collection must not require `ZAI_API_KEY` or make a provider call. Repeat for the other provider markers in `pytest.ini` as part of release preparation.
+Expected: baseline-positive scenarios are collected for each exact model unless its exception list routes that capability to a documented exception scenario. Missing profiles, invalid exceptions, and missing evidence fail collection instead of silently deselecting tests. Collection must not require `ZAI_API_KEY` or make a provider call. Repeat for the other provider markers in `pytest.ini` as part of release preparation.
 
 ## 5. Run the full deterministic gate
 

@@ -44,6 +44,7 @@ def test_only_model_dependent_capabilities_can_be_profile_decisions(capability_m
         "message_normalization",
         "transport_parity",
         "error_normalization",
+        "request_rule_fidelity",
         "pricing_correctness",
         "missing_usage_honesty",
     ):

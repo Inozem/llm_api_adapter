@@ -9,17 +9,16 @@ This document describes the planning-level data contracts. It does not replace t
 | Field | Meaning | Validation |
 | --- | --- | --- |
 | `id` | Stable identifier derived from one observable baseline behavior or variant | Unique; no undeclared identifier is accepted |
-| `scope` | `model-dependent` or `always-on` | Only model-dependent entries receive model decisions |
+| `scope` | `model-dependent` or `always-on` | Only model-dependent entries may be listed as exceptions; always-on scenarios are unconditional |
 | `positive_scenarios` | Applicable common scenarios for confirmed support | At least one scenario or an explicit explanation for a non-E2E-only check |
 | `exception_scenarios` | Common or package-local checks of documented refusal/special behavior | Required when a model declares an exception |
 
-The initial catalogue covers exact-model decisions for text/chat modes, synchronous and asynchronous streaming, application tools and `tool_choice` variants, portable structured output, supported image/document forms, reasoning controls and events, continuation, usage availability, refusal, and incomplete outcomes. Scenario granularity must preserve meaningful variants such as image URL versus bytes, PDF forms, and restricted tool-choice modes. Facade/discovery, message and error normalization, transport parity/cleanup, pricing correctness, and missing-usage honesty are always-on checks. The complete catalogue is derived from the existing baseline and shared scenario inventory during implementation, then version-controlled and tested.
+The initial catalogue covers exact-model exceptions for text/chat modes, synchronous and asynchronous streaming, application tools and `tool_choice` variants, portable structured output, supported image/document forms, reasoning controls and events, continuation, usage availability, refusal, and incomplete outcomes. Scenario granularity must preserve meaningful variants such as image URL versus bytes, PDF forms, and restricted tool-choice modes. Facade/discovery, message and error normalization, transport parity/cleanup, request-rule fidelity, pricing correctness, and missing-usage honesty are always-on checks. The catalogue is derived from the existing baseline and shared scenario inventory, then version-controlled and tested.
 
 The ID trace below is planning documentation for the canonical baseline. Runtime metadata and executable tests use stable capability IDs and scopes; they do not read specification files or carry requirement numbers.
 
 | Scope | Capability IDs | Baseline requirements |
 | --- | --- | --- |
-| Model-dependent | `text_chat` | FR-004, FR-005 |
 | Model-dependent | `sync_chat`, `async_chat` | FR-004 |
 | Model-dependent | `sync_streaming`, `async_streaming` | FR-004, FR-006, FR-017 |
 | Model-dependent | `application_tools`, `tool_choice_auto`, `tool_choice_none`, `tool_choice_any`, `tool_choice_named` | FR-007 |
@@ -39,24 +38,27 @@ The ID trace below is planning documentation for the canonical baseline. Runtime
 | Always-on | `schema_validation` | FR-008 |
 | Always-on | `error_normalization` | FR-012, FR-016 |
 | Always-on | `registry_exactness` | FR-010, FR-011 |
+| Always-on | `request_rule_fidelity` | FR-019 |
 | Always-on | `pricing_correctness` | FR-010, FR-015 |
 | Always-on | `missing_usage_honesty` | FR-015 |
 
-## Model capability profile
+FR-013 (base dependency boundary), FR-020 (optional-package capability documentation), and FR-021 (optional-package E2E profile and evidence) are baseline obligations outside exact-model scenario selection. They remain in installation, package, and release validation; a model profile cannot turn them off.
+
+## Model exception profile
 
 **Owner**: Exact model entry in a built-in or external organization's registry metadata.
 
 | Field | Meaning | Validation |
 | --- | --- | --- |
 | `model_id` | Existing exact registered model identifier | Existing registry uniqueness and alias rules apply |
-| `decisions` | One decision per model-dependent catalogue ID | Complete for first-party models; no unknown key or missing status |
-| `status` | `supported` or `exception` | No implicit false or fallback status |
-| `exception_behavior` | Exact expected rejection or provider-specific normalized behavior | Required for `exception`; absent for `supported` |
-| `variant_limits` | Explicit supported or excluded forms within a capability | Cannot silently broaden a parent decision |
+| `capability_exceptions` | Explicit deviations from the canonical baseline | Required for each first-party model; may be empty; IDs must be known, unique, and model-dependent |
+| `capability_id` | Canonical capability ID whose baseline behavior differs | Must match one catalogue entry; always-on IDs cannot be excepted |
+| `behavior` | Verified expected rejection or provider-specific normalized behavior | Required for every exception |
+| `variant_limits` | Exact supported or excluded forms within a declared exception | Cannot silently broaden the exception |
 
-An older third-party package that uses the current plugin API may have no profile and can still register and serve requests. Such a model is **uncertified**, not implicitly unsupported: a profile-based conformance or E2E selector must raise a clear error. This preserves `OrganizationPlugin` registration compatibility while satisfying the requirement that unknown capability status never skips a test. A first-party profile missing a decision fails deterministic validation before release.
+For first-party models, the explicit `capability_exceptions` field is required even when empty. Every applicable model-dependent capability absent from that list is tested against the baseline-positive scenario. An undocumented model deviation therefore fails its positive check; omission never skips a scenario. An older third-party package that uses the current plugin API may have no profile and can still register and serve requests, but it is **uncertified**: profile-based conformance or E2E selection must raise a clear error. This preserves `OrganizationPlugin` registration compatibility.
 
-**Evidence relationship**: Each `supported` decision maps to common positive scenarios. Each `exception` maps to a common rejection/special-behavior scenario or a package-local scenario. The selector checks that mapping; the registry records model facts rather than test node IDs. Package-local evidence never removes an applicable common scenario.
+**Evidence relationship**: Each applicable model-dependent capability maps to a common baseline-positive scenario. A declared exception routes that exact model and capability to a common rejection/special-behavior scenario or a package-local scenario instead. Other applicable common scenarios remain selected. The selector checks that mapping; the registry records model facts rather than test node IDs. Always-on scenarios run regardless of the exception list.
 
 ## Pricing tier and selected rate set
 
@@ -116,7 +118,7 @@ A repository validation test compares these sources and reports the missing/mism
 
 ## State transitions
 
-1. **Registry load**: Parse existing model metadata and optional new fields. First-party profile validation must pass before release; legacy third-party metadata remains loadable.
-2. **Scenario selection**: Resolve one exact model profile. A complete profile selects positive or exception evidence; a missing/unknown status produces a profile error, never a deselection.
+1. **Registry load**: Parse existing model metadata and optional new fields. A first-party profile must contain a valid `capability_exceptions` list before release; legacy third-party metadata remains loadable.
+2. **Scenario selection**: Resolve one exact model profile. Select baseline-positive evidence for each applicable model-dependent capability, then route declared exceptions to their documented evidence. A missing profile or invalid exception produces a profile error, never a deselection.
 3. **Response accounting**: Parse provider usage → validate cached subset and selected rate context → calculate known components → expose a complete total only if every incurred component is known.
 4. **Release validation**: Compare package identity sources → run deterministic conformance → use the existing independent post-publish provider lane for authorized live evidence.
