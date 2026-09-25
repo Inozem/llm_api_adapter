@@ -1,0 +1,130 @@
+# Feature Specification: Core / Plugin Architecture Refactor (0.9.8)
+
+**Feature Branch**: Not created (specification prepared on `main`)
+**Created**: 2026-09-25
+**Status**: Draft
+**Input**: User description: "Prepare Core 0.9.8 as a refactor of the boundary between Core and independently versioned organization packages, following the LLM API Adapter Implementation Plan in Notion."
+
+## User Scenarios & Testing *(mandatory)*
+
+### User Story 1 - Trust Each Model's Capability Profile (Priority: P1)
+
+A maintainer can inspect a registered model and see which parts of the established Core contract it supports and which have a confirmed exception. An application developer can rely on those declarations when selecting a model.
+
+**Why this priority**: A missing declaration must not make a model appear conformant or silently remove required evidence.
+
+**Independent Test**: Review every registered model against the existing baseline. Remove one status in a test profile and verify that the profile is rejected.
+
+**Acceptance Scenarios**:
+
+1. **Given** a registered model with confirmed support for a baseline capability, **When** its profile is inspected, **Then** the support decision explicitly names the canonical capability.
+2. **Given** a registered model with a confirmed exception, **When** its profile is inspected, **Then** the exact exception and expected unsupported or special behavior are explicit.
+3. **Given** a registered model whose status for a baseline capability is unknown or absent, **When** its profile is validated, **Then** validation fails instead of treating the capability as unsupported or skipping its checks.
+
+---
+
+### User Story 2 - Get Complete Common Contract Evidence (Priority: P1)
+
+A provider maintainer runs conformance and authorized live verification for a model. The applicable common scenarios are selected from that model's confirmed capability profile, with package-specific checks supplementing the common evidence.
+
+**Why this priority**: Every model needs evidence for what it claims to support and for each declared exception, without manually maintained gaps in test selection.
+
+**Independent Test**: For representative built-in and external models, compare selected common scenarios with their profiles. Confirm that support selects a positive check, an exception selects a check of documented behavior, and an unknown status fails selection.
+
+**Acceptance Scenarios**:
+
+1. **Given** a model that supports a baseline capability, **When** conformance or E2E selection is prepared, **Then** the applicable shared positive scenario is selected.
+2. **Given** a model with an explicit capability exception, **When** selection is prepared, **Then** its documented rejection or special behavior is checked by a shared or package-specific scenario.
+3. **Given** a package-specific scenario for a supported common capability, **When** package checks are selected, **Then** the applicable shared scenario remains selected.
+4. **Given** a provider-specific CI line, **When** its tests are selected, **Then** line selection and credential access remain independently controlled and credentials remain unavailable to pull-request checks.
+
+---
+
+### User Story 3 - Read Honest Cached Input Accounting (Priority: P2)
+
+An application developer can read provider-confirmed cached input tokens and a corresponding standard-rate cost estimate when the selected model has a verified cached-input price. The developer never sees an assumed cache hit or fabricated total when usage is incomplete.
+
+**Why this priority**: Cached input can materially change the cost estimate, but partial provider usage must not look like complete billing evidence.
+
+**Independent Test**: Compare results with complete cached-token usage, missing cached-token usage, malformed usage, and a model without a verified cached-input rate. Include a model whose pricing cannot be represented by one static rate.
+
+**Acceptance Scenarios**:
+
+1. **Given** a model with a verified cached-input price and complete provider-confirmed usage, **When** a response is accounted for, **Then** cached input is identified and priced separately from ordinary input without double counting.
+2. **Given** usage that does not confirm a cache hit or its token quantity, **When** a response is accounted for, **Then** no cached quantity or savings are invented and an incomplete total is not presented as complete.
+3. **Given** tiered or otherwise non-static pricing, **When** cached usage is priced, **Then** the applicable existing rate rules remain correct.
+
+---
+
+### User Story 4 - Keep External Organizations Consistent (Priority: P2)
+
+A release maintainer can verify that every supported external organization has consistent identity and distribution naming across Core discovery, optional installation declarations, E2E profiles, and CI line selection.
+
+**Why this priority**: Drift between these sources can make an installable provider undiscoverable or leave its verification line incomplete.
+
+**Independent Test**: Check the current external organization inventory, then introduce a missing package declaration or mismatched name in a test fixture and confirm that deterministic validation fails.
+
+**Acceptance Scenarios**:
+
+1. **Given** current supported external organizations, **When** their metadata is checked, **Then** each organization and distribution name matches across all four sources.
+2. **Given** a missing external package or a conflicting distribution name, **When** deterministic validation runs, **Then** it identifies the affected organization and conflicting source.
+3. **Given** a correctly installed external organization, **When** a caller selects it through the existing facade, **Then** discovery and public behavior remain backward compatible.
+
+### Edge Cases
+
+- A capability is omitted, unverified, or given an unrecognized status: the model profile is invalid; test selection cannot silently skip it.
+- A model declares an exception but neither common nor package-specific checks cover its documented outcome: validation identifies the evidence gap.
+- A package-specific test duplicates a common scenario: the common scenario is still required.
+- A provider reports cached tokens without enough total input usage to establish complete accounting, or reports inconsistent quantities: confirmed fields may be retained, but unconfirmed costs and a complete total are unavailable. A parsed, omitted input or output count remains `None`; an explicitly reported zero remains `0`. Direct `Usage` construction retains its existing zero defaults and first three positional arguments.
+- A cached-input price is absent or unverified: usage may be reported if confirmed, while cached-input cost remains unavailable.
+- A pricing schedule has tiers or other conditional rates: a new cached-input rate does not flatten or bypass those rules.
+- An external organization is absent from one metadata source, uses a different distribution name, or lacks an E2E profile: deterministic validation fails with an actionable mismatch.
+- A user selects a known but uninstalled external organization: existing installation guidance remains distinct from an unknown-organization error.
+
+## Requirements *(mandatory)*
+
+### Functional Requirements
+
+- **FR-001**: Core 0.9.8 MUST reuse `specs/001-baseline-contract/spec.md` as the existing provider-neutral baseline and MUST NOT redefine its admission criteria in this feature. After implementation, the baseline's observable usage and pricing clauses MUST be synchronized with the additive 0.9.8 response behavior.
+- **FR-002**: The model registry MUST be the authoritative source for each registered model's confirmed baseline capabilities and exact exceptions. Package placement MUST NOT be used to infer capability support.
+- **FR-003**: Each applicable baseline capability in a registered model profile MUST have an explicit confirmed support or explicit exception status. An unknown, missing, or unrecognized status MUST invalidate the profile and MUST NOT authorize a skipped check.
+- **FR-004**: Each explicit exception MUST identify the expected rejection or special behavior closely enough to verify it without weakening the shared baseline.
+- **FR-005**: Conformance and E2E scenario selection MUST derive applicable common checks for each model from its confirmed profile. Confirmed support MUST select a positive common check; an explicit exception MUST select a check of the documented outcome in the common or package-specific suite.
+- **FR-006**: Package-specific checks MUST supplement, and MUST NOT replace, applicable common checks. A declared capability or exception without appropriate verification MUST be reported as a coverage gap.
+- **FR-007**: Selection of a provider's CI line and access to that provider's credentials MUST remain separate from model-capability-based scenario selection. Pull-request checks MUST remain deterministic and credential-free.
+- **FR-008**: The model registry MUST allow an optional, verified cached-input price for a model. A missing or unverified price MUST NOT be inferred from ordinary input pricing.
+- **FR-009**: Usage and cost reporting MUST distinguish provider-confirmed cached input from ordinary input, avoid double counting, and MUST NOT infer a cache hit or quantity from incomplete provider usage.
+- **FR-010**: A complete cost total MUST be reported only when all incurred components needed for that total are confirmed and priceable. In provider-parsed partial usage, an omitted input or output token count MUST remain `None`, distinct from an explicitly reported `0`; the existing `Usage` constructor order and defaults MUST remain valid. Existing tiered and other non-static pricing semantics MUST remain correct.
+- **FR-011**: A deterministic consistency check MUST cover external organization identities and distribution names across Core organization discovery, optional installation declarations, E2E profiles, and CI line selection; missing or conflicting entries MUST fail with an actionable result.
+- **FR-012**: Safe metadata duplication MAY be removed, but the existing public facade, provider discovery behavior, optional installation experience, provider contracts, independent package release jobs, and credential boundaries MUST remain backward compatible. The documented `None` correction for omitted counts in provider-parsed partial usage requires migration guidance for callers that perform arithmetic on token counts.
+- **FR-013**: The refactor MUST pass applicable shared conformance checks and backward-compatibility checks for built-in and external organizations without requiring changes to existing callers.
+- **FR-014**: Core 0.9.8 MUST NOT move xAI or another external organization into Core, add a public cache-control capability, change provider contracts, or begin the service-provider/deployment-profile layer.
+
+### Key Entities
+
+- **Canonical baseline capability**: An externally observable behavior already defined by `specs/001-baseline-contract/spec.md`.
+- **Model capability profile**: A registered model's confirmed support decisions and exact exceptions against that baseline.
+- **Scenario evidence**: A positive common check or a check of an explicit rejection or special behavior; package-specific evidence is additional where required.
+- **Cached input usage**: The portion of input tokens explicitly reported by a provider as cached, with no locally assumed cache hit.
+- **Cached input price**: An optional verified rate or pricing rule applicable to confirmed cached input.
+- **External organization identity**: The organization key and its separately installable distribution name, consistently represented across discovery, installation, E2E, and CI metadata.
+
+## Success Criteria *(mandatory)*
+
+### Measurable Outcomes
+
+- **SC-001**: Every first-party model included in the Core 0.9.8 and six external organization catalogues has an explicit, valid status for every applicable canonical baseline capability; removing any required status causes validation to fail. A legacy third-party plugin without a profile remains usable at runtime but cannot pass profile-based certification.
+- **SC-002**: For every tested model, 100% of confirmed supported capabilities select their applicable common positive scenarios, and 100% of explicit exceptions select a check of their documented outcome.
+- **SC-003**: No applicable common scenario is removed by the presence of a package-specific check; a missing scenario or unknown capability status fails deterministic validation.
+- **SC-004**: Deterministic accounting examples with complete cached usage produce the expected quantity and cost without double counting. In partial provider-parsed usage, omitted input or output counts are `None` in the public `Usage` value, while explicit reported zero remains `0`; neither partial nor malformed usage produces a fabricated cache hit or complete total. Direct `Usage` construction remains compatible.
+- **SC-005**: Every supported external organization has matching identity and distribution name across the four existing metadata sources; a single missing entry or name mismatch is detected by a deterministic check.
+- **SC-006**: Existing caller-facing conformance and compatibility scenarios pass for all affected built-in and external organizations, including existing installation errors and both supported synchronous transport choices.
+- **SC-007**: Provider credentials remain absent from pull-request checks, and each provider's separate release and E2E line remains available after the refactor.
+
+## Assumptions
+
+- The 0.9.8 scope comes from the [LLM API Adapter Implementation Plan](https://app.notion.com/p/34f33dd99fc8812ea5f2eae262910ab3), specifically “Следующий этап — 0.9.8: Core / Plugin Architecture Refactor.”
+- The existing baseline specification defines the capabilities; this feature records model decisions against it rather than copying or revising that contract.
+- A cached-input rate is added only when verified for the exact model and pricing context. No provider-wide default, cache-hit estimate, or user-facing cache-control behavior is assumed.
+- The current organization inventory and existing public behavior are the starting compatibility target; metadata cleanup is permitted only where the same behavior and release isolation are preserved.
+- Provider-specific live checks remain subject to the project's established authorization and post-publish release gates. The specification does not authorize a live run or publication.
