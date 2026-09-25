@@ -15,6 +15,33 @@ This document describes the planning-level data contracts. It does not replace t
 
 The initial catalogue covers exact-model decisions for text/chat modes, synchronous and asynchronous streaming, application tools and `tool_choice` variants, portable structured output, supported image/document forms, reasoning controls and events, continuation, usage availability, refusal, and incomplete outcomes. Scenario granularity must preserve meaningful variants such as image URL versus bytes, PDF forms, and restricted tool-choice modes. Facade/discovery, message and error normalization, transport parity/cleanup, pricing correctness, and missing-usage honesty are always-on checks. The complete catalogue is derived from the existing baseline and shared scenario inventory during implementation, then version-controlled and tested.
 
+The ID trace below is planning documentation for the canonical baseline. Runtime metadata and executable tests use stable capability IDs and scopes; they do not read specification files or carry requirement numbers.
+
+| Scope | Capability IDs | Baseline requirements |
+| --- | --- | --- |
+| Model-dependent | `text_chat` | FR-004, FR-005 |
+| Model-dependent | `sync_chat`, `async_chat` | FR-004 |
+| Model-dependent | `sync_streaming`, `async_streaming` | FR-004, FR-006, FR-017 |
+| Model-dependent | `application_tools`, `tool_choice_auto`, `tool_choice_none`, `tool_choice_any`, `tool_choice_named` | FR-007 |
+| Model-dependent | `structured_output_schema`, `structured_output_model` | FR-008 |
+| Model-dependent | `image_url`, `image_bytes`, `image_data_url`, `pdf_url`, `pdf_bytes` | FR-009 |
+| Model-dependent | `reasoning_control` | FR-010, FR-018 |
+| Model-dependent | `reasoning_events` | FR-018 |
+| Model-dependent | `provider_continuation` | FR-014 |
+| Model-dependent | `usage_reporting` | FR-005, FR-015 |
+| Model-dependent | `refusal_outcome`, `incomplete_outcome` | FR-005 |
+| Always-on | `facade_discovery` | FR-001, FR-002 |
+| Always-on | `message_normalization` | FR-003 |
+| Always-on | `response_normalization` | FR-005 |
+| Always-on | `transport_parity` | FR-004 |
+| Always-on | `stream_cleanup` | FR-006, FR-017 |
+| Always-on | `tool_validation` | FR-007 |
+| Always-on | `schema_validation` | FR-008 |
+| Always-on | `error_normalization` | FR-012, FR-016 |
+| Always-on | `registry_exactness` | FR-010, FR-011 |
+| Always-on | `pricing_correctness` | FR-010, FR-015 |
+| Always-on | `missing_usage_honesty` | FR-015 |
+
 ## Model capability profile
 
 **Owner**: Exact model entry in a built-in or external organization's registry metadata.

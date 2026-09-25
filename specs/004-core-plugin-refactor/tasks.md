@@ -26,7 +26,7 @@
 
 **Purpose**: Establish one baseline capability vocabulary shared by profiles and test selection.
 
-- [ ] T002 Add failing catalogue tests in `tests/unit/llm_registry/test_model_capabilities.py` that trace each model-dependent identifier to `specs/001-baseline-contract/spec.md`, retain distinct streaming/tool-choice/image/PDF/reasoning/outcome variants, reject duplicate or unknown IDs, and classify facade, normalization, transport, errors, pricing, and missing-usage honesty as always-on.
+- [x] T002 Add failing catalogue tests in `tests/unit/llm_registry/test_model_capabilities.py` for unique stable IDs, distinct streaming/tool-choice/image/PDF/reasoning/outcome variants, duplicate or unknown IDs, and the `model-dependent` versus `always-on` scope. Keep the catalogue as the single executable list of IDs and baseline traceability in `data-model.md`.
 - [ ] T003 Implement the version-controlled capability IDs and `model-dependent` versus `always-on` scope in `src/llm_api_adapter/llm_registry/model_capabilities.py`; keep pytest scenario node IDs out of runtime metadata and make T002 pass.
 
 **Checkpoint**: Profiles and selectors can refer to the same canonical capability IDs without making Core invariants optional.
