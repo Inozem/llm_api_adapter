@@ -47,4 +47,102 @@
 
 **Rationale**: The constitution requires deterministic PR checks and segregated paid E2E. `.github/workflows/ci-dev.yml` already runs the Python matrix and a canonical 3.10 coverage floor of 90%. The existing release workflow already owns provider-specific secrets and candidate installation.
 
-**Remaining implementation work, not unresolved design**: Verify the exact capability decisions and any new cached-input rates against each organization's authoritative documentation before editing registry data. Map every shared scenario to its baseline capability or cross-cutting invariant, and update affected package expectations. These are explicit tasks for `$speckit-tasks`; no design decision remains unresolved.
+**Remaining work**: Verify the exact capability decisions and any new cached-input rates against each organization's authoritative documentation before editing registry data. Map every shared scenario to its baseline capability or cross-cutting invariant, and update affected package expectations. The public missing-count compatibility choice remains unresolved: FR-013 promises no caller changes, while the proposed `None` correction requires callers doing arithmetic to adapt. Resolve that constitution-level conflict before changing `Usage`.
+
+## 6. T001 baseline-to-code audit (2026-09-25 snapshot)
+
+This is an inventory of the current repository, not a capability or price certification. No live model/API request was made. The canonical source of required behavior is `specs/001-baseline-contract/spec.md`; model declarations and official rates still require the exact-model checks in T007–T015 and T034.
+
+### Baseline requirements and existing evidence
+
+| Baseline requirements | Current implementation boundary | Deterministic evidence to preserve or extend |
+| --- | --- | --- |
+| FR-001, FR-002, FR-010, FR-011, FR-020, FR-021: facade, built-ins, exact models, external packages and profiles | `src/llm_api_adapter/universal_adapter.py`, `organization_registry.py`, `service_provider_registry.py`, `llm_registry/llm_registry.py`, nine JSON catalogues, and six package `plugin.py`/registry modules | `tests/unit/test_universal_adapter.py`, `test_organization_plugins.py`, `test_organization_profile_compatibility.py`, `tests/unit/llm_registry/test_llm_registry.py`, package scaffold tests, `tests/e2e/conftest.py` |
+| FR-003, FR-009: typed messages and image/PDF forms | `models/messages/chat_message.py`, `models/messages/file_parts.py`, built-in adapter `payloads.py`, external package adapters and Mistral `documents.py` | `tests/integration/test_vision.py`, `test_documents.py`, `tests/e2e/test_vision.py`, `test_file_uploads.py`, package file-contract tests |
+| FR-004, FR-006, FR-017: sync/async calls, text streams and finalization order | `adapters/base_adapter.py`, `llms/{requests_transport,httpx_transport,async_streaming,streaming}.py`, `models/responses/stream_chunk.py`, built-in and external streaming parsers | `tests/unit/adapters/test_async_parity.py`, `test_async_lifecycle.py`, `tests/unit/streaming/test_chunk_buffer.py`, `tests/integration/test_streaming.py`, `tests/e2e/test_streaming.py`, `test_async.py` |
+| FR-005, FR-014, FR-018: response, continuation and opt-in reasoning | `models/responses/chat_response.py`, `models/responses/reasoning_event.py`, `llm_registry/reasoning.py`, `adapters/base_adapter.py`, provider payload and streaming parsers | `tests/unit/models/responses/test_chat_response.py`, `tests/unit/llm_registry/test_reasoning.py`, `tests/unit/conformance/test_facade_contract.py`, `tests/e2e/test_tools_auto_loop.py` |
+| FR-007, FR-008, FR-019: tools, portable structured output and request rules | `models/tools/`, `adapters/structured_output.py`, `llm_registry/request_rules.py`, `llms/request_rules.py`, `llms/openai/sync_client.py`, `adapters/anthropic/payloads.py`, model JSON `request_rules` | `tests/unit/adapters/test_request_rule_conformance.py`, `tests/unit/conformance/test_portable_profile_matrix.py`, `tests/e2e/test_json_schema.py` |
+| FR-012, FR-016: normalized errors | `errors/`, `adapters/base_adapter.py`, provider adapter/client error mappings | `tests/unit/errors/`, `tests/e2e/test_errors.py`, package adapter tests |
+| FR-013: minimal installation and optional transports | Core `pyproject.toml` extras, transport modules, six package manifests | `tests/unit/llms/test_sync_transport_characterization.py`, `test_httpx_transport.py`, `tests/e2e/test_sync_httpx.py` |
+| FR-015: reported usage and separately metered costs | `models/responses/chat_response.py`, `adapters/base_adapter.py`, `llm_registry/llm_registry.py`, Mistral `documents.py`, external cache-pricing modules | `tests/unit/adapters/test_pricing_lifecycle.py`, `test_base_adapter.py`, `tests/unit/models/responses/test_chat_response.py`, `tests/unit/conformance/test_portable_profile_matrix.py`, affected package tests |
+
+The baseline's SC-001–SC-005 are exercised across the facade, response, transport, and conformance tests above. SC-006 and the organization release standard depend on `tests/e2e/`, package-local E2E tests, `.github/scripts/select_e2e_lanes.py`, and `.github/workflows/ci-dev-release.yml`; collection and mocked tests provide local evidence, while live provider evidence remains a later release gate.
+
+### Exact model inventory
+
+The nine `models` objects contain **57 entries**: 43 built in and 14 external. The count is a snapshot, not a hard-coded admission limit. The following names are registry keys, not independently verified capability claims.
+
+| Catalogue | Count | Current exact model IDs |
+| --- | ---: | --- |
+| `src/llm_api_adapter/llm_registry/organizations/openai.json` | 20 | `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini` |
+| `src/llm_api_adapter/llm_registry/organizations/anthropic.json` | 12 | `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5-5`, `claude-opus-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5` |
+| `src/llm_api_adapter/llm_registry/organizations/google.json` | 11 | `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` |
+| `packages/organizations/mistral/src/llm_api_adapter_mistral/registry/organizations/mistral.json` | 3 | `mistral-small-2603`, `mistral-medium-3-5`, `mistral-large-2512` |
+| `packages/organizations/xai/src/llm_api_adapter_xai/registry/organizations/xai.json` | 3 | `grok-4.7`, `grok-4.6`, `grok-4.5` |
+| `packages/organizations/qwen/src/llm_api_adapter_qwen/registry/organizations/qwen.json` | 4 | `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, `qwen3.7-flash` |
+| `packages/organizations/kimi/src/llm_api_adapter_kimi/registry/organizations/kimi.json` | 2 | `kimi-k3`, `kimi-k2.6` |
+| `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/organizations/deepseek.json` | 1 | `deepseek-flash` |
+| `packages/organizations/zai/src/llm_api_adapter_zai/registry/organizations/zai.json` | 1 | `glm-5.3-flash` |
+
+Model-specific reasoning, limits, pricing tiers, and request restrictions currently live in those JSON entries. `llm_registry/llm_registry.py` parses them into `ModelSpec`, `Pricing`, and `PricingTier`; `llm_registry/request_rules.py`, `llms/request_rules.py`, `llm_registry/reasoning.py`, `llms/openai/sync_client.py`, and `adapters/anthropic/payloads.py` consume the corresponding decisions. Organization adapters and package compatibility tests carry further provider-specific handling. `tests/e2e/conftest.py` currently has only organization-wide feature sets; `tests/unit/conformance/test_portable_profile_matrix.py` separately stores `_TERMINAL_OUTCOME_CAPABILITIES`. Neither is an exact-model profile.
+
+### Shared interface callers and subclass inventory
+
+| Shared interface | Definition, direct callers and compatibility surface | Tests that exercise the surface |
+| --- | --- | --- |
+| `ModelSpec` | Defined and constructed in `src/llm_api_adapter/llm_registry/llm_registry.py`; resolved by `adapters/base_adapter.py` and `llms/request_rules.py`; reasoning read by `llm_registry/reasoning.py` and `llms/openai/sync_client.py`; request-rule limits read by `adapters/anthropic/payloads.py`. `organization_registry.py`, six external `plugin.py`/registry modules, their adapters, and `tests/e2e/harness.py` load or pass model metadata. No `ModelSpec` subclass was found in repository Python files. | `tests/unit/llm_registry/test_llm_registry.py`, `test_reasoning.py`, `tests/unit/adapters/test_request_rule_conformance.py`, `test_base_adapter.py`, `tests/unit/test_organization_plugins.py`, `test_organization_profile_compatibility.py`, package adapter/capability tests, shared conformance tests |
+| `PricingTier` / `Pricing` | Defined in `llm_registry/llm_registry.py`; `ModelSpec.from_dict` parses tiers, `Pricing.tier_for_prompt_tokens` selects a tier, and `Pricing.set_in_per_1m`, `set_out_per_1m`, and `set_currency` preserve public overrides. `adapters/base_adapter.py::_apply_response_pricing` selects a tier from `usage.input_tokens`. External cache modules consume or override the selected rates. No `PricingTier` or `Pricing` subclass was found. | `tests/unit/llm_registry/test_llm_registry.py`, `tests/unit/adapters/test_base_adapter.py`, `test_pricing_lifecycle.py`, `test_async_parity.py`, `tests/unit/conformance/test_facade_contract.py`, affected package tests |
+| `Usage` / `ChatResponse` | `models/responses/chat_response.py` defines `Usage`, the four direct `ChatResponse.from_*` factories, `apply_pricing`, and `apply_cost_breakdown`; `adapters/base_adapter.py` prices sync and final stream responses. Built-in `adapters/{openai,anthropic,google}/{payloads,streaming}.py` parse usage. `models/responses/stream_chunk.py::__post_init__` and `llms/streaming.py::StreamChunkBuffer._update_metadata` **copy only the first three token fields today**, so both must be audited when `cached_tokens` is added. `llms/streaming.py::StreamUsageTracker` retains usage references. External parsing lives in Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai adapters/streaming modules. `KimiUsage`, `DeepSeekUsage`, and `ZaiUsage` are the three repository subclasses; each already declares `cached_tokens`. | `tests/unit/models/responses/test_chat_response.py` calls factories directly; `tests/unit/streaming/test_chunk_buffer.py`, `tests/integration/test_streaming.py`, `tests/unit/adapters/{test_openai_adapter,test_anthropic_adapter,test_google_adapter,test_async_parity,test_base_adapter,test_pricing_lifecycle}.py`, shared conformance and package adapter tests |
+
+The current common factories use `.get(..., 0)` for omitted counts; Anthropic derives total from input plus output, and Google composes output from candidate and thought counts. Built-in stream parsers have separate usage normalization. External partial-usage paths include `packages/organizations/deepseek/src/llm_api_adapter_deepseek/streaming.py`, `packages/organizations/xai/src/llm_api_adapter_xai/streaming.py`, and `packages/organizations/qwen/src/llm_api_adapter_qwen/streaming.py`; these must be checked independently of the common factories. This inventory does not itself decide the compatibility question identified by `$speckit-analyze` about changing a public missing count from `0` to `None`.
+
+The public import paths to retain are `llm_api_adapter.models` and `llm_api_adapter.models.responses` (both re-export `Usage`/`ChatResponse`), direct `llm_api_adapter.models.responses.chat_response`, the adapter compatibility modules `llm_api_adapter.adapters.{openai_adapter,anthropic_adapter,google_adapter}`, and direct `llm_api_adapter.llm_registry.llm_registry` imports used by external packages. `src/llm_api_adapter/universal_adapter.py` imports those adapter compatibility modules. `llm_api_adapter.llms.streaming.stream_request` is also an explicit transport compatibility wrapper. Tests import both installed `llm_api_adapter.*` and local `src.llm_api_adapter.*` paths.
+
+### Current conformance and E2E selection
+
+- Shared mocked contract evidence is concentrated in `tests/unit/conformance/test_facade_contract.py`, `test_portable_profile_matrix.py`, `tests/unit/adapters/test_request_rule_conformance.py`, and `tests/integration/`. The outcome matrix contains a separate `_TERMINAL_OUTCOME_CAPABILITIES` map and an outcome-driven skip.
+- Common E2E files are `tests/e2e/test_llm_adapter_chat.py`, `test_streaming.py`, `test_tools_auto_loop.py`, `test_json_schema.py`, `test_vision.py`, `test_file_uploads.py`, `test_async.py`, `test_errors.py`, `test_sync_httpx.py`, and `test_mistral_ocr_costs.py`. `tests/e2e/conftest.py::pytest_collection_modifyitems` currently uses `@e2e_feature` markers with organization-wide `supported_features` and deselects unsupported combinations. Some shared chat, stream, and tool tests have no feature marker. `test_async.py` can skip a malformed or non-JSON structured result after a provider call.
+- Package-local exception evidence is in `packages/organizations/{zai,kimi,deepseek,qwen}/tests/e2e/` for documented file, reasoning, and structured-output boundaries. Mistral OCR has `tests/e2e/test_mistral_ocr_costs.py`; Mistral and xAI otherwise rely on shared E2E and package adapter tests. Existing negative tests must supplement, rather than replace, an applicable common positive scenario.
+- `tests/e2e/harness.py` and `tests/e2e/conftest.py` resolve registry models and lane profiles. `pytest.ini` defines separate `e2e_openai`, `e2e_anthropic`, `e2e_google`, `e2e_mistral`, `e2e_xai`, `e2e_qwen`, `e2e_kimi`, `e2e_deepseek`, and `e2e_zai` markers.
+
+### Cache pricing and non-token charge hooks
+
+| Owner | Current hook and behavior to preserve |
+| --- | --- |
+| Core | `llm_registry/llm_registry.py::PricingTier` has ordinary input/output rates and `Pricing.tier_for_prompt_tokens`; `adapters/base_adapter.py::_apply_response_pricing` selects the rate; `ChatResponse.apply_pricing` and `apply_cost_breakdown` set public aggregate costs. Built-in response and stream parsers supply `Usage`. |
+| Z.ai | `packages/organizations/zai/src/llm_api_adapter_zai/adapter.py` defines `ZaiUsage`, extracts `prompt_tokens_details.cached_tokens`, and applies `registry/cache_pricing.py::ZaiCachePricing`; the package's JSON catalogue and tests are additional evidence. |
+| Kimi | `packages/organizations/kimi/src/llm_api_adapter_kimi/adapter.py` defines `KimiUsage`, extracts `usage.cached_tokens`, and uses `registry/cache_pricing.py` with a per-model `cache_pricing` JSON block. Its current missing-split test assumes a cache miss. |
+| DeepSeek | `packages/organizations/deepseek/src/llm_api_adapter_deepseek/adapter.py` defines `DeepSeekUsage` and its pricing override; `registry/cache_pricing.py` selects peak/off-peak rates at dispatch time. The separate `streaming.py::_normalize_usage` parses Responses usage and must be audited too. |
+| Mistral | `packages/organizations/mistral/src/llm_api_adapter_mistral/adapter.py` parses token usage; `documents.py` and `ChatResponse.apply_cost_breakdown` keep OCR page charges separate from token cost. |
+| xAI and Qwen | Their adapter and streaming modules parse usage using distinct Responses/Messages paths; `xai/streaming.py` and `qwen/streaming.py` currently substitute zeros for omitted components. They require explicit partial-usage checks when common `Usage` changes. |
+
+### Package metadata, entry points and CI lane outputs
+
+`src/llm_api_adapter/organization_registry.py::KNOWN_ORGANIZATION_PACKAGES` declares all six known external distribution names and `ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP = "llm_api_adapter.organizations"` with API version 1. Core `pyproject.toml` declares the matching optional extras. Each package manifest declares one entry point in the same group; plugin modules expose `PLUGIN` and register through the existing service-provider registry.
+
+| Organization | Distribution and Core extra version range | Package entry point | Package Core dependency floor |
+| --- | --- | --- | --- |
+| Mistral | `llm-api-adapter-mistral>=0.1.1,<0.2.0` | `mistral = llm_api_adapter_mistral.plugin:PLUGIN` | `>=0.9.3,<1.0.0` |
+| xAI | `llm-api-adapter-xai>=0.1.1,<0.2.0` | `xai = llm_api_adapter_xai.plugin:PLUGIN` | `>=0.9.2,<1.0.0` |
+| Qwen | `llm-api-adapter-qwen>=0.1.0,<0.2.0` | `qwen = llm_api_adapter_qwen.plugin:PLUGIN` | `>=0.9.3,<1.0.0` |
+| Kimi | `llm-api-adapter-kimi>=0.1.0,<0.2.0` | `kimi = llm_api_adapter_kimi.plugin:PLUGIN` | `>=0.9.5,<1.0.0` |
+| DeepSeek | `llm-api-adapter-deepseek>=0.1.0,<0.2.0` | `deepseek = llm_api_adapter_deepseek.plugin:PLUGIN` | `>=0.9.6,<1.0.0` |
+| Z.ai | `llm-api-adapter-zai>=0.1.0,<0.2.0` | `zai = llm_api_adapter_zai.plugin:PLUGIN` | `>=0.9.7,<1.0.0` |
+
+`.github/scripts/select_e2e_lanes.py::E2ELaneSelection.github_outputs` currently emits `core`, `shared_core`, three `core_{openai,anthropic,google}_e2e` values, and `{kimi,mistral,xai,qwen,deepseek,zai}` plus matching `*_e2e` values. Shared Core paths select every affected organization lane; provider paths select their own lanes; changed shared E2E harness paths select E2E lanes without changing package candidate publication. The selector reads paths only and does not inspect capability profiles. `tests/unit/test_ci_e2e_lane_selection.py` covers this behavior. `.github/workflows/ci-dev.yml` runs Python 3.10–3.14 with a 90% coverage floor on 3.10 and no provider keys in the PR test job. `.github/workflows/ci-dev-release.yml` has separate Core/package TestPyPI publication and post-publish jobs, each with its own provider credential and marker. No model profile or package metadata should grant a credential or merge those jobs.
+
+### Official provider source starting points
+
+These vendor pages were reachable on 2026-09-25. They identify where later tasks must check **each exact registry model and applicable pricing context**; merely listing a source here does not certify a model's support, cached rate, region, tier, or availability.
+
+| Organization | Model/capability source | Pricing or cache source |
+| --- | --- | --- |
+| OpenAI | [API model directory](https://developers.openai.com/api/docs/models) | [API pricing](https://developers.openai.com/api/docs/pricing) |
+| Anthropic | [Claude model overview](https://platform.claude.com/docs/en/models/overview) | [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing) |
+| Google | [Gemini models](https://ai.google.dev/gemini-api/docs/models) | [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) and [context caching](https://ai.google.dev/gemini-api/docs/generate-content/caching) |
+| Mistral | [Model directory](https://docs.mistral.ai/models) | [Inference pricing](https://docs.mistral.ai/inference/pricing) |
+| xAI | [Grok models](https://docs.x.ai/developers/models) | [API pricing](https://docs.x.ai/developers/pricing) and [cached usage](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing) |
+| Qwen | [Model Studio model listing](https://help.aliyun.com/zh/model-studio/list-models) | [Model Studio pricing](https://help.aliyun.com/zh/model-studio/model-pricing) and [context cache](https://help.aliyun.com/zh/model-studio/context-cache); check region and currency |
+| Kimi | [Kimi model list](https://platform.kimi.ai/docs/models) | [Kimi API platform pricing](https://platform.kimi.ai/) and [context caching](https://platform.kimi.ai/docs/guide/context-caching) |
+| DeepSeek | [Models and pricing](https://api-docs.deepseek.com/quick_start/pricing/) | [Context caching](https://api-docs.deepseek.com/guides/kv_cache/); check dispatch-time peak/off-peak rules |
+| Z.ai | [GLM model overview](https://docs.z.ai/guides/overview/overview) | [GLM pricing](https://docs.z.ai/guides/overview/pricing) |

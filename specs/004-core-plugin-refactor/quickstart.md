@@ -19,7 +19,7 @@ Expected: every first-party registered model has a complete profile; a missing/u
 ## 2. Validate cached usage and prices
 
 ```powershell
-& .\.venv\Scripts\python.exe -m pytest -q -m unit tests/unit/models/responses tests/unit/adapters/test_base_adapter.py tests/unit/adapters/test_pricing_lifecycle.py tests/unit/adapters/test_openai_adapter.py tests/unit/adapters/test_anthropic_adapter.py tests/unit/adapters/test_google_adapter.py
+& .\.venv\Scripts\python.exe -m pytest -q -m unit tests/unit/models/responses tests/unit/streaming/test_chunk_buffer.py tests/unit/adapters/test_base_adapter.py tests/unit/adapters/test_pricing_lifecycle.py tests/unit/adapters/test_openai_adapter.py tests/unit/adapters/test_anthropic_adapter.py tests/unit/adapters/test_google_adapter.py
 & .\.venv\Scripts\python.exe -m pytest -q --ignore=packages/organizations/zai/tests/e2e --ignore=packages/organizations/kimi/tests/e2e --ignore=packages/organizations/deepseek/tests/e2e -m "unit or integration" packages/organizations/zai/tests packages/organizations/kimi/tests packages/organizations/deepseek/tests
 & .\.venv\Scripts\python.exe -m pytest -q -m "unit or integration" packages/organizations/mistral/tests/test_mistral_adapter.py packages/organizations/xai/tests/test_xai_adapter.py packages/organizations/qwen/tests/test_qwen_adapter.py
 ```
