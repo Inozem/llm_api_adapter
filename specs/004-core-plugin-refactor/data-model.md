@@ -11,7 +11,7 @@ This document describes the planning-level data contracts. It does not replace t
 | `id` | Stable identifier derived from one observable baseline behavior or variant | Unique; no undeclared identifier is accepted |
 | `scope` | `model-dependent` or `always-on` | Only model-dependent entries may be listed as exceptions; always-on scenarios are unconditional |
 | `positive_scenarios` | Applicable common scenarios for confirmed support | At least one scenario or an explicit explanation for a non-E2E-only check |
-| `exception_scenarios` | Common or package-local checks of documented refusal/special behavior | Required when a model declares an exception |
+| `exception_scenarios` | Common or package-local checks keyed by `(capability_id, behavior_id)` | A non-`pass` pair needs one replacement route; a `pass` pair keeps the positive scenario and needs additive package evidence |
 
 The initial catalogue covers exact-model exceptions for text/chat modes, synchronous and asynchronous streaming, application tools and `tool_choice` variants, portable structured output, supported image/document forms, reasoning controls and events, continuation, usage availability, refusal, and incomplete outcomes. Scenario granularity must preserve meaningful variants such as image URL versus bytes, PDF forms, and restricted tool-choice modes. Facade/discovery, message and error normalization, transport parity/cleanup, request-rule fidelity, pricing correctness, and missing-usage honesty are always-on checks. The catalogue is derived from the existing baseline and shared scenario inventory, then version-controlled and tested.
 
@@ -51,15 +51,18 @@ FR-013 (base dependency boundary), FR-020 (optional-package capability documenta
 | Field | Meaning | Validation |
 | --- | --- | --- |
 | `model_id` | Existing exact registered model identifier | Existing registry uniqueness and alias rules apply |
-| `capability_exceptions` | Explicit deviations from the canonical baseline | Required for each first-party model; may be empty; IDs must be known, unique, and model-dependent |
+| `capability_exceptions` | Explicit model/provider limitations, including those compensated by the package | Required for each first-party model; may be empty; IDs must be known, unique, and model-dependent |
 | `capability_id` | Canonical capability ID whose baseline behavior differs | Must match one catalogue entry; always-on IDs cannot be excepted |
+| `behavior_id` | Stable code for the adapter's outcome; `pass` marks a compensated limitation | Required on every declared exception; lowercase ASCII identifier matching `^[a-z][a-z0-9_]*$` |
 | `behavior` | Verified expected rejection or provider-specific normalized behavior | Required for every exception |
 
 Capability IDs already identify meaningful variants separately (for example, `image_url` and `image_bytes`). An exception therefore applies to exactly its listed ID and has no nested variant overrides; this prevents a profile entry from silently broadening to neighboring capabilities.
 
-For first-party models, the explicit `capability_exceptions` field is required even when empty. Every applicable model-dependent capability absent from that list is tested against the baseline-positive scenario. An undocumented model deviation therefore fails its positive check; omission never skips a scenario. An older third-party package that uses the current plugin API may have no profile and can still register and serve requests, but it is **uncertified**: profile-based conformance or E2E selection must raise a clear error. This preserves `OrganizationPlugin` registration compatibility.
+The same `(capability_id, behavior_id)` pair may be reused by models with the same observable outcome. A `pass` exception records a provider limitation compensated by the package: Mistral PDF through OCR remains visible in the profile, selects the ordinary positive PDF scenario, and requires an additive package check for OCR routing and page cost. Distinct non-`pass` deviations for one capability need distinct behavior IDs. `behavior_id: null` is invalid, so compensated cases cannot silently lose their positive or additive evidence.
 
-**Evidence relationship**: Each applicable model-dependent capability maps to a common baseline-positive scenario. A declared exception routes that exact model and capability to a common rejection/special-behavior scenario or a package-local scenario instead. Other applicable common scenarios remain selected. The selector checks that mapping; the registry records model facts rather than test node IDs. Always-on scenarios run regardless of the exception list.
+For first-party models, the explicit `capability_exceptions` field is required even when empty. Every applicable model-dependent capability absent from that list, or listed with `behavior_id: "pass"`, is tested against the baseline-positive scenario. An undocumented model deviation therefore fails its positive check; omission never skips a scenario. An older third-party package that uses the current plugin API may have no profile and can still register and serve requests, but it is **uncertified**: profile-based conformance or E2E selection must raise a clear error. This preserves `OrganizationPlugin` registration compatibility.
+
+**Evidence relationship**: Each applicable model-dependent capability maps to a common baseline-positive scenario. A declared `pass` exception keeps that positive scenario and requires additive package evidence keyed by exact organization, model, and capability. A non-`pass` exception routes its `(capability_id, behavior_id)` pair to one common rejection/deviation scenario or a package-local scenario instead. The selector rejects missing or duplicate evidence and never parses the free-form `behavior` text. Behavior IDs are model facts rather than pytest node IDs; test locations remain in `tests/capability_scenarios.py`. Other applicable common scenarios remain selected. Always-on scenarios run regardless of the exception list.
 
 ## Pricing tier and selected rate set
 
@@ -120,6 +123,6 @@ A repository validation test compares these sources and reports the missing/mism
 ## State transitions
 
 1. **Registry load**: Parse existing model metadata and optional new fields. A first-party profile must contain a valid `capability_exceptions` list before release; legacy third-party metadata remains loadable.
-2. **Scenario selection**: Resolve one exact model profile. Select baseline-positive evidence for each applicable model-dependent capability, then route declared exceptions to their documented evidence. A missing profile or invalid exception produces a profile error, never a deselection.
+2. **Scenario selection**: Resolve one exact model profile. Select baseline-positive evidence for each applicable model-dependent capability, retain it and add package evidence for a `pass` exception, or replace it through the documented `(capability_id, behavior_id)` route for a non-`pass` exception. A missing profile, invalid behavior ID, or missing evidence produces a profile error, never a deselection.
 3. **Response accounting**: Parse provider usage → validate cached subset and selected rate context → calculate known components → expose a complete total only if every incurred component is known.
 4. **Release validation**: Compare package identity sources → run deterministic conformance → use the existing independent post-publish provider lane for authorized live evidence.

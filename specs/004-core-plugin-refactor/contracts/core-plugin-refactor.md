@@ -17,15 +17,16 @@ This contract records the observable guarantees of the 0.9.8 refactor. The full 
 ## Model exceptions against the baseline
 
 - The canonical baseline defines required behavior and mandatory Core invariants. Each first-party model's registry entry contains an explicit `capability_exceptions` list; the list may be empty.
-- An applicable capability absent from a model's exception list keeps its baseline-positive check. A declared exception names the capability and exact rejection or special behavior to verify. Package location is not an exception.
-- A missing profile, unknown/duplicate exception, always-on exception, or malformed behavior is a profile-validation error for conformance and E2E selection. The selector never interprets an unlisted capability as a reason to skip.
+- An applicable capability absent from a model's exception list keeps its baseline-positive check. A declared exception names the capability, a stable `behavior_id`, and its verified provider limitation and adapter behavior. A package workaround that fulfills the public contract remains an exception with `behavior_id: "pass"`.
+- A missing profile, unknown/duplicate exception, always-on exception, missing/malformed `behavior_id`, or malformed behavior is a profile-validation error for conformance and E2E selection. The selector never interprets an unlisted capability as a reason to skip.
 - Older third-party plugins that implement the current entry-point API may still register and serve requests without new metadata. A missing profile prevents profile-based certification, not runtime plugin loading.
 
 ## Conformance and E2E selection
 
-- For an exact model, each applicable capability without a declared exception selects its baseline-positive scenario. Each exception selects a common or package-local check of the documented rejection/special behavior, replacing only the positive scenario for that exact capability.
+- For an exact model, each applicable capability without a declared exception selects its baseline-positive scenario. A `pass` exception keeps that scenario and adds package evidence linked to the exact model and capability. A non-`pass` exception selects a common or package-local check through its `(capability_id, behavior_id)` pair, replacing only the positive scenario for that capability. Test node IDs stay in the test catalogue; the selector does not parse `behavior` prose.
+- Mistral PDF via OCR remains a declared `pass` exception: the baseline-positive PDF check runs, and package-local OCR and cost checks run additively.
 - Shared facade, normalization, error, transport, pricing, and lifecycle invariants run regardless of discretionary model capabilities.
-- Missing baseline-positive or declared-exception scenario coverage is a deterministic validation failure. Expected refusals/incomplete results are asserted by their explicit exception scenarios; unexpected ones fail positive scenarios.
+- Missing baseline-positive evidence, missing/duplicate evidence for a non-`pass` behavior pair, or missing additive evidence for a `pass` exception is a deterministic validation failure. Expected refusals/incomplete results are asserted by their explicit exception scenarios; unexpected ones fail positive scenarios.
 - Model decisions choose scenarios **inside** a provider lane. Changed paths select the lane; provider-specific CI jobs alone control exact candidate installation, credentials, and paid E2E execution. Pull requests remain credential-free.
 
 ## Organization metadata consistency
