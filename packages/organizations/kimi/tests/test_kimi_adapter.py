@@ -377,6 +377,24 @@ def test_kimi_metadata_uses_standard_fields_and_cache_pricing_extension():
     from llm_api_adapter_kimi.registry import CACHE_PRICING, ORGANIZATION_DATA
 
     assert tuple(ORGANIZATION_DATA["models"]) == KIMI_MODELS
+    expected_exceptions = {
+        "kimi-k3": {
+            "reasoning_control",
+            "provider_continuation",
+            "tool_choice_named",
+            "image_url",
+            "pdf_url",
+            "pdf_bytes",
+        },
+        "kimi-k2.6": {
+            "provider_continuation",
+            "tool_choice_any",
+            "tool_choice_named",
+            "image_url",
+            "pdf_url",
+            "pdf_bytes",
+        },
+    }
     for model in KIMI_MODELS:
         model_data = ORGANIZATION_DATA["models"][model]
         assert set(model_data) == {
@@ -385,7 +403,12 @@ def test_kimi_metadata_uses_standard_fields_and_cache_pricing_extension():
             "reasoning_capability",
             "request_rules",
             "cache_pricing",
+            "capability_exceptions",
         }
+        assert {
+            exception["capability_id"]
+            for exception in model_data["capability_exceptions"]
+        } == expected_exceptions[model]
         assert CACHE_PRICING[model].cache_hit_input_per_token > 0
         assert CACHE_PRICING[model].cache_miss_input_per_token > 0
 

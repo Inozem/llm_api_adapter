@@ -2,6 +2,32 @@
   "currency": "USD",
   "models": {
     "kimi-k3": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior": "Kimi K3 always enables thinking; requesting reasoning_level='none' cannot disable it and the adapter warns."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior": "Kimi Chat Completions is stateless; previous_response is accepted for shared API compatibility but ignored, so callers must send the complete messages history."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior": "The adapter rejects a forced named-tool choice before transport; Kimi documents that forcing a specific tool is incompatible with K3's always-on thinking."
+        },
+        {
+          "capability_id": "image_url",
+          "behavior": "The adapter rejects URL-backed ImagePart input before transport; image bytes and data URIs are sent inline."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior": "The adapter rejects DocumentPart URLs before transport; Kimi's Files API extracts file content separately and does not attach a PDF to Chat Completions."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior": "The adapter rejects DocumentPart bytes before transport; Kimi's Files API extracts file content separately and does not attach a PDF to Chat Completions."
+        }
+      ],
       "limits": {
         "context_window_tokens": 1048576,
         "max_output_tokens": 1048576
@@ -41,6 +67,32 @@
       ]
     },
     "kimi-k2.6": {
+      "capability_exceptions": [
+        {
+          "capability_id": "provider_continuation",
+          "behavior": "Kimi Chat Completions is stateless; previous_response is accepted for shared API compatibility but ignored, so callers must send the complete messages history."
+        },
+        {
+          "capability_id": "tool_choice_any",
+          "behavior": "The adapter rejects tool_choice='any' before transport under the K2.6 exact-model request rule; Kimi documents only auto and none while thinking is enabled."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior": "The adapter rejects forced named-tool selection before transport under the K2.6 exact-model request rule; Kimi documents only auto and none while thinking is enabled."
+        },
+        {
+          "capability_id": "image_url",
+          "behavior": "The adapter rejects URL-backed ImagePart input before transport; image bytes and data URIs are sent inline."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior": "The adapter rejects DocumentPart URLs before transport; Kimi's Files API extracts file content separately and does not attach a PDF to Chat Completions."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior": "The adapter rejects DocumentPart bytes before transport; Kimi's Files API extracts file content separately and does not attach a PDF to Chat Completions."
+        }
+      ],
       "limits": {
         "context_window_tokens": 262144,
         "max_output_tokens": 32768
