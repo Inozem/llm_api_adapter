@@ -2,6 +2,7 @@
   "currency": "USD",
   "models": {
     "gemini-3.8-flash": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high"]
       },
@@ -22,6 +23,7 @@
       ]
     },
     "gemini-3.7-flash": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high"]
       },
@@ -42,6 +44,7 @@
       ]
     },
     "gemini-3.6-flash": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -62,6 +65,7 @@
       ]
     },
     "gemini-3.5-flash": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -78,6 +82,7 @@
       ]
     },
     "gemini-3.5-flash-lite": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -98,6 +103,7 @@
       ]
     },
     "gemini-3.1-pro-preview": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high"]
       },
@@ -119,6 +125,7 @@
       ]
     },
     "gemini-3.1-flash-lite": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -135,6 +142,7 @@
       ]
     },
     "gemini-3-flash-preview": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -151,6 +159,7 @@
       ]
     },
     "gemini-2.5-pro": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "min_budget_tokens": 128,
         "max_budget_tokens": 32768
@@ -176,6 +185,7 @@
       ]
     },
     "gemini-2.5-flash": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "min_budget_tokens": 0,
         "max_budget_tokens": 24576,
@@ -197,6 +207,7 @@
       ]
     },
     "gemini-2.5-flash-lite": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "min_budget_tokens": 512,
         "max_budget_tokens": 24576,
