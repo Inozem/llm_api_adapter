@@ -23,6 +23,28 @@ EXPECTED_LIMITS: Final = {
     "max_output_tokens": 384_000,
 }
 EXPECTED_THINKING_MODES: Final = ("none", "low", "high", "max")
+EXPECTED_CAPABILITY_EXCEPTIONS: Final = {
+    "provider_continuation": (
+        "The Responses API is stateless and does not support previous_response_id; "
+        "callers send full messages history, while previous_response carries only "
+        "matching opaque reasoning replay material."
+    ),
+    "tool_choice_named": (
+        "For a forced named function choice, the adapter sets reasoning_level='none' "
+        "and warns when it must disable thinking, following DeepSeek's documented "
+        "thinking-mode restriction for forced tool choice."
+    ),
+    "pdf_url": (
+        "DocumentPart URLs, including PDFs, are rejected before transport; the "
+        "Responses API does not support file inputs and this package accepts image "
+        "inputs only."
+    ),
+    "pdf_bytes": (
+        "DocumentPart bytes, including PDFs, are rejected before transport; the "
+        "Responses API does not support file inputs and this package accepts image "
+        "inputs only."
+    ),
+}
 
 MATRIX_CAPABILITIES: Final = (
     "endpoint",
@@ -62,6 +84,7 @@ DEEPSEEK_CAPABILITY_DISCOVERY: Final = {
             "aliases": EXPECTED_ALIASES,
             "limits": EXPECTED_LIMITS,
             "reasoning_modes": EXPECTED_THINKING_MODES,
+            "capability_exceptions": EXPECTED_CAPABILITY_EXCEPTIONS,
             "capabilities": EXPECTED_CAPABILITIES,
             "unsupported_capabilities": UNSUPPORTED_CAPABILITIES,
         },

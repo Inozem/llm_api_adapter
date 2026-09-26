@@ -2,6 +2,24 @@
   "currency": "USD",
   "models": {
     "deepseek-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "provider_continuation",
+          "behavior": "The Responses API is stateless and does not support previous_response_id; callers send full messages history, while previous_response carries only matching opaque reasoning replay material."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior": "For a forced named function choice, the adapter sets reasoning_level='none' and warns when it must disable thinking, following DeepSeek's documented thinking-mode restriction for forced tool choice."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior": "DocumentPart URLs, including PDFs, are rejected before transport; the Responses API does not support file inputs and this package accepts image inputs only."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior": "DocumentPart bytes, including PDFs, are rejected before transport; the Responses API does not support file inputs and this package accepts image inputs only."
+        }
+      ],
       "limits": {
         "context_window_tokens": 1000000,
         "max_output_tokens": 384000

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -25,6 +26,7 @@ from packages.organizations.deepseek.tests.fixtures.deepseek_capability_discover
     CLOSED_MODEL_IDS,
     DEEPSEEK_CAPABILITY_DISCOVERY,
     EXPECTED_CAPABILITIES,
+    EXPECTED_CAPABILITY_EXCEPTIONS,
     EXPECTED_LIMITS,
     EXPECTED_THINKING_MODES,
     MATRIX_CAPABILITIES,
@@ -71,16 +73,40 @@ def test_flash_limits_and_thinking_modes_are_exact(discovery_record):
     model_data = MODEL_METADATA.organization_data["models"]["deepseek-flash"]
 
     assert set(model_data) == {
+        "capability_exceptions",
         "limits",
         "pricing_tiers",
         "reasoning_capability",
     }
+    assert {
+        exception["capability_id"]: exception["behavior"]
+        for exception in model_data["capability_exceptions"]
+    } == EXPECTED_CAPABILITY_EXCEPTIONS
+    assert "cache_pricing" not in model_data
     assert model_data["limits"] == EXPECTED_LIMITS
     assert expected_model["limits"] == EXPECTED_LIMITS
     assert model_data["reasoning_capability"]["allowed_values"] == list(
         EXPECTED_THINKING_MODES
     )
     assert expected_model["reasoning_modes"] == EXPECTED_THINKING_MODES
+
+
+@pytest.mark.unit
+def test_dynamic_peak_and_off_peak_pricing_stays_package_owned():
+    from llm_api_adapter_deepseek.registry import (
+        OFF_PEAK_PRICING,
+        PEAK_PRICING,
+        pricing_for_dispatch,
+    )
+
+    assert PEAK_PRICING.cache_miss_input_per_token == 0.3 / 1_000_000
+    assert OFF_PEAK_PRICING.cache_miss_input_per_token == 0.15 / 1_000_000
+    assert pricing_for_dispatch(
+        datetime(2026, 10, 13, 1, 0, tzinfo=timezone.utc)
+    ) == PEAK_PRICING
+    assert pricing_for_dispatch(
+        datetime(2026, 10, 13, 4, 0, tzinfo=timezone.utc)
+    ) == OFF_PEAK_PRICING
 
 
 @pytest.mark.unit
