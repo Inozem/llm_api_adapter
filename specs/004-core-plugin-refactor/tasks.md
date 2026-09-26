@@ -47,7 +47,7 @@
 ### Implementation
 
 - [x] T006 [US1] Parse an optional exact-model exception profile in `src/llm_api_adapter/llm_registry/llm_registry.py`, validate the T004 constraints using T003's catalogue, preserve existing `ModelSpec` construction/alias rules, and distinguish a legacy absent profile from an invalid present profile.
-- [ ] T007 [P] [US1] Declare each exact OpenAI model's explicit `capability_exceptions` list and source-check every listed exception in `src/llm_api_adapter/llm_registry/organizations/openai.json`; an unlisted capability keeps its baseline-positive check.
+- [x] T007 [P] [US1] Declare each exact OpenAI model's explicit `capability_exceptions` list and source-check every listed exception in `src/llm_api_adapter/llm_registry/organizations/openai.json`; an unlisted capability keeps its baseline-positive check.
 - [ ] T008 [P] [US1] Declare each exact Anthropic model's explicit `capability_exceptions` list and source-check every listed exception in `src/llm_api_adapter/llm_registry/organizations/anthropic.json`; reconcile exceptions with reasoning and request-rule limits.
 - [ ] T009 [P] [US1] Declare each exact Google model's explicit `capability_exceptions` list and source-check every listed exception in `src/llm_api_adapter/llm_registry/organizations/google.json`; preserve distinct input forms and outcome behavior.
 - [ ] T010 [P] [US1] Declare each exact Mistral model's explicit `capability_exceptions` list and source-check every listed exception in `packages/organizations/mistral/src/llm_api_adapter_mistral/registry/organizations/mistral.json`, including document/OCR boundaries.
