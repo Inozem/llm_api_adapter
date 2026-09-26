@@ -42,11 +42,11 @@
 ### Tests
 
 - [x] T004 [P] [US1] Write failing parser and validation tests in `tests/unit/llm_registry/test_model_profile.py`: an explicit empty exception list differs from a missing legacy profile; exception IDs are unique known `model-dependent` capabilities; `behavior` is required; each entry applies only to its exact capability ID and rejects nested variant overrides; and malformed, unknown, duplicate, or always-on exceptions fail with model and capability named. T016 checks that every first-party model explicitly declares a list.
-- [ ] T005 [P] [US1] Add legacy third-party plugin tests in `tests/unit/test_organization_plugins.py`: missing profile still registers and serves requests, while profile-based certification reports that the model is uncertified; retain known-but-uninstalled installation guidance.
+- [x] T005 [P] [US1] Add legacy third-party plugin tests in `tests/unit/test_organization_plugins.py`: missing profile still registers and serves requests, while profile-based certification reports that the model is uncertified; retain known-but-uninstalled installation guidance.
 
 ### Implementation
 
-- [ ] T006 [US1] Parse an optional exact-model exception profile in `src/llm_api_adapter/llm_registry/llm_registry.py`, validate the T004 constraints using T003's catalogue, preserve existing `ModelSpec` construction/alias rules, and distinguish a legacy absent profile from an invalid present profile.
+- [x] T006 [US1] Parse an optional exact-model exception profile in `src/llm_api_adapter/llm_registry/llm_registry.py`, validate the T004 constraints using T003's catalogue, preserve existing `ModelSpec` construction/alias rules, and distinguish a legacy absent profile from an invalid present profile.
 - [ ] T007 [P] [US1] Declare each exact OpenAI model's explicit `capability_exceptions` list and source-check every listed exception in `src/llm_api_adapter/llm_registry/organizations/openai.json`; an unlisted capability keeps its baseline-positive check.
 - [ ] T008 [P] [US1] Declare each exact Anthropic model's explicit `capability_exceptions` list and source-check every listed exception in `src/llm_api_adapter/llm_registry/organizations/anthropic.json`; reconcile exceptions with reasoning and request-rule limits.
 - [ ] T009 [P] [US1] Declare each exact Google model's explicit `capability_exceptions` list and source-check every listed exception in `src/llm_api_adapter/llm_registry/organizations/google.json`; preserve distinct input forms and outcome behavior.

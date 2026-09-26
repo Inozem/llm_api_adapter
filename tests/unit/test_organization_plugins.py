@@ -177,6 +177,45 @@ def test_external_organization_is_discovered_after_its_distribution_is_available
 
 
 @pytest.mark.unit
+def test_legacy_third_party_plugin_without_profile_still_serves_requests(
+    monkeypatch,
+    isolated_plugin_runtime,
+):
+    registry, discovery, model_registry = isolated_plugin_runtime
+    organization = "legacy-third-party"
+    entry_point = FakeEntryPoint(
+        name=organization,
+        value="legacy_third_party.plugin:PLUGIN",
+        plugin=_test_plugin(
+            organization=organization,
+            model_metadata=_organization_model_metadata(organization),
+        ),
+    )
+    monkeypatch.setattr(
+        registry_module,
+        "entry_points",
+        lambda *, group: (entry_point,),
+    )
+
+    discovery.discover(registry, model_registry=model_registry)
+
+    model = resolve_model_spec(model_registry, organization, "test-model")
+    assert model is not None
+    assert model.capability_exceptions is None
+    with pytest.raises(ValueError, match="uncertified") as raised:
+        model.require_capability_profile()
+    assert "test-model" in str(raised.value)
+
+    adapter = UniversalLLMAPIAdapter(
+        organization=organization,
+        model="test-model",
+        api_key="test-key",
+    )
+    assert adapter.chat(messages=[]) == {"response": "ok"}
+    assert entry_point.load_calls == 1
+
+
+@pytest.mark.unit
 def test_known_xai_organization_is_installable_before_its_package_is_available(
     monkeypatch,
     isolated_plugin_runtime,
