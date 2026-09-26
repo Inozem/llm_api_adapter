@@ -5,10 +5,12 @@
       "capability_exceptions": [
         {
           "capability_id": "tool_choice_any",
+          "behavior_id": "rejected_before_transport",
           "behavior": "Anthropic documents that tool_choice='any' is unsupported and returns a 400 invalid_request_error; Core rejects the request locally using the exact-model registry rule."
         },
         {
           "capability_id": "tool_choice_named",
+          "behavior_id": "rejected_before_transport",
           "behavior": "Anthropic documents that tool_choice='tool' with a named tool is unsupported and returns a 400 invalid_request_error; Core rejects the request locally using the exact-model registry rule."
         }
       ],
@@ -56,10 +58,12 @@
       "capability_exceptions": [
         {
           "capability_id": "tool_choice_any",
+          "behavior_id": "rejected_before_transport",
           "behavior": "Anthropic documents that tool_choice='any' is unsupported and returns a 400 invalid_request_error; Core rejects the request locally using the exact-model registry rule."
         },
         {
           "capability_id": "tool_choice_named",
+          "behavior_id": "rejected_before_transport",
           "behavior": "Anthropic documents that tool_choice='tool' with a named tool is unsupported and returns a 400 invalid_request_error; Core rejects the request locally using the exact-model registry rule."
         }
       ],

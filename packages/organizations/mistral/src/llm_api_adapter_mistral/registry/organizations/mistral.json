@@ -5,10 +5,12 @@
       "capability_exceptions": [
         {
           "capability_id": "pdf_url",
+          "behavior_id": "pass",
           "behavior": "The package handles a PDF URL through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
         },
         {
           "capability_id": "pdf_bytes",
+          "behavior_id": "pass",
           "behavior": "The package handles PDF bytes through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
         }
       ],
@@ -31,10 +33,12 @@
       "capability_exceptions": [
         {
           "capability_id": "pdf_url",
+          "behavior_id": "pass",
           "behavior": "The package handles a PDF URL through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
         },
         {
           "capability_id": "pdf_bytes",
+          "behavior_id": "pass",
           "behavior": "The package handles PDF bytes through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
         }
       ],
@@ -57,14 +61,17 @@
       "capability_exceptions": [
         {
           "capability_id": "pdf_url",
+          "behavior_id": "pass",
           "behavior": "The package handles a PDF URL through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
         },
         {
           "capability_id": "pdf_bytes",
+          "behavior_id": "pass",
           "behavior": "The package handles PDF bytes through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
         },
         {
           "capability_id": "reasoning_control",
+          "behavior_id": "reasoning_unsupported",
           "behavior": "Mistral's reasoning guide documents adjustable reasoning_effort for Small and Medium 3.5, but not Large 3. The registry leaves this model's reasoning metadata unset, so Core resolves reasoning requests as unsupported and disables reasoning."
         }
       ],

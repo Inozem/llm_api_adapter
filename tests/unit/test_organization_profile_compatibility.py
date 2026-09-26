@@ -179,9 +179,9 @@ def test_profile_parsing_preserves_registry_resolution_plugin_discovery_and_faca
     )
     assert external_spec is not None
     assert tuple(
-        exception.capability_id
+        (exception.capability_id, exception.behavior_id)
         for exception in external_spec.capability_exceptions or ()
-    ) == ("pdf_url", "pdf_bytes")
+    ) == (("pdf_url", "pass"), ("pdf_bytes", "pass"))
     assert resolve_model_spec(registry, "mistral", "unknown-model") is None
     assert isinstance(facade.adapter, MistralAdapter)
     assert facade.adapter.model_spec is external_spec

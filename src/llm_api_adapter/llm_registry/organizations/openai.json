@@ -364,6 +364,7 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
+          "behavior_id": "reasoning_unsupported",
           "behavior": "OpenAI documents GPT-4.1 as a non-reasoning model; reasoning-effort controls are unsupported."
         }
       ],
@@ -386,6 +387,7 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
+          "behavior_id": "reasoning_unsupported",
           "behavior": "OpenAI documents the GPT-4.1 family as non-reasoning; reasoning-effort controls are unsupported."
         }
       ],
@@ -408,6 +410,7 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
+          "behavior_id": "reasoning_unsupported",
           "behavior": "OpenAI documents the GPT-4.1 family as non-reasoning; reasoning-effort controls are unsupported."
         }
       ],
@@ -430,6 +433,7 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
+          "behavior_id": "reasoning_unsupported",
           "behavior": "GPT-4o is a general GPT model rather than a reasoning model; reasoning-effort controls are unsupported."
         }
       ],
@@ -449,6 +453,7 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
+          "behavior_id": "reasoning_unsupported",
           "behavior": "GPT-4o mini is a general GPT model rather than a reasoning model; reasoning-effort controls are unsupported."
         }
       ],

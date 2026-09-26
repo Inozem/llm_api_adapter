@@ -44,6 +44,7 @@ def test_model_profile_parses_a_declared_capability_exception():
             capability_exceptions=[
                 {
                     "capability_id": "pdf_url",
+                    "behavior_id": "rejected_before_transport",
                     "behavior": "rejects remote PDF URLs before submission",
                 }
             ]
@@ -53,7 +54,26 @@ def test_model_profile_parses_a_declared_capability_exception():
     assert len(model.capability_exceptions) == 1
     exception = model.capability_exceptions[0]
     assert exception.capability_id == "pdf_url"
+    assert exception.behavior_id == "rejected_before_transport"
     assert exception.behavior == "rejects remote PDF URLs before submission"
+
+
+@pytest.mark.unit
+def test_compensated_exception_accepts_the_explicit_pass_behavior_id():
+    model = ModelSpec.from_dict(
+        "ocr-model",
+        _model_data(
+            capability_exceptions=[
+                {
+                    "capability_id": "pdf_bytes",
+                    "behavior_id": "pass",
+                    "behavior": "handles PDF bytes through OCR before chat",
+                }
+            ]
+        ),
+    )
+
+    assert model.capability_exceptions[0].behavior_id == "pass"
 
 
 @pytest.mark.unit
@@ -68,6 +88,7 @@ def test_model_profile_parses_a_declared_capability_exception():
             [
                 {
                     "capability_id": "unregistered_provider_shortcut",
+                    "behavior_id": "rejected_before_transport",
                     "behavior": "unsupported",
                 }
             ],
@@ -75,8 +96,16 @@ def test_model_profile_parses_a_declared_capability_exception():
         ),
         (
             [
-                {"capability_id": "pdf_url", "behavior": "unsupported"},
-                {"capability_id": "pdf_url", "behavior": "also unsupported"},
+                {
+                    "capability_id": "pdf_url",
+                    "behavior_id": "rejected_before_transport",
+                    "behavior": "unsupported",
+                },
+                {
+                    "capability_id": "pdf_url",
+                    "behavior_id": "rejected_before_transport",
+                    "behavior": "also unsupported",
+                },
             ],
             "pdf_url",
         ),
@@ -84,17 +113,28 @@ def test_model_profile_parses_a_declared_capability_exception():
             [
                 {
                     "capability_id": "request_rule_fidelity",
+                    "behavior_id": "rejected_before_transport",
                     "behavior": "unsupported",
                 }
             ],
             "request_rule_fidelity",
         ),
         ([{"capability_id": "pdf_url"}], "pdf_url"),
-        ([{"capability_id": "pdf_url", "behavior": ""}], "pdf_url"),
         (
             [
                 {
                     "capability_id": "pdf_url",
+                    "behavior_id": "rejected_before_transport",
+                    "behavior": "",
+                }
+            ],
+            "pdf_url",
+        ),
+        (
+            [
+                {
+                    "capability_id": "pdf_url",
+                    "behavior_id": "rejected_before_transport",
                     "behavior": "rejects remote PDFs",
                     "variant_limits": {"pdf_bytes": "supported"},
                 }
@@ -117,3 +157,45 @@ def test_invalid_exception_profiles_fail_with_model_and_capability_named(
     assert "invalid-model-profile" in message
     if capability_id is not None:
         assert capability_id in message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "invalid_behavior_id",
+    (None, "", " ", "Pass", "before-transport", "2nd_route", "has space", 7, True),
+)
+def test_declared_exception_requires_a_valid_behavior_id(invalid_behavior_id):
+    with pytest.raises(ValueError) as error:
+        ModelSpec.from_dict(
+            "invalid-behavior-model",
+            _model_data(
+                capability_exceptions=[
+                    {
+                        "capability_id": "pdf_url",
+                        "behavior_id": invalid_behavior_id,
+                        "behavior": "rejects PDF URLs before submission",
+                    }
+                ]
+            ),
+        )
+
+    message = str(error.value)
+    assert "invalid-behavior-model" in message
+    assert "pdf_url" in message
+    assert "behavior_id" in message
+
+
+@pytest.mark.unit
+def test_declared_exception_rejects_a_missing_behavior_id():
+    with pytest.raises(ValueError, match="behavior_id"):
+        ModelSpec.from_dict(
+            "missing-behavior-model",
+            _model_data(
+                capability_exceptions=[
+                    {
+                        "capability_id": "pdf_url",
+                        "behavior": "rejects PDF URLs before submission",
+                    }
+                ]
+            ),
+        )

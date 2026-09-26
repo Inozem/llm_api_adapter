@@ -5,18 +5,22 @@
       "capability_exceptions": [
         {
           "capability_id": "tool_choice_any",
+          "behavior_id": "pass",
           "behavior": "A forced any-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
         },
         {
           "capability_id": "tool_choice_named",
+          "behavior_id": "pass",
           "behavior": "A forced named-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
         },
         {
           "capability_id": "pdf_url",
+          "behavior_id": "rejected_before_transport",
           "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
         },
         {
           "capability_id": "pdf_bytes",
+          "behavior_id": "rejected_before_transport",
           "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
         }
       ],
@@ -28,18 +32,22 @@
       "capability_exceptions": [
         {
           "capability_id": "tool_choice_any",
+          "behavior_id": "pass",
           "behavior": "A forced any-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
         },
         {
           "capability_id": "tool_choice_named",
+          "behavior_id": "pass",
           "behavior": "A forced named-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
         },
         {
           "capability_id": "pdf_url",
+          "behavior_id": "rejected_before_transport",
           "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
         },
         {
           "capability_id": "pdf_bytes",
+          "behavior_id": "rejected_before_transport",
           "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
         }
       ],
@@ -51,18 +59,22 @@
       "capability_exceptions": [
         {
           "capability_id": "tool_choice_any",
+          "behavior_id": "pass",
           "behavior": "A forced any-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
         },
         {
           "capability_id": "tool_choice_named",
+          "behavior_id": "pass",
           "behavior": "A forced named-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
         },
         {
           "capability_id": "pdf_url",
+          "behavior_id": "rejected_before_transport",
           "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
         },
         {
           "capability_id": "pdf_bytes",
+          "behavior_id": "rejected_before_transport",
           "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
         }
       ],
@@ -77,18 +89,22 @@
       "capability_exceptions": [
         {
           "capability_id": "tool_choice_any",
+          "behavior_id": "pass",
           "behavior": "A forced any-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
         },
         {
           "capability_id": "tool_choice_named",
+          "behavior_id": "pass",
           "behavior": "A forced named-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
         },
         {
           "capability_id": "pdf_url",
+          "behavior_id": "rejected_before_transport",
           "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
         },
         {
           "capability_id": "pdf_bytes",
+          "behavior_id": "rejected_before_transport",
           "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
         }
       ],

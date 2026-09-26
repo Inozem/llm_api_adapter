@@ -162,10 +162,11 @@ def _reasoning_capability_from_dict(data: Any) -> ReasoningCapability:
 
 @dataclass(frozen=True)
 class CapabilityException:
-    """One exact-model deviation from a model-dependent baseline capability."""
+    """One exact-model capability limitation and its adapter behavior."""
 
     capability_id: str
     behavior: str
+    behavior_id: str
 
     @classmethod
     def from_dict(cls, model_name: str, data: Any) -> "CapabilityException":
@@ -180,7 +181,7 @@ class CapabilityException:
                 f"Model '{model_name}' capability exception must name a capability_id"
             )
 
-        allowed_fields = {"capability_id", "behavior"}
+        allowed_fields = {"capability_id", "behavior_id", "behavior"}
         unknown_fields = set(data) - allowed_fields
         if unknown_fields:
             names = ", ".join(sorted(str(field) for field in unknown_fields))
@@ -200,6 +201,15 @@ class CapabilityException:
                 f"'{capability_id}'"
             )
 
+        behavior_id = data.get("behavior_id")
+        if not isinstance(behavior_id, str) or not re.fullmatch(
+            r"[a-z][a-z0-9_]*", behavior_id
+        ):
+            raise ValueError(
+                f"Model '{model_name}' capability exception '{capability_id}' "
+                "must have a behavior_id matching [a-z][a-z0-9_]*"
+            )
+
         behavior = data.get("behavior")
         if not isinstance(behavior, str) or not behavior.strip():
             raise ValueError(
@@ -207,7 +217,11 @@ class CapabilityException:
                 "must have a non-empty behavior"
             )
 
-        return cls(capability_id=capability_id, behavior=behavior)
+        return cls(
+            capability_id=capability_id,
+            behavior=behavior,
+            behavior_id=behavior_id,
+        )
 
 
 def _capability_exceptions_from_data(

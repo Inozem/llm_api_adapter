@@ -184,12 +184,26 @@ def test_every_first_party_model_has_a_valid_explicit_exception_profile():
     # current total of 57 models as a release limit.
     organizations = set()
     model_count = 0
-    for organization_name, _, organization_spec in _catalogue_specs():
+    for organization_name, organization_data, organization_spec in _catalogue_specs():
         organizations.add(organization_name)
         model_count += len(organization_spec.models)
         for model_name, model_spec in organization_spec.models.items():
             assert model_spec.capability_exceptions is not None, (
                 f"{organization_name}/{model_name} has no certified profile"
+            )
+            raw_exceptions = organization_data["models"][model_name][
+                "capability_exceptions"
+            ]
+            assert all(
+                isinstance(exception, dict) and "behavior_id" in exception
+                for exception in raw_exceptions
+            ), f"{organization_name}/{model_name} has an exception without behavior_id"
+            assert tuple(
+                (exception.capability_id, exception.behavior_id)
+                for exception in model_spec.capability_exceptions
+            ) == tuple(
+                (exception["capability_id"], exception["behavior_id"])
+                for exception in raw_exceptions
             )
 
     assert organizations == {name for name, _ in FIRST_PARTY_CATALOGUES}
