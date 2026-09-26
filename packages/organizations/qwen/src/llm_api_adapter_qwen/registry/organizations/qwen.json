@@ -2,16 +2,70 @@
   "currency": "CNY",
   "models": {
     "qwen3.8-max": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior": "A forced any-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior": "A forced named-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
+        }
+      ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 12.0, "output_per_1m": 36.0}],
       "reasoning_capability": {"allowed_values": ["none", "low", "medium", "xhigh"]}
     },
     "qwen3.8-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior": "A forced any-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior": "A forced named-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
+        }
+      ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 0.8, "output_per_1m": 2.7}],
       "reasoning_capability": {"allowed_values": ["none", "low", "medium", "xhigh"]}
     },
     "qwen3.7-plus": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior": "A forced any-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior": "A forced named-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
+        }
+      ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [
         {"up_to_prompt_tokens": 256000, "input_per_1m": 2.0, "output_per_1m": 8.0},
@@ -20,6 +74,24 @@
       "reasoning_capability": {"min_budget_tokens": 1, "max_budget_tokens": 262144, "can_disable_thinking": true}
     },
     "qwen3.7-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior": "A forced any-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior": "A forced named-tool choice is sent with thinking disabled; the adapter warns unless the caller explicitly set reasoning_level='none'."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
+        }
+      ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [
         {"up_to_prompt_tokens": 32000, "input_per_1m": 0.2, "output_per_1m": 0.8},
