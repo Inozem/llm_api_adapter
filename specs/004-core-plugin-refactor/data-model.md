@@ -54,7 +54,8 @@ FR-013 (base dependency boundary), FR-020 (optional-package capability documenta
 | `capability_exceptions` | Explicit deviations from the canonical baseline | Required for each first-party model; may be empty; IDs must be known, unique, and model-dependent |
 | `capability_id` | Canonical capability ID whose baseline behavior differs | Must match one catalogue entry; always-on IDs cannot be excepted |
 | `behavior` | Verified expected rejection or provider-specific normalized behavior | Required for every exception |
-| `variant_limits` | Exact supported or excluded forms within a declared exception | Cannot silently broaden the exception |
+
+Capability IDs already identify meaningful variants separately (for example, `image_url` and `image_bytes`). An exception therefore applies to exactly its listed ID and has no nested variant overrides; this prevents a profile entry from silently broadening to neighboring capabilities.
 
 For first-party models, the explicit `capability_exceptions` field is required even when empty. Every applicable model-dependent capability absent from that list is tested against the baseline-positive scenario. An undocumented model deviation therefore fails its positive check; omission never skips a scenario. An older third-party package that uses the current plugin API may have no profile and can still register and serve requests, but it is **uncertified**: profile-based conformance or E2E selection must raise a clear error. This preserves `OrganizationPlugin` registration compatibility.
 

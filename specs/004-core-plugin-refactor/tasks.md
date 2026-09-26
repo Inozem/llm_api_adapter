@@ -41,7 +41,7 @@
 
 ### Tests
 
-- [ ] T004 [P] [US1] Write failing parser and validation tests in `tests/unit/llm_registry/test_model_profile.py`: each first-party model has an explicit `capability_exceptions` list (empty is valid); exception IDs are unique known `model-dependent` capabilities; `behavior` is required; `variant_limits` cannot silently broaden an exception; and missing lists, unknown/duplicate/always-on IDs, or malformed exception entries fail with model and capability named.
+- [x] T004 [P] [US1] Write failing parser and validation tests in `tests/unit/llm_registry/test_model_profile.py`: an explicit empty exception list differs from a missing legacy profile; exception IDs are unique known `model-dependent` capabilities; `behavior` is required; each entry applies only to its exact capability ID and rejects nested variant overrides; and malformed, unknown, duplicate, or always-on exceptions fail with model and capability named. T016 checks that every first-party model explicitly declares a list.
 - [ ] T005 [P] [US1] Add legacy third-party plugin tests in `tests/unit/test_organization_plugins.py`: missing profile still registers and serves requests, while profile-based certification reports that the model is uncertified; retain known-but-uninstalled installation guidance.
 
 ### Implementation
