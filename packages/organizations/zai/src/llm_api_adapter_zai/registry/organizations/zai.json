@@ -2,6 +2,44 @@
   "currency": "USD",
   "models": {
     "glm-5.3-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "pdf_bytes",
+          "behavior": "The Z.ai package rejects DocumentPart bytes, including PDF content, before HTTP; document files are outside this adapter's supported input serialization."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior": "The Z.ai package rejects DocumentPart URLs, including PDF URLs, before HTTP; document files are outside this adapter's supported input serialization."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; each request uses the caller-provided messages and sends no provider continuation identifier."
+        },
+        {
+          "capability_id": "reasoning_control",
+          "behavior": "GLM-5.3-Flash cannot disable thinking; reasoning_level='none' falls back to 'low' with a warning, and the supported effort levels are low, high, and max."
+        },
+        {
+          "capability_id": "structured_output_model",
+          "behavior": "The adapter rejects response_model before HTTP; Z.ai documents JSON object mode but no model-bound output enforcement, so this package does not expose Pydantic response models."
+        },
+        {
+          "capability_id": "structured_output_schema",
+          "behavior": "The adapter rejects portable json_schema before HTTP; response_format supports json_object only, with schema guidance and validation handled in the application."
+        },
+        {
+          "capability_id": "tool_choice_any",
+          "behavior": "The model request rule permits only tool_choice='auto'; a forced any-tool choice is rejected before transport."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior": "The model request rule permits only tool_choice='auto'; a forced named-tool choice is rejected before transport."
+        },
+        {
+          "capability_id": "tool_choice_none",
+          "behavior": "The model request rule permits only tool_choice='auto'; an explicit no-tools choice is rejected before transport."
+        }
+      ],
       "limits": {
         "context_window_tokens": 1000000,
         "max_output_tokens": 131072

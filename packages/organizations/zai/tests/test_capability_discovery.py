@@ -25,6 +25,7 @@ from packages.organizations.zai.tests.fixtures.zai_capability_discovery import (
     CLOSED_MODEL_IDS,
     EXPECTED_LIMITS,
     EXPECTED_CAPABILITIES,
+    EXPECTED_CAPABILITY_EXCEPTIONS,
     EXPECTED_PRICING_PER_1M_USD,
     EXPECTED_PRICING_TIER,
     EXPECTED_THINKING_MODES,
@@ -74,11 +75,17 @@ def test_flash_limits_pricing_and_reasoning_modes_are_exact(discovery_record):
 
     assert MODEL_METADATA.organization_data["currency"] == "USD"
     assert set(model_data) == {
+        "capability_exceptions",
         "limits",
         "pricing_tiers",
         "reasoning_capability",
         "request_rules",
     }
+    assert {
+        exception["capability_id"]: exception["behavior"]
+        for exception in model_data["capability_exceptions"]
+    } == EXPECTED_CAPABILITY_EXCEPTIONS
+    assert expected_model["capability_exceptions"] == EXPECTED_CAPABILITY_EXCEPTIONS
     assert model_data["limits"] == EXPECTED_LIMITS
     assert expected_model["limits"] == EXPECTED_LIMITS
     assert model_data["pricing_tiers"] == [EXPECTED_PRICING_TIER]
