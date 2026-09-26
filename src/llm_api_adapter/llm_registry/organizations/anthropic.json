@@ -2,6 +2,16 @@
   "currency": "USD",
   "models": {
     "claude-fable-5-1": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior": "Anthropic documents that tool_choice='any' is unsupported and returns a 400 invalid_request_error; Core rejects the request locally using the exact-model registry rule."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior": "Anthropic documents that tool_choice='tool' with a named tool is unsupported and returns a 400 invalid_request_error; Core rejects the request locally using the exact-model registry rule."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -25,6 +35,7 @@
       ]
     },
     "claude-fable-5": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -42,6 +53,16 @@
       ]
     },
     "claude-opus-5-5": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior": "Anthropic documents that tool_choice='any' is unsupported and returns a 400 invalid_request_error; Core rejects the request locally using the exact-model registry rule."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior": "Anthropic documents that tool_choice='tool' with a named tool is unsupported and returns a 400 invalid_request_error; Core rejects the request locally using the exact-model registry rule."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -65,6 +86,7 @@
       ]
     },
     "claude-opus-5": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -82,6 +104,7 @@
       ]
     },
     "claude-sonnet-5": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -99,6 +122,7 @@
       ]
     },
     "claude-opus-4-8": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -116,6 +140,7 @@
       ]
     },
     "claude-opus-4-7": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -133,6 +158,7 @@
       ]
     },
     "claude-opus-4-6": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "max"]
       },
@@ -150,6 +176,7 @@
       ]
     },
     "claude-sonnet-4-6": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "max"]
       },
@@ -167,6 +194,7 @@
       ]
     },
     "claude-opus-4-5": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "min_budget_tokens": 1024,
         "max_budget_tokens": 128000
@@ -187,6 +215,7 @@
       ]
     },
     "claude-sonnet-4-5": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "min_budget_tokens": 1024,
         "max_budget_tokens": 64000
@@ -207,6 +236,7 @@
       ]
     },
     "claude-haiku-4-5": {
+      "capability_exceptions": [],
       "reasoning_capability": {
         "min_budget_tokens": 1024,
         "max_budget_tokens": 64000
