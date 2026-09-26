@@ -2,6 +2,24 @@
   "currency": "USD",
   "models": {
     "grok-4.7": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior": "xAI documents low, medium, high, and xhigh reasoning effort for this model, but reasoning cannot be disabled. Core maps a request for none to low and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior": "The package accepts previous_response for API compatibility but ignores it and does not send previous_response_id; the request uses the messages supplied by the caller."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior": "A public PDF URL is passed unchanged as an input_file file_url. xAI activates attachment_search for the attached document, making the request agentic and potentially adding tool-invocation charges."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior": "PDF bytes are uploaded to xAI's Files API with a 24-hour expiry and attached by the returned file_id. xAI activates attachment_search, making the request agentic and potentially adding tool-invocation charges."
+        }
+      ],
       "limits": {
         "context_window_tokens": 500000,
         "max_output_tokens": 500000
@@ -23,6 +41,24 @@
       }
     },
     "grok-4.6": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior": "xAI documents low, medium, high, and xhigh reasoning effort for this model, but reasoning cannot be disabled. Core maps a request for none to low and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior": "The package accepts previous_response for API compatibility but ignores it and does not send previous_response_id; the request uses the messages supplied by the caller."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior": "A public PDF URL is passed unchanged as an input_file file_url. xAI activates attachment_search for the attached document, making the request agentic and potentially adding tool-invocation charges."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior": "PDF bytes are uploaded to xAI's Files API with a 24-hour expiry and attached by the returned file_id. xAI activates attachment_search, making the request agentic and potentially adding tool-invocation charges."
+        }
+      ],
       "limits": {
         "context_window_tokens": 500000,
         "max_output_tokens": 500000
@@ -44,6 +80,24 @@
       }
     },
     "grok-4.5": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior": "xAI documents low, medium, and high reasoning effort for this model, but reasoning cannot be disabled. Core maps a request for none to low and emits a warning. xAI accepts xhigh for this model and treats it as high."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior": "The package accepts previous_response for API compatibility but ignores it and does not send previous_response_id; the request uses the messages supplied by the caller."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior": "A public PDF URL is passed unchanged as an input_file file_url. xAI activates attachment_search for the attached document, making the request agentic and potentially adding tool-invocation charges."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior": "PDF bytes are uploaded to xAI's Files API with a 24-hour expiry and attached by the returned file_id. xAI activates attachment_search, making the request agentic and potentially adding tool-invocation charges."
+        }
+      ],
       "limits": {
         "context_window_tokens": 500000,
         "max_output_tokens": 500000
