@@ -57,7 +57,7 @@
 - [x] T014 [P] [US1] Declare each exact DeepSeek model's explicit `capability_exceptions` list and source-check every listed exception in `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/organizations/deepseek.json`; retain package-owned dynamic pricing.
 - [x] T015 [P] [US1] Declare each exact Z.ai model's explicit `capability_exceptions` list and source-check every listed exception in `packages/organizations/zai/src/llm_api_adapter_zai/registry/organizations/zai.json`, including documented structured-output limits.
 - [x] T016 [US1] Add a deterministic inventory test in `tests/unit/llm_registry/test_model_profile_inventory.py` that walks all nine first-party catalogues (currently 57 model entries), requires an explicit exception list on every model, rejects malformed/unknown/duplicate/always-on exceptions, and checks listed exceptions against existing reasoning/request-rule metadata without hard-coding 57 as a future limit.
-- [ ] T017 [US1] Update `tests/unit/test_organization_profile_compatibility.py` to verify that profile parsing does not change built-in or external registry loading, exact-model resolution, aliases, plugin discovery, or current public facade behavior.
+- [x] T017 [US1] Update `tests/unit/test_organization_profile_compatibility.py` to verify that profile parsing does not change built-in or external registry loading, exact-model resolution, aliases, plugin discovery, or current public facade behavior.
 
 **Checkpoint**: US1 passes its deterministic tests without scenario-selection changes.
 
