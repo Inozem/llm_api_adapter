@@ -133,14 +133,14 @@ The public import paths to retain are `llm_api_adapter.models` and `llm_api_adap
 
 ### Official provider source starting points
 
-These vendor pages were reachable on 2026-09-25. They identify where later tasks must check **each exact registry model and applicable pricing context**; merely listing a source here does not certify a model's support, cached rate, region, tier, or availability.
+The Mistral sources in this table were checked on 2026-09-26; the other vendor pages were reachable on 2026-09-25. They identify where later tasks must check **each exact registry model and applicable pricing context**; merely listing a source here does not certify a model's support, cached rate, region, tier, or availability.
 
 | Organization | Model/capability source | Pricing or cache source |
 | --- | --- | --- |
 | OpenAI | [API model directory](https://developers.openai.com/api/docs/models) | [API pricing](https://developers.openai.com/api/docs/pricing) |
 | Anthropic | [Claude model overview](https://platform.claude.com/docs/en/models/overview), [API errors and exact-model tool-choice limits](https://platform.claude.com/docs/en/api/errors), [extended-thinking model limits](https://platform.claude.com/docs/en/build-with-claude/extended-thinking) | [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing) |
 | Google | [Gemini models](https://ai.google.dev/gemini-api/docs/models), [image input methods](https://ai.google.dev/gemini-api/docs/generate-content/image-understanding), [PDF/document input](https://ai.google.dev/gemini-api/docs/generate-content/document-processing), [external URL and inline file input](https://ai.google.dev/gemini-api/docs/generate-content/file-input-methods), [GenerateContent finish and safety outcomes](https://ai.google.dev/api/generate-content) | [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) and [context caching](https://ai.google.dev/gemini-api/docs/generate-content/caching) |
-| Mistral | [Model directory](https://docs.mistral.ai/models) | [Inference pricing](https://docs.mistral.ai/inference/pricing) |
+| Mistral | [Model directory](https://docs.mistral.ai/models), [reasoning controls](https://docs.mistral.ai/studio/conversations/reasoning), [PDF OCR input forms](https://docs.mistral.ai/studio/document-processing/basic_ocr) | [Inference pricing](https://docs.mistral.ai/inference/pricing), [OCR 4.1 model and per-page rate](https://docs.mistral.ai/models/ocr-4-1), [OCR endpoint and page usage](https://docs.mistral.ai/api/endpoint/ocr) |
 | xAI | [Grok models](https://docs.x.ai/developers/models) | [API pricing](https://docs.x.ai/developers/pricing) and [cached usage](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing) |
 | Qwen | [Model Studio model listing](https://help.aliyun.com/zh/model-studio/list-models) | [Model Studio pricing](https://help.aliyun.com/zh/model-studio/model-pricing) and [context cache](https://help.aliyun.com/zh/model-studio/context-cache); check region and currency |
 | Kimi | [Kimi model list](https://platform.kimi.ai/docs/models) | [Kimi API platform pricing](https://platform.kimi.ai/) and [context caching](https://platform.kimi.ai/docs/guide/context-caching) |
