@@ -86,6 +86,8 @@ _NO_SEPARATE_SHARED_E2E_SCENARIO_IDS = frozenset(
         "image_url",
         "image_data_url",
         "pdf_url",
+        "refusal_outcome",
+        "incomplete_outcome",
         "tool_choice_auto",
         "tool_choice_none",
         "tool_choice_any",
@@ -145,14 +147,6 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
         CapabilityScenario(
             "usage_reporting",
             "tests/e2e/test_llm_adapter_chat.py::test_chat_accepts_basic_params_and_returns_contract",
-        ),
-        CapabilityScenario(
-            "refusal_outcome",
-            "tests/e2e/test_async.py::test_refusal_outcome_is_normalized",
-        ),
-        CapabilityScenario(
-            "incomplete_outcome",
-            "tests/e2e/test_async.py::test_incomplete_outcome_is_normalized",
         ),
     ),
     exceptions=(
