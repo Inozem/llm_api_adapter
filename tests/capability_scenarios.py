@@ -1,592 +1,214 @@
-"""Static E2E evidence routes for model capability profiles.
-
-Pytest node IDs stay here so runtime registry metadata contains only stable
-capability and behavior identifiers. A route may be shared by multiple
-capabilities when the same test proves both contracts.
-"""
+"""Static pytest routes for the capabilities exercised by shared E2E tests."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
 import json
 from pathlib import Path
-import re
 
 from llm_api_adapter.llm_registry.llm_registry import ModelSpec
-from llm_api_adapter.llm_registry.model_capabilities import (
-    ALWAYS_ON_CAPABILITY_IDS,
-    CAPABILITY_CATALOGUE,
-    MODEL_DEPENDENT_CAPABILITY_IDS,
-    ModelCapability,
-)
+from llm_api_adapter.llm_registry.model_capabilities import CAPABILITY_CATALOGUE
 
 
-@dataclass(frozen=True)
-class CapabilityScenario:
-    """One baseline-positive or unconditional scenario route."""
-
-    capability_id: str
-    node_id: str
-
-
-@dataclass(frozen=True)
-class ExceptionScenario:
-    """One replacement route, optionally scoped to an organization."""
-
-    capability_id: str
-    behavior_id: str
-    node_id: str
-    organization: str | None = None
-
-
-@dataclass(frozen=True)
-class DeclaredException:
-    """A capability exception read from one first-party model profile."""
-
-    organization: str
-    model: str
-    capability_id: str
-    behavior_id: str
+def _routes(*entries):
+    """Build a route map while rejecting duplicate keys and invalid node IDs."""
+    routes = {}
+    for key, node_id in entries:
+        if key in routes:
+            raise ValueError(f"duplicate scenario route: {key!r}")
+        if (
+            not isinstance(node_id, str)
+            or node_id.count("::") != 1
+            or not node_id.startswith(("tests/", "packages/organizations/"))
+            or "\\" in node_id
+            or any(character.isspace() for character in node_id)
+        ):
+            raise ValueError(f"invalid pytest node ID for {key!r}: {node_id!r}")
+        routes[key] = node_id
+    return routes
 
 
-@dataclass(frozen=True)
-class ScenarioCatalogue:
-    """Positive, exception, and always-on test routes."""
-
-    positive: tuple[CapabilityScenario, ...]
-    exceptions: tuple[ExceptionScenario, ...]
-    always_on: tuple[CapabilityScenario, ...]
-
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-_CORE_CATALOGUES = (
-    REPOSITORY_ROOT / "src" / "llm_api_adapter" / "llm_registry" / "organizations"
-)
-_PACKAGE_CATALOGUES = REPOSITORY_ROOT / "packages" / "organizations"
-_BEHAVIOR_ID_PATTERN = re.compile(r"[a-z][a-z0-9_]*\Z")
-_STANDARD_REASONING_CHAT_SCENARIO = (
+_REASONING_CHAT = (
     "tests/e2e/test_llm_adapter_chat.py::"
     "test_chat_with_reasoning_level_returns_valid_contract"
 )
-# The existing shared tests do not prove these variants separately. They remain
-# model capabilities, but do not have separate shared E2E scenario routes.
-_NO_SEPARATE_SHARED_E2E_SCENARIO_IDS = frozenset(
-    {
-        "structured_output_model",
-        "image_url",
-        "image_data_url",
-        "pdf_url",
-        "refusal_outcome",
-        "incomplete_outcome",
-        "reasoning_events",
-        "tool_choice_auto",
-        "tool_choice_none",
-        "tool_choice_any",
-        "tool_choice_named",
-        "provider_continuation",
-    }
+
+BASELINE_SCENARIOS = _routes(
+    (
+        "sync_chat",
+        "tests/e2e/test_llm_adapter_chat.py::test_chat_accepts_basic_params_and_returns_contract",
+    ),
+    (
+        "async_chat",
+        "tests/e2e/test_async.py::test_async_chat_returns_structured_response_and_pricing",
+    ),
+    (
+        "sync_streaming",
+        "tests/e2e/test_streaming.py::test_stream_chat_returns_text_and_finalized_response",
+    ),
+    (
+        "async_streaming",
+        "tests/e2e/test_async.py::test_async_streaming_preserves_callbacks_and_final_response",
+    ),
+    (
+        "application_tools",
+        "tests/e2e/test_tools_auto_loop.py::test_basic_tool_loop_with_previous_response",
+    ),
+    (
+        "structured_output_schema",
+        "tests/e2e/test_json_schema.py::test_json_schema_returns_structured_output_for_every_configured_model",
+    ),
+    (
+        "image_bytes",
+        "tests/e2e/test_vision.py::test_vision_bytes_returns_non_empty_response",
+    ),
+    (
+        "pdf_bytes",
+        "tests/e2e/test_file_uploads.py::test_document_bytes_returns_non_empty_response",
+    ),
+    ("reasoning_control", _REASONING_CHAT),
+    (
+        "usage_reporting",
+        "tests/e2e/test_llm_adapter_chat.py::test_chat_accepts_basic_params_and_returns_contract",
+    ),
 )
+
+# Keys are (capability_id, behavior_id, organization). ``None`` is a shared route.
+EXCEPTION_SCENARIOS = _routes(
+    (
+        ("pdf_bytes", "rejected_before_transport", "zai"),
+        "packages/organizations/zai/tests/e2e/test_capability_boundaries.py::test_zai_rejects_document_forms_before_provider_transport",
+    ),
+    (
+        ("pdf_bytes", "rejected_before_transport", "kimi"),
+        "packages/organizations/kimi/tests/e2e/test_file_contract.py::test_kimi_file_contract_rejects_unsupported_parts_before_transport",
+    ),
+    (
+        ("pdf_bytes", "rejected_before_transport", "deepseek"),
+        "packages/organizations/deepseek/tests/e2e/test_file_contract.py::test_deepseek_file_contract_rejects_documents_before_transport",
+    ),
+    (
+        ("pdf_bytes", "rejected_before_transport", "qwen"),
+        "packages/organizations/qwen/tests/e2e/test_document_input.py::test_qwen_document_parts_are_rejected_before_messages_transport",
+    ),
+    (
+        ("reasoning_control", "cannot_disable_thinking", "kimi"),
+        "packages/organizations/kimi/tests/e2e/test_live_contract.py::test_kimi_models_apply_their_declared_reasoning_mode_through_the_facade",
+    ),
+    (("reasoning_control", "none_falls_back_to_low", None), _REASONING_CHAT),
+    (("reasoning_control", "none_to_low_xhigh_to_high", None), _REASONING_CHAT),
+    (("reasoning_control", "reasoning_unsupported", None), _REASONING_CHAT),
+    (
+        ("structured_output_schema", "rejected_before_transport", "zai"),
+        "packages/organizations/zai/tests/e2e/test_capability_boundaries.py::test_zai_rejects_structured_output_before_provider_transport",
+    ),
+)
+
+ALWAYS_ON_SCENARIOS = _routes(
+    (
+        "facade_discovery",
+        "tests/unit/test_organization_profile_compatibility.py::test_profile_parsing_preserves_registry_resolution_plugin_discovery_and_facade",
+    ),
+    (
+        "message_normalization",
+        "tests/unit/models/messages/test_chat_message.py::test_messages_normalize_openai_style_content_list",
+    ),
+    (
+        "response_normalization",
+        "tests/unit/conformance/test_facade_contract.py::test_facade_chat_normalizes_messages_response_usage_and_pricing",
+    ),
+    (
+        "transport_parity",
+        "tests/e2e/test_sync_httpx.py::test_sync_httpx_chat_returns_contract_for_latest_provider_models",
+    ),
+    (
+        "stream_cleanup",
+        "tests/unit/adapters/test_async_lifecycle.py::test_async_stream_close_before_completion_skips_tool_and_done",
+    ),
+    (
+        "tool_validation",
+        "tests/unit/conformance/test_facade_contract.py::test_facade_preserves_tool_structured_output_file_and_reasoning_contracts",
+    ),
+    (
+        "schema_validation",
+        "tests/unit/conformance/test_facade_contract.py::test_facade_rejects_nonportable_core_schema_before_sending_request",
+    ),
+    ("error_normalization", "tests/e2e/test_async.py::test_async_errors_are_normalized"),
+    (
+        "registry_exactness",
+        "tests/unit/llm_registry/test_model_profile_inventory.py::test_every_first_party_model_has_a_valid_explicit_exception_profile",
+    ),
+    (
+        "request_rule_fidelity",
+        "tests/unit/adapters/test_request_rule_conformance.py::test_adapter_accepts_each_registered_tool_choice_mode",
+    ),
+    (
+        "pricing_correctness",
+        "tests/unit/adapters/test_pricing_lifecycle.py::test_tiered_pricing_matches_sync_chat_and_stream",
+    ),
+    (
+        "missing_usage_honesty",
+        "tests/unit/adapters/test_pricing_lifecycle.py::test_multi_tier_chat_without_provider_usage_leaves_costs_unset",
+    ),
+)
+
+_CAPABILITY_SCOPES = {item.id: item.scope for item in CAPABILITY_CATALOGUE}
+if any(_CAPABILITY_SCOPES.get(key) != "model-dependent" for key in BASELINE_SCENARIOS):
+    raise ValueError("baseline routes must name model-dependent capabilities")
+if any(_CAPABILITY_SCOPES.get(key) != "always-on" for key in ALWAYS_ON_SCENARIOS):
+    raise ValueError("unconditional routes must name always-on capabilities")
+if any(key[0] not in BASELINE_SCENARIOS or key[1] == "pass" for key in EXCEPTION_SCENARIOS):
+    raise ValueError("exception routes must replace a baseline with a non-pass behavior")
+
+_E2E_CAPABILITY_IDS = BASELINE_SCENARIOS.keys() | ALWAYS_ON_SCENARIOS.keys()
 E2E_SCENARIO_CAPABILITIES = tuple(
     capability
     for capability in CAPABILITY_CATALOGUE
-    if capability.id not in _NO_SEPARATE_SHARED_E2E_SCENARIO_IDS
+    if capability.id in _E2E_CAPABILITY_IDS
 )
-
-
-SCENARIO_CATALOGUE = ScenarioCatalogue(
-    positive=(
-        CapabilityScenario(
-            "sync_chat",
-            "tests/e2e/test_llm_adapter_chat.py::test_chat_accepts_basic_params_and_returns_contract",
-        ),
-        CapabilityScenario(
-            "async_chat",
-            "tests/e2e/test_async.py::test_async_chat_returns_structured_response_and_pricing",
-        ),
-        CapabilityScenario(
-            "sync_streaming",
-            "tests/e2e/test_streaming.py::test_stream_chat_returns_text_and_finalized_response",
-        ),
-        CapabilityScenario(
-            "async_streaming",
-            "tests/e2e/test_async.py::test_async_streaming_preserves_callbacks_and_final_response",
-        ),
-        CapabilityScenario(
-            "application_tools",
-            "tests/e2e/test_tools_auto_loop.py::test_basic_tool_loop_with_previous_response",
-        ),
-        CapabilityScenario(
-            "structured_output_schema",
-            "tests/e2e/test_json_schema.py::test_json_schema_returns_structured_output_for_every_configured_model",
-        ),
-        CapabilityScenario(
-            "image_bytes",
-            "tests/e2e/test_vision.py::test_vision_bytes_returns_non_empty_response",
-        ),
-        CapabilityScenario(
-            "pdf_bytes",
-            "tests/e2e/test_file_uploads.py::test_document_bytes_returns_non_empty_response",
-        ),
-        CapabilityScenario(
-            "reasoning_control",
-            _STANDARD_REASONING_CHAT_SCENARIO,
-        ),
-        CapabilityScenario(
-            "usage_reporting",
-            "tests/e2e/test_llm_adapter_chat.py::test_chat_accepts_basic_params_and_returns_contract",
-        ),
-    ),
-    exceptions=(
-        ExceptionScenario(
-            "pdf_bytes",
-            "rejected_before_transport",
-            "packages/organizations/zai/tests/e2e/test_capability_boundaries.py::test_zai_rejects_document_forms_before_provider_transport",
-            organization="zai",
-        ),
-        ExceptionScenario(
-            "pdf_bytes",
-            "rejected_before_transport",
-            "packages/organizations/kimi/tests/e2e/test_file_contract.py::test_kimi_file_contract_rejects_unsupported_parts_before_transport",
-            organization="kimi",
-        ),
-        ExceptionScenario(
-            "pdf_bytes",
-            "rejected_before_transport",
-            "packages/organizations/deepseek/tests/e2e/test_file_contract.py::test_deepseek_file_contract_rejects_documents_before_transport",
-            organization="deepseek",
-        ),
-        ExceptionScenario(
-            "pdf_bytes",
-            "rejected_before_transport",
-            "packages/organizations/qwen/tests/e2e/test_document_input.py::test_qwen_document_parts_are_rejected_before_messages_transport",
-            organization="qwen",
-        ),
-        ExceptionScenario(
-            "reasoning_control",
-            "cannot_disable_thinking",
-            "packages/organizations/kimi/tests/e2e/test_live_contract.py::test_kimi_models_apply_their_declared_reasoning_mode_through_the_facade",
-            organization="kimi",
-        ),
-        # Keep reasoning exceptions without a package-local check on the
-        # shared public chat contract scenario.
-        ExceptionScenario(
-            "reasoning_control",
-            "none_falls_back_to_low",
-            _STANDARD_REASONING_CHAT_SCENARIO,
-        ),
-        ExceptionScenario(
-            "reasoning_control",
-            "none_to_low_xhigh_to_high",
-            _STANDARD_REASONING_CHAT_SCENARIO,
-        ),
-        ExceptionScenario(
-            "reasoning_control",
-            "reasoning_unsupported",
-            _STANDARD_REASONING_CHAT_SCENARIO,
-        ),
-        ExceptionScenario(
-            "structured_output_schema",
-            "rejected_before_transport",
-            "packages/organizations/zai/tests/e2e/test_capability_boundaries.py::test_zai_rejects_structured_output_before_provider_transport",
-            organization="zai",
-        ),
-    ),
-    always_on=(
-        CapabilityScenario(
-            "facade_discovery",
-            "tests/unit/test_organization_profile_compatibility.py::test_profile_parsing_preserves_registry_resolution_plugin_discovery_and_facade",
-        ),
-        CapabilityScenario(
-            "message_normalization",
-            "tests/unit/models/messages/test_chat_message.py::test_messages_normalize_openai_style_content_list",
-        ),
-        CapabilityScenario(
-            "response_normalization",
-            "tests/unit/conformance/test_facade_contract.py::test_facade_chat_normalizes_messages_response_usage_and_pricing",
-        ),
-        CapabilityScenario(
-            "transport_parity",
-            "tests/e2e/test_sync_httpx.py::test_sync_httpx_chat_returns_contract_for_latest_provider_models",
-        ),
-        CapabilityScenario(
-            "stream_cleanup",
-            "tests/unit/adapters/test_async_lifecycle.py::test_async_stream_close_before_completion_skips_tool_and_done",
-        ),
-        CapabilityScenario(
-            "tool_validation",
-            "tests/unit/conformance/test_facade_contract.py::test_facade_preserves_tool_structured_output_file_and_reasoning_contracts",
-        ),
-        CapabilityScenario(
-            "schema_validation",
-            "tests/unit/conformance/test_facade_contract.py::test_facade_rejects_nonportable_core_schema_before_sending_request",
-        ),
-        CapabilityScenario(
-            "error_normalization",
-            "tests/e2e/test_async.py::test_async_errors_are_normalized",
-        ),
-        CapabilityScenario(
-            "registry_exactness",
-            "tests/unit/llm_registry/test_model_profile_inventory.py::test_every_first_party_model_has_a_valid_explicit_exception_profile",
-        ),
-        CapabilityScenario(
-            "request_rule_fidelity",
-            "tests/unit/adapters/test_request_rule_conformance.py::test_adapter_accepts_each_registered_tool_choice_mode",
-        ),
-        CapabilityScenario(
-            "pricing_correctness",
-            "tests/unit/adapters/test_pricing_lifecycle.py::test_tiered_pricing_matches_sync_chat_and_stream",
-        ),
-        CapabilityScenario(
-            "missing_usage_honesty",
-            "tests/unit/adapters/test_pricing_lifecycle.py::test_multi_tier_chat_without_provider_usage_leaves_costs_unset",
-        ),
-    ),
+ALL_SCENARIO_NODE_IDS = frozenset(
+    (*BASELINE_SCENARIOS.values(), *EXCEPTION_SCENARIOS.values(), *ALWAYS_ON_SCENARIOS.values())
 )
-
-
-def first_party_declared_exceptions() -> tuple[DeclaredException, ...]:
-    """Read model exception IDs from the nine checked-in first-party catalogues."""
-    paths = sorted(_CORE_CATALOGUES.glob("*.json")) + sorted(
-        _PACKAGE_CATALOGUES.glob("*/src/*/registry/organizations/*.json")
-    )
-    if len(paths) != 9:
-        raise ValueError(
-            f"expected nine first-party model catalogues, found {len(paths)}"
-        )
-
-    declared = []
-    organizations = set()
-    for path in paths:
-        organization = path.stem
-        if organization in organizations:
-            raise ValueError(f"duplicate first-party catalogue: {organization}")
-        organizations.add(organization)
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"cannot read first-party catalogue {path}") from exc
-        models = data.get("models")
-        if not isinstance(models, dict):
-            raise ValueError(f"{organization} catalogue must contain a models object")
-        for model, profile in models.items():
-            if not isinstance(profile, dict):
-                raise ValueError(f"{organization}/{model} profile must be an object")
-            exceptions = profile.get("capability_exceptions")
-            if not isinstance(exceptions, list):
-                raise ValueError(
-                    f"{organization}/{model} must declare capability_exceptions"
-                )
-            for exception in exceptions:
-                if not isinstance(exception, dict):
-                    raise ValueError(
-                        f"{organization}/{model} has a malformed capability exception"
-                    )
-                capability_id = exception.get("capability_id")
-                behavior_id = exception.get("behavior_id")
-                if not isinstance(capability_id, str) or not isinstance(
-                    behavior_id, str
-                ):
-                    raise ValueError(
-                        f"{organization}/{model} exception requires capability_id "
-                        "and behavior_id"
-                    )
-                if not _BEHAVIOR_ID_PATTERN.fullmatch(behavior_id):
-                    raise ValueError(
-                        f"{organization}/{model} has an invalid behavior_id: "
-                        f"{behavior_id!r}"
-                    )
-                declared.append(
-                    DeclaredException(
-                        organization=organization,
-                        model=model,
-                        capability_id=capability_id,
-                        behavior_id=behavior_id,
-                    )
-                )
-    return tuple(declared)
 
 
 def first_party_model_profiles() -> tuple[tuple[str, ModelSpec], ...]:
-    """Build minimal exact-model specs for deterministic routing coverage."""
-    paths = sorted(_CORE_CATALOGUES.glob("*.json")) + sorted(
-        _PACKAGE_CATALOGUES.glob("*/src/*/registry/organizations/*.json")
+    """Load the exception profiles used by deterministic routing tests."""
+    root = Path(__file__).resolve().parents[1]
+    paths = sorted(
+        (root / "src/llm_api_adapter/llm_registry/organizations").glob("*.json")
+    ) + sorted(
+        (root / "packages/organizations").glob(
+            "*/src/*/registry/organizations/*.json"
+        )
     )
-    if len(paths) != 9:
-        raise ValueError(f"expected nine first-party model catalogues, found {len(paths)}")
-
     profiles = []
     for path in paths:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"cannot read first-party catalogue {path}") from exc
-        models = data.get("models")
-        if not isinstance(models, dict):
-            raise ValueError(f"{path.stem} catalogue must contain a models object")
-
-        for model_name, profile in models.items():
-            if not isinstance(profile, dict):
-                raise ValueError(f"{path.stem}/{model_name} profile must be an object")
-            selector_profile = {
-                "limits": {
-                    "context_window_tokens": 1,
-                    "max_output_tokens": 1,
-                },
+        catalogue = json.loads(path.read_text(encoding="utf-8"))
+        for model_name, model_data in catalogue["models"].items():
+            selector_data = {
+                "limits": {"context_window_tokens": 1, "max_output_tokens": 1},
                 "pricing_tiers": [
-                    {
-                        "up_to_prompt_tokens": None,
-                        "input_per_1m": 1,
-                        "output_per_1m": 1,
-                    }
+                    {"up_to_prompt_tokens": None, "input_per_1m": 1, "output_per_1m": 1}
                 ],
+                "capability_exceptions": model_data["capability_exceptions"],
             }
-            if "capability_exceptions" in profile:
-                selector_profile["capability_exceptions"] = profile[
-                    "capability_exceptions"
-                ]
             profiles.append(
                 (
                     path.stem,
                     ModelSpec.from_dict(
                         model_name,
-                        selector_profile,
-                        currency=data.get("currency", "USD"),
+                        selector_data,
+                        currency=catalogue.get("currency", "USD"),
                     ),
                 )
             )
     return tuple(profiles)
 
 
-def _validate_node_id(node_id: str, *, route: str) -> None:
-    if (
-        not isinstance(node_id, str)
-        or node_id.count("::") != 1
-        or not node_id.startswith(("tests/", "packages/organizations/"))
-        or "\\" in node_id
-        or any(character.isspace() for character in node_id)
-    ):
-        raise ValueError(f"{route} must contain a valid pytest node ID")
-    test_path, _, test_name = node_id.partition("::")
-    if not test_path or not test_name:
-        raise ValueError(f"{route} must contain a valid pytest node ID")
-
-
-def _unique_routes(
-    records: Iterable,
-    key,
-    *,
-    route_name: str,
-    record_type: type,
-) -> dict:
-    by_key = {}
-    for record in records:
-        if not isinstance(record, record_type):
-            raise ValueError(f"{route_name} evidence has an invalid record")
-        try:
-            record_key = key(record)
-        except (AttributeError, TypeError) as exc:
-            raise ValueError(f"{route_name} evidence has an invalid key") from exc
-        try:
-            duplicate = record_key in by_key
-        except TypeError as exc:
-            raise ValueError(f"{route_name} evidence has an invalid key") from exc
-        if duplicate:
-            raise ValueError(f"duplicate {route_name} evidence: {record_key!r}")
-        by_key[record_key] = record
-    return by_key
-
-
-def validate_scenario_catalogue(
-    catalogue: ScenarioCatalogue = SCENARIO_CATALOGUE,
-    *,
-    capabilities: Iterable[ModelCapability] | None = None,
-    declared_exceptions: Iterable[DeclaredException] | None = None,
-) -> None:
-    """Reject missing, duplicate, mis-scoped, or unbacked scenario evidence."""
-    if not isinstance(catalogue, ScenarioCatalogue):
-        raise ValueError("scenario evidence must be a ScenarioCatalogue")
-    use_canonical_scopes = capabilities is None
-    if capabilities is None:
-        capabilities = E2E_SCENARIO_CAPABILITIES
-
-    capability_scopes = {}
-    for capability in capabilities:
-        if not isinstance(capability, ModelCapability):
-            raise ValueError("capability catalogue entries must be ModelCapability values")
-        if not isinstance(capability.id, str) or capability.id not in (
-            MODEL_DEPENDENT_CAPABILITY_IDS | ALWAYS_ON_CAPABILITY_IDS
-        ):
-            raise ValueError(f"unknown capability catalogue ID: {capability.id!r}")
-        if capability.id in capability_scopes:
-            raise ValueError(f"duplicate capability catalogue entry: {capability.id!r}")
-        if capability.scope not in ("model-dependent", "always-on"):
-            raise ValueError(f"invalid capability scope: {capability.scope!r}")
-        capability_scopes[capability.id] = capability.scope
-
-    model_dependent = {
-        capability_id
-        for capability_id, scope in capability_scopes.items()
-        if scope == "model-dependent"
-    }
-    always_on_ids = {
-        capability_id
-        for capability_id, scope in capability_scopes.items()
-        if scope == "always-on"
-    }
-    if use_canonical_scopes and (
-        model_dependent
-        != MODEL_DEPENDENT_CAPABILITY_IDS - _NO_SEPARATE_SHARED_E2E_SCENARIO_IDS
-        or always_on_ids != ALWAYS_ON_CAPABILITY_IDS
-    ):
-        raise ValueError("scenario capability scopes differ from the canonical catalogue")
-
-    positive = _unique_routes(
-        catalogue.positive,
-        lambda route: route.capability_id,
-        route_name="baseline-positive",
-        record_type=CapabilityScenario,
-    )
-    always_on = _unique_routes(
-        catalogue.always_on,
-        lambda route: route.capability_id,
-        route_name="always-on",
-        record_type=CapabilityScenario,
-    )
-    for capability_id, route in positive.items():
-        if capability_id not in capability_scopes:
-            raise ValueError(f"unknown positive capability route: {capability_id!r}")
-        if capability_scopes[capability_id] != "model-dependent":
-            raise ValueError(
-                f"always-on capability {capability_id!r} cannot have a model route"
-            )
-        _validate_node_id(route.node_id, route=f"positive {capability_id}")
-    for capability_id, route in always_on.items():
-        if capability_id not in capability_scopes:
-            raise ValueError(f"unknown always-on capability route: {capability_id!r}")
-        if capability_scopes[capability_id] != "always-on":
-            raise ValueError(
-                f"model-dependent capability {capability_id!r} cannot have an "
-                "unconditional route"
-            )
-        _validate_node_id(route.node_id, route=f"always-on {capability_id}")
-
-    missing_positive = model_dependent - positive.keys()
-    if missing_positive:
-        raise ValueError(
-            "missing baseline-positive scenarios: "
-            + ", ".join(sorted(missing_positive))
-        )
-    missing_always_on = always_on_ids - always_on.keys()
-    if missing_always_on:
-        raise ValueError(
-            "missing unconditional scenarios: " + ", ".join(sorted(missing_always_on))
-        )
-
-    exception_routes = _unique_routes(
-        catalogue.exceptions,
-        lambda route: (
-            route.capability_id,
-            route.behavior_id,
-            route.organization,
-        ),
-        route_name="exception",
-        record_type=ExceptionScenario,
-    )
-    for (capability_id, behavior_id, organization), route in exception_routes.items():
-        if capability_id not in capability_scopes:
-            raise ValueError(f"unknown exception capability: {capability_id!r}")
-        if capability_scopes[capability_id] != "model-dependent":
-            raise ValueError(
-                f"always-on capability {capability_id!r} cannot declare an exception"
-            )
-        if (
-            not isinstance(behavior_id, str)
-            or not _BEHAVIOR_ID_PATTERN.fullmatch(behavior_id)
-            or behavior_id == "pass"
-        ):
-            raise ValueError(
-                f"exception route {capability_id!r} requires a valid non-pass behavior_id"
-            )
-        if organization is not None and (
-            not isinstance(organization, str) or not organization
-        ):
-            raise ValueError(
-                f"exception route {capability_id}/{behavior_id} has an invalid organization"
-            )
-        _validate_node_id(
-            route.node_id,
-            route=f"exception {organization or '*'}/{capability_id}/{behavior_id}",
-        )
-
-    profile_inventory_is_default = declared_exceptions is None
-    declared = tuple(
-        first_party_declared_exceptions()
-        if profile_inventory_is_default
-        else declared_exceptions
-    )
-    if any(not isinstance(entry, DeclaredException) for entry in declared):
-        raise ValueError("declared exception inventory has an invalid record")
-    if len(set(declared)) != len(declared):
-        raise ValueError("duplicate declared model exception profile entry")
-    expected_exception_routes = {
-        (entry.capability_id, entry.behavior_id, entry.organization)
-        for entry in declared
-        if entry.capability_id in model_dependent and entry.behavior_id != "pass"
-    }
-    missing_exception_routes = {
-        route_key
-        for route_key in expected_exception_routes
-        if route_key not in exception_routes
-        and (route_key[0], route_key[1], None) not in exception_routes
-    }
-    if missing_exception_routes:
-        missing = ", ".join(
-            f"{organization}/{capability_id}/{behavior_id}"
-            for capability_id, behavior_id, organization in sorted(
-                missing_exception_routes,
-                key=lambda item: (item[0], item[1], item[2] or ""),
-            )
-        )
-        raise ValueError(f"missing exception evidence routes: {missing}")
-    if profile_inventory_is_default:
-        declared_exception_pairs = {
-            (capability_id, behavior_id)
-            for capability_id, behavior_id, _ in expected_exception_routes
-        }
-        orphan_exception_routes = {
-            route_key
-            for route_key in exception_routes
-            if (
-                (route_key[2] is None and route_key[:2] not in declared_exception_pairs)
-                or (
-                    route_key[2] is not None
-                    and route_key not in expected_exception_routes
-                )
-            )
-        }
-        if orphan_exception_routes:
-            orphaned = ", ".join(
-                f"{organization or '*'}/{capability_id}/{behavior_id}"
-                for capability_id, behavior_id, organization in sorted(
-                    orphan_exception_routes,
-                    key=lambda item: (item[0], item[1], item[2] or ""),
-                )
-            )
-            raise ValueError(f"exception evidence has no declared model route: {orphaned}")
-
-
-validate_scenario_catalogue()
-
-
 __all__ = [
-    "CapabilityScenario",
-    "DeclaredException",
+    "ALL_SCENARIO_NODE_IDS",
+    "ALWAYS_ON_SCENARIOS",
+    "BASELINE_SCENARIOS",
     "E2E_SCENARIO_CAPABILITIES",
-    "ExceptionScenario",
-    "SCENARIO_CATALOGUE",
-    "ScenarioCatalogue",
-    "first_party_declared_exceptions",
+    "EXCEPTION_SCENARIOS",
     "first_party_model_profiles",
-    "validate_scenario_catalogue",
 ]

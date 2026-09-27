@@ -179,24 +179,10 @@ def _profile_operation_kwargs(profile: E2EOrganizationProfile) -> dict[str, str]
 
 def get_e2e_organization_profile(name: str) -> E2EOrganizationProfile:
     """Return one named E2E profile for a package-local specialized check."""
-    profiles = {
-        profile.name: profile
-        for profile in (
-            _OPENAI_E2E_PROFILE,
-            _ANTHROPIC_E2E_PROFILE,
-            _GOOGLE_E2E_PROFILE,
-            _MISTRAL_E2E_PROFILE,
-            _XAI_E2E_PROFILE,
-            _KIMI_E2E_PROFILE,
-            _QWEN_E2E_PROFILE,
-            _DEEPSEEK_E2E_PROFILE,
-            _ZAI_E2E_PROFILE,
-        )
-    }
-    try:
-        return profiles[name]
-    except KeyError as exc:
-        raise pytest.UsageError(f"Unknown E2E organization profile: {name}") from exc
+    for profile in _E2E_PROFILES:
+        if profile.name == name:
+            return profile
+    raise pytest.UsageError(f"Unknown E2E organization profile: {name}")
 
 
 @lru_cache(maxsize=None)

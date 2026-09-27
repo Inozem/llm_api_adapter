@@ -24,107 +24,25 @@ from llm_api_adapter.llm_registry.llm_registry import (
     NumericReasoningCapability,
     OrganizationSpec,
 )
-FIRST_PARTY_CATALOGUES = (
-    (
-        "openai",
-        REPOSITORY_ROOT
-        / "src"
-        / "llm_api_adapter"
-        / "llm_registry"
-        / "organizations"
-        / "openai.json",
-    ),
-    (
-        "anthropic",
-        REPOSITORY_ROOT
-        / "src"
-        / "llm_api_adapter"
-        / "llm_registry"
-        / "organizations"
-        / "anthropic.json",
-    ),
-    (
-        "google",
-        REPOSITORY_ROOT
-        / "src"
-        / "llm_api_adapter"
-        / "llm_registry"
-        / "organizations"
-        / "google.json",
-    ),
-    (
-        "mistral",
-        REPOSITORY_ROOT
-        / "packages"
-        / "organizations"
-        / "mistral"
-        / "src"
-        / "llm_api_adapter_mistral"
-        / "registry"
-        / "organizations"
-        / "mistral.json",
-    ),
-    (
-        "xai",
-        REPOSITORY_ROOT
-        / "packages"
-        / "organizations"
-        / "xai"
-        / "src"
-        / "llm_api_adapter_xai"
-        / "registry"
-        / "organizations"
-        / "xai.json",
-    ),
-    (
-        "qwen",
-        REPOSITORY_ROOT
-        / "packages"
-        / "organizations"
-        / "qwen"
-        / "src"
-        / "llm_api_adapter_qwen"
-        / "registry"
-        / "organizations"
-        / "qwen.json",
-    ),
-    (
-        "kimi",
-        REPOSITORY_ROOT
-        / "packages"
-        / "organizations"
-        / "kimi"
-        / "src"
-        / "llm_api_adapter_kimi"
-        / "registry"
-        / "organizations"
-        / "kimi.json",
-    ),
-    (
-        "deepseek",
-        REPOSITORY_ROOT
-        / "packages"
-        / "organizations"
-        / "deepseek"
-        / "src"
-        / "llm_api_adapter_deepseek"
-        / "registry"
-        / "organizations"
-        / "deepseek.json",
-    ),
-    (
-        "zai",
-        REPOSITORY_ROOT
-        / "packages"
-        / "organizations"
-        / "zai"
-        / "src"
-        / "llm_api_adapter_zai"
-        / "registry"
-        / "organizations"
-        / "zai.json",
-    ),
+_EXPECTED_ORGANIZATIONS = {
+    "openai",
+    "anthropic",
+    "google",
+    "mistral",
+    "xai",
+    "qwen",
+    "kimi",
+    "deepseek",
+    "zai",
+}
+_CATALOGUE_PATHS = sorted(
+    (REPOSITORY_ROOT / "src/llm_api_adapter/llm_registry/organizations").glob("*.json")
+) + sorted(
+    (REPOSITORY_ROOT / "packages/organizations").glob(
+        "*/src/*/registry/organizations/*.json"
+    )
 )
+FIRST_PARTY_CATALOGUES = tuple((path.stem, path) for path in _CATALOGUE_PATHS)
 
 PACKAGE_REQUEST_RULE_REGISTRIES = {
     "kimi": importlib.import_module(
@@ -206,7 +124,7 @@ def test_every_first_party_model_has_a_valid_explicit_exception_profile():
                 for exception in raw_exceptions
             )
 
-    assert organizations == {name for name, _ in FIRST_PARTY_CATALOGUES}
+    assert organizations == _EXPECTED_ORGANIZATIONS
     assert model_count > 0
 
 
