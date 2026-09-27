@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 
+from llm_api_adapter.llm_registry.llm_registry import ModelSpec
 from llm_api_adapter.llm_registry.model_capabilities import (
     ALWAYS_ON_CAPABILITY_IDS,
     CAPABILITY_CATALOGUE,
@@ -40,16 +41,6 @@ class ExceptionScenario:
 
 
 @dataclass(frozen=True)
-class PassSupplement:
-    """One additive route scoped to an exact organization, model, and capability."""
-
-    organization: str
-    model: str
-    capability_id: str
-    node_id: str
-
-
-@dataclass(frozen=True)
 class DeclaredException:
     """A capability exception read from one first-party model profile."""
 
@@ -61,11 +52,10 @@ class DeclaredException:
 
 @dataclass(frozen=True)
 class ScenarioCatalogue:
-    """Positive, exception, package-supplement, and always-on test routes."""
+    """Positive, exception, and always-on test routes."""
 
     positive: tuple[CapabilityScenario, ...]
     exceptions: tuple[ExceptionScenario, ...]
-    supplements: tuple[PassSupplement, ...]
     always_on: tuple[CapabilityScenario, ...]
 
 
@@ -202,44 +192,6 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
             organization="zai",
         ),
     ),
-    supplements=(
-        PassSupplement(
-            "mistral",
-            "mistral-small-2603",
-            "pdf_bytes",
-            "tests/e2e/test_mistral_ocr_costs.py::test_mistral_pdf_ocr_exposes_cost_breakdown",
-        ),
-        PassSupplement(
-            "mistral",
-            "mistral-medium-3-5",
-            "pdf_bytes",
-            "tests/e2e/test_mistral_ocr_costs.py::test_mistral_pdf_ocr_exposes_cost_breakdown",
-        ),
-        PassSupplement(
-            "mistral",
-            "mistral-large-2512",
-            "pdf_bytes",
-            "tests/e2e/test_mistral_ocr_costs.py::test_mistral_pdf_ocr_exposes_cost_breakdown",
-        ),
-        PassSupplement(
-            "xai",
-            "grok-4.7",
-            "pdf_bytes",
-            "tests/e2e/test_file_uploads.py::test_xai_pdf_bytes_uses_attachment_search",
-        ),
-        PassSupplement(
-            "xai",
-            "grok-4.6",
-            "pdf_bytes",
-            "tests/e2e/test_file_uploads.py::test_xai_pdf_bytes_uses_attachment_search",
-        ),
-        PassSupplement(
-            "xai",
-            "grok-4.5",
-            "pdf_bytes",
-            "tests/e2e/test_file_uploads.py::test_xai_pdf_bytes_uses_attachment_search",
-        ),
-    ),
     always_on=(
         CapabilityScenario(
             "facade_discovery",
@@ -353,6 +305,57 @@ def first_party_declared_exceptions() -> tuple[DeclaredException, ...]:
                     )
                 )
     return tuple(declared)
+
+
+def first_party_model_profiles() -> tuple[tuple[str, ModelSpec], ...]:
+    """Build minimal exact-model specs for deterministic routing coverage."""
+    paths = sorted(_CORE_CATALOGUES.glob("*.json")) + sorted(
+        _PACKAGE_CATALOGUES.glob("*/src/*/registry/organizations/*.json")
+    )
+    if len(paths) != 9:
+        raise ValueError(f"expected nine first-party model catalogues, found {len(paths)}")
+
+    profiles = []
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read first-party catalogue {path}") from exc
+        models = data.get("models")
+        if not isinstance(models, dict):
+            raise ValueError(f"{path.stem} catalogue must contain a models object")
+
+        for model_name, profile in models.items():
+            if not isinstance(profile, dict):
+                raise ValueError(f"{path.stem}/{model_name} profile must be an object")
+            selector_profile = {
+                "limits": {
+                    "context_window_tokens": 1,
+                    "max_output_tokens": 1,
+                },
+                "pricing_tiers": [
+                    {
+                        "up_to_prompt_tokens": None,
+                        "input_per_1m": 1,
+                        "output_per_1m": 1,
+                    }
+                ],
+            }
+            if "capability_exceptions" in profile:
+                selector_profile["capability_exceptions"] = profile[
+                    "capability_exceptions"
+                ]
+            profiles.append(
+                (
+                    path.stem,
+                    ModelSpec.from_dict(
+                        model_name,
+                        selector_profile,
+                        currency=data.get("currency", "USD"),
+                    ),
+                )
+            )
+    return tuple(profiles)
 
 
 def _validate_node_id(node_id: str, *, route: str) -> None:
@@ -516,20 +519,6 @@ def validate_scenario_catalogue(
             route=f"exception {organization or '*'}/{capability_id}/{behavior_id}",
         )
 
-    supplements = _unique_routes(
-        catalogue.supplements,
-        lambda route: (route.organization, route.model, route.capability_id),
-        route_name="pass supplement",
-        record_type=PassSupplement,
-    )
-    for key, route in supplements.items():
-        organization, model, capability_id = key
-        if not all(isinstance(value, str) and value for value in key):
-            raise ValueError(f"pass supplement requires organization, model, and capability: {key!r}")
-        if capability_id not in model_dependent:
-            raise ValueError(f"pass supplement has non-model capability: {key!r}")
-        _validate_node_id(route.node_id, route=f"pass supplement {organization}/{model}/{capability_id}")
-
     profile_inventory_is_default = declared_exceptions is None
     declared = tuple(
         first_party_declared_exceptions()
@@ -544,11 +533,6 @@ def validate_scenario_catalogue(
         (entry.capability_id, entry.behavior_id, entry.organization)
         for entry in declared
         if entry.capability_id in model_dependent and entry.behavior_id != "pass"
-    }
-    expected_pass_supplements = {
-        (entry.organization, entry.model, entry.capability_id)
-        for entry in declared
-        if entry.capability_id in model_dependent and entry.behavior_id == "pass"
     }
     missing_exception_routes = {
         route_key
@@ -565,14 +549,6 @@ def validate_scenario_catalogue(
             )
         )
         raise ValueError(f"missing exception evidence routes: {missing}")
-    missing_supplements = expected_pass_supplements - supplements.keys()
-    if missing_supplements:
-        missing = ", ".join(
-            f"{organization}/{model}/{capability_id}"
-            for organization, model, capability_id in sorted(missing_supplements)
-        )
-        raise ValueError(f"missing exact-model pass supplements: {missing}")
-
     if profile_inventory_is_default:
         declared_exception_pairs = {
             (capability_id, behavior_id)
@@ -598,13 +574,6 @@ def validate_scenario_catalogue(
                 )
             )
             raise ValueError(f"exception evidence has no declared model route: {orphaned}")
-        orphan_supplements = supplements.keys() - expected_pass_supplements
-        if orphan_supplements:
-            orphaned = ", ".join(
-                f"{organization}/{model}/{capability_id}"
-                for organization, model, capability_id in sorted(orphan_supplements)
-            )
-            raise ValueError(f"pass evidence has no declared model exception: {orphaned}")
 
 
 validate_scenario_catalogue()
@@ -615,9 +584,9 @@ __all__ = [
     "DeclaredException",
     "E2E_SCENARIO_CAPABILITIES",
     "ExceptionScenario",
-    "PassSupplement",
     "SCENARIO_CATALOGUE",
     "ScenarioCatalogue",
     "first_party_declared_exceptions",
+    "first_party_model_profiles",
     "validate_scenario_catalogue",
 ]

@@ -12,16 +12,6 @@
           "capability_id": "provider_continuation",
           "behavior_id": "ignored",
           "behavior": "The package accepts previous_response for API compatibility but ignores it and does not send previous_response_id; the request uses the messages supplied by the caller."
-        },
-        {
-          "capability_id": "pdf_url",
-          "behavior_id": "pass",
-          "behavior": "A public PDF URL is passed unchanged as an input_file file_url. xAI activates attachment_search for the attached document, making the request agentic and potentially adding tool-invocation charges."
-        },
-        {
-          "capability_id": "pdf_bytes",
-          "behavior_id": "pass",
-          "behavior": "PDF bytes are uploaded to xAI's Files API with a 24-hour expiry and attached by the returned file_id. xAI activates attachment_search, making the request agentic and potentially adding tool-invocation charges."
         }
       ],
       "limits": {
@@ -55,16 +45,6 @@
           "capability_id": "provider_continuation",
           "behavior_id": "ignored",
           "behavior": "The package accepts previous_response for API compatibility but ignores it and does not send previous_response_id; the request uses the messages supplied by the caller."
-        },
-        {
-          "capability_id": "pdf_url",
-          "behavior_id": "pass",
-          "behavior": "A public PDF URL is passed unchanged as an input_file file_url. xAI activates attachment_search for the attached document, making the request agentic and potentially adding tool-invocation charges."
-        },
-        {
-          "capability_id": "pdf_bytes",
-          "behavior_id": "pass",
-          "behavior": "PDF bytes are uploaded to xAI's Files API with a 24-hour expiry and attached by the returned file_id. xAI activates attachment_search, making the request agentic and potentially adding tool-invocation charges."
         }
       ],
       "limits": {
@@ -98,16 +78,6 @@
           "capability_id": "provider_continuation",
           "behavior_id": "ignored",
           "behavior": "The package accepts previous_response for API compatibility but ignores it and does not send previous_response_id; the request uses the messages supplied by the caller."
-        },
-        {
-          "capability_id": "pdf_url",
-          "behavior_id": "pass",
-          "behavior": "A public PDF URL is passed unchanged as an input_file file_url. xAI activates attachment_search for the attached document, making the request agentic and potentially adding tool-invocation charges."
-        },
-        {
-          "capability_id": "pdf_bytes",
-          "behavior_id": "pass",
-          "behavior": "PDF bytes are uploaded to xAI's Files API with a 24-hour expiry and attached by the returned file_id. xAI activates attachment_search, making the request agentic and potentially adding tool-invocation charges."
         }
       ],
       "limits": {

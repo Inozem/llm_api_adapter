@@ -14,7 +14,7 @@ Run these checks **after implementation**, from the actual repository root (`llm
 & .\.venv\Scripts\python.exe -m pytest -q -m unit tests/unit/llm_registry tests/unit/conformance tests/unit/test_organization_plugins.py
 ```
 
-Expected: every first-party registered model has an explicit `capability_exceptions` list, including an empty list when it follows the baseline, and every declared exception has a valid `behavior_id`. An unlisted capability selects its baseline-positive scenario; a `pass` exception keeps that scenario and selects additive package evidence for the exact model and capability; another `(capability_id, behavior_id)` pair selects its documented deviation check. Mistral PDF via OCR remains a `pass` exception with positive PDF and separate OCR/cost evidence. A missing profile, invalid behavior ID, or missing/duplicate evidence fails deterministically. A legacy third-party plugin can still register without a profile, but profile-based certification fails clearly.
+Expected: every first-party registered model has an explicit `capability_exceptions` list, including an empty list when it follows the baseline, and every declared exception has a valid `behavior_id`. An unlisted capability and a `pass` exception both select the baseline-positive scenario; another `(capability_id, behavior_id)` pair selects its documented deviation check. Mistral PDF via OCR remains a visible `pass` exception, while package tests verify the normalization and OCR costs. A missing profile, invalid behavior ID, or missing/duplicate route fails deterministically. A legacy third-party plugin can still register without a profile, but profile-based certification fails clearly.
 
 ## 2. Validate cached usage and prices
 
@@ -40,7 +40,7 @@ Expected: all known external organizations match their Core extras, package mani
 & .\.venv\Scripts\python.exe -m pytest --collect-only -q --import-mode=importlib -m e2e_zai tests/e2e
 ```
 
-Expected: baseline-positive scenarios are collected for each exact model with no exception or a `pass` exception; a `pass` exception also collects its additive package evidence. Other exception pairs route to documented deviation scenarios. Missing profiles, invalid behavior IDs, and missing/duplicate evidence fail collection instead of silently deselecting tests. Collection must not require `ZAI_API_KEY` or make a provider call. Repeat for the other provider markers in `pytest.ini` as part of release preparation.
+Expected: baseline-positive scenarios are collected for each exact model with no exception or a `pass` exception. Other exception pairs route to documented deviation scenarios. Missing profiles, invalid behavior IDs, and missing/duplicate routes fail collection instead of silently deselecting tests. Collection must not require `ZAI_API_KEY` or make a provider call. Repeat for the other provider markers in `pytest.ini` as part of release preparation.
 
 ## 5. Run the full deterministic gate
 

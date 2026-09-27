@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import importlib
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -13,18 +16,22 @@ from llm_api_adapter.llm_registry.llm_registry import (
     CapabilityException,
     ModelSpec,
 )
+from tests.capability_scenarios import (
+    E2E_SCENARIO_CAPABILITIES,
+    SCENARIO_CATALOGUE,
+    first_party_model_profiles,
+)
+from tests.capability_selection import select_model_scenarios
 
 
 SYNC_CHAT = "tests/e2e/test_examples.py::test_sync_chat"
 PDF_SUCCESS = "tests/e2e/test_examples.py::test_pdf_url_succeeds"
 PDF_REJECTION = "tests/e2e/test_examples.py::test_pdf_url_rejected"
-MISTRAL_OCR = "tests/e2e/test_examples.py::test_mistral_ocr_evidence"
 ERROR_NORMALIZATION = "tests/e2e/test_examples.py::test_error_normalization"
 ALL_SCENARIOS = (
     SYNC_CHAT,
     PDF_SUCCESS,
     PDF_REJECTION,
-    MISTRAL_OCR,
     ERROR_NORMALIZATION,
 )
 
@@ -140,6 +147,100 @@ def _collect(conftest, items: list[_CollectedItem]) -> list[_CollectedItem]:
     return items
 
 
+def _scenario_route_node_ids() -> tuple[str, ...]:
+    routes = (
+        *SCENARIO_CATALOGUE.positive,
+        *SCENARIO_CATALOGUE.exceptions,
+        *SCENARIO_CATALOGUE.always_on,
+    )
+    return tuple(dict.fromkeys(route.node_id for route in routes))
+
+
+def _collected_scenario_node_ids() -> frozenset[str]:
+    """Collect the static route files through pytest without running their tests."""
+    repository_root = Path(__file__).resolve().parents[2]
+    route_files = sorted(
+        {
+            node_id.partition("::")[0]
+            for node_id in _scenario_route_node_ids()
+            if "::" in node_id
+        }
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "--import-mode=importlib",
+            "-q",
+            *route_files,
+        ],
+        cwd=repository_root,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        "pytest could not collect the scenario route files:\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
+
+    collected = set()
+    for line in result.stdout.splitlines():
+        path, separator, test_id = line.partition("::")
+        if separator:
+            collected.add(f"{path}::{test_id.partition('[')[0]}")
+    return frozenset(collected)
+
+
+def _route_contexts_for_profile(organization: str, model: ModelSpec, node_id: str):
+    exceptions = {
+        exception.capability_id: exception
+        for exception in model.require_capability_profile()
+    }
+    contexts = []
+    for capability in E2E_SCENARIO_CAPABILITIES:
+        if capability.scope == "always-on":
+            route = next(
+                route
+                for route in SCENARIO_CATALOGUE.always_on
+                if route.capability_id == capability.id
+            )
+            if route.node_id == node_id:
+                contexts.append((capability.id, "always-on", "unconditional route"))
+            continue
+
+        exception = exceptions.get(capability.id)
+        if exception is not None and exception.behavior_id != "pass":
+            candidates = [
+                route
+                for route in SCENARIO_CATALOGUE.exceptions
+                if route.capability_id == capability.id
+                and route.behavior_id == exception.behavior_id
+                and route.organization in (organization, None)
+            ]
+            route = next(
+                (candidate for candidate in candidates if candidate.organization == organization),
+                candidates[0] if candidates else None,
+            )
+            if route is not None and route.node_id == node_id:
+                contexts.append(
+                    (capability.id, exception.behavior_id, "replacement route")
+                )
+            continue
+
+        positive = next(
+            route
+            for route in SCENARIO_CATALOGUE.positive
+            if route.capability_id == capability.id
+        )
+        behavior_id = exception.behavior_id if exception is not None else "baseline"
+        if positive.node_id == node_id:
+            contexts.append((capability.id, behavior_id, "positive route"))
+    return tuple(contexts)
+
+
 @pytest.mark.unit
 def test_collection_selects_scenarios_per_model_within_one_organization(
     e2e_collection,
@@ -148,7 +249,7 @@ def test_collection_selects_scenarios_per_model_within_one_organization(
     conftest, package_lookup, plugin_discovery = e2e_collection
     profile = conftest.get_e2e_organization_profile("mistral")
     baseline_model = _model("mistral-baseline-fixture", [])
-    ocr_model = _model(
+    pass_model = _model(
         "mistral-small-2603",
         [_pdf_exception("pass")],
     )
@@ -158,15 +259,14 @@ def test_collection_selects_scenarios_per_model_within_one_organization(
             PDF_SUCCESS,
             ERROR_NORMALIZATION,
         },
-        ("mistral", ocr_model.name): {
+        ("mistral", pass_model.name): {
             SYNC_CHAT,
             PDF_SUCCESS,
-            MISTRAL_OCR,
             ERROR_NORMALIZATION,
         },
     }
     _install_synthetic_selector(monkeypatch, conftest, routes)
-    items = _collect(conftest, _items(profile, (baseline_model, ocr_model)))
+    items = _collect(conftest, _items(profile, (baseline_model, pass_model)))
 
     selected_by_model = {
         item.model_spec.name: {
@@ -178,7 +278,7 @@ def test_collection_selects_scenarios_per_model_within_one_organization(
     }
     assert selected_by_model == {
         model.name: routes[("mistral", model.name)]
-        for model in (baseline_model, ocr_model)
+        for model in (baseline_model, pass_model)
     }
     assert all(ERROR_NORMALIZATION in selected for selected in selected_by_model.values())
     package_lookup.assert_not_called()
@@ -205,7 +305,6 @@ def test_collection_routes_a_model_deviation_to_its_declared_scenario(
 
     assert {item.nodeid for item in selected} == routes[("mistral", model.name)]
     assert PDF_SUCCESS not in {item.nodeid for item in selected}
-    assert MISTRAL_OCR not in {item.nodeid for item in selected}
 
 
 @pytest.mark.unit
@@ -285,3 +384,74 @@ def test_collection_rejects_an_invalid_organization_profile(
 
     with pytest.raises(pytest.UsageError, match="invalid E2E organization profile"):
         _collect(conftest, [item])
+
+
+@pytest.mark.unit
+def test_every_first_party_profile_selects_only_collected_scenario_nodes(
+    e2e_collection,
+):
+    conftest, _, _ = e2e_collection
+    model_profiles = first_party_model_profiles()
+    profiles = {
+        organization: conftest.get_e2e_organization_profile(organization)
+        for organization, _ in model_profiles
+    }
+    collected_node_ids = _collected_scenario_node_ids()
+    items = [
+        _CollectedItem(node_id, profiles[organization], model)
+        for organization, model in model_profiles
+        for node_id in collected_node_ids
+    ]
+
+    selected_items = _collect(conftest, items)
+    selected_by_model = {}
+    for item in selected_items:
+        key = (item.organization_profile.name, item.model_spec.name)
+        selected_by_model.setdefault(key, set()).add(item.nodeid)
+
+    gaps = []
+    selected_route_owners = {}
+    for organization, model in model_profiles:
+        key = (organization, model.name)
+        selected_routes = set(
+            select_model_scenarios(
+                organization=organization,
+                model=model,
+                capabilities=E2E_SCENARIO_CAPABILITIES,
+            )
+        )
+        for node_id in selected_routes:
+            selected_route_owners.setdefault(node_id, []).append((organization, model))
+        collected_routes = selected_by_model.get(key, set())
+        missing_nodes = selected_routes - collected_routes
+        unexpected_nodes = collected_routes - selected_routes
+        for node_id in sorted(missing_nodes):
+            contexts = _route_contexts_for_profile(organization, model, node_id)
+            if not contexts:
+                contexts = (("unknown", "unknown", "scenario route"),)
+            for capability_id, behavior_id, route_type in contexts:
+                gaps.append(
+                    f"{organization}/{model.name}: capability_id={capability_id}, "
+                    f"behavior_id={behavior_id}, missing {route_type} collected node "
+                    f"{node_id}"
+                )
+        for node_id in sorted(unexpected_nodes):
+            gaps.append(
+                f"{organization}/{model.name}: capability_id=unknown, "
+                f"behavior_id=unknown, unexpected collected node {node_id}"
+            )
+
+    for node_id in sorted(selected_route_owners.keys() - collected_node_ids):
+        owners = selected_route_owners[node_id]
+        for organization, model in owners:
+            contexts = _route_contexts_for_profile(organization, model, node_id)
+            if not contexts:
+                contexts = (("unknown", "unknown", "scenario route"),)
+            for capability_id, behavior_id, route_type in contexts:
+                gaps.append(
+                    f"{organization}/{model.name}: capability_id={capability_id}, "
+                    f"behavior_id={behavior_id}, selected {route_type} has no "
+                    f"collected pytest node {node_id}"
+                )
+
+    assert not gaps, "\n".join(gaps)

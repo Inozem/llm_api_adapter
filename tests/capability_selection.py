@@ -14,7 +14,6 @@ from tests.capability_scenarios import (
     CapabilityScenario,
     E2E_SCENARIO_CAPABILITIES,
     ExceptionScenario,
-    PassSupplement,
     SCENARIO_CATALOGUE,
     ScenarioCatalogue,
 )
@@ -82,7 +81,6 @@ def _validate_route_scopes(
     positive: dict[str, CapabilityScenario],
     always_on: dict[str, CapabilityScenario],
     exceptions: dict[tuple[str, str, str | None], ExceptionScenario],
-    supplements: dict[tuple[str, str, str], PassSupplement],
 ) -> None:
     for capability_id, route in positive.items():
         if _CAPABILITY_SCOPES.get(capability_id) != "model-dependent":
@@ -130,18 +128,6 @@ def _validate_route_scopes(
                 f"{behavior_id} has no node ID"
             )
 
-    for key, route in supplements.items():
-        organization, model_name, capability_id = key
-        if not all(isinstance(value, str) and value for value in key):
-            raise ValueError(f"pass supplement requires an exact model key: {key!r}")
-        if _CAPABILITY_SCOPES.get(capability_id) != "model-dependent":
-            raise ValueError(f"pass supplement has unknown or non-model key: {key!r}")
-        if not isinstance(route.node_id, str) or not route.node_id:
-            raise ValueError(
-                "pass supplement for "
-                f"{organization}/{model_name}/{capability_id} has no node ID"
-            )
-
 
 def select_model_scenarios(
     *,
@@ -154,10 +140,10 @@ def select_model_scenarios(
 
     Every requested model-dependent capability keeps its baseline-positive
     evidence unless its profile declares a non-``pass`` behavior. A ``pass``
-    exception retains the baseline and adds only the supplement keyed by the
-    exact organization, model name, and capability. Requested always-on routes
-    are always included. Exception replacements can be global or scoped to an
-    organization; an organization-specific route takes precedence.
+    exception records an adapter-normalized provider limitation and therefore
+    retains only the baseline route. Requested always-on routes are always
+    included. Exception replacements can be global or scoped to an organization;
+    an organization-specific route takes precedence.
     """
     if not isinstance(organization, str) or not organization:
         raise ValueError("organization must be a non-empty string")
@@ -189,13 +175,7 @@ def select_model_scenarios(
             route.organization,
         ),
     )
-    supplements = _index_routes(
-        scenarios.supplements,
-        route_name="pass supplement",
-        record_type=PassSupplement,
-        key=lambda route: (route.organization, route.model, route.capability_id),
-    )
-    _validate_route_scopes(positive, always_on, exception_routes, supplements)
+    _validate_route_scopes(positive, always_on, exception_routes)
 
     declared_exceptions = model.require_capability_profile()
     exceptions_by_capability: dict[str, CapabilityException] = {}
@@ -258,16 +238,6 @@ def select_model_scenarios(
         exception = exceptions_by_capability.get(capability_id)
         if exception is None or exception.behavior_id == "pass":
             add(baseline.node_id)
-            if exception is not None:
-                exact_key = (organization, model.name, capability_id)
-                supplement = supplements.get(exact_key)
-                if supplement is None:
-                    raise ValueError(
-                        f"Model '{model.name}' in organization '{organization}' has "
-                        "a coverage gap: missing exact-model pass supplement for "
-                        f"capability '{capability_id}' (behavior_id 'pass')"
-                    )
-                add(supplement.node_id)
             continue
 
         replacement = exception_routes.get(

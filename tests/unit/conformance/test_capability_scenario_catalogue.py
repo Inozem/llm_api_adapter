@@ -10,7 +10,6 @@ from tests.capability_scenarios import (
     DeclaredException,
     E2E_SCENARIO_CAPABILITIES,
     ExceptionScenario,
-    PassSupplement,
     SCENARIO_CATALOGUE,
     ScenarioCatalogue,
     first_party_declared_exceptions,
@@ -42,14 +41,6 @@ def _synthetic_catalogue() -> ScenarioCatalogue:
                 "tests/e2e/test_files.py::test_pdf_rejected",
             ),
         ),
-        supplements=(
-            PassSupplement(
-                "mistral",
-                "mistral-small-2603",
-                "pdf_url",
-                "tests/e2e/test_mistral.py::test_pdf_uses_ocr",
-            ),
-        ),
         always_on=(
             CapabilityScenario(
                 "error_normalization",
@@ -71,19 +62,10 @@ def test_checked_in_catalogue_covers_capabilities_and_declared_profiles():
         (route.capability_id, route.behavior_id)
         for route in SCENARIO_CATALOGUE.exceptions
     }
-    mapped_supplements = {
-        (route.organization, route.model, route.capability_id)
-        for route in SCENARIO_CATALOGUE.supplements
-    }
     assert mapped_pairs == {
         (item.capability_id, item.behavior_id)
         for item in declared
         if item.capability_id in e2e_capability_ids and item.behavior_id != "pass"
-    }
-    assert mapped_supplements == {
-        (item.organization, item.model, item.capability_id)
-        for item in declared
-        if item.capability_id in e2e_capability_ids and item.behavior_id == "pass"
     }
 
 
@@ -102,7 +84,6 @@ def test_validator_accepts_a_complete_synthetic_catalogue():
     [
         ("positive", "missing baseline-positive"),
         ("exceptions", "missing exception evidence"),
-        ("supplements", "missing exact-model pass supplements"),
         ("always_on", "missing unconditional"),
     ],
 )
@@ -119,7 +100,7 @@ def test_validator_rejects_missing_evidence(field: str, message: str):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("field", ("positive", "exceptions", "supplements", "always_on"))
+@pytest.mark.parametrize("field", ("positive", "exceptions", "always_on"))
 def test_validator_rejects_duplicate_evidence(field: str):
     catalogue = _synthetic_catalogue()
     routes = getattr(catalogue, field)

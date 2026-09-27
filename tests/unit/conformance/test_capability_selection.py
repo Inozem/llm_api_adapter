@@ -15,18 +15,19 @@ from llm_api_adapter.llm_registry.llm_registry import ModelSpec
 from llm_api_adapter.llm_registry.model_capabilities import ModelCapability
 from tests.capability_scenarios import (
     CapabilityScenario,
+    E2E_SCENARIO_CAPABILITIES,
     ExceptionScenario,
-    PassSupplement,
+    SCENARIO_CATALOGUE,
     ScenarioCatalogue,
+    first_party_model_profiles,
 )
 
 
 SYNC_CHAT = "tests/e2e/test_llm_adapter_chat.py::test_sync_chat"
 PDF_SUCCESS = "tests/e2e/test_file_uploads.py::test_pdf_url_succeeds"
 PDF_REJECTION = "tests/e2e/test_file_uploads.py::test_pdf_url_rejected"
-MISTRAL_OCR = "tests/e2e/test_mistral_ocr_costs.py::test_mistral_pdf_ocr_exposes_cost_breakdown"
-PACKAGE_OCR = "packages/organizations/example/tests/e2e/test_pdf.py::test_ocr"
 ERROR_NORMALIZATION = "tests/e2e/test_errors.py::test_error_normalization"
+FIRST_PARTY_MODEL_PROFILES = first_party_model_profiles()
 
 CAPABILITIES = (
     ModelCapability("sync_chat", "model-dependent"),
@@ -44,9 +45,6 @@ def _scenario_catalogue() -> ScenarioCatalogue:
         ),
         exceptions=(
             ExceptionScenario("pdf_url", "rejected_before_transport", PDF_REJECTION),
-        ),
-        supplements=(
-            PassSupplement("mistral", "mistral-small-2603", "pdf_url", MISTRAL_OCR),
         ),
         always_on=(CapabilityScenario("error_normalization", ERROR_NORMALIZATION),),
     )
@@ -106,15 +104,12 @@ def test_empty_profile_selects_every_applicable_positive_and_always_on_scenario(
 
 
 @pytest.mark.unit
-def test_mistral_pdf_pass_keeps_success_and_adds_exact_model_ocr_evidence():
+def test_mistral_pdf_pass_uses_the_shared_success_scenario():
     model = _model("mistral-small-2603", [_exception("pass", "PDF via OCR")])
 
     selected = _select("mistral", model)
 
-    _assert_selected(
-        selected,
-        {SYNC_CHAT, PDF_SUCCESS, MISTRAL_OCR, ERROR_NORMALIZATION},
-    )
+    _assert_selected(selected, {SYNC_CHAT, PDF_SUCCESS, ERROR_NORMALIZATION})
     assert PDF_REJECTION not in selected
 
 
@@ -129,6 +124,50 @@ def test_pdf_rejection_replaces_only_pdf_success_and_never_interprets_prose():
 
     _assert_selected(selected, {SYNC_CHAT, PDF_REJECTION, ERROR_NORMALIZATION})
     assert PDF_SUCCESS not in selected
+
+
+@pytest.mark.unit
+def test_replacement_routes_can_be_scoped_to_an_organization():
+    zai_route = "packages/organizations/zai/tests/e2e/test_zai.py::test_pdf_rejected"
+    kimi_route = "packages/organizations/kimi/tests/e2e/test_kimi.py::test_pdf_rejected"
+    catalogue = replace(
+        _scenario_catalogue(),
+        exceptions=(
+            ExceptionScenario(
+                "pdf_url",
+                "rejected_before_transport",
+                zai_route,
+                organization="zai",
+            ),
+            ExceptionScenario(
+                "pdf_url",
+                "rejected_before_transport",
+                kimi_route,
+                organization="kimi",
+            ),
+        ),
+    )
+    model = _model(
+        "pdf-limited-model",
+        [_exception("rejected_before_transport")],
+    )
+
+    _assert_selected(
+        _select("zai", model, catalogue),
+        {SYNC_CHAT, zai_route, ERROR_NORMALIZATION},
+    )
+    _assert_selected(
+        _select("kimi", model, catalogue),
+        {SYNC_CHAT, kimi_route, ERROR_NORMALIZATION},
+    )
+
+    with pytest.raises(ValueError) as error:
+        _select("deepseek", model, catalogue)
+
+    message = str(error.value)
+    assert "pdf-limited-model" in message
+    assert "pdf_url" in message
+    assert "rejected_before_transport" in message
 
 
 @pytest.mark.unit
@@ -184,21 +223,7 @@ def test_missing_replacement_scenario_is_a_coverage_error():
 
 
 @pytest.mark.unit
-def test_pass_without_exact_model_supplement_is_a_coverage_error():
-    model = _model("mistral-small-2603", [_exception("pass")])
-    catalogue = replace(_scenario_catalogue(), supplements=())
-
-    with pytest.raises(ValueError) as error:
-        _select("mistral", model, catalogue)
-
-    message = str(error.value)
-    assert "mistral-small-2603" in message
-    assert "pdf_url" in message
-    assert "pass" in message
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("route_type", ("positive", "exceptions", "supplements"))
+@pytest.mark.parametrize("route_type", ("positive", "exceptions"))
 def test_duplicate_evidence_route_is_rejected(route_type: str):
     catalogue = _scenario_catalogue()
     duplicate_routes = getattr(catalogue, route_type)
@@ -208,9 +233,7 @@ def test_duplicate_evidence_route_is_rejected(route_type: str):
     )
     model = _model(
         "mistral-small-2603",
-        [_exception("pass" if route_type == "supplements" else "rejected_before_transport")]
-        if route_type != "positive"
-        else [],
+        [_exception("rejected_before_transport")] if route_type != "positive" else [],
     )
 
     with pytest.raises(ValueError, match="duplicate"):
@@ -218,29 +241,67 @@ def test_duplicate_evidence_route_is_rejected(route_type: str):
 
 
 @pytest.mark.unit
-def test_package_supplements_are_scoped_to_exact_organization_and_model():
-    catalogue = replace(
-        _scenario_catalogue(),
-        supplements=(
-            PassSupplement("mistral", "mistral-small-2603", "pdf_url", MISTRAL_OCR),
-            PassSupplement("example", "mistral-small-2603", "pdf_url", PACKAGE_OCR),
-        ),
+@pytest.mark.parametrize(
+    ("organization", "model"),
+    [
+        pytest.param(
+            organization,
+            model,
+            id=f"{organization}-{model.name}",
+        )
+        for organization, model in FIRST_PARTY_MODEL_PROFILES
+    ],
+)
+def test_every_first_party_profile_has_routes_for_its_shared_capabilities(
+    organization: str,
+    model: ModelSpec,
+):
+    from tests.capability_selection import select_model_scenarios
+
+    gaps = []
+    declared = {
+        exception.capability_id: exception
+        for exception in model.require_capability_profile()
+    }
+    for capability in E2E_SCENARIO_CAPABILITIES:
+        try:
+            select_model_scenarios(
+                organization=organization,
+                model=model,
+                capabilities=(capability,),
+            )
+        except (TypeError, ValueError) as error:
+            exception = declared.get(capability.id)
+            behavior_id = (
+                exception.behavior_id
+                if exception is not None
+                else "always-on"
+                if capability.scope == "always-on"
+                else "baseline"
+            )
+            gaps.append(
+                f"{organization}/{model.name}: capability_id={capability.id}, "
+                f"behavior_id={behavior_id}: {error}"
+            )
+
+    assert not gaps, "\n".join(gaps)
+
+    selected = set(
+        select_model_scenarios(
+            organization=organization,
+            model=model,
+            capabilities=E2E_SCENARIO_CAPABILITIES,
+        )
     )
-    model = _model("mistral-small-2603", [_exception("pass")])
-
-    mistral = _select("mistral", model, catalogue)
-    example = _select("example", model, catalogue)
-
-    _assert_selected(mistral, {SYNC_CHAT, PDF_SUCCESS, MISTRAL_OCR, ERROR_NORMALIZATION})
-    _assert_selected(example, {SYNC_CHAT, PDF_SUCCESS, PACKAGE_OCR, ERROR_NORMALIZATION})
-
-
-@pytest.mark.unit
-def test_another_model_cannot_borrow_a_package_supplement():
-    model = _model("mistral-medium-3.5", [_exception("pass")])
-
-    with pytest.raises(ValueError) as error:
-        _select("mistral", model)
-
-    assert "mistral-medium-3.5" in str(error.value)
-    assert "pdf_url" in str(error.value)
+    shared_capabilities = {item.id: item for item in E2E_SCENARIO_CAPABILITIES}
+    for capability_id in ("sync_chat", "application_tools"):
+        expected_node = next(
+            route.node_id
+            for route in SCENARIO_CATALOGUE.positive
+            if route.capability_id == capability_id
+        )
+        assert shared_capabilities[capability_id].scope == "model-dependent"
+        assert expected_node in selected, (
+            f"{organization}/{model.name}: capability_id={capability_id}, "
+            "behavior_id=baseline shared scenario was not selected"
+        )
