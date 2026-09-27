@@ -7,11 +7,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 import pytest
 
-from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY
+from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY, ModelSpec
 from llm_api_adapter.universal_adapter import (
     ORGANIZATION_PLUGIN_DISCOVERY,
     SERVICE_PROVIDER_REGISTRY,
 )
+from tests.capability_selection import select_model_scenarios
 from tests.e2e import harness
 
 _FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
@@ -23,45 +24,10 @@ class E2EOrganizationProfile:
 
     name: str
     organization_names: tuple[str, ...]
-    supported_features: frozenset[str]
     distribution: str | None = None
     api_key_is_required: bool = False
     missing_api_key_is_usage_error: bool = False
     operation_kwargs_env: tuple[tuple[str, str], ...] = ()
-
-
-_PORTABLE_E2E_FEATURES = frozenset(
-    {
-        "text",
-        "sync_chat",
-        "async_chat",
-        "streaming",
-        "tools",
-        "structured_output",
-        "reasoning",
-        "image_input",
-        "document_input",
-        "error_normalization",
-    }
-)
-_QWEN_PORTABLE_E2E_FEATURES = frozenset(
-    {
-        "text",
-        "sync_chat",
-        "async_chat",
-        "streaming",
-        "tools",
-        "structured_output",
-        "reasoning",
-        "image_input",
-    }
-)
-_KIMI_PORTABLE_E2E_FEATURES = _QWEN_PORTABLE_E2E_FEATURES
-_DEEPSEEK_PORTABLE_E2E_FEATURES = _PORTABLE_E2E_FEATURES - {"document_input"}
-_ZAI_PORTABLE_E2E_FEATURES = _PORTABLE_E2E_FEATURES - {
-    "structured_output",
-    "document_input",
-}
 
 
 class E2EOrganization(dict):
@@ -81,29 +47,24 @@ class E2EOrganization(dict):
 _OPENAI_E2E_PROFILE = E2EOrganizationProfile(
     name="openai",
     organization_names=("openai",),
-    supported_features=_PORTABLE_E2E_FEATURES,
 )
 _ANTHROPIC_E2E_PROFILE = E2EOrganizationProfile(
     name="anthropic",
     organization_names=("anthropic",),
-    supported_features=_PORTABLE_E2E_FEATURES,
 )
 _GOOGLE_E2E_PROFILE = E2EOrganizationProfile(
     name="google",
     organization_names=("google",),
-    supported_features=_PORTABLE_E2E_FEATURES,
 )
 _MISTRAL_E2E_PROFILE = E2EOrganizationProfile(
     name="mistral",
     organization_names=("mistral",),
-    supported_features=_PORTABLE_E2E_FEATURES | {"ocr"},
     distribution="llm-api-adapter-mistral",
     api_key_is_required=True,
 )
 _XAI_E2E_PROFILE = E2EOrganizationProfile(
     name="xai",
     organization_names=("xai",),
-    supported_features=_PORTABLE_E2E_FEATURES,
     distribution="llm-api-adapter-xai",
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
@@ -111,7 +72,6 @@ _XAI_E2E_PROFILE = E2EOrganizationProfile(
 _KIMI_E2E_PROFILE = E2EOrganizationProfile(
     name="kimi",
     organization_names=("kimi",),
-    supported_features=_KIMI_PORTABLE_E2E_FEATURES,
     distribution="llm-api-adapter-kimi",
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
@@ -119,7 +79,6 @@ _KIMI_E2E_PROFILE = E2EOrganizationProfile(
 _QWEN_E2E_PROFILE = E2EOrganizationProfile(
     name="qwen",
     organization_names=("qwen",),
-    supported_features=_QWEN_PORTABLE_E2E_FEATURES,
     distribution="llm-api-adapter-qwen",
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
@@ -128,7 +87,6 @@ _QWEN_E2E_PROFILE = E2EOrganizationProfile(
 _DEEPSEEK_E2E_PROFILE = E2EOrganizationProfile(
     name="deepseek",
     organization_names=("deepseek",),
-    supported_features=_DEEPSEEK_PORTABLE_E2E_FEATURES,
     distribution="llm-api-adapter-deepseek",
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
@@ -136,7 +94,6 @@ _DEEPSEEK_E2E_PROFILE = E2EOrganizationProfile(
 _ZAI_E2E_PROFILE = E2EOrganizationProfile(
     name="zai",
     organization_names=("zai",),
-    supported_features=_ZAI_PORTABLE_E2E_FEATURES,
     distribution="llm-api-adapter-zai",
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
@@ -223,13 +180,6 @@ def _profile_operation_kwargs(profile: E2EOrganizationProfile) -> dict[str, str]
     return operation_kwargs
 
 
-def _profile_supports_features(
-    profile: E2EOrganizationProfile,
-    required_features: frozenset[str],
-) -> bool:
-    return required_features <= profile.supported_features
-
-
 def get_e2e_organization_profile(name: str) -> E2EOrganizationProfile:
     """Return one named E2E profile for a package-local specialized check."""
     profiles = {
@@ -253,32 +203,54 @@ def get_e2e_organization_profile(name: str) -> E2EOrganizationProfile:
 
 
 def pytest_collection_modifyitems(config, items) -> None:
-    """Deselect profile/test combinations whose declared feature is unavailable."""
+    """Keep only scenario routes selected by each exact model profile."""
     selected = []
     deselected = []
+    routes_by_model: dict[tuple[str, str], frozenset[str]] = {}
+
     for item in items:
         callspec = getattr(item, "callspec", None)
-        profile = (
-            callspec.params.get("e2e_organization_profile")
-            if callspec is not None
-            else None
-        )
-        feature_markers = tuple(item.iter_markers("e2e_feature"))
-        if not isinstance(profile, E2EOrganizationProfile) or not feature_markers:
+        params = callspec.params if callspec is not None else {}
+        profile = params.get("e2e_organization_profile")
+        model_spec = params.get("e2e_model_spec")
+
+        if "e2e_organization_profile" in params and not isinstance(
+            profile, E2EOrganizationProfile
+        ):
+            raise pytest.UsageError(
+                f"{item.nodeid} has a missing or invalid E2E organization profile"
+            )
+
+        if "e2e_model_spec" not in params:
             selected.append(item)
             continue
 
-        required_features = frozenset(
-            feature
-            for marker in feature_markers
-            for feature in marker.args
-            if isinstance(feature, str)
-        )
-        if not required_features:
+        if not isinstance(profile, E2EOrganizationProfile):
             raise pytest.UsageError(
-                f"{item.nodeid} must declare at least one string e2e_feature"
+                f"{item.nodeid} has an exact model but no valid E2E organization profile"
             )
-        if _profile_supports_features(profile, required_features):
+
+        if not isinstance(model_spec, ModelSpec):
+            raise pytest.UsageError(
+                f"{item.nodeid} has a missing or invalid exact-model profile"
+            )
+
+        route_key = (profile.name, model_spec.name)
+        if route_key not in routes_by_model:
+            try:
+                routes_by_model[route_key] = frozenset(
+                    select_model_scenarios(
+                        organization=profile.name,
+                        model=model_spec,
+                    )
+                )
+            except (TypeError, ValueError) as exc:
+                raise pytest.UsageError(
+                    f"Invalid capability profile for {profile.name}/{model_spec.name}: "
+                    f"{exc}"
+                ) from exc
+
+        if _base_pytest_node_id(item.nodeid) in routes_by_model[route_key]:
             selected.append(item)
         else:
             deselected.append(item)
@@ -286,6 +258,15 @@ def pytest_collection_modifyitems(config, items) -> None:
     if deselected:
         config.hook.pytest_deselected(items=deselected)
         items[:] = selected
+
+
+def _base_pytest_node_id(nodeid: str) -> str:
+    """Drop parametrization IDs so static scenario routes match model variants."""
+    parent, separator, test_name = nodeid.rpartition("::")
+    if not separator:
+        return nodeid
+    test_name = test_name.partition("[")[0]
+    return f"{parent}::{test_name}"
 
 
 def _select_latest_e2e_models(organizations, override_prefix: str):

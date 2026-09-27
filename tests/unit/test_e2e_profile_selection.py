@@ -209,6 +209,30 @@ def test_collection_routes_a_model_deviation_to_its_declared_scenario(
 
 
 @pytest.mark.unit
+def test_collection_matches_static_routes_to_parameterized_model_node_ids(
+    e2e_collection,
+    monkeypatch,
+):
+    conftest, _, _ = e2e_collection
+    profile = conftest.get_e2e_organization_profile("mistral")
+    model = _model("mistral-small-2603", [])
+    parameterized_item = _CollectedItem(
+        f"{SYNC_CHAT}[{model.name}]",
+        profile,
+        model,
+    )
+    _install_synthetic_selector(
+        monkeypatch,
+        conftest,
+        {("mistral", model.name): {SYNC_CHAT}},
+    )
+
+    selected = _collect(conftest, [parameterized_item])
+
+    assert selected == [parameterized_item]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("model", "expected_detail"),
     [
@@ -246,3 +270,18 @@ def test_collection_reports_missing_or_unmapped_model_evidence(
 
     with pytest.raises(pytest.UsageError, match=expected_detail):
         _collect(conftest, items)
+
+
+@pytest.mark.unit
+def test_collection_rejects_an_invalid_organization_profile(
+    e2e_collection,
+):
+    conftest, _, _ = e2e_collection
+    item = _CollectedItem(
+        SYNC_CHAT,
+        object(),
+        _model("mistral-small-2603", []),
+    )
+
+    with pytest.raises(pytest.UsageError, match="invalid E2E organization profile"):
+        _collect(conftest, [item])
