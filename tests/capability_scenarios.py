@@ -88,6 +88,7 @@ _NO_SEPARATE_SHARED_E2E_SCENARIO_IDS = frozenset(
         "pdf_url",
         "refusal_outcome",
         "incomplete_outcome",
+        "reasoning_events",
         "tool_choice_auto",
         "tool_choice_none",
         "tool_choice_any",
@@ -139,10 +140,6 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
         CapabilityScenario(
             "reasoning_control",
             _STANDARD_REASONING_CHAT_SCENARIO,
-        ),
-        CapabilityScenario(
-            "reasoning_events",
-            "tests/e2e/test_async.py::test_async_reasoning_events_are_normalized",
         ),
         CapabilityScenario(
             "usage_reporting",
@@ -252,7 +249,7 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
         ),
         CapabilityScenario(
             "error_normalization",
-            "tests/e2e/test_errors.py::test_chat_timeout_error",
+            "tests/e2e/test_async.py::test_async_errors_are_normalized",
         ),
         CapabilityScenario(
             "registry_exactness",
