@@ -31,11 +31,12 @@ class CapabilityScenario:
 
 @dataclass(frozen=True)
 class ExceptionScenario:
-    """One replacement route for a non-pass capability behavior pair."""
+    """One replacement route, optionally scoped to an organization."""
 
     capability_id: str
     behavior_id: str
     node_id: str
+    organization: str | None = None
 
 
 @dataclass(frozen=True)
@@ -150,15 +151,35 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
         ExceptionScenario(
             "pdf_bytes",
             "rejected_before_transport",
-            "tests/e2e/test_file_uploads.py::test_document_bytes_declared_exception",
+            "packages/organizations/zai/tests/e2e/test_capability_boundaries.py::test_zai_rejects_document_forms_before_provider_transport",
+            organization="zai",
         ),
-        # Every model uses the same public chat contract, including models with
-        # different reasoning policies recorded in their capability profiles.
+        ExceptionScenario(
+            "pdf_bytes",
+            "rejected_before_transport",
+            "packages/organizations/kimi/tests/e2e/test_file_contract.py::test_kimi_file_contract_rejects_unsupported_parts_before_transport",
+            organization="kimi",
+        ),
+        ExceptionScenario(
+            "pdf_bytes",
+            "rejected_before_transport",
+            "packages/organizations/deepseek/tests/e2e/test_file_contract.py::test_deepseek_file_contract_rejects_documents_before_transport",
+            organization="deepseek",
+        ),
+        ExceptionScenario(
+            "pdf_bytes",
+            "rejected_before_transport",
+            "packages/organizations/qwen/tests/e2e/test_document_input.py::test_qwen_document_parts_are_rejected_before_messages_transport",
+            organization="qwen",
+        ),
         ExceptionScenario(
             "reasoning_control",
             "cannot_disable_thinking",
-            _STANDARD_REASONING_CHAT_SCENARIO,
+            "packages/organizations/kimi/tests/e2e/test_live_contract.py::test_kimi_models_apply_their_declared_reasoning_mode_through_the_facade",
+            organization="kimi",
         ),
+        # Keep reasoning exceptions without a package-local check on the
+        # shared public chat contract scenario.
         ExceptionScenario(
             "reasoning_control",
             "none_falls_back_to_low",
@@ -177,7 +198,8 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
         ExceptionScenario(
             "structured_output_schema",
             "rejected_before_transport",
-            "tests/e2e/test_json_schema.py::test_json_schema_declared_exception",
+            "packages/organizations/zai/tests/e2e/test_capability_boundaries.py::test_zai_rejects_structured_output_before_provider_transport",
+            organization="zai",
         ),
     ),
     supplements=(
@@ -460,11 +482,15 @@ def validate_scenario_catalogue(
 
     exception_routes = _unique_routes(
         catalogue.exceptions,
-        lambda route: (route.capability_id, route.behavior_id),
+        lambda route: (
+            route.capability_id,
+            route.behavior_id,
+            route.organization,
+        ),
         route_name="exception",
         record_type=ExceptionScenario,
     )
-    for (capability_id, behavior_id), route in exception_routes.items():
+    for (capability_id, behavior_id, organization), route in exception_routes.items():
         if capability_id not in capability_scopes:
             raise ValueError(f"unknown exception capability: {capability_id!r}")
         if capability_scopes[capability_id] != "model-dependent":
@@ -479,9 +505,15 @@ def validate_scenario_catalogue(
             raise ValueError(
                 f"exception route {capability_id!r} requires a valid non-pass behavior_id"
             )
+        if organization is not None and (
+            not isinstance(organization, str) or not organization
+        ):
+            raise ValueError(
+                f"exception route {capability_id}/{behavior_id} has an invalid organization"
+            )
         _validate_node_id(
             route.node_id,
-            route=f"exception {capability_id}/{behavior_id}",
+            route=f"exception {organization or '*'}/{capability_id}/{behavior_id}",
         )
 
     supplements = _unique_routes(
@@ -508,8 +540,8 @@ def validate_scenario_catalogue(
         raise ValueError("declared exception inventory has an invalid record")
     if len(set(declared)) != len(declared):
         raise ValueError("duplicate declared model exception profile entry")
-    expected_exception_pairs = {
-        (entry.capability_id, entry.behavior_id)
+    expected_exception_routes = {
+        (entry.capability_id, entry.behavior_id, entry.organization)
         for entry in declared
         if entry.capability_id in model_dependent and entry.behavior_id != "pass"
     }
@@ -518,11 +550,19 @@ def validate_scenario_catalogue(
         for entry in declared
         if entry.capability_id in model_dependent and entry.behavior_id == "pass"
     }
-    missing_exception_routes = expected_exception_pairs - exception_routes.keys()
+    missing_exception_routes = {
+        route_key
+        for route_key in expected_exception_routes
+        if route_key not in exception_routes
+        and (route_key[0], route_key[1], None) not in exception_routes
+    }
     if missing_exception_routes:
         missing = ", ".join(
-            f"{capability_id}/{behavior_id}"
-            for capability_id, behavior_id in sorted(missing_exception_routes)
+            f"{organization}/{capability_id}/{behavior_id}"
+            for capability_id, behavior_id, organization in sorted(
+                missing_exception_routes,
+                key=lambda item: (item[0], item[1], item[2] or ""),
+            )
         )
         raise ValueError(f"missing exception evidence routes: {missing}")
     missing_supplements = expected_pass_supplements - supplements.keys()
@@ -534,11 +574,28 @@ def validate_scenario_catalogue(
         raise ValueError(f"missing exact-model pass supplements: {missing}")
 
     if profile_inventory_is_default:
-        orphan_exception_routes = exception_routes.keys() - expected_exception_pairs
+        declared_exception_pairs = {
+            (capability_id, behavior_id)
+            for capability_id, behavior_id, _ in expected_exception_routes
+        }
+        orphan_exception_routes = {
+            route_key
+            for route_key in exception_routes
+            if (
+                (route_key[2] is None and route_key[:2] not in declared_exception_pairs)
+                or (
+                    route_key[2] is not None
+                    and route_key not in expected_exception_routes
+                )
+            )
+        }
         if orphan_exception_routes:
             orphaned = ", ".join(
-                f"{capability_id}/{behavior_id}"
-                for capability_id, behavior_id in sorted(orphan_exception_routes)
+                f"{organization or '*'}/{capability_id}/{behavior_id}"
+                for capability_id, behavior_id, organization in sorted(
+                    orphan_exception_routes,
+                    key=lambda item: (item[0], item[1], item[2] or ""),
+                )
             )
             raise ValueError(f"exception evidence has no declared model route: {orphaned}")
         orphan_supplements = supplements.keys() - expected_pass_supplements

@@ -81,7 +81,7 @@ def _validate_capabilities(
 def _validate_route_scopes(
     positive: dict[str, CapabilityScenario],
     always_on: dict[str, CapabilityScenario],
-    exceptions: dict[tuple[str, str], ExceptionScenario],
+    exceptions: dict[tuple[str, str, str | None], ExceptionScenario],
     supplements: dict[tuple[str, str, str], PassSupplement],
 ) -> None:
     for capability_id, route in positive.items():
@@ -102,7 +102,7 @@ def _validate_route_scopes(
         if not isinstance(route.node_id, str) or not route.node_id:
             raise ValueError(f"always-on evidence for {capability_id!r} has no node ID")
 
-    for (capability_id, behavior_id), route in exceptions.items():
+    for (capability_id, behavior_id, organization), route in exceptions.items():
         if _CAPABILITY_SCOPES.get(capability_id) != "model-dependent":
             raise ValueError(
                 f"exception evidence has unknown or non-model capability "
@@ -117,9 +117,17 @@ def _validate_route_scopes(
                 f"exception evidence for {capability_id!r} requires a non-pass "
                 "behavior_id"
             )
+        if organization is not None and (
+            not isinstance(organization, str) or not organization
+        ):
+            raise ValueError(
+                f"exception evidence for {capability_id}/{behavior_id} "
+                "requires a non-empty organization scope"
+            )
         if not isinstance(route.node_id, str) or not route.node_id:
             raise ValueError(
-                f"exception evidence for {capability_id}/{behavior_id} has no node ID"
+                f"exception evidence for {organization or '*'}/{capability_id}/"
+                f"{behavior_id} has no node ID"
             )
 
     for key, route in supplements.items():
@@ -148,7 +156,8 @@ def select_model_scenarios(
     evidence unless its profile declares a non-``pass`` behavior. A ``pass``
     exception retains the baseline and adds only the supplement keyed by the
     exact organization, model name, and capability. Requested always-on routes
-    are always included.
+    are always included. Exception replacements can be global or scoped to an
+    organization; an organization-specific route takes precedence.
     """
     if not isinstance(organization, str) or not organization:
         raise ValueError("organization must be a non-empty string")
@@ -174,7 +183,11 @@ def select_model_scenarios(
         scenarios.exceptions,
         route_name="exception",
         record_type=ExceptionScenario,
-        key=lambda route: (route.capability_id, route.behavior_id),
+        key=lambda route: (
+            route.capability_id,
+            route.behavior_id,
+            route.organization,
+        ),
     )
     supplements = _index_routes(
         scenarios.supplements,
@@ -257,8 +270,13 @@ def select_model_scenarios(
                 add(supplement.node_id)
             continue
 
-        route_key = (capability_id, exception.behavior_id)
-        replacement = exception_routes.get(route_key)
+        replacement = exception_routes.get(
+            (capability_id, exception.behavior_id, organization)
+        )
+        if replacement is None:
+            replacement = exception_routes.get(
+                (capability_id, exception.behavior_id, None)
+            )
         if replacement is None:
             raise ValueError(
                 f"Model '{model.name}' has a coverage gap: missing exception "
