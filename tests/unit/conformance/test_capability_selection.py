@@ -7,12 +7,18 @@ T021 supplies the real scenario inventory; T022 implements the selector.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
 import pytest
 
 from llm_api_adapter.llm_registry.llm_registry import ModelSpec
 from llm_api_adapter.llm_registry.model_capabilities import ModelCapability
+from tests.capability_scenarios import (
+    CapabilityScenario,
+    ExceptionScenario,
+    PassSupplement,
+    ScenarioCatalogue,
+)
 
 
 SYNC_CHAT = "tests/e2e/test_llm_adapter_chat.py::test_sync_chat"
@@ -29,22 +35,20 @@ CAPABILITIES = (
 )
 
 
-@dataclass(frozen=True)
-class _ScenarioCatalogue:
-    """Small route inventory; tuple entries preserve duplicate routes for validation."""
-
-    positive: tuple[tuple[str, str], ...] = (
-        ("sync_chat", SYNC_CHAT),
-        ("pdf_url", PDF_SUCCESS),
-    )
-    exceptions: tuple[tuple[str, str, str], ...] = (
-        ("pdf_url", "rejected_before_transport", PDF_REJECTION),
-    )
-    supplements: tuple[tuple[str, str, str, str], ...] = (
-        ("mistral", "mistral-small-2603", "pdf_url", MISTRAL_OCR),
-    )
-    always_on: tuple[tuple[str, str], ...] = (
-        ("error_normalization", ERROR_NORMALIZATION),
+def _scenario_catalogue() -> ScenarioCatalogue:
+    """Small route inventory; tuple entries preserve duplicates for validation."""
+    return ScenarioCatalogue(
+        positive=(
+            CapabilityScenario("sync_chat", SYNC_CHAT),
+            CapabilityScenario("pdf_url", PDF_SUCCESS),
+        ),
+        exceptions=(
+            ExceptionScenario("pdf_url", "rejected_before_transport", PDF_REJECTION),
+        ),
+        supplements=(
+            PassSupplement("mistral", "mistral-small-2603", "pdf_url", MISTRAL_OCR),
+        ),
+        always_on=(CapabilityScenario("error_normalization", ERROR_NORMALIZATION),),
     )
 
 
@@ -75,7 +79,7 @@ def _exception(behavior_id: str, behavior: str = "Provider limitation") -> dict[
 def _select(
     organization: str,
     model: ModelSpec,
-    catalogue: _ScenarioCatalogue = _ScenarioCatalogue(),
+    catalogue: ScenarioCatalogue | None = None,
 ) -> tuple[str, ...]:
     # Import inside the helper so pytest collects every red contract case even
     # before the selector module exists.
@@ -84,7 +88,7 @@ def _select(
     return select_model_scenarios(
         organization=organization,
         model=model,
-        scenarios=catalogue,
+        scenarios=catalogue or _scenario_catalogue(),
         capabilities=CAPABILITIES,
     )
 
@@ -154,8 +158,8 @@ def test_unknown_behavior_pair_reports_model_capability_and_behavior_id():
 @pytest.mark.unit
 def test_missing_positive_scenario_is_a_coverage_error():
     catalogue = replace(
-        _ScenarioCatalogue(),
-        positive=(("sync_chat", SYNC_CHAT),),
+        _scenario_catalogue(),
+        positive=(CapabilityScenario("sync_chat", SYNC_CHAT),),
     )
 
     with pytest.raises(ValueError) as error:
@@ -168,7 +172,7 @@ def test_missing_positive_scenario_is_a_coverage_error():
 @pytest.mark.unit
 def test_missing_replacement_scenario_is_a_coverage_error():
     model = _model("pdf-limited-model", [_exception("rejected_before_transport")])
-    catalogue = replace(_ScenarioCatalogue(), exceptions=())
+    catalogue = replace(_scenario_catalogue(), exceptions=())
 
     with pytest.raises(ValueError) as error:
         _select("example", model, catalogue)
@@ -182,7 +186,7 @@ def test_missing_replacement_scenario_is_a_coverage_error():
 @pytest.mark.unit
 def test_pass_without_exact_model_supplement_is_a_coverage_error():
     model = _model("mistral-small-2603", [_exception("pass")])
-    catalogue = replace(_ScenarioCatalogue(), supplements=())
+    catalogue = replace(_scenario_catalogue(), supplements=())
 
     with pytest.raises(ValueError) as error:
         _select("mistral", model, catalogue)
@@ -196,7 +200,7 @@ def test_pass_without_exact_model_supplement_is_a_coverage_error():
 @pytest.mark.unit
 @pytest.mark.parametrize("route_type", ("positive", "exceptions", "supplements"))
 def test_duplicate_evidence_route_is_rejected(route_type: str):
-    catalogue = _ScenarioCatalogue()
+    catalogue = _scenario_catalogue()
     duplicate_routes = getattr(catalogue, route_type)
     catalogue = replace(
         catalogue,
@@ -216,10 +220,10 @@ def test_duplicate_evidence_route_is_rejected(route_type: str):
 @pytest.mark.unit
 def test_package_supplements_are_scoped_to_exact_organization_and_model():
     catalogue = replace(
-        _ScenarioCatalogue(),
+        _scenario_catalogue(),
         supplements=(
-            ("mistral", "mistral-small-2603", "pdf_url", MISTRAL_OCR),
-            ("example", "mistral-small-2603", "pdf_url", PACKAGE_OCR),
+            PassSupplement("mistral", "mistral-small-2603", "pdf_url", MISTRAL_OCR),
+            PassSupplement("example", "mistral-small-2603", "pdf_url", PACKAGE_OCR),
         ),
     )
     model = _model("mistral-small-2603", [_exception("pass")])
