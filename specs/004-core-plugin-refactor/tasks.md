@@ -73,7 +73,7 @@
 ### Tests
 
 - [x] T019 [P] [US2] Write failing selector tests in `tests/unit/conformance/test_capability_selection.py` for baseline-default, Mistral PDF declared as `behavior_id: "pass"` retaining the positive scenario plus additive OCR evidence, the same PDF capability with a rejection behavior ID selecting a negative scenario, missing-profile, unknown behavior pair, missing-scenario, missing `pass` supplement, duplicate-evidence, and package-supplement cases; assert always-on scenarios remain selected.
-- [ ] T020 [P] [US2] Write failing credential-free collection tests in `tests/unit/test_e2e_profile_selection.py` for two models in one organization with different exception lists: collection must select baseline-positive checks for absent or `pass` exceptions, add the exact-model supplement for `pass`, select the scenario named by each other `(capability_id, behavior_id)` pair, and error on invalid or unmapped behavior IDs without package installation, provider keys, or a network call.
+- [x] T020 [P] [US2] Write failing credential-free collection tests in `tests/unit/test_e2e_profile_selection.py` for two models in one organization with different exception lists: collection must select baseline-positive checks for absent or `pass` exceptions, add the exact-model supplement for `pass`, select the scenario named by each other `(capability_id, behavior_id)` pair, and error on invalid or unmapped behavior IDs without package installation, provider keys, or a network call.
 
 ### Implementation
 
