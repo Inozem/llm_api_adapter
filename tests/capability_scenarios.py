@@ -78,10 +78,14 @@ _STANDARD_REASONING_CHAT_SCENARIO = (
     "tests/e2e/test_llm_adapter_chat.py::"
     "test_chat_with_reasoning_level_returns_valid_contract"
 )
-# The shared tool loop uses one viable mode per model. It does not establish
-# separate E2E evidence for every tool-choice mode or provider-side state.
+# The existing shared tests do not prove these variants separately. They remain
+# model capabilities, but do not have separate shared E2E scenario routes.
 _NO_SEPARATE_SHARED_E2E_SCENARIO_IDS = frozenset(
     {
+        "structured_output_model",
+        "image_url",
+        "image_data_url",
+        "pdf_url",
         "tool_choice_auto",
         "tool_choice_none",
         "tool_choice_any",
@@ -123,24 +127,8 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
             "tests/e2e/test_json_schema.py::test_json_schema_returns_structured_output_for_every_configured_model",
         ),
         CapabilityScenario(
-            "structured_output_model",
-            "tests/e2e/test_json_schema.py::test_pydantic_response_model_returns_structured_output",
-        ),
-        CapabilityScenario(
-            "image_url",
-            "tests/e2e/test_vision.py::test_vision_url_returns_text",
-        ),
-        CapabilityScenario(
             "image_bytes",
             "tests/e2e/test_vision.py::test_vision_bytes_returns_non_empty_response",
-        ),
-        CapabilityScenario(
-            "image_data_url",
-            "tests/e2e/test_vision.py::test_vision_data_url_returns_text",
-        ),
-        CapabilityScenario(
-            "pdf_url",
-            "tests/e2e/test_file_uploads.py::test_document_url_returns_non_empty_response",
         ),
         CapabilityScenario(
             "pdf_bytes",
@@ -169,19 +157,9 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
     ),
     exceptions=(
         ExceptionScenario(
-            "image_url",
-            "rejected_before_transport",
-            "tests/e2e/test_vision.py::test_vision_url_declared_exception",
-        ),
-        ExceptionScenario(
             "pdf_bytes",
             "rejected_before_transport",
             "tests/e2e/test_file_uploads.py::test_document_bytes_declared_exception",
-        ),
-        ExceptionScenario(
-            "pdf_url",
-            "rejected_before_transport",
-            "tests/e2e/test_file_uploads.py::test_document_url_declared_exception",
         ),
         # Every model uses the same public chat contract, including models with
         # different reasoning policies recorded in their capability profiles.
@@ -206,11 +184,6 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
             _STANDARD_REASONING_CHAT_SCENARIO,
         ),
         ExceptionScenario(
-            "structured_output_model",
-            "rejected_before_transport",
-            "tests/e2e/test_json_schema.py::test_response_model_declared_exception",
-        ),
-        ExceptionScenario(
             "structured_output_schema",
             "rejected_before_transport",
             "tests/e2e/test_json_schema.py::test_json_schema_declared_exception",
@@ -220,20 +193,8 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
         PassSupplement(
             "mistral",
             "mistral-small-2603",
-            "pdf_url",
-            "tests/e2e/test_mistral_ocr_costs.py::test_mistral_pdf_url_ocr_exposes_cost_breakdown",
-        ),
-        PassSupplement(
-            "mistral",
-            "mistral-small-2603",
             "pdf_bytes",
             "tests/e2e/test_mistral_ocr_costs.py::test_mistral_pdf_ocr_exposes_cost_breakdown",
-        ),
-        PassSupplement(
-            "mistral",
-            "mistral-medium-3-5",
-            "pdf_url",
-            "tests/e2e/test_mistral_ocr_costs.py::test_mistral_pdf_url_ocr_exposes_cost_breakdown",
         ),
         PassSupplement(
             "mistral",
@@ -244,44 +205,20 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
         PassSupplement(
             "mistral",
             "mistral-large-2512",
-            "pdf_url",
-            "tests/e2e/test_mistral_ocr_costs.py::test_mistral_pdf_url_ocr_exposes_cost_breakdown",
-        ),
-        PassSupplement(
-            "mistral",
-            "mistral-large-2512",
             "pdf_bytes",
             "tests/e2e/test_mistral_ocr_costs.py::test_mistral_pdf_ocr_exposes_cost_breakdown",
         ),
         PassSupplement(
             "xai",
             "grok-4.7",
-            "pdf_url",
-            "tests/e2e/test_file_uploads.py::test_xai_pdf_url_uses_attachment_search",
-        ),
-        PassSupplement(
-            "xai",
-            "grok-4.7",
             "pdf_bytes",
             "tests/e2e/test_file_uploads.py::test_xai_pdf_bytes_uses_attachment_search",
         ),
         PassSupplement(
             "xai",
             "grok-4.6",
-            "pdf_url",
-            "tests/e2e/test_file_uploads.py::test_xai_pdf_url_uses_attachment_search",
-        ),
-        PassSupplement(
-            "xai",
-            "grok-4.6",
             "pdf_bytes",
             "tests/e2e/test_file_uploads.py::test_xai_pdf_bytes_uses_attachment_search",
-        ),
-        PassSupplement(
-            "xai",
-            "grok-4.5",
-            "pdf_url",
-            "tests/e2e/test_file_uploads.py::test_xai_pdf_url_uses_attachment_search",
         ),
         PassSupplement(
             "xai",
