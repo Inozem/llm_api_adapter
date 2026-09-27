@@ -3,19 +3,23 @@ import pytest
 from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY
 from llm_api_adapter.models.messages.file_parts import DocumentPart
 from tests.e2e import harness
+from tests.e2e.conftest import e2e_model_case_parameters
 
 
 @pytest.mark.e2e
-@pytest.mark.e2e_feature("ocr")
+@pytest.mark.e2e_capability("pdf_bytes")
+@pytest.mark.parametrize("e2e_model_case", e2e_model_case_parameters("mistral"))
 def test_mistral_pdf_ocr_exposes_cost_breakdown(
-    organizations,
+    e2e_model_case,
+    e2e_model_organization,
     pdf_bytes,
     chat_with_retry,
     e2e_adapter,
 ):
-    organization = organizations[0]
+    model = e2e_model_case.model_spec
+    assert model is not None
     meter = LLM_REGISTRY.organizations["mistral"].metered_operations["ocr"]
-    adapter = e2e_adapter(organization, organization["latest_model"])
+    adapter = e2e_adapter(e2e_model_organization, model.name)
 
     response = chat_with_retry(
         adapter,

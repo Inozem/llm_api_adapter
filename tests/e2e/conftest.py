@@ -199,9 +199,9 @@ def get_e2e_organization_profile(name: str) -> E2EOrganizationProfile:
         raise pytest.UsageError(f"Unknown E2E organization profile: {name}") from exc
 
 
-@lru_cache(maxsize=1)
-def e2e_model_case_parameters():
-    """Build exact-model pytest parameters from installed organization plugins."""
+@lru_cache(maxsize=None)
+def e2e_model_case_parameters(organization_name: str | None = None):
+    """Build exact-model pytest parameters, optionally for one organization."""
     ORGANIZATION_PLUGIN_DISCOVERY.discover(
         SERVICE_PROVIDER_REGISTRY,
         model_registry=LLM_REGISTRY,
@@ -209,6 +209,8 @@ def e2e_model_case_parameters():
 
     parameters = []
     for profile in _E2E_PROFILES:
+        if organization_name is not None and organization_name not in profile.organization_names:
+            continue
         package_missing = False
         if profile.distribution is not None:
             try:
@@ -217,6 +219,8 @@ def e2e_model_case_parameters():
                 package_missing = True
 
         for organization in profile.organization_names:
+            if organization_name is not None and organization != organization_name:
+                continue
             if package_missing:
                 case = E2EModelCase(
                     organization=organization,
@@ -257,7 +261,9 @@ def e2e_model_case_parameters():
                 )
 
     if not parameters:
-        raise pytest.UsageError("No E2E model cases were available for collection")
+        raise pytest.UsageError(
+            f"No E2E model cases were available for {organization_name or 'collection'}"
+        )
     return tuple(parameters)
 
 

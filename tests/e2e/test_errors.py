@@ -5,7 +5,6 @@ from llm_api_adapter.models.messages.chat_message import UserMessage
 
 
 @pytest.mark.e2e
-@pytest.mark.e2e_feature("error_normalization")
 def test_chat_auth_error_invalid_api_key(organizations, e2e_adapter):
     """
     Verifies that an invalid API key is converted into a LLMAPIAuthorizationError.
@@ -18,7 +17,6 @@ def test_chat_auth_error_invalid_api_key(organizations, e2e_adapter):
             print(f"{p['name']=} {model=}: {excinfo.value}")
 
 @pytest.mark.e2e
-@pytest.mark.e2e_feature("error_normalization")
 def test_chat_timeout_error(organizations, e2e_adapter):
     """
     Verifies that an extremely small timeout is converted into a LLMAPITimeoutError.
