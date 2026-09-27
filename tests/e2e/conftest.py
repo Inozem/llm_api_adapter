@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 import os
 from itertools import zip_longest
@@ -13,6 +14,7 @@ from llm_api_adapter.universal_adapter import (
     SERVICE_PROVIDER_REGISTRY,
 )
 from tests.capability_selection import select_model_scenarios
+from tests.capability_scenarios import E2E_SCENARIO_CAPABILITIES
 from tests.e2e import harness
 
 _FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
@@ -28,6 +30,15 @@ class E2EOrganizationProfile:
     api_key_is_required: bool = False
     missing_api_key_is_usage_error: bool = False
     operation_kwargs_env: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class E2EModelCase:
+    """One organization and its exact registered model for scenario selection."""
+
+    organization: str
+    model_spec: ModelSpec | None
+    profile: E2EOrganizationProfile
 
 
 class E2EOrganization(dict):
@@ -98,53 +109,39 @@ _ZAI_E2E_PROFILE = E2EOrganizationProfile(
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
 )
-_E2E_PROFILE_PARAMS = (
-    pytest.param(
-        _OPENAI_E2E_PROFILE,
-        id="openai",
-        marks=(pytest.mark.e2e_builtin, pytest.mark.e2e_openai),
-    ),
-    pytest.param(
-        _ANTHROPIC_E2E_PROFILE,
-        id="anthropic",
-        marks=(pytest.mark.e2e_builtin, pytest.mark.e2e_anthropic),
-    ),
-    pytest.param(
-        _GOOGLE_E2E_PROFILE,
-        id="google",
-        marks=(pytest.mark.e2e_builtin, pytest.mark.e2e_google),
-    ),
-    pytest.param(
-        _MISTRAL_E2E_PROFILE,
-        id="mistral",
-        marks=pytest.mark.e2e_mistral,
-    ),
-    pytest.param(
-        _XAI_E2E_PROFILE,
-        id="xai",
-        marks=pytest.mark.e2e_xai,
-    ),
-    pytest.param(
-        _KIMI_E2E_PROFILE,
-        id="kimi",
-        marks=pytest.mark.e2e_kimi,
-    ),
-    pytest.param(
-        _QWEN_E2E_PROFILE,
-        id="qwen",
-        marks=pytest.mark.e2e_qwen,
-    ),
-    pytest.param(
-        _DEEPSEEK_E2E_PROFILE,
-        id="deepseek",
-        marks=pytest.mark.e2e_deepseek,
-    ),
-    pytest.param(
-        _ZAI_E2E_PROFILE,
-        id="zai",
-        marks=pytest.mark.e2e_zai,
-    ),
+_E2E_PROFILES = (
+    _OPENAI_E2E_PROFILE,
+    _ANTHROPIC_E2E_PROFILE,
+    _GOOGLE_E2E_PROFILE,
+    _MISTRAL_E2E_PROFILE,
+    _XAI_E2E_PROFILE,
+    _KIMI_E2E_PROFILE,
+    _QWEN_E2E_PROFILE,
+    _DEEPSEEK_E2E_PROFILE,
+    _ZAI_E2E_PROFILE,
 )
+_E2E_PROFILE_MARKS = {
+    "openai": (pytest.mark.e2e_builtin, pytest.mark.e2e_openai),
+    "anthropic": (pytest.mark.e2e_builtin, pytest.mark.e2e_anthropic),
+    "google": (pytest.mark.e2e_builtin, pytest.mark.e2e_google),
+    "mistral": (pytest.mark.e2e_mistral,),
+    "xai": (pytest.mark.e2e_xai,),
+    "kimi": (pytest.mark.e2e_kimi,),
+    "qwen": (pytest.mark.e2e_qwen,),
+    "deepseek": (pytest.mark.e2e_deepseek,),
+    "zai": (pytest.mark.e2e_zai,),
+}
+_E2E_PROFILE_PARAMS = tuple(
+    pytest.param(
+        profile,
+        id=profile.name,
+        marks=_E2E_PROFILE_MARKS[profile.name],
+    )
+    for profile in _E2E_PROFILES
+)
+_CAPABILITY_BY_ID = {
+    capability.id: capability for capability in E2E_SCENARIO_CAPABILITIES
+}
 
 load_dotenv()
 
@@ -202,17 +199,149 @@ def get_e2e_organization_profile(name: str) -> E2EOrganizationProfile:
         raise pytest.UsageError(f"Unknown E2E organization profile: {name}") from exc
 
 
+@lru_cache(maxsize=1)
+def e2e_model_case_parameters():
+    """Build exact-model pytest parameters from installed organization plugins."""
+    ORGANIZATION_PLUGIN_DISCOVERY.discover(
+        SERVICE_PROVIDER_REGISTRY,
+        model_registry=LLM_REGISTRY,
+    )
+
+    parameters = []
+    for profile in _E2E_PROFILES:
+        package_missing = False
+        if profile.distribution is not None:
+            try:
+                version(profile.distribution)
+            except PackageNotFoundError:
+                package_missing = True
+
+        for organization in profile.organization_names:
+            if package_missing:
+                case = E2EModelCase(
+                    organization=organization,
+                    model_spec=None,
+                    profile=profile,
+                )
+                parameters.append(
+                    pytest.param(
+                        case,
+                        id=f"{organization}-package-not-installed",
+                        marks=(
+                            *_E2E_PROFILE_MARKS[profile.name],
+                            pytest.mark.skip(
+                                reason=f"{profile.distribution} is not installed"
+                            ),
+                        ),
+                    )
+                )
+                continue
+
+            organization_spec = LLM_REGISTRY.organizations.get(organization)
+            if organization_spec is None:
+                raise pytest.UsageError(
+                    f"No valid model catalogue was registered for {organization}"
+                )
+            for model_spec in organization_spec.models.values():
+                case = E2EModelCase(
+                    organization=organization,
+                    model_spec=model_spec,
+                    profile=profile,
+                )
+                parameters.append(
+                    pytest.param(
+                        case,
+                        id=f"{organization}-{model_spec.name}",
+                        marks=_E2E_PROFILE_MARKS[profile.name],
+                    )
+                )
+
+    if not parameters:
+        raise pytest.UsageError("No E2E model cases were available for collection")
+    return tuple(parameters)
+
+
 def pytest_collection_modifyitems(config, items) -> None:
     """Keep only scenario routes selected by each exact model profile."""
     selected = []
     deselected = []
-    routes_by_model: dict[tuple[str, str], frozenset[str]] = {}
+    routes_by_model: dict[tuple[object, ...], frozenset[str]] = {}
 
     for item in items:
         callspec = getattr(item, "callspec", None)
         params = callspec.params if callspec is not None else {}
+        model_case = params.get("e2e_model_case")
         profile = params.get("e2e_organization_profile")
         model_spec = params.get("e2e_model_spec")
+
+        if "e2e_model_case" in params:
+            if not isinstance(model_case, E2EModelCase):
+                raise pytest.UsageError(
+                    f"{item.nodeid} has a missing or invalid exact-model case"
+                )
+            if model_case.profile not in _E2E_PROFILES:
+                raise pytest.UsageError(
+                    f"{item.nodeid} has an unknown E2E organization profile"
+                )
+            if model_case.organization not in model_case.profile.organization_names:
+                raise pytest.UsageError(
+                    f"{item.nodeid} has an organization outside its E2E lane"
+                )
+            if "skip" in item.keywords and model_case.model_spec is None:
+                selected.append(item)
+                continue
+            if not isinstance(model_case.model_spec, ModelSpec):
+                raise pytest.UsageError(
+                    f"{item.nodeid} has a missing or invalid exact-model profile"
+                )
+
+            capability_markers = tuple(item.iter_markers("e2e_capability"))
+            capability_ids = tuple(
+                capability_id
+                for marker in capability_markers
+                for capability_id in marker.args
+            )
+            if not capability_ids or any(
+                not isinstance(capability_id, str)
+                or capability_id not in _CAPABILITY_BY_ID
+                for capability_id in capability_ids
+            ):
+                raise pytest.UsageError(
+                    f"{item.nodeid} must declare known e2e_capability IDs"
+                )
+            if len(set(capability_ids)) != len(capability_ids):
+                raise pytest.UsageError(
+                    f"{item.nodeid} declares duplicate e2e_capability IDs"
+                )
+
+            route_key = (
+                model_case.organization,
+                model_case.model_spec.name,
+                capability_ids,
+            )
+            if route_key not in routes_by_model:
+                try:
+                    routes_by_model[route_key] = frozenset(
+                        select_model_scenarios(
+                            organization=model_case.organization,
+                            model=model_case.model_spec,
+                            capabilities=tuple(
+                                _CAPABILITY_BY_ID[capability_id]
+                                for capability_id in capability_ids
+                            ),
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise pytest.UsageError(
+                        "Invalid capability profile for "
+                        f"{model_case.organization}/{model_case.model_spec.name}: {exc}"
+                    ) from exc
+
+            if _base_pytest_node_id(item.nodeid) in routes_by_model[route_key]:
+                selected.append(item)
+            else:
+                deselected.append(item)
+            continue
 
         if "e2e_organization_profile" in params and not isinstance(
             profile, E2EOrganizationProfile
@@ -267,6 +396,23 @@ def _base_pytest_node_id(nodeid: str) -> str:
         return nodeid
     test_name = test_name.partition("[")[0]
     return f"{parent}::{test_name}"
+
+
+@pytest.fixture
+def e2e_model_organization(e2e_model_case: E2EModelCase) -> E2EOrganization:
+    """Resolve the provider lane for one exact-model E2E case."""
+    if not isinstance(e2e_model_case, E2EModelCase) or not isinstance(
+        e2e_model_case.model_spec,
+        ModelSpec,
+    ):
+        raise pytest.UsageError("The E2E case has no valid exact-model profile")
+    organizations = resolve_e2e_organizations(e2e_model_case.profile)
+    for organization in organizations:
+        if organization["name"] == e2e_model_case.organization:
+            return organization
+    raise pytest.UsageError(
+        f"No E2E organization data was prepared for {e2e_model_case.organization}"
+    )
 
 
 def _select_latest_e2e_models(organizations, override_prefix: str):

@@ -74,6 +74,26 @@ _CORE_CATALOGUES = (
 )
 _PACKAGE_CATALOGUES = REPOSITORY_ROOT / "packages" / "organizations"
 _BEHAVIOR_ID_PATTERN = re.compile(r"[a-z][a-z0-9_]*\Z")
+_STANDARD_REASONING_CHAT_SCENARIO = (
+    "tests/e2e/test_llm_adapter_chat.py::"
+    "test_chat_with_reasoning_level_returns_valid_contract"
+)
+# The shared tool loop uses one viable mode per model. It does not establish
+# separate E2E evidence for every tool-choice mode or provider-side state.
+_NO_SEPARATE_SHARED_E2E_SCENARIO_IDS = frozenset(
+    {
+        "tool_choice_auto",
+        "tool_choice_none",
+        "tool_choice_any",
+        "tool_choice_named",
+        "provider_continuation",
+    }
+)
+E2E_SCENARIO_CAPABILITIES = tuple(
+    capability
+    for capability in CAPABILITY_CATALOGUE
+    if capability.id not in _NO_SEPARATE_SHARED_E2E_SCENARIO_IDS
+)
 
 
 SCENARIO_CATALOGUE = ScenarioCatalogue(
@@ -97,22 +117,6 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
         CapabilityScenario(
             "application_tools",
             "tests/e2e/test_tools_auto_loop.py::test_basic_tool_loop_with_previous_response",
-        ),
-        CapabilityScenario(
-            "tool_choice_auto",
-            "tests/e2e/test_tools_auto_loop.py::test_tool_choice_auto_succeeds",
-        ),
-        CapabilityScenario(
-            "tool_choice_none",
-            "tests/e2e/test_tools_auto_loop.py::test_tool_choice_none_succeeds",
-        ),
-        CapabilityScenario(
-            "tool_choice_any",
-            "tests/e2e/test_tools_auto_loop.py::test_tool_choice_any_succeeds",
-        ),
-        CapabilityScenario(
-            "tool_choice_named",
-            "tests/e2e/test_tools_auto_loop.py::test_tool_choice_named_succeeds",
         ),
         CapabilityScenario(
             "structured_output_schema",
@@ -144,15 +148,11 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
         ),
         CapabilityScenario(
             "reasoning_control",
-            "tests/e2e/test_llm_adapter_chat.py::test_chat_with_reasoning_level_returns_valid_contract",
+            _STANDARD_REASONING_CHAT_SCENARIO,
         ),
         CapabilityScenario(
             "reasoning_events",
             "tests/e2e/test_async.py::test_async_reasoning_events_are_normalized",
-        ),
-        CapabilityScenario(
-            "provider_continuation",
-            "tests/e2e/test_tools_auto_loop.py::test_provider_continuation_round_trip",
         ),
         CapabilityScenario(
             "usage_reporting",
@@ -183,35 +183,27 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
             "rejected_before_transport",
             "tests/e2e/test_file_uploads.py::test_document_url_declared_exception",
         ),
-        ExceptionScenario(
-            "provider_continuation",
-            "ignored",
-            "tests/e2e/test_tools_auto_loop.py::test_provider_continuation_ignored",
-        ),
-        ExceptionScenario(
-            "provider_continuation",
-            "stateless_reasoning_replay",
-            "packages/organizations/deepseek/tests/e2e/test_live_contract.py::test_deepseek_continuation_replays_reasoning",
-        ),
+        # Every model uses the same public chat contract, including models with
+        # different reasoning policies recorded in their capability profiles.
         ExceptionScenario(
             "reasoning_control",
             "cannot_disable_thinking",
-            "tests/e2e/test_llm_adapter_chat.py::test_reasoning_control_cannot_disable_thinking",
+            _STANDARD_REASONING_CHAT_SCENARIO,
         ),
         ExceptionScenario(
             "reasoning_control",
             "none_falls_back_to_low",
-            "tests/e2e/test_llm_adapter_chat.py::test_reasoning_none_falls_back_to_low",
+            _STANDARD_REASONING_CHAT_SCENARIO,
         ),
         ExceptionScenario(
             "reasoning_control",
             "none_to_low_xhigh_to_high",
-            "tests/e2e/test_llm_adapter_chat.py::test_grok_45_reasoning_level_mapping",
+            _STANDARD_REASONING_CHAT_SCENARIO,
         ),
         ExceptionScenario(
             "reasoning_control",
             "reasoning_unsupported",
-            "tests/e2e/test_llm_adapter_chat.py::test_reasoning_control_is_unsupported",
+            _STANDARD_REASONING_CHAT_SCENARIO,
         ),
         ExceptionScenario(
             "structured_output_model",
@@ -223,30 +215,9 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
             "rejected_before_transport",
             "tests/e2e/test_json_schema.py::test_json_schema_declared_exception",
         ),
-        ExceptionScenario(
-            "tool_choice_any",
-            "rejected_before_transport",
-            "tests/e2e/test_tools_auto_loop.py::test_tool_choice_any_declared_exception",
-        ),
-        ExceptionScenario(
-            "tool_choice_named",
-            "rejected_before_transport",
-            "tests/e2e/test_tools_auto_loop.py::test_tool_choice_named_declared_exception",
-        ),
-        ExceptionScenario(
-            "tool_choice_none",
-            "rejected_before_transport",
-            "tests/e2e/test_tools_auto_loop.py::test_tool_choice_none_declared_exception",
-        ),
     ),
     supplements=(
         PassSupplement(
-            "deepseek",
-            "deepseek-flash",
-            "tool_choice_named",
-            "packages/organizations/deepseek/tests/e2e/test_live_contract.py::test_deepseek_named_tool_choice_disables_thinking",
-        ),
-        PassSupplement(
             "mistral",
             "mistral-small-2603",
             "pdf_url",
@@ -281,54 +252,6 @@ SCENARIO_CATALOGUE = ScenarioCatalogue(
             "mistral-large-2512",
             "pdf_bytes",
             "tests/e2e/test_mistral_ocr_costs.py::test_mistral_pdf_ocr_exposes_cost_breakdown",
-        ),
-        PassSupplement(
-            "qwen",
-            "qwen3.8-max",
-            "tool_choice_any",
-            "packages/organizations/qwen/tests/e2e/test_live_contract.py::test_qwen_forced_tool_choice_disables_thinking",
-        ),
-        PassSupplement(
-            "qwen",
-            "qwen3.8-max",
-            "tool_choice_named",
-            "packages/organizations/qwen/tests/e2e/test_live_contract.py::test_qwen_forced_tool_choice_disables_thinking",
-        ),
-        PassSupplement(
-            "qwen",
-            "qwen3.8-flash",
-            "tool_choice_any",
-            "packages/organizations/qwen/tests/e2e/test_live_contract.py::test_qwen_forced_tool_choice_disables_thinking",
-        ),
-        PassSupplement(
-            "qwen",
-            "qwen3.8-flash",
-            "tool_choice_named",
-            "packages/organizations/qwen/tests/e2e/test_live_contract.py::test_qwen_forced_tool_choice_disables_thinking",
-        ),
-        PassSupplement(
-            "qwen",
-            "qwen3.7-plus",
-            "tool_choice_any",
-            "packages/organizations/qwen/tests/e2e/test_live_contract.py::test_qwen_forced_tool_choice_disables_thinking",
-        ),
-        PassSupplement(
-            "qwen",
-            "qwen3.7-plus",
-            "tool_choice_named",
-            "packages/organizations/qwen/tests/e2e/test_live_contract.py::test_qwen_forced_tool_choice_disables_thinking",
-        ),
-        PassSupplement(
-            "qwen",
-            "qwen3.7-flash",
-            "tool_choice_any",
-            "packages/organizations/qwen/tests/e2e/test_live_contract.py::test_qwen_forced_tool_choice_disables_thinking",
-        ),
-        PassSupplement(
-            "qwen",
-            "qwen3.7-flash",
-            "tool_choice_named",
-            "packages/organizations/qwen/tests/e2e/test_live_contract.py::test_qwen_forced_tool_choice_disables_thinking",
         ),
         PassSupplement(
             "xai",
@@ -532,7 +455,7 @@ def validate_scenario_catalogue(
         raise ValueError("scenario evidence must be a ScenarioCatalogue")
     use_canonical_scopes = capabilities is None
     if capabilities is None:
-        capabilities = CAPABILITY_CATALOGUE
+        capabilities = E2E_SCENARIO_CAPABILITIES
 
     capability_scopes = {}
     for capability in capabilities:
@@ -559,7 +482,8 @@ def validate_scenario_catalogue(
         if scope == "always-on"
     }
     if use_canonical_scopes and (
-        model_dependent != MODEL_DEPENDENT_CAPABILITY_IDS
+        model_dependent
+        != MODEL_DEPENDENT_CAPABILITY_IDS - _NO_SEPARATE_SHARED_E2E_SCENARIO_IDS
         or always_on_ids != ALWAYS_ON_CAPABILITY_IDS
     ):
         raise ValueError("scenario capability scopes differ from the canonical catalogue")
@@ -659,12 +583,12 @@ def validate_scenario_catalogue(
     expected_exception_pairs = {
         (entry.capability_id, entry.behavior_id)
         for entry in declared
-        if entry.behavior_id != "pass"
+        if entry.capability_id in model_dependent and entry.behavior_id != "pass"
     }
     expected_pass_supplements = {
         (entry.organization, entry.model, entry.capability_id)
         for entry in declared
-        if entry.behavior_id == "pass"
+        if entry.capability_id in model_dependent and entry.behavior_id == "pass"
     }
     missing_exception_routes = expected_exception_pairs - exception_routes.keys()
     if missing_exception_routes:
@@ -704,6 +628,7 @@ validate_scenario_catalogue()
 __all__ = [
     "CapabilityScenario",
     "DeclaredException",
+    "E2E_SCENARIO_CAPABILITIES",
     "ExceptionScenario",
     "PassSupplement",
     "SCENARIO_CATALOGUE",

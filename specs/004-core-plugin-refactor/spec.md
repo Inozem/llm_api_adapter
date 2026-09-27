@@ -9,34 +9,34 @@
 
 ### User Story 1 - Declare Model Exceptions to the Baseline (Priority: P1)
 
-A maintainer can inspect a registered model's explicit exceptions to the established Core baseline. Every applicable behavior without a declared exception remains required by the baseline and is checked by its normal positive scenario.
+A maintainer can inspect a registered model's explicit exceptions to the established Core baseline. Every applicable behavior without a declared exception remains required by the baseline. Capabilities represented by shared E2E scenarios retain their normal positive check.
 
 **Why this priority**: An undocumented provider deviation must fail the baseline check instead of silently removing evidence.
 
-**Independent Test**: Review every registered model's exception list. Verify that an empty list selects baseline-positive scenarios, a `pass` exception retains them with additive package evidence, a non-`pass` exception selects its documented deviation scenario, and an invalid exception is rejected.
+**Independent Test**: Review every registered model's exception list. For capabilities represented by shared E2E scenarios, verify that an empty list selects baseline-positive scenarios, a `pass` exception retains them with additive package evidence, and a non-`pass` exception selects its documented deviation scenario. An invalid exception is rejected.
 
 **Acceptance Scenarios**:
 
-1. **Given** a first-party model with no exceptions, **When** its profile is inspected, **Then** it has an explicit empty exception list and baseline-positive checks remain selected for every applicable model-dependent capability.
+1. **Given** a first-party model with no exceptions, **When** its profile is inspected, **Then** it has an explicit empty exception list and baseline-positive checks remain selected for every applicable model-dependent capability represented by a shared E2E scenario.
 2. **Given** a first-party model with a confirmed exception, **When** its profile is inspected, **Then** the canonical capability ID, stable `behavior_id`, and exact expected behavior are explicit.
 3. **Given** a model profile with an unknown, duplicate, always-on, or malformed exception, including a missing or malformed `behavior_id`, **When** the profile is validated, **Then** validation fails with the model and exception named.
-4. **Given** an organization package makes an exceptional model capability work through its own conversion or fallback, **When** the exact model's checks are selected, **Then** its `behavior_id: "pass"` selects the normal positive scenario and an additive package-specific check verifies the adaptation.
+4. **Given** an organization package makes an exceptional model capability work through its own conversion or fallback and existing E2E checks cover both paths, **When** the exact model's checks are selected, **Then** its `behavior_id: "pass"` selects the normal positive scenario and an existing additive package-specific check verifies the adaptation.
 
 ---
 
 ### User Story 2 - Get Complete Common Contract Evidence (Priority: P1)
 
-A provider maintainer runs conformance and authorized live verification for an exact model. Baseline-positive scenarios run by default; only that model's explicit exceptions route to checks of their documented behavior.
+A provider maintainer runs conformance and authorized live verification for an exact model. Shared baseline-positive scenarios run by default; model exceptions change routing only where a distinct shared E2E scenario exists. The standard chat, streaming, and tool-loop tests run for every model.
 
-**Why this priority**: Every model needs evidence for the baseline and each declared exception, without manually maintained gaps in test selection.
+**Why this priority**: Every model needs its existing shared baseline checks, and exceptions with matching existing E2E evidence must route without manually maintained gaps.
 
-**Independent Test**: For representative built-in and external models, compare selected scenarios with their exception lists. Confirm that no exception selects the baseline-positive check, `pass` keeps it and adds package evidence, another behavior ID selects its documented deviation check, and a missing profile or evidence fails selection.
+**Independent Test**: For representative built-in and external models, compare selected scenarios with their exception lists. For capabilities with distinct shared E2E scenarios, confirm that no exception selects the baseline-positive check, `pass` keeps it and adds package evidence, another behavior ID selects its documented deviation check, and a missing profile or evidence fails selection. Confirm the common tool loop runs once per model.
 
 **Acceptance Scenarios**:
 
-1. **Given** a model has no declared exception for a baseline capability, **When** conformance or E2E selection is prepared, **Then** the applicable shared positive scenario is selected.
-2. **Given** a model with an explicit `pass` exception, **When** selection is prepared, **Then** the baseline-positive scenario and additive package evidence are selected for its exact model and capability.
-3. **Given** a model with a non-`pass` exception, **When** checks are selected, **Then** its `(capability_id, behavior_id)` pair selects a documented rejection or deviation scenario, replacing only the baseline-positive scenario for that exact capability; other applicable shared scenarios remain selected.
+1. **Given** a model has no declared exception for a capability with a shared E2E scenario, **When** selection is prepared, **Then** the applicable shared positive scenario is selected.
+2. **Given** a model with an explicit `pass` exception for a capability with distinct shared E2E evidence, **When** selection is prepared, **Then** the baseline-positive scenario and additive package evidence are selected for its exact model and capability.
+3. **Given** a model with a non-`pass` exception for a capability with a distinct shared E2E scenario, **When** checks are selected, **Then** its `(capability_id, behavior_id)` pair selects a documented rejection or deviation scenario, replacing only the baseline-positive scenario for that exact capability; other applicable shared scenarios remain selected.
 4. **Given** a provider-specific CI line, **When** its tests are selected, **Then** line selection and credential access remain independently controlled and credentials remain unavailable to pull-request checks.
 
 ---
@@ -73,10 +73,10 @@ A release maintainer can verify that every supported external organization has c
 
 ### Edge Cases
 
-- A first-party model has no exception-list field: the profile is invalid. An applicable capability absent from a valid exception list still selects its baseline-positive check, so an undeclared deviation fails that check.
+- A first-party model has no exception-list field: the profile is invalid. A capability represented by a shared E2E scenario and absent from a valid exception list still selects its baseline-positive check, so an undeclared deviation fails that check.
 - A provider API lacks a direct input form but its package supplies the public baseline behavior, such as Mistral PDF through OCR: the capability remains a documented exception with `behavior_id: "pass"`; its baseline-positive check and an additive package check run.
 - An exception names an unknown or always-on capability, is duplicated, or lacks a valid `behavior_id` or verified behavior: validation fails.
-- A model declares an exception whose `(capability_id, behavior_id)` pair has no matching common or package-specific scenario: validation identifies the evidence gap.
+- A model declares an exception for a capability with a distinct shared E2E scenario whose `(capability_id, behavior_id)` pair has no matching route: validation identifies the evidence gap.
 - A package-specific test duplicates a common scenario: the common scenario is still required.
 - A provider reports cached tokens without enough total input usage to establish complete accounting, or reports inconsistent quantities: confirmed fields may be retained, but unconfirmed costs and a complete total are unavailable. A parsed, omitted input or output count remains `None`; an explicitly reported zero remains `0`. Direct `Usage` construction retains its existing zero defaults and first three positional arguments.
 - A cached-input price is absent or unverified: usage may be reported if confirmed, while cached-input cost remains unavailable.
@@ -90,10 +90,10 @@ A release maintainer can verify that every supported external organization has c
 
 - **FR-001**: Core 0.9.8 MUST reuse `specs/001-baseline-contract/spec.md` as the existing provider-neutral baseline and MUST NOT redefine its admission criteria in this feature. After implementation, the baseline's observable usage and pricing clauses MUST be synchronized with the additive 0.9.8 response behavior.
 - **FR-002**: The model registry MUST be the authoritative source for each first-party model's explicit exceptions to direct baseline capability handling, including provider limitations compensated by package-owned adaptation. Package placement MUST NOT be used to infer exceptions.
-- **FR-003**: Every first-party exact-model profile MUST include an explicit exception list, which MAY be empty. Each listed exception MUST name one known `model-dependent` capability exactly once and include a nonempty stable `behavior_id` and its expected behavior. An applicable capability absent from the exception list MUST retain its baseline-positive check; no omission may skip a check. A missing profile or malformed exception list MUST invalidate certification.
+- **FR-003**: Every first-party exact-model profile MUST include an explicit exception list, which MAY be empty. Each listed exception MUST name one known `model-dependent` capability exactly once and include a nonempty stable `behavior_id` and its expected behavior. A capability represented by a shared E2E scenario and absent from the exception list MUST retain its baseline-positive check; no omission may skip that check. A missing profile or malformed exception list MUST invalidate certification.
 - **FR-004**: Each explicit exception MUST identify the provider limitation and expected adapter behavior closely enough to verify it without weakening the shared baseline. `behavior_id: "pass"` is reserved for a package adaptation that fulfills the public capability; other behavior IDs describe observable deviations. Behavior IDs MUST NOT name pytest tests.
-- **FR-005**: Conformance and E2E scenario selection MUST select the baseline-positive check for each applicable model-dependent capability with no exception or with `behavior_id: "pass"`. A non-`pass` exception's `(capability_id, behavior_id)` pair MUST select a check of the documented outcome in the common or package-specific suite. Selection MUST NOT infer a route from prose in `behavior`.
-- **FR-006**: A `pass` exception MUST have additive package evidence for its adaptation, linked to the exact model and capability while retaining the baseline-positive check. A package-specific non-`pass` exception check MAY replace the positive check for the same model and capability only. Neither kind may remove unrelated common checks; missing evidence MUST be reported as a coverage gap.
+- **FR-005**: For each capability represented by an existing shared E2E scenario, selection MUST choose its baseline-positive check when there is no exception or when `behavior_id: "pass"` applies. Where an existing distinct common or package-specific E2E check covers a non-`pass` `(capability_id, behavior_id)` pair, selection MUST use that check. Selection MUST NOT infer a route from prose in `behavior`. The canonical capability catalogue MAY include more detailed IDs than the existing E2E scenario inventory; IDs without an existing matching request MUST NOT be claimed as shared E2E evidence.
+- **FR-006**: A `pass` exception within the existing shared E2E scope MUST have additive package evidence for its adaptation, linked to the exact model and capability while retaining the baseline-positive check. An existing package-specific non-`pass` exception check MAY replace the positive check for the same model and capability only. Neither kind may remove unrelated common checks; missing evidence within the shared E2E scope MUST be reported as a coverage gap. The 0.9.8 test refactor MUST reuse existing common and package E2E functions and request forms rather than create new scenarios. `tool_choice_*` and `provider_continuation` do not create separate shared E2E requests; the standard application-tool loop runs once per model using a viable tool-choice mode.
 - **FR-007**: Selection of a provider's CI line and access to that provider's credentials MUST remain separate from model-capability-based scenario selection. Pull-request checks MUST remain deterministic and credential-free.
 - **FR-008**: The model registry MUST allow an optional, verified cached-input price for a model. A missing or unverified price MUST NOT be inferred from ordinary input pricing.
 - **FR-009**: Usage and cost reporting MUST distinguish provider-confirmed cached input from ordinary input, avoid double counting, and MUST NOT infer a cache hit or quantity from incomplete provider usage.
@@ -106,8 +106,8 @@ A release maintainer can verify that every supported external organization has c
 ### Key Entities
 
 - **Canonical baseline capability**: An externally observable behavior already defined by `specs/001-baseline-contract/spec.md`.
-- **Model exception profile**: A first-party model's explicit list of verified model/provider limitations and their adapter behavior; `behavior_id: "pass"` records a compensated limitation, other IDs route to deviation evidence, and absence of an exception retains the baseline-positive check.
-- **Scenario evidence**: A positive common check or a check of an explicit rejection or special behavior; package-specific evidence is additional where required.
+- **Model exception profile**: A first-party model's explicit list of verified model/provider limitations and their adapter behavior; `behavior_id: "pass"` records a compensated limitation, and IDs with distinct shared E2E scenarios route to deviation evidence. Absence of an exception retains any applicable shared baseline-positive check.
+- **Scenario evidence**: A positive common check or, where a distinct shared E2E route exists, a check of an explicit rejection or special behavior; package-specific evidence is additional where required.
 - **Cached input usage**: The portion of input tokens explicitly reported by a provider as cached, with no locally assumed cache hit.
 - **Cached input price**: An optional verified rate or pricing rule applicable to confirmed cached input.
 - **External organization identity**: The organization key and its separately installable distribution name, consistently represented across discovery, installation, E2E, and CI metadata.
@@ -117,8 +117,8 @@ A release maintainer can verify that every supported external organization has c
 ### Measurable Outcomes
 
 - **SC-001**: Every first-party model included in the Core 0.9.8 and six external organization catalogues has an explicit, valid exception list; removing that list or declaring an unknown/duplicate exception or a missing/malformed `behavior_id` causes validation to fail. A legacy third-party plugin without a profile remains usable at runtime but cannot pass profile-based certification.
-- **SC-002**: For every tested model, 100% of applicable capabilities without an exception and with a `pass` exception select their baseline-positive scenarios; 100% of `pass` exceptions also select additive package evidence, and 100% of other declared `(capability_id, behavior_id)` pairs select a check of their documented outcome.
-- **SC-003**: A non-`pass` exception check replaces only the positive check for the same model and capability; all other applicable common scenarios remain selected. Missing or duplicate evidence for a declared behavior pair, or missing additive evidence for a `pass` exception, fails deterministic validation.
+- **SC-002**: For every tested model, 100% of applicable capabilities with shared E2E scenarios select their baseline-positive scenario when no exception or a `pass` exception applies. For capabilities requiring distinct E2E evidence, 100% of `pass` exceptions also select additive package evidence, and 100% of other declared `(capability_id, behavior_id)` pairs select a check of their documented outcome. The common application-tool loop runs once per model.
+- **SC-003**: A distinct non-`pass` exception check replaces only the positive check for the same model and capability; all other applicable common scenarios remain selected. Missing or duplicate evidence within the shared E2E scope fails deterministic validation.
 - **SC-004**: Deterministic accounting examples with complete cached usage produce the expected quantity and cost without double counting. In partial provider-parsed usage, omitted input or output counts are `None` in the public `Usage` value, while explicit reported zero remains `0`; neither partial nor malformed usage produces a fabricated cache hit or complete total. Direct `Usage` construction remains compatible.
 - **SC-005**: Every supported external organization has matching identity and distribution name across the four existing metadata sources; a single missing entry or name mismatch is detected by a deterministic check.
 - **SC-006**: Existing caller-facing conformance and compatibility scenarios pass for all affected built-in and external organizations, including existing installation errors and both supported synchronous transport choices.

@@ -12,6 +12,7 @@ from llm_api_adapter.llm_registry.model_capabilities import (
 )
 from tests.capability_scenarios import (
     CapabilityScenario,
+    E2E_SCENARIO_CAPABILITIES,
     ExceptionScenario,
     PassSupplement,
     SCENARIO_CATALOGUE,
@@ -139,7 +140,7 @@ def select_model_scenarios(
     organization: str,
     model: ModelSpec,
     scenarios: ScenarioCatalogue = SCENARIO_CATALOGUE,
-    capabilities: Iterable[ModelCapability] = CAPABILITY_CATALOGUE,
+    capabilities: Iterable[ModelCapability] = E2E_SCENARIO_CAPABILITIES,
 ) -> tuple[str, ...]:
     """Return the selected pytest node IDs for one exact model profile.
 

@@ -8,6 +8,7 @@ from llm_api_adapter.llm_registry.model_capabilities import ModelCapability
 from tests.capability_scenarios import (
     CapabilityScenario,
     DeclaredException,
+    E2E_SCENARIO_CAPABILITIES,
     ExceptionScenario,
     PassSupplement,
     SCENARIO_CATALOGUE,
@@ -63,6 +64,9 @@ def test_checked_in_catalogue_covers_capabilities_and_declared_profiles():
     validate_scenario_catalogue(SCENARIO_CATALOGUE)
 
     declared = first_party_declared_exceptions()
+    e2e_capability_ids = {
+        capability.id for capability in E2E_SCENARIO_CAPABILITIES
+    }
     mapped_pairs = {
         (route.capability_id, route.behavior_id)
         for route in SCENARIO_CATALOGUE.exceptions
@@ -74,12 +78,12 @@ def test_checked_in_catalogue_covers_capabilities_and_declared_profiles():
     assert mapped_pairs == {
         (item.capability_id, item.behavior_id)
         for item in declared
-        if item.behavior_id != "pass"
+        if item.capability_id in e2e_capability_ids and item.behavior_id != "pass"
     }
     assert mapped_supplements == {
         (item.organization, item.model, item.capability_id)
         for item in declared
-        if item.behavior_id == "pass"
+        if item.capability_id in e2e_capability_ids and item.behavior_id == "pass"
     }
 
 
