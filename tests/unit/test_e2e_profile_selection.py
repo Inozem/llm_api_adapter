@@ -25,6 +25,10 @@ SYNC_CHAT = "tests/e2e/test_examples.py::test_sync_chat"
 PDF_SUCCESS = "tests/e2e/test_examples.py::test_pdf_succeeds"
 PDF_REJECTION = "tests/e2e/test_examples.py::test_pdf_rejected"
 ERROR_NORMALIZATION = "tests/e2e/test_examples.py::test_error_normalization"
+ASYNC_STRUCTURED_CHAT = (
+    "tests/e2e/test_async.py::"
+    "test_async_chat_returns_structured_response_and_pricing"
+)
 SYNTHETIC_NODES = (SYNC_CHAT, PDF_SUCCESS, PDF_REJECTION, ERROR_NORMALIZATION)
 
 
@@ -179,9 +183,15 @@ def test_every_first_party_route_names_a_collected_pytest_node():
         text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    collection_lines = result.stdout.splitlines()
+    assert any(line.startswith(f"{ASYNC_STRUCTURED_CHAT}[") for line in collection_lines)
+    assert not any(
+        line.startswith(f"{ASYNC_STRUCTURED_CHAT}[zai-")
+        for line in collection_lines
+    )
     collected = {
         f"{path}::{test_id.partition('[')[0]}"
-        for line in result.stdout.splitlines()
+        for line in collection_lines
         for path, separator, test_id in (line.partition("::"),)
         if separator
     }

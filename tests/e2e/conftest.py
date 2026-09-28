@@ -306,30 +306,44 @@ def pytest_collection_modifyitems(config, items) -> None:
                     f"{item.nodeid} declares duplicate e2e_capability IDs"
                 )
 
-            route_key = (
-                model_case.organization,
-                model_case.model_spec.name,
-                capability_ids,
-            )
-            if route_key not in routes_by_model:
-                try:
-                    routes_by_model[route_key] = frozenset(
-                        select_model_scenarios(
-                            organization=model_case.organization,
-                            model=model_case.model_spec,
-                            capabilities=tuple(
-                                _CAPABILITY_BY_ID[capability_id]
-                                for capability_id in capability_ids
-                            ),
-                        )
+            try:
+                capability_routes = {}
+                for capability_id in capability_ids:
+                    route_key = (
+                        model_case.organization,
+                        model_case.model_spec.name,
+                        capability_id,
                     )
-                except (TypeError, ValueError) as exc:
-                    raise pytest.UsageError(
-                        "Invalid capability profile for "
-                        f"{model_case.organization}/{model_case.model_spec.name}: {exc}"
-                    ) from exc
+                    if route_key not in routes_by_model:
+                        routes_by_model[route_key] = frozenset(
+                            select_model_scenarios(
+                                organization=model_case.organization,
+                                model=model_case.model_spec,
+                                capabilities=(_CAPABILITY_BY_ID[capability_id],),
+                            )
+                        )
+                    capability_routes[capability_id] = routes_by_model[route_key]
+            except (TypeError, ValueError) as exc:
+                raise pytest.UsageError(
+                    "Invalid capability profile for "
+                    f"{model_case.organization}/{model_case.model_spec.name}: {exc}"
+                ) from exc
 
-            if _base_pytest_node_id(item.nodeid) in routes_by_model[route_key]:
+            node_id = _base_pytest_node_id(item.nodeid)
+            exceptions = {
+                exception.capability_id: exception
+                for exception in model_case.model_spec.require_capability_profile()
+            }
+            blocked_by_exception = any(
+                exception.behavior_id != "pass"
+                and node_id not in capability_routes[capability_id]
+                for capability_id, exception in exceptions.items()
+                if capability_id in capability_routes
+            )
+            if (
+                any(node_id in routes for routes in capability_routes.values())
+                and not blocked_by_exception
+            ):
                 selected.append(item)
             else:
                 deselected.append(item)

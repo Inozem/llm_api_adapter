@@ -23,7 +23,7 @@ This contract records the observable guarantees of the 0.9.8 refactor. The full 
 
 ## Conformance and E2E selection
 
-- For an exact model, each applicable capability without a declared exception selects its baseline-positive scenario. A `pass` exception keeps that scenario without an additional model-specific E2E route. A non-`pass` exception selects a common or package-local check through its `(capability_id, behavior_id)` pair, replacing only the positive scenario for that capability. Test node IDs stay in the test catalogue; the selector does not parse `behavior` prose.
+- For an exact model, each applicable capability without a declared exception selects its baseline-positive scenario. A `pass` exception keeps that scenario without an additional model-specific E2E route. A non-`pass` exception selects a common or package-local check through its `(capability_id, behavior_id)` pair, replacing only the positive scenario for that capability. A request that exercises several marked capabilities runs only when none of them redirects to a different non-`pass` scenario. Test node IDs stay in the test catalogue; the selector does not parse `behavior` prose.
 - Mistral PDF via OCR remains a declared `pass` exception: the baseline-positive PDF check runs, while package-local tests verify OCR routing and costs.
 - Shared facade, normalization, error, transport, pricing, and lifecycle invariants run regardless of discretionary model capabilities.
 - Missing baseline-positive evidence or missing/duplicate evidence for a non-`pass` behavior pair is a deterministic validation failure. Expected refusals/incomplete results are asserted by their explicit exception scenarios; unexpected ones fail positive scenarios.

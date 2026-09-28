@@ -68,7 +68,7 @@ def _assert_usage_and_pricing(response):
 
 @pytest.mark.asyncio
 @pytest.mark.e2e
-@pytest.mark.e2e_capability("async_chat")
+@pytest.mark.e2e_capability("async_chat", "structured_output_schema")
 @pytest.mark.parametrize("e2e_model_case", e2e_model_case_parameters())
 async def test_async_chat_returns_structured_response_and_pricing(
     e2e_model_case,
