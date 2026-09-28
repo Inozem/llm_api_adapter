@@ -49,7 +49,7 @@ def test_zai_project_declares_core_dependency_extras_and_entry_point():
     metadata = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert 'name = "llm-api-adapter-zai"' in metadata
-    assert 'version = "0.1.0"' in metadata
+    assert 'version = "0.1.1"' in metadata
     assert 'dependencies = ["llm-api-adapter>=0.9.7,<1.0.0"]' in metadata
     assert 'async = ["llm-api-adapter[async]>=0.9.7,<1.0.0"]' in metadata
     assert 'httpx = ["llm-api-adapter[httpx]>=0.9.7,<1.0.0"]' in metadata
