@@ -1,6 +1,6 @@
 # Contract: Core / Plugin Refactor 0.9.8
 
-This contract records the observable guarantees of the 0.9.8 refactor. The full provider-neutral API and provider admission baseline remain in `specs/001-baseline-contract/spec.md`.
+This contract records the observable guarantees of the 0.9.8 refactor. The project constitution remains the sole source of the full provider-neutral API and provider admission baseline.
 
 ## Caller-facing compatibility
 

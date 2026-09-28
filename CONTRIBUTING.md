@@ -254,7 +254,7 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
 
 - Keep README focused on the public package contract, installation, and user-facing examples.
 - Keep contributor setup, test commands, provider-key rules, CI details, and release procedures in this guide.
-- Update the relevant documentation when public behavior, provider mappings, or test workflows change. Keep the baseline specification focused on externally observable contracts and record stable component boundaries and flows in its living architecture artifact.
+- Update the constitution when the provider-neutral baseline changes, and update the relevant compatibility and architecture documentation when public behavior, provider mappings, or test workflows change.
 - When structured-output behavior changes, update the README's portable-profile contract, the organization-package READMEs, and deterministic conformance tests together. Do not claim arbitrary JSON Schema compatibility.
 - Examples must not require credentials merely to import. Live calls should be explicit and documented.
 - When code or project artifacts change, run `graphify update .` and review the resulting diff.

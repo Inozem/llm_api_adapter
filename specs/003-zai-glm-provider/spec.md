@@ -108,7 +108,7 @@ A maintainer can publish and validate the Z.ai integration independently while r
 - Z.ai / GLM remains an external organization package under the existing plugin criteria; no new core-provider exception has been approved.
 - The initial release includes the officially documented and verified GLM models with the greatest number of confirmed current core-baseline capabilities. The Z.ai package remains an external extra, and any capability a selected model does not support remains explicit in the matrix.
 - A model without officially confirmed Z.ai pricing and currency is excluded from the initial release.
-- The baseline contract in `specs/001-baseline-contract` governs Z.ai. A selected model need not support every core capability, but its declared profile must cover every applicable shared conformance and Core E2E scenario; only explicitly unsupported scenarios may be excluded.
+- The canonical provider-neutral baseline in the project constitution governs Z.ai. A selected model need not support every core capability, but its declared profile must cover every applicable shared conformance and Core E2E scenario; only explicitly declared exceptions may exclude or replace a scenario.
 - The exact initial model list, endpoint details, authentication method, capability statuses, limits, and pricing will be established from official Z.ai documentation during planning.
 - The existing public facade, transport policy, provider registry, compatibility-matrix convention, and common conformance suite remain the governing product constraints.
 - Paid live verification is performed only with maintainer-controlled credentials in an authorized release or post-publish lane.

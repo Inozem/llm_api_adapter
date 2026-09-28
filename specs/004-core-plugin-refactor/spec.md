@@ -88,7 +88,7 @@ A release maintainer can verify that every supported external organization has c
 
 ### Functional Requirements
 
-- **FR-001**: Core 0.9.8 MUST reuse `specs/001-baseline-contract/spec.md` as the existing provider-neutral baseline and MUST NOT redefine its admission criteria in this feature. After implementation, the baseline's observable usage and pricing clauses MUST be synchronized with the additive 0.9.8 response behavior.
+- **FR-001**: Core 0.9.8 MUST use the project constitution as the sole provider-neutral baseline and MUST NOT create a competing baseline in this feature. The constitution's observable usage and pricing rules MUST include the additive 0.9.8 response behavior.
 - **FR-002**: The model registry MUST be the authoritative source for each first-party model's explicit exceptions to direct baseline capability handling, including provider limitations compensated by package-owned adaptation. Package placement MUST NOT be used to infer exceptions.
 - **FR-003**: Every first-party exact-model profile MUST include an explicit exception list, which MAY be empty. Each listed exception MUST name one known `model-dependent` capability exactly once and include a nonempty stable `behavior_id` and its expected behavior. A capability represented by a shared E2E scenario and absent from the exception list MUST retain its baseline-positive check; no omission may skip that check. A missing profile or malformed exception list MUST invalidate certification.
 - **FR-004**: Each explicit exception MUST identify the provider limitation and expected adapter behavior closely enough to verify it without weakening the shared baseline. Behavior IDs MUST be semantic and independent of exact registry values: `pass` records a package adaptation that fulfills the public capability, `ignored` records an accepted input with no provider effect, `rejected_before_transport` records local rejection, and `none_falls_back_to_minimum` derives its exact minimum from `reasoning_capability`. A provider-specific behavior ID is permitted only when those shared outcomes plus structured model metadata cannot express the behavior. Behavior IDs MUST NOT name pytest tests or duplicate exact values owned by structured registry fields.
@@ -105,7 +105,7 @@ A release maintainer can verify that every supported external organization has c
 
 ### Key Entities
 
-- **Canonical baseline capability**: An externally observable behavior already defined by `specs/001-baseline-contract/spec.md`.
+- **Canonical baseline capability**: An externally observable behavior defined by the project constitution and represented by the version-controlled capability catalogue.
 - **Model exception profile**: A first-party model's explicit list of verified model/provider limitations and their adapter behavior; `behavior_id: "pass"` records a compensated limitation, and IDs with distinct shared E2E scenarios route to deviation evidence. Absence of an exception retains any applicable shared baseline-positive check.
 - **Scenario evidence**: A positive common check or, where a distinct shared E2E route exists, a check of an explicit rejection or special behavior; package-specific evidence is additional where required.
 - **Cached input usage**: The portion of input tokens explicitly reported by a provider as cached, with no locally assumed cache hit.
@@ -127,7 +127,7 @@ A release maintainer can verify that every supported external organization has c
 ## Assumptions
 
 - The 0.9.8 scope comes from the [LLM API Adapter Implementation Plan](https://app.notion.com/p/34f33dd99fc8812ea5f2eae262910ab3), specifically “Следующий этап — 0.9.8: Core / Plugin Architecture Refactor.”
-- The existing baseline specification defines the capabilities; this feature records model decisions against it rather than copying or revising that contract.
+- The constitution defines the provider-neutral baseline and capability scopes; this feature records model decisions against it without creating another contract.
 - A cached-input rate is added only when verified for the exact model and pricing context. No provider-wide default, cache-hit estimate, or user-facing cache-control behavior is assumed.
 - The current organization inventory and existing public behavior are the starting compatibility target; metadata cleanup is permitted only where the same behavior and release isolation are preserved.
 - Provider-specific live checks remain subject to the project's established authorization and post-publish release gates. The specification does not authorize a live run or publication.

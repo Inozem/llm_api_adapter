@@ -2,11 +2,11 @@
 
 **Scope**: Stable architecture and dependency boundaries for the current public SDK contract.
 
-**Companion specification**: [Existing SDK Baseline Contract](spec.md)
+**Normative baseline**: The canonical provider-neutral baseline is maintained in `.specify/memory/constitution.md`. This living architecture records implementation boundaries only.
 
-**Source precedence**: Current code and tests define behavior. This artifact records durable
-design boundaries; it does not replace source, test cases, package metadata, or live provider
-documentation.
+**Source precedence**: The constitution defines the normative provider-neutral baseline. Registry
+data owns verified exact-model facts, while code and tests implement and evidence the contract.
+This artifact records durable design boundaries only.
 
 ## Architectural Purpose
 
@@ -66,18 +66,21 @@ authentication, endpoint and protocol handling, raw error handling, and usage ex
 first-party API normally uses the same identifier for both; the distinction remains required for
 other service providers and runtimes.
 
-Built-in adapters cover OpenAI, Anthropic, and Google. Mistral, xAI, Qwen, and Kimi are separate
-organization distributions. An installed optional package registers its model metadata and
-first-party service-provider adapter through the established organization-plugin entry point.
-The facade does not change when a package is added.
+Built-in adapters cover OpenAI, Anthropic, and Google. Mistral, xAI, Qwen, Kimi, DeepSeek, and
+Z.ai are separate organization distributions. An installed optional package registers its model
+metadata and first-party service-provider adapter through the established organization-plugin
+entry point. The facade does not change when a package is added.
 
 ## Registry Boundary
 
 The model registry is the authoritative project record for verified model limits, standard token
-rates, reasoning capability, and exact-model request rules. Registry-owned exceptions are data,
-not adapter-local model-name logic. The closed request-rule mechanism may select an API variant,
-restrict normalized tool choice, rename a supported request field, or drop a documented unsupported
-field. It may not execute arbitrary callbacks or infer behavior from a model prefix.
+rates, reasoning capability, exact-model request rules, and capability exceptions. Structured
+fields own exact values and allowed sets. Capability exceptions describe only semantic deviations
+from the constitutional baseline and must not duplicate those structured values. Registry-owned
+exceptions are data, not adapter-local model-name logic. The closed request-rule mechanism may
+select an API variant, restrict normalized tool choice, rename a supported request field, or drop
+a documented unsupported field. It may not execute arbitrary callbacks or infer behavior from a
+model prefix.
 
 Unknown models remain selectable through the chosen adapter but receive no inferred pricing,
 reasoning capability, or request transformation. Only documented direct organization snapshot
@@ -116,10 +119,12 @@ before dispatching an invalid native request.
 
 ## Usage and Cost Boundary
 
-Usage is provider-reported; the common layer does not estimate it. Standard text token cost is
-calculated from a selected verified tier when usable provider input usage exists. Separately
-metered provider operations are represented as independent cost line items. A total is available
-only when accounting information is complete and compatible; absent data stays absent.
+Usage is provider-reported; the common layer does not estimate it. Provider-confirmed cached input
+is a subset of input and is priced only when a verified cached-input rate exists. Standard text
+token cost is calculated from a selected verified tier when usable provider input usage exists.
+Separately metered provider operations are represented as independent cost line items. A total is
+available only when every incurred component is known and priceable; absent or contradictory data
+stays absent.
 
 ## Dependency and Extension Boundary
 
@@ -132,7 +137,10 @@ core dependency without an explicit approved contract change.
 ## Quality and Release Boundaries
 
 Unit and mocked integration tests are the deterministic contract evidence. They do not require
-provider credentials or network access. Provider E2E validation is deliberately bounded,
+provider credentials or network access. `tests/capability_scenarios.py` maps the subset of
+capabilities covered by shared E2E scenarios to positive, exception, and always-on evidence; it is
+not a second product contract or an inventory of every test. Exact-model registry exceptions select
+the applicable shared or package-local route. Provider E2E validation is deliberately bounded,
 organization-specific, and performed only through explicit manual verification or designated
 post-publish CI lanes. Core and organization packages are independently versioned and released.
 

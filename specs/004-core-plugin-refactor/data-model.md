@@ -1,6 +1,6 @@
 # Data Model: Core / Plugin Architecture Refactor (0.9.8)
 
-This document describes the planning-level data contracts. It does not replace the canonical public baseline in `specs/001-baseline-contract/spec.md`.
+This document describes the planning-level data contracts derived from the canonical provider-neutral baseline in the project constitution. It does not create another normative baseline.
 
 ## Baseline capability catalogue
 
@@ -15,34 +15,25 @@ This document describes the planning-level data contracts. It does not replace t
 
 The canonical capability catalogue records text/chat modes, synchronous and asynchronous streaming, application tools and `tool_choice` variants, portable structured output, supported image/document forms, reasoning controls and events, continuation, usage availability, refusal, and incomplete outcomes. The shared E2E scenario inventory is narrower: it reuses existing common test functions and their request forms. The tool loop selects a viable `tool_choice` mode for each model; it does not separately exercise `tool_choice_auto`, `tool_choice_none`, `tool_choice_any`, `tool_choice_named`, or provider-side continuation. Image, document, structured-output, and async variants enter shared E2E selection only when an existing test request actually exercises them; no new scenario is created to match a registry ID. Facade/discovery, message and error normalization, transport parity/cleanup, request-rule fidelity, pricing correctness, and missing-usage honesty are always-on checks. The catalogue is derived from the existing baseline and shared scenario inventory, then version-controlled and tested.
 
-The ID trace below is planning documentation for the canonical baseline. Runtime metadata and executable tests use stable capability IDs and scopes; they do not read specification files or carry requirement numbers.
+The ID trace below points to the owning constitution subsection. Runtime metadata and executable tests use stable capability IDs and scopes; they do not read documentation or carry requirement numbers.
 
-| Scope | Capability IDs | Baseline requirements |
+| Scope | Capability IDs | Constitution subsection |
 | --- | --- | --- |
-| Model-dependent | `sync_chat`, `async_chat` | FR-004 |
-| Model-dependent | `sync_streaming`, `async_streaming` | FR-004, FR-006, FR-017 |
-| Model-dependent | `application_tools`, `tool_choice_auto`, `tool_choice_none`, `tool_choice_any`, `tool_choice_named` | FR-007 |
-| Model-dependent | `structured_output_schema`, `structured_output_model` | FR-008 |
-| Model-dependent | `image_url`, `image_bytes`, `image_data_url`, `pdf_url`, `pdf_bytes` | FR-009 |
-| Model-dependent | `reasoning_control` | FR-010, FR-018 |
-| Model-dependent | `reasoning_events` | FR-018 |
-| Model-dependent | `provider_continuation` | FR-014 |
-| Model-dependent | `usage_reporting` | FR-005, FR-015 |
-| Model-dependent | `refusal_outcome`, `incomplete_outcome` | FR-005 |
-| Always-on | `facade_discovery` | FR-001, FR-002 |
-| Always-on | `message_normalization` | FR-003 |
-| Always-on | `response_normalization` | FR-005 |
-| Always-on | `transport_parity` | FR-004 |
-| Always-on | `stream_cleanup` | FR-006, FR-017 |
-| Always-on | `tool_validation` | FR-007 |
-| Always-on | `schema_validation` | FR-008 |
-| Always-on | `error_normalization` | FR-012, FR-016 |
-| Always-on | `registry_exactness` | FR-010, FR-011 |
-| Always-on | `request_rule_fidelity` | FR-019 |
-| Always-on | `pricing_correctness` | FR-010, FR-015 |
-| Always-on | `missing_usage_honesty` | FR-015 |
+| Model-dependent | `sync_chat`, `async_chat` | Requests, responses, and streaming |
+| Model-dependent | `sync_streaming`, `async_streaming` | Requests, responses, and streaming |
+| Model-dependent | `application_tools`, `tool_choice_auto`, `tool_choice_none`, `tool_choice_any`, `tool_choice_named` | Tools, structured output, files, and reasoning |
+| Model-dependent | `structured_output_schema`, `structured_output_model` | Tools, structured output, files, and reasoning |
+| Model-dependent | `image_url`, `image_bytes`, `image_data_url`, `pdf_url`, `pdf_bytes` | Tools, structured output, files, and reasoning |
+| Model-dependent | `reasoning_control`, `reasoning_events` | Tools, structured output, files, and reasoning |
+| Model-dependent | `provider_continuation` | Registry, continuation, usage, pricing, and errors |
+| Model-dependent | `usage_reporting` | Registry, continuation, usage, pricing, and errors |
+| Model-dependent | `refusal_outcome`, `incomplete_outcome` | Requests, responses, and streaming |
+| Always-on | `facade_discovery` | Public facade and distribution boundary |
+| Always-on | `message_normalization`, `response_normalization`, `transport_parity`, `stream_cleanup` | Requests, responses, and streaming |
+| Always-on | `tool_validation`, `schema_validation` | Tools, structured output, files, and reasoning |
+| Always-on | `error_normalization`, `registry_exactness`, `request_rule_fidelity`, `pricing_correctness`, `missing_usage_honesty` | Registry, continuation, usage, pricing, and errors |
 
-FR-013 (base dependency boundary), FR-020 (optional-package capability documentation), and FR-021 (optional-package E2E profile and evidence) are baseline obligations outside exact-model scenario selection. They remain in installation, package, and release validation; a model profile cannot turn them off.
+The base dependency boundary, optional-package capability documentation, and named E2E profile and evidence requirements are constitutional obligations outside exact-model scenario selection. They remain in installation, package, and release validation; a model profile cannot turn them off.
 
 ## Model exception profile
 
