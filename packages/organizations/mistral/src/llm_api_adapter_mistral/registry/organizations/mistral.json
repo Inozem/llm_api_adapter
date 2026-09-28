@@ -6,12 +6,17 @@
         {
           "capability_id": "pdf_url",
           "behavior_id": "pass",
-          "behavior": "The package handles a PDF URL through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
+          "behavior": "The package converts the PDF through the registry-declared OCR operation and sends the extracted text to the chat model, preserving the public PDF contract."
         },
         {
           "capability_id": "pdf_bytes",
           "behavior_id": "pass",
-          "behavior": "The package handles PDF bytes through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
+          "behavior": "The package converts the PDF through the registry-declared OCR operation and sends the extracted text to the chat model, preserving the public PDF contract."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "reasoning_capability": {
@@ -34,12 +39,17 @@
         {
           "capability_id": "pdf_url",
           "behavior_id": "pass",
-          "behavior": "The package handles a PDF URL through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
+          "behavior": "The package converts the PDF through the registry-declared OCR operation and sends the extracted text to the chat model, preserving the public PDF contract."
         },
         {
           "capability_id": "pdf_bytes",
           "behavior_id": "pass",
-          "behavior": "The package handles PDF bytes through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
+          "behavior": "The package converts the PDF through the registry-declared OCR operation and sends the extracted text to the chat model, preserving the public PDF contract."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "reasoning_capability": {
@@ -62,17 +72,22 @@
         {
           "capability_id": "pdf_url",
           "behavior_id": "pass",
-          "behavior": "The package handles a PDF URL through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
+          "behavior": "The package converts the PDF through the registry-declared OCR operation and sends the extracted text to the chat model, preserving the public PDF contract."
         },
         {
           "capability_id": "pdf_bytes",
           "behavior_id": "pass",
-          "behavior": "The package handles PDF bytes through Mistral OCR 4.1 before sending the extracted Markdown to the selected chat model; OCR page usage is recorded as a separate cost line."
+          "behavior": "The package converts the PDF through the registry-declared OCR operation and sends the extracted text to the chat model, preserving the public PDF contract."
         },
         {
           "capability_id": "reasoning_control",
-          "behavior_id": "reasoning_unsupported",
-          "behavior": "Mistral's reasoning guide documents adjustable reasoning_effort for Small and Medium 3.5, but not Large 3. The registry leaves this model's reasoning metadata unset, so Core resolves reasoning requests as unsupported and disables reasoning."
+          "behavior_id": "ignored",
+          "behavior": "reasoning_level is accepted for Core API compatibility but ignored because reasoning_capability is absent; Core emits a warning and sends no reasoning control."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "limits": {

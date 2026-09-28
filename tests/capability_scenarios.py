@@ -90,13 +90,12 @@ EXCEPTION_SCENARIOS = _routes(
         ("pdf_bytes", "rejected_before_transport", "qwen"),
         "packages/organizations/qwen/tests/e2e/test_document_input.py::test_qwen_document_parts_are_rejected_before_messages_transport",
     ),
+    (("reasoning_control", "none_falls_back_to_minimum", None), _REASONING_CHAT),
     (
-        ("reasoning_control", "cannot_disable_thinking", "kimi"),
-        "packages/organizations/kimi/tests/e2e/test_live_contract.py::test_kimi_models_apply_their_declared_reasoning_mode_through_the_facade",
+        ("reasoning_control", "minimum_fallback_with_effort_alias", None),
+        _REASONING_CHAT,
     ),
-    (("reasoning_control", "none_falls_back_to_low", None), _REASONING_CHAT),
-    (("reasoning_control", "none_to_low_xhigh_to_high", None), _REASONING_CHAT),
-    (("reasoning_control", "reasoning_unsupported", None), _REASONING_CHAT),
+    (("reasoning_control", "ignored", None), _REASONING_CHAT),
     (
         ("structured_output_schema", "rejected_before_transport", "zai"),
         "packages/organizations/zai/tests/e2e/test_capability_boundaries.py::test_zai_rejects_structured_output_before_provider_transport",

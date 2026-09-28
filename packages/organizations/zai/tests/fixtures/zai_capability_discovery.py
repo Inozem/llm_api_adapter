@@ -27,13 +27,13 @@ EXPECTED_CAPABILITY_EXCEPTIONS: Final = {
         "HTTP; document files are outside this adapter's supported input serialization."
     ),
     "provider_continuation": (
-        "previous_response is accepted for Core API compatibility but ignored; each "
-        "request uses the caller-provided messages and sends no provider continuation "
+        "previous_response is accepted for Core API compatibility but ignored; the "
+        "request uses caller-provided messages and sends no provider continuation "
         "identifier."
     ),
     "reasoning_control": (
-        "GLM-5.3-Flash cannot disable thinking; reasoning_level='none' falls back to "
-        "'low' with a warning, and the supported effort levels are low, high, and max."
+        "Reasoning cannot be disabled; Core uses the minimum declared by "
+        "reasoning_capability and emits a warning."
     ),
     "structured_output_model": (
         "The adapter rejects response_model before HTTP; Z.ai documents JSON object "
@@ -46,16 +46,16 @@ EXPECTED_CAPABILITY_EXCEPTIONS: Final = {
         "the application."
     ),
     "tool_choice_any": (
-        "The model request rule permits only tool_choice='auto'; a forced any-tool "
-        "choice is rejected before transport."
+        "The adapter rejects this unsupported tool-choice mode before transport "
+        "according to the exact-model request rules."
     ),
     "tool_choice_named": (
-        "The model request rule permits only tool_choice='auto'; a forced named-tool "
-        "choice is rejected before transport."
+        "The adapter rejects this unsupported tool-choice mode before transport "
+        "according to the exact-model request rules."
     ),
     "tool_choice_none": (
-        "The model request rule permits only tool_choice='auto'; an explicit no-tools "
-        "choice is rejected before transport."
+        "The adapter rejects this unsupported tool-choice mode before transport "
+        "according to the exact-model request rules."
     ),
 }
 EXPECTED_PRICING_PER_1M_USD: Final = {

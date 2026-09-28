@@ -118,7 +118,10 @@ def test_profile_parsing_preserves_registry_resolution_plugin_discovery_and_faca
     base_spec = resolve_model_spec(registry, "openai", "gpt-6-astra")
 
     assert base_spec is not None
-    assert base_spec.capability_exceptions == ()
+    assert tuple(
+        (exception.capability_id, exception.behavior_id)
+        for exception in base_spec.capability_exceptions or ()
+    ) == (("reasoning_control", "none_falls_back_to_minimum"),)
     assert resolve_model_spec(registry, "openai", "gpt-6-astra") is base_spec
     snapshot_model = "gpt-6-astra-2026-07-01"
     assert resolve_model_spec(registry, "openai", snapshot_model) is base_spec
@@ -181,7 +184,11 @@ def test_profile_parsing_preserves_registry_resolution_plugin_discovery_and_faca
     assert tuple(
         (exception.capability_id, exception.behavior_id)
         for exception in external_spec.capability_exceptions or ()
-    ) == (("pdf_url", "pass"), ("pdf_bytes", "pass"))
+    ) == (
+        ("pdf_url", "pass"),
+        ("pdf_bytes", "pass"),
+        ("provider_continuation", "ignored"),
+    )
     assert resolve_model_spec(registry, "mistral", "unknown-model") is None
     assert isinstance(facade.adapter, MistralAdapter)
     assert facade.adapter.model_spec is external_spec

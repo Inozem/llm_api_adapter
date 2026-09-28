@@ -60,6 +60,17 @@ TOOL_CHOICE_EXCEPTION_BY_RULE_MODE = {
     "tool": "tool_choice_named",
 }
 
+STANDARD_BEHAVIOR_IDS = {
+    "pass",
+    "ignored",
+    "rejected_before_transport",
+    "none_falls_back_to_minimum",
+}
+CUSTOM_BEHAVIOR_KEYS = {
+    ("reasoning_control", "minimum_fallback_with_effort_alias"),
+    ("provider_continuation", "stateless_reasoning_replay"),
+}
+
 
 def _catalogue_specs():
     for organization_name, catalogue_path in FIRST_PARTY_CATALOGUES:
@@ -136,20 +147,85 @@ def test_reasoning_control_exceptions_match_reasoning_metadata():
                 exception.capability_id: exception
                 for exception in model_spec.capability_exceptions
             }
-            if "reasoning_control" not in exceptions:
-                continue
-
             capability = model_spec.reasoning_capability
-            can_disable_thinking = False
-            if isinstance(capability, CategoricalReasoningCapability):
-                can_disable_thinking = "none" in capability.allowed_values
+            if capability is None:
+                expected_behavior_ids = {"ignored"}
+            elif isinstance(capability, CategoricalReasoningCapability):
+                expected_behavior_ids = (
+                    {None}
+                    if "none" in capability.allowed_values
+                    else {
+                        "none_falls_back_to_minimum",
+                        "minimum_fallback_with_effort_alias",
+                    }
+                )
             elif isinstance(capability, NumericReasoningCapability):
-                can_disable_thinking = capability.can_disable_thinking
+                expected_behavior_ids = (
+                    {None}
+                    if capability.can_disable_thinking
+                    else {
+                        "none_falls_back_to_minimum",
+                        "minimum_fallback_with_effort_alias",
+                    }
+                )
+            else:  # pragma: no cover - union exhaustiveness guard
+                raise AssertionError(f"unsupported reasoning capability: {capability!r}")
 
-            assert not can_disable_thinking, (
-                f"{organization_name}/{model_name} declares a reasoning_control "
-                "exception even though its reasoning metadata can disable thinking"
+            actual_exception = exceptions.get("reasoning_control")
+            actual_behavior_id = (
+                actual_exception.behavior_id if actual_exception is not None else None
             )
+            assert actual_behavior_id in expected_behavior_ids, (
+                f"{organization_name}/{model_name} reasoning_control profile "
+                f"disagrees with reasoning_capability: expected one of "
+                f"{expected_behavior_ids!r}, got {actual_behavior_id!r}"
+            )
+
+
+@pytest.mark.unit
+def test_provider_continuation_exceptions_match_transport_metadata():
+    for organization_name, _, organization_spec in _catalogue_specs():
+        for model_name, model_spec in organization_spec.models.items():
+            exceptions = {
+                exception.capability_id: exception
+                for exception in model_spec.capability_exceptions
+            }
+            if model_spec.request_rules.api_variant == "responses":
+                expected_behavior_ids = {None}
+            else:
+                expected_behavior_ids = {
+                    "ignored",
+                    "stateless_reasoning_replay",
+                }
+
+            actual_exception = exceptions.get("provider_continuation")
+            actual_behavior_id = (
+                actual_exception.behavior_id if actual_exception is not None else None
+            )
+            assert actual_behavior_id in expected_behavior_ids, (
+                f"{organization_name}/{model_name} provider_continuation profile "
+                f"disagrees with its transport: expected one of "
+                f"{expected_behavior_ids!r}, got {actual_behavior_id!r}"
+            )
+
+
+@pytest.mark.unit
+def test_exception_behavior_ids_use_the_shared_vocabulary_or_declared_custom_case():
+    observed_custom_behaviors = set()
+    for organization_name, _, organization_spec in _catalogue_specs():
+        for model_name, model_spec in organization_spec.models.items():
+            for exception in model_spec.capability_exceptions:
+                if exception.behavior_id in STANDARD_BEHAVIOR_IDS:
+                    continue
+
+                behavior_key = (exception.capability_id, exception.behavior_id)
+                assert behavior_key in CUSTOM_BEHAVIOR_KEYS, (
+                    f"{organization_name}/{model_name} uses undeclared custom "
+                    f"behavior {behavior_key!r}"
+                )
+                observed_custom_behaviors.add(behavior_key)
+
+    assert observed_custom_behaviors == CUSTOM_BEHAVIOR_KEYS
 
 
 @pytest.mark.unit

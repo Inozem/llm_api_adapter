@@ -40,6 +40,16 @@ or a narrowly scoped new abstraction rather than hardcoded duplicates. Registry 
 be checked against official organization documentation; unsupported or missing provider data MUST
 remain explicit rather than inferred.
 
+Dedicated structured registry fields MUST be the sole source of exact model values, limits, and
+supported-value sets. Capability exceptions MUST record only the observable class of a baseline
+deviation or behavior that existing structured metadata cannot express; they MUST NOT duplicate
+exact values or become an alternative source of truth. Adapters and tests MUST derive the concrete
+result from the owning structured field. The same observable behavior MUST reuse the same semantic,
+value-independent `behavior_id` across models and organizations. A custom `behavior_id` is
+permitted only when neither an existing shared behavior nor structured metadata can express the
+result. Any contradiction between structured metadata and an exception MUST fail deterministic
+validation.
+
 Rationale: centralized metadata and reuse prevent drift across adapters and transports.
 
 ### IV. Deterministic Contract Evidence and Baseline Profiles
@@ -146,4 +156,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.3.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-09-23
+**Version**: 0.4.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-09-28

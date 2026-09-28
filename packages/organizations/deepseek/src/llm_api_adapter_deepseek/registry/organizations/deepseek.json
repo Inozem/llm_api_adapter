@@ -4,14 +4,9 @@
     "deepseek-flash": {
       "capability_exceptions": [
         {
-          "capability_id": "provider_continuation",
-          "behavior_id": "stateless_reasoning_replay",
-          "behavior": "The Responses API is stateless and does not support previous_response_id; callers send full messages history, while previous_response carries only matching opaque reasoning replay material."
-        },
-        {
           "capability_id": "tool_choice_named",
           "behavior_id": "pass",
-          "behavior": "For a forced named function choice, the adapter sets reasoning_level='none' and warns when it must disable thinking, following DeepSeek's documented thinking-mode restriction for forced tool choice."
+          "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
         },
         {
           "capability_id": "pdf_url",
@@ -22,6 +17,11 @@
           "capability_id": "pdf_bytes",
           "behavior_id": "rejected_before_transport",
           "behavior": "DocumentPart bytes, including PDFs, are rejected before transport; the Responses API does not support file inputs and this package accepts image inputs only."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "stateless_reasoning_replay",
+          "behavior": "The Responses API is stateless and does not support previous_response_id; callers send full messages history, while previous_response carries only matching opaque reasoning replay material."
         }
       ],
       "limits": {

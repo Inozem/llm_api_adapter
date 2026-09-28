@@ -30,9 +30,9 @@ EXPECTED_CAPABILITY_EXCEPTIONS: Final = {
         "matching opaque reasoning replay material."
     ),
     "tool_choice_named": (
-        "For a forced named function choice, the adapter sets reasoning_level='none' "
-        "and warns when it must disable thinking, following DeepSeek's documented "
-        "thinking-mode restriction for forced tool choice."
+        "The adapter disables reasoning according to the model's declared reasoning "
+        "capability before sending the forced tool choice and emits a warning when "
+        "it changes the caller's request."
     ),
     "pdf_url": (
         "DocumentPart URLs, including PDFs, are rejected before transport; the "

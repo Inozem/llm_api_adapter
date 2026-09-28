@@ -4,29 +4,19 @@
     "glm-5.3-flash": {
       "capability_exceptions": [
         {
-          "capability_id": "pdf_bytes",
+          "capability_id": "tool_choice_none",
           "behavior_id": "rejected_before_transport",
-          "behavior": "The Z.ai package rejects DocumentPart bytes, including PDF content, before HTTP; document files are outside this adapter's supported input serialization."
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
         },
         {
-          "capability_id": "pdf_url",
+          "capability_id": "tool_choice_any",
           "behavior_id": "rejected_before_transport",
-          "behavior": "The Z.ai package rejects DocumentPart URLs, including PDF URLs, before HTTP; document files are outside this adapter's supported input serialization."
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
         },
         {
-          "capability_id": "provider_continuation",
-          "behavior_id": "ignored",
-          "behavior": "previous_response is accepted for Core API compatibility but ignored; each request uses the caller-provided messages and sends no provider continuation identifier."
-        },
-        {
-          "capability_id": "reasoning_control",
-          "behavior_id": "none_falls_back_to_low",
-          "behavior": "GLM-5.3-Flash cannot disable thinking; reasoning_level='none' falls back to 'low' with a warning, and the supported effort levels are low, high, and max."
-        },
-        {
-          "capability_id": "structured_output_model",
+          "capability_id": "tool_choice_named",
           "behavior_id": "rejected_before_transport",
-          "behavior": "The adapter rejects response_model before HTTP; Z.ai documents JSON object mode but no model-bound output enforcement, so this package does not expose Pydantic response models."
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
         },
         {
           "capability_id": "structured_output_schema",
@@ -34,19 +24,29 @@
           "behavior": "The adapter rejects portable json_schema before HTTP; response_format supports json_object only, with schema guidance and validation handled in the application."
         },
         {
-          "capability_id": "tool_choice_any",
+          "capability_id": "structured_output_model",
           "behavior_id": "rejected_before_transport",
-          "behavior": "The model request rule permits only tool_choice='auto'; a forced any-tool choice is rejected before transport."
+          "behavior": "The adapter rejects response_model before HTTP; Z.ai documents JSON object mode but no model-bound output enforcement, so this package does not expose Pydantic response models."
         },
         {
-          "capability_id": "tool_choice_named",
+          "capability_id": "pdf_url",
           "behavior_id": "rejected_before_transport",
-          "behavior": "The model request rule permits only tool_choice='auto'; a forced named-tool choice is rejected before transport."
+          "behavior": "The Z.ai package rejects DocumentPart URLs, including PDF URLs, before HTTP; document files are outside this adapter's supported input serialization."
         },
         {
-          "capability_id": "tool_choice_none",
+          "capability_id": "pdf_bytes",
           "behavior_id": "rejected_before_transport",
-          "behavior": "The model request rule permits only tool_choice='auto'; an explicit no-tools choice is rejected before transport."
+          "behavior": "The Z.ai package rejects DocumentPart bytes, including PDF content, before HTTP; document files are outside this adapter's supported input serialization."
+        },
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "limits": {

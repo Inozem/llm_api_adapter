@@ -4,19 +4,9 @@
     "kimi-k3": {
       "capability_exceptions": [
         {
-          "capability_id": "reasoning_control",
-          "behavior_id": "cannot_disable_thinking",
-          "behavior": "Kimi K3 always enables thinking; requesting reasoning_level='none' cannot disable it and the adapter warns."
-        },
-        {
-          "capability_id": "provider_continuation",
-          "behavior_id": "ignored",
-          "behavior": "Kimi Chat Completions is stateless; previous_response is accepted for shared API compatibility but ignored, so callers must send the complete messages history."
-        },
-        {
           "capability_id": "tool_choice_named",
           "behavior_id": "rejected_before_transport",
-          "behavior": "The adapter rejects a forced named-tool choice before transport; Kimi documents that forcing a specific tool is incompatible with K3's always-on thinking."
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
         },
         {
           "capability_id": "image_url",
@@ -32,6 +22,16 @@
           "capability_id": "pdf_bytes",
           "behavior_id": "rejected_before_transport",
           "behavior": "The adapter rejects DocumentPart bytes before transport; Kimi's Files API extracts file content separately and does not attach a PDF to Chat Completions."
+        },
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "limits": {
@@ -75,19 +75,14 @@
     "kimi-k2.6": {
       "capability_exceptions": [
         {
-          "capability_id": "provider_continuation",
-          "behavior_id": "ignored",
-          "behavior": "Kimi Chat Completions is stateless; previous_response is accepted for shared API compatibility but ignored, so callers must send the complete messages history."
-        },
-        {
           "capability_id": "tool_choice_any",
           "behavior_id": "rejected_before_transport",
-          "behavior": "The adapter rejects tool_choice='any' before transport under the K2.6 exact-model request rule; Kimi documents only auto and none while thinking is enabled."
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
         },
         {
           "capability_id": "tool_choice_named",
           "behavior_id": "rejected_before_transport",
-          "behavior": "The adapter rejects forced named-tool selection before transport under the K2.6 exact-model request rule; Kimi documents only auto and none while thinking is enabled."
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
         },
         {
           "capability_id": "image_url",
@@ -103,6 +98,11 @@
           "capability_id": "pdf_bytes",
           "behavior_id": "rejected_before_transport",
           "behavior": "The adapter rejects DocumentPart bytes before transport; Kimi's Files API extracts file content separately and does not attach a PDF to Chat Completions."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "limits": {

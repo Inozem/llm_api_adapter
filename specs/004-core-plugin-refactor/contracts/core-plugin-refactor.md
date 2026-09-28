@@ -17,7 +17,7 @@ This contract records the observable guarantees of the 0.9.8 refactor. The full 
 ## Model exceptions against the baseline
 
 - The canonical baseline defines required behavior and mandatory Core invariants. Each first-party model's registry entry contains an explicit `capability_exceptions` list; the list may be empty.
-- An applicable capability absent from a model's exception list keeps its baseline-positive check. A declared exception names the capability, a stable `behavior_id`, and its verified provider limitation and adapter behavior. A package workaround that fulfills the public contract remains an exception with `behavior_id: "pass"`.
+- An applicable capability absent from a model's exception list keeps its baseline-positive check. A declared exception names the capability, a stable value-independent `behavior_id`, and its verified provider limitation and adapter behavior. Shared outcomes use `pass`, `ignored`, `rejected_before_transport`, or `none_falls_back_to_minimum`; provider-specific IDs are reserved for behavior that those outcomes plus structured metadata cannot express. Exact values and limits come from their dedicated registry fields. A package workaround that fulfills the public contract remains an exception with `behavior_id: "pass"`.
 - A missing profile, unknown/duplicate exception, always-on exception, missing/malformed `behavior_id`, or malformed behavior is a profile-validation error for conformance and E2E selection. The selector never interprets an unlisted capability as a reason to skip.
 - Older third-party plugins that implement the current entry-point API may still register and serve requests without new metadata. A missing profile prevents profile-based certification, not runtime plugin loading.
 

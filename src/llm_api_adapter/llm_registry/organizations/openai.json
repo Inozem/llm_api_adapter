@@ -2,7 +2,13 @@
   "currency": "USD",
   "models": {
     "gpt-6-astra": {
-      "capability_exceptions": [],
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -297,7 +303,13 @@
       ]
     },
     "gpt-5": {
-      "capability_exceptions": [],
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -318,7 +330,13 @@
       ]
     },
     "gpt-5-mini": {
-      "capability_exceptions": [],
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -339,7 +357,13 @@
       ]
     },
     "gpt-5-nano": {
-      "capability_exceptions": [],
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -364,8 +388,13 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
-          "behavior_id": "reasoning_unsupported",
-          "behavior": "OpenAI documents GPT-4.1 as a non-reasoning model; reasoning-effort controls are unsupported."
+          "behavior_id": "ignored",
+          "behavior": "reasoning_level is accepted for Core API compatibility but ignored because reasoning_capability is absent; Core emits a warning and sends no reasoning control."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "request_rules": [
@@ -387,8 +416,13 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
-          "behavior_id": "reasoning_unsupported",
-          "behavior": "OpenAI documents the GPT-4.1 family as non-reasoning; reasoning-effort controls are unsupported."
+          "behavior_id": "ignored",
+          "behavior": "reasoning_level is accepted for Core API compatibility but ignored because reasoning_capability is absent; Core emits a warning and sends no reasoning control."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "request_rules": [
@@ -410,8 +444,13 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
-          "behavior_id": "reasoning_unsupported",
-          "behavior": "OpenAI documents the GPT-4.1 family as non-reasoning; reasoning-effort controls are unsupported."
+          "behavior_id": "ignored",
+          "behavior": "reasoning_level is accepted for Core API compatibility but ignored because reasoning_capability is absent; Core emits a warning and sends no reasoning control."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "request_rules": [
@@ -433,8 +472,13 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
-          "behavior_id": "reasoning_unsupported",
-          "behavior": "GPT-4o is a general GPT model rather than a reasoning model; reasoning-effort controls are unsupported."
+          "behavior_id": "ignored",
+          "behavior": "reasoning_level is accepted for Core API compatibility but ignored because reasoning_capability is absent; Core emits a warning and sends no reasoning control."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "limits": {
@@ -453,8 +497,13 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
-          "behavior_id": "reasoning_unsupported",
-          "behavior": "GPT-4o mini is a general GPT model rather than a reasoning model; reasoning-effort controls are unsupported."
+          "behavior_id": "ignored",
+          "behavior": "reasoning_level is accepted for Core API compatibility but ignored because reasoning_capability is absent; Core emits a warning and sends no reasoning control."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "limits": {

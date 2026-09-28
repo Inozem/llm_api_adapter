@@ -5,13 +5,13 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
-          "behavior_id": "none_falls_back_to_low",
-          "behavior": "xAI documents low, medium, high, and xhigh reasoning effort for this model, but reasoning cannot be disabled. Core maps a request for none to low and emits a warning."
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
         },
         {
           "capability_id": "provider_continuation",
           "behavior_id": "ignored",
-          "behavior": "The package accepts previous_response for API compatibility but ignores it and does not send previous_response_id; the request uses the messages supplied by the caller."
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "limits": {
@@ -38,13 +38,13 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
-          "behavior_id": "none_falls_back_to_low",
-          "behavior": "xAI documents low, medium, high, and xhigh reasoning effort for this model, but reasoning cannot be disabled. Core maps a request for none to low and emits a warning."
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
         },
         {
           "capability_id": "provider_continuation",
           "behavior_id": "ignored",
-          "behavior": "The package accepts previous_response for API compatibility but ignores it and does not send previous_response_id; the request uses the messages supplied by the caller."
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "limits": {
@@ -71,13 +71,13 @@
       "capability_exceptions": [
         {
           "capability_id": "reasoning_control",
-          "behavior_id": "none_to_low_xhigh_to_high",
-          "behavior": "xAI documents low, medium, and high reasoning effort for this model, but reasoning cannot be disabled. Core maps a request for none to low and emits a warning. xAI accepts xhigh for this model and treats it as high."
+          "behavior_id": "minimum_fallback_with_effort_alias",
+          "behavior": "Reasoning cannot be disabled, so Core uses the minimum declared by reasoning_capability and emits a warning. The provider accepts xhigh but executes it with high behavior."
         },
         {
           "capability_id": "provider_continuation",
           "behavior_id": "ignored",
-          "behavior": "The package accepts previous_response for API compatibility but ignores it and does not send previous_response_id; the request uses the messages supplied by the caller."
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
       "limits": {
