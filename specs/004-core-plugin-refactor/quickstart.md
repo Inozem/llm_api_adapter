@@ -16,7 +16,7 @@ Run these checks **after implementation**, from the actual repository root (`llm
 
 Expected: every first-party registered model has an explicit `capability_exceptions` list, including an empty list when it follows the baseline, and every declared exception has a valid `behavior_id`. An unlisted capability and a `pass` exception both select the baseline-positive scenario; another `(capability_id, behavior_id)` pair selects its documented deviation check. Mistral PDF via OCR remains a visible `pass` exception, while package tests verify the normalization and OCR costs. A missing profile, invalid behavior ID, or missing/duplicate route fails deterministically. A legacy third-party plugin can still register without a profile, but profile-based certification fails clearly.
 
-## 2. Validate cached usage and prices
+## 2. Validate automatic cache usage and prices
 
 ```powershell
 & .\.venv\Scripts\python.exe -m pytest -q -m unit tests/unit/models/responses tests/unit/streaming/test_chunk_buffer.py tests/unit/adapters/test_base_adapter.py tests/unit/adapters/test_pricing_lifecycle.py tests/unit/adapters/test_openai_adapter.py tests/unit/adapters/test_anthropic_adapter.py tests/unit/adapters/test_google_adapter.py
@@ -24,7 +24,7 @@ Expected: every first-party registered model has an explicit `capability_excepti
 & .\.venv\Scripts\python.exe -m pytest -q -m "unit or integration" packages/organizations/mistral/tests/test_mistral_adapter.py packages/organizations/xai/tests/test_xai_adapter.py packages/organizations/qwen/tests/test_qwen_adapter.py
 ```
 
-Expected: complete provider-confirmed cache splits price ordinary and cached input once at the correct tier; missing or inconsistent splits yield no invented input/total cost. Direct `ChatResponse.from_*` calls and provider adapters expose `None` for omitted counts in parsed partial usage and retain reported `0`; direct `Usage` construction retains its zero defaults. DeepSeek peak/off-peak examples retain their dispatch-time behavior, and its separate streaming usage parser preserves partial counts. Synchronous, asynchronous, and streaming final responses agree on accounting. No live request is made.
+Expected: complete provider-confirmed automatic cache-read/cache-write splits price ordinary, read, and write input once at the correct tier; missing or inconsistent component splits yield no invented input/total cost. Registry fixtures contain rates only for exact models whose ordinary adapter requests can automatically incur and report those components; opt-in-only cache modes remain absent. Direct `ChatResponse.from_*` calls and provider adapters expose `None` for omitted counts in parsed partial usage and retain reported `0`; direct `Usage` construction retains its zero defaults and existing `cached_tokens` cache-read meaning. DeepSeek peak/off-peak examples retain their dispatch-time behavior, and its separate streaming usage parser preserves partial counts. Synchronous, asynchronous, and streaming final responses agree on accounting. No live request is made.
 
 ## 3. Validate organization metadata and CI line selection
 

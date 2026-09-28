@@ -66,10 +66,11 @@ For first-party models, the explicit `capability_exceptions` field is required e
 | `up_to_prompt_tokens` | Existing tier boundary | Existing strictly increasing final-open-tier rule |
 | `input_per_1m` | Existing standard ordinary-input rate | Existing validated rate rule |
 | `output_per_1m` | Existing standard output rate | Existing validated rate rule |
-| `cached_input_per_1m` | New optional standard cached-input rate | Finite, nonnegative, exact-model verified; no default from ordinary input |
+| `cache_read_input_per_1m` | New optional rate for provider-confirmed automatic cache reads | Finite, nonnegative, exact-model verified for an ordinary adapter request; no default from ordinary input or cache write |
+| `cache_write_input_per_1m` | New optional rate for provider-confirmed, separately priced automatic cache writes | Finite, nonnegative, exact-model verified for an ordinary adapter request; no default from ordinary input or cache read |
 | `currency` | Existing organization pricing currency | Same currency applies to the selected rate set |
 
-The existing tier selection uses the provider-reported **total input token count**, not only the uncached portion. Static cached rates follow that same tier. A package with dispatch-time or other conditional pricing, notably DeepSeek, selects its verified rate set under its existing provider-specific rules; it must not claim that one registry tier is the complete applicable rate. Shared accounting may consume the already selected rate set without adding a plugin API requirement.
+The existing tier selection uses the provider-reported **total input token count**, not only the ordinary, cache-read, or cache-write portion. Static cache component rates follow that same tier. Pricing metadata is present only when the component can occur automatically during an ordinary adapter request and the provider reports enough usage to price it. An unsupported opt-in cache mode, TTL choice, cache resource, or storage rate is absent rather than represented by a capability flag. A package with dispatch-time or other conditional pricing, notably DeepSeek, selects its verified rate set under its existing provider-specific rules; it must not claim that one registry tier is the complete applicable rate. Shared accounting may consume the already selected rate set without adding a plugin API requirement.
 
 ## Usage and response accounting
 
@@ -78,26 +79,29 @@ The existing tier selection uses the provider-reported **total input token count
 | Field | Meaning | Compatibility |
 | --- | --- | --- |
 | `input_tokens`, `output_tokens`, `total_tokens` | Provider-reported token counts; omitted components in parsed partial usage are `None` | Keep existing names, constructor order, and zero defaults for direct construction; document the `None` correction for partial provider responses |
-| `cached_tokens` | Optional provider-confirmed subset of input tokens | Add at the end of `Usage`; never infer from request settings |
-| `cost_input` | Aggregate ordinary plus cached input charge | Existing public meaning remains aggregate input cost |
+| `cached_tokens` | Optional provider-confirmed automatic cache-read/cache-hit subset of input tokens | Retain the existing package-facing meaning and add it to common `Usage`; never infer from request settings |
+| `cache_write_tokens` | Optional provider-confirmed, separately metered automatic cache-write subset of input tokens | Append after existing fields; absent for opt-in-only or unreported writes |
+| `cost_input` | Aggregate ordinary plus cache-read plus cache-write input charge | Existing public meaning remains aggregate input cost |
 | `cost_output` | Output-token charge | Existing public field |
 | `cost_total` | Complete token and separately metered total where priceable | `None` when any incurred required component is unknown |
-| `cost_breakdown` | Existing non-token operations such as OCR | Cached input remains a token component, not a non-token line item |
+| `cost_breakdown` | Existing non-token operations such as OCR | Automatic cache input remains a token component, not a non-token line item |
 
-For a valid static cache split, `0 <= cached_tokens <= input_tokens` and both counts are nonnegative integers. If the selected ordinary rate is `r_in`, cached rate is `r_cached`, and the selected output rate is `r_out`:
+For a valid static automatic-cache split, common `input_tokens` is the inclusive input total, `cached_tokens` and `cache_write_tokens` are nonnegative integers, and `cached_tokens + cache_write_tokens <= input_tokens` when input is known. A provider parser reconstructs the inclusive total only when official response semantics expose exact disjoint components; otherwise the total and dependent costs remain unavailable. If the selected ordinary rate is `r_in`, cache-read rate is `r_read`, cache-write rate is `r_write`, and the selected output rate is `r_out`:
 
 The public constructor keeps its existing first three positional fields and zero defaults. Provider-parsed partial usage sets each omitted input or output count to `None` before constructing `Usage`; an explicitly reported zero remains `0`. Existing `ChatResponse.from_*` factories must apply the same rule when called directly, including without an adapter. Missing provider input makes `cost_input` and `cost_total` unavailable; missing provider output makes `cost_output` and `cost_total` unavailable. A wholly absent usage object remains absent. An omitted provider total remains `None` unless an existing documented parser computes an exact sum from both confirmed component counts. This public `None` correction requires migration guidance for consumers that perform arithmetic on parsed token counts; direct legacy `Usage(input_tokens, output_tokens, total_tokens)` construction keeps its existing pricing behavior.
 
 ```text
-cost_input  = (input_tokens - cached_tokens) × r_in
-            + cached_tokens × r_cached
+ordinary_input_tokens = input_tokens - cached_tokens - cache_write_tokens
+cost_input  = ordinary_input_tokens × r_in
+            + cached_tokens × r_read
+            + cache_write_tokens × r_write
 cost_output = output_tokens × r_out
 cost_total  = cost_input + cost_output + known non-token charges
 ```
 
-If a distinct cached rate applies but the provider omits, corrupts, or contradicts the cache split, keep only independently confirmed values; `cost_input` and `cost_total` are unavailable. `cost_output` may remain if output usage and its rate are valid. If cached usage is confirmed positive but its rate is unverified, input and total cost are unavailable. An explicit provider-reported `cached_tokens=0` is a confirmed cache miss and may use the ordinary rate. Existing simple pricing remains available for models without a distinct cached rate and without reported cache usage; it must not be presented as a complete discounted estimate when a separately billed cached portion is known. Existing currency-completeness rules for combining token and non-token charges still apply.
+If an automatic cache component can incur a distinct rate but the provider omits, corrupts, or contradicts its split, keep only independently confirmed values; `cost_input` and `cost_total` are unavailable. `cost_output` may remain if output usage and its rate are valid. If a cache-read or cache-write quantity is confirmed positive but its applicable rate is unverified, input and total cost are unavailable. An explicitly reported zero confirms only that component's absence. Existing simple pricing remains available for models whose ordinary requests cannot incur a distinct automatic cache rate and whose responses report no automatic cache usage; it must not be presented as complete when a separately billed component is known. Existing currency-completeness rules for combining token and non-token charges still apply.
 
-Package-specific `Usage` subclasses can inherit the common cached field. All first-party provider parsers, including streaming finalizers, must preserve omitted input/output counts as `None` when constructing common or subclass usage. Provider-specific extra usage such as DeepSeek reasoning tokens remains package-owned. The refactor does not add request parameters for cache control or require a new public cost-breakdown field.
+Package-specific `Usage` subclasses can inherit the common cache-read and cache-write fields. Existing package `cached_tokens` consumers retain the cache-read/cache-hit meaning. All first-party provider parsers, including streaming finalizers, must preserve omitted input/output counts as `None` when constructing common or subclass usage. Provider-specific extra usage such as DeepSeek reasoning tokens remains package-owned. The refactor does not add request parameters for cache control, record opt-in-only cache modes or prices, or require a new public cost-breakdown field.
 
 ## External organization identity
 
@@ -117,5 +121,5 @@ A repository validation test compares these sources and reports the missing/mism
 
 1. **Registry load**: Parse existing model metadata and optional new fields. A first-party profile must contain a valid `capability_exceptions` list before release; legacy third-party metadata remains loadable.
 2. **Scenario selection**: Resolve one exact model profile. Select baseline-positive evidence for each applicable capability with a shared E2E scenario, including capabilities declared with `behavior_id: "pass"`, or replace it through the documented `(capability_id, behavior_id)` route for a non-`pass` exception requiring distinct E2E evidence. The common tool loop runs once per model with a viable tool-choice mode. A missing profile, invalid behavior ID, or missing route in the shared E2E scope produces a profile error, never a deselection.
-3. **Response accounting**: Parse provider usage → validate cached subset and selected rate context → calculate known components → expose a complete total only if every incurred component is known.
+3. **Response accounting**: Parse provider usage → validate automatic cache-read/cache-write subsets and selected rate context → calculate known components → expose a complete total only if every incurred component is known.
 4. **Release validation**: Compare package identity sources → run deterministic conformance → use the existing independent post-publish provider lane for authorized live evidence.
