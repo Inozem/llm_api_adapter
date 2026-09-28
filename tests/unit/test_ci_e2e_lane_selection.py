@@ -130,6 +130,39 @@ def test_select_e2e_lanes_classifies_shared_and_organization_paths(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "changed_path",
+    ("tests/capability_scenarios.py", "tests/capability_selection.py"),
+)
+def test_capability_routing_changes_select_every_e2e_lane(changed_path):
+    selection = _SELECTOR.select_e2e_lanes([changed_path])
+
+    assert selection.core is False
+    assert selection.shared_core is False
+    assert selection.core_organizations == ("openai", "anthropic", "google")
+    assert not any(
+        (
+            selection.kimi,
+            selection.mistral,
+            selection.xai,
+            selection.qwen,
+            selection.deepseek,
+            selection.zai,
+        )
+    )
+    assert all(
+        (
+            selection.kimi_e2e,
+            selection.mistral_e2e,
+            selection.xai_e2e,
+            selection.qwen_e2e,
+            selection.deepseek_e2e,
+            selection.zai_e2e,
+        )
+    )
+
+
+@pytest.mark.unit
 def test_selector_cli_writes_github_outputs(tmp_path):
     github_output = tmp_path / "github_output"
     result = subprocess.run(
