@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import sys
 import warnings
+from typing import Any
 
 import pytest
 
@@ -132,14 +133,30 @@ class FakeHTTPError(Exception):
         self.response = FakeHTTPResponse(status_code, payload)
 
 
-def kimi_response(model: str, *, cached_tokens: int | None = 12) -> dict:
-    usage = {
-        "prompt_tokens": 19,
-        "completion_tokens": 13,
-        "total_tokens": 32,
-    }
+def kimi_response(
+    model: str,
+    *,
+    prompt_tokens: int | None = 19,
+    completion_tokens: int | None = 13,
+    cached_tokens: int | None = 12,
+    cache_write_tokens: int | None = 0,
+) -> dict:
+    usage: dict[str, Any] = {}
+    if prompt_tokens is not None:
+        usage["prompt_tokens"] = prompt_tokens
+    if completion_tokens is not None:
+        usage["completion_tokens"] = completion_tokens
+    if prompt_tokens is not None and completion_tokens is not None:
+        usage["total_tokens"] = prompt_tokens + completion_tokens
     if cached_tokens is not None:
         usage["cached_tokens"] = cached_tokens
+    prompt_details: dict[str, int] = {}
+    if cached_tokens is not None:
+        prompt_details["cached_tokens"] = cached_tokens
+    if cache_write_tokens is not None:
+        prompt_details["cache_write_tokens"] = cache_write_tokens
+    if prompt_details:
+        usage["prompt_tokens_details"] = prompt_details
     return {
         "id": "cmpl-kimi-test",
         "created": 1_789_721_600,
@@ -878,17 +895,26 @@ def test_kimi_rejects_invalid_json_and_pydantic_structured_responses(kimi_runtim
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    ("model", "cache_hit_rate", "cache_miss_rate", "output_rate"),
+    (
+        "model",
+        "cache_hit_rate",
+        "cache_miss_rate",
+        "cache_write_rate",
+        "cache_write_tokens",
+        "output_rate",
+    ),
     [
-        ("kimi-k3", 0.30, 3.00, 15.00),
-        ("kimi-k2.6", 0.16, 0.95, 4.00),
+        ("kimi-k3", 0.30, 3.00, 3.00, 5, 15.00),
+        ("kimi-k2.6", 0.16, 0.95, None, 0, 4.00),
     ],
 )
-def test_kimi_prices_reported_cache_hits_exactly(
+def test_kimi_prices_reported_cache_reads_and_writes_exactly(
     kimi_runtime,
     model,
     cache_hit_rate,
     cache_miss_rate,
+    cache_write_rate,
+    cache_write_tokens,
     output_rate,
 ):
     adapter = UniversalLLMAPIAdapter(
@@ -896,20 +922,68 @@ def test_kimi_prices_reported_cache_hits_exactly(
         model=model,
         api_key="kimi-test-key",
     )
-    adapter.adapter._sync_transport = FakeSyncTransport(kimi_response(model))
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        kimi_response(
+            model,
+            cached_tokens=12,
+            cache_write_tokens=cache_write_tokens,
+        ),
+    )
 
     response = adapter.chat([{"role": "user", "content": "Hello"}])
 
     assert response.usage is not None
     assert response.usage.cached_tokens == 12
+    assert response.usage.cache_write_tokens == cache_write_tokens
     assert response.currency == "USD"
     assert response.cost_input == pytest.approx(
-        (12 * cache_hit_rate + 7 * cache_miss_rate) / 1_000_000,
+        (
+            12 * cache_hit_rate
+            + (cache_write_tokens * cache_write_rate if cache_write_tokens else 0)
+            + (19 - 12 - cache_write_tokens) * cache_miss_rate
+        )
+        / 1_000_000,
     )
     assert response.cost_output == pytest.approx(13 * output_rate / 1_000_000)
     assert response.cost_total == pytest.approx(
         response.cost_input + response.cost_output,
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model", "output_rate"),
+    [
+        ("kimi-k3", 15.00),
+        ("kimi-k2.6", 4.00),
+    ],
+)
+def test_kimi_keeps_input_and_total_cost_unknown_when_cache_split_is_missing(
+    kimi_runtime,
+    model,
+    output_rate,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        kimi_response(
+            model,
+            cached_tokens=None,
+            cache_write_tokens=None,
+        ),
+    )
+
+    response = adapter.chat([{"role": "user", "content": "Hello"}])
+
+    assert response.usage is not None
+    assert response.usage.cached_tokens is None
+    assert response.usage.cache_write_tokens is None
+    assert response.cost_input is None
+    assert response.cost_output == pytest.approx(13 * output_rate / 1_000_000)
+    assert response.cost_total is None
 
 
 @pytest.mark.unit
@@ -920,7 +994,7 @@ def test_kimi_prices_reported_cache_hits_exactly(
         ("kimi-k2.6", 0.95, 4.00),
     ],
 )
-def test_kimi_uses_cache_miss_pricing_when_the_cache_split_is_missing(
+def test_kimi_preserves_reported_zero_cache_counts(
     kimi_runtime,
     model,
     input_rate,
@@ -932,16 +1006,98 @@ def test_kimi_uses_cache_miss_pricing_when_the_cache_split_is_missing(
         api_key="kimi-test-key",
     )
     adapter.adapter._sync_transport = FakeSyncTransport(
-        kimi_response(model, cached_tokens=None),
+        kimi_response(
+            model,
+            cached_tokens=0,
+            cache_write_tokens=0,
+        ),
     )
 
     response = adapter.chat([{"role": "user", "content": "Hello"}])
 
+    assert response.usage is not None
+    assert response.usage.cached_tokens == 0
+    assert response.usage.cache_write_tokens == 0
     assert response.cost_input == pytest.approx(19 * input_rate / 1_000_000)
     assert response.cost_output == pytest.approx(13 * output_rate / 1_000_000)
     assert response.cost_total == pytest.approx(
         response.cost_input + response.cost_output,
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    (
+        "prompt_tokens",
+        "completion_tokens",
+        "cached_tokens",
+        "cache_write_tokens",
+        "expected_input",
+        "expected_output",
+        "expected_total",
+        "expected_cache_read",
+        "expected_cache_write",
+    ),
+    [
+        (None, 13, None, None, None, 13, None, None, None),
+        (19, None, 0, 0, 19, None, None, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0, 0),
+    ],
+    ids=["input-omitted", "output-omitted", "reported-zero-counts"],
+)
+def test_kimi_preserves_partial_and_reported_zero_usage(
+    kimi_runtime,
+    prompt_tokens,
+    completion_tokens,
+    cached_tokens,
+    cache_write_tokens,
+    expected_input,
+    expected_output,
+    expected_total,
+    expected_cache_read,
+    expected_cache_write,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        kimi_response(
+            "kimi-k3",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
+        ),
+    )
+
+    response = adapter.chat([{"role": "user", "content": "Hello"}])
+
+    assert response.usage is not None
+    assert response.usage.input_tokens == expected_input
+    assert response.usage.output_tokens == expected_output
+    assert response.usage.total_tokens == expected_total
+    assert response.usage.cached_tokens == expected_cache_read
+    assert response.usage.cache_write_tokens == expected_cache_write
+    if expected_input is None:
+        assert response.cost_input is None
+    else:
+        assert response.cost_input == pytest.approx(
+            expected_input * 3.00 / 1_000_000,
+        )
+    if expected_input is None or expected_output is None:
+        assert response.cost_output is None
+    else:
+        assert response.cost_output == pytest.approx(
+            expected_output * 15.00 / 1_000_000,
+        )
+    if expected_input is None or expected_output is None:
+        assert response.cost_total is None
+    else:
+        assert response.cost_total == pytest.approx(
+            response.cost_input + response.cost_output,
+        )
 
 
 @pytest.mark.unit
