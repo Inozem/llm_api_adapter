@@ -30,7 +30,7 @@
         }
       ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
-      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 12.0, "output_per_1m": 36.0}],
+      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 12.0, "output_per_1m": 36.0, "cache_read_input_per_1m": 1.5}],
       "reasoning_capability": {"allowed_values": ["none", "low", "medium", "xhigh"]}
     },
     "qwen3.8-flash": {
@@ -62,7 +62,7 @@
         }
       ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
-      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 0.8, "output_per_1m": 2.7}],
+      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 0.8, "output_per_1m": 2.7, "cache_read_input_per_1m": 0.1}],
       "reasoning_capability": {"allowed_values": ["none", "low", "medium", "xhigh"]}
     },
     "qwen3.7-plus": {
@@ -95,8 +95,8 @@
       ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [
-        {"up_to_prompt_tokens": 256000, "input_per_1m": 2.0, "output_per_1m": 8.0},
-        {"up_to_prompt_tokens": null, "input_per_1m": 6.0, "output_per_1m": 24.0}
+        {"up_to_prompt_tokens": 256000, "input_per_1m": 2.0, "output_per_1m": 8.0, "cache_read_input_per_1m": 0.4},
+        {"up_to_prompt_tokens": null, "input_per_1m": 6.0, "output_per_1m": 24.0, "cache_read_input_per_1m": 1.2}
       ],
       "reasoning_capability": {"min_budget_tokens": 1, "max_budget_tokens": 262144, "can_disable_thinking": true}
     },
@@ -130,9 +130,9 @@
       ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [
-        {"up_to_prompt_tokens": 32000, "input_per_1m": 0.2, "output_per_1m": 0.8},
-        {"up_to_prompt_tokens": 256000, "input_per_1m": 0.6, "output_per_1m": 2.4},
-        {"up_to_prompt_tokens": null, "input_per_1m": 1.2, "output_per_1m": 4.8}
+        {"up_to_prompt_tokens": 32000, "input_per_1m": 0.2, "output_per_1m": 0.8, "cache_read_input_per_1m": 0.04},
+        {"up_to_prompt_tokens": 256000, "input_per_1m": 0.6, "output_per_1m": 2.4, "cache_read_input_per_1m": 0.12},
+        {"up_to_prompt_tokens": null, "input_per_1m": 1.2, "output_per_1m": 4.8, "cache_read_input_per_1m": 0.24}
       ],
       "reasoning_capability": {"min_budget_tokens": 1, "max_budget_tokens": 262144, "can_disable_thinking": true}
     }

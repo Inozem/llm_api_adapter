@@ -57,7 +57,8 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.15,
-          "output_per_1m": 0.5
+          "output_per_1m": 0.5,
+          "cache_read_input_per_1m": 0.03
         }
       ],
       "reasoning_capability": {

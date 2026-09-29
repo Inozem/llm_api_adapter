@@ -42,7 +42,9 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 3.0,
-          "output_per_1m": 15.0
+          "output_per_1m": 15.0,
+          "cache_read_input_per_1m": 0.3,
+          "cache_write_input_per_1m": 3
         }
       ],
       "cache_pricing": {
@@ -113,7 +115,8 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.95,
-          "output_per_1m": 4.0
+          "output_per_1m": 4.0,
+          "cache_read_input_per_1m": 0.16
         }
       ],
       "cache_pricing": {

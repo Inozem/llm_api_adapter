@@ -29,7 +29,8 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.75,
-          "output_per_1m": 3.75
+          "output_per_1m": 3.75,
+          "cache_read_input_per_1m": 0.075
         }
       ]
     },
@@ -61,7 +62,8 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.75,
-          "output_per_1m": 3.75
+          "output_per_1m": 3.75,
+          "cache_read_input_per_1m": 0.075
         }
       ]
     },
@@ -93,7 +95,8 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.75,
-          "output_per_1m": 3.75
+          "output_per_1m": 3.75,
+          "cache_read_input_per_1m": 0.075
         }
       ]
     },
@@ -121,7 +124,8 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 1.5,
-          "output_per_1m": 9.0
+          "output_per_1m": 9.0,
+          "cache_read_input_per_1m": 0.15
         }
       ]
     },
@@ -153,7 +157,8 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.3,
-          "output_per_1m": 2.5
+          "output_per_1m": 2.5,
+          "cache_read_input_per_1m": 0.03
         }
       ]
     },
@@ -181,12 +186,14 @@
         {
           "up_to_prompt_tokens": 200000,
           "input_per_1m": 2.0,
-          "output_per_1m": 12.0
+          "output_per_1m": 12.0,
+          "cache_read_input_per_1m": 0.2
         },
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 4.0,
-          "output_per_1m": 18.0
+          "output_per_1m": 18.0,
+          "cache_read_input_per_1m": 0.4
         }
       ]
     },
@@ -214,7 +221,8 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.25,
-          "output_per_1m": 1.5
+          "output_per_1m": 1.5,
+          "cache_read_input_per_1m": 0.025
         }
       ]
     },
@@ -274,12 +282,14 @@
         {
           "up_to_prompt_tokens": 200000,
           "input_per_1m": 1.25,
-          "output_per_1m": 10.0
+          "output_per_1m": 10.0,
+          "cache_read_input_per_1m": 0.125
         },
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 2.5,
-          "output_per_1m": 15.0
+          "output_per_1m": 15.0,
+          "cache_read_input_per_1m": 0.25
         }
       ]
     },
@@ -307,7 +317,8 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.3,
-          "output_per_1m": 2.5
+          "output_per_1m": 2.5,
+          "cache_read_input_per_1m": 0.03
         }
       ]
     },
@@ -332,7 +343,8 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.1,
-          "output_per_1m": 0.4
+          "output_per_1m": 0.4,
+          "cache_read_input_per_1m": 0.01
         }
       ]
     }
