@@ -143,15 +143,17 @@ class FakeHTTPError(Exception):
 
 def zai_response(
     *,
-    prompt_tokens: int = 19,
-    completion_tokens: int = 13,
+    prompt_tokens: int | None = 19,
+    completion_tokens: int | None = 13,
     cached_tokens: int | None = None,
 ) -> dict[str, Any]:
-    usage: dict[str, Any] = {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens + completion_tokens,
-    }
+    usage: dict[str, Any] = {}
+    if prompt_tokens is not None:
+        usage["prompt_tokens"] = prompt_tokens
+    if completion_tokens is not None:
+        usage["completion_tokens"] = completion_tokens
+    if prompt_tokens is not None and completion_tokens is not None:
+        usage["total_tokens"] = prompt_tokens + completion_tokens
     if cached_tokens is not None:
         usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
     return {
@@ -898,7 +900,7 @@ def test_zai_prices_cache_hit_and_cache_miss_rates(
 
 
 @pytest.mark.unit
-def test_zai_uses_standard_miss_pricing_when_cache_split_is_missing(zai_runtime):
+def test_zai_keeps_input_and_total_cost_unknown_when_cache_split_is_missing(zai_runtime):
     adapter = UniversalLLMAPIAdapter(
         organization="zai",
         model=MODEL,
@@ -912,11 +914,86 @@ def test_zai_uses_standard_miss_pricing_when_cache_split_is_missing(zai_runtime)
 
     assert response.usage is not None
     assert response.usage.cached_tokens is None
-    assert response.cost_input == pytest.approx(100 * 0.15 / 1_000_000)
+    assert response.cost_input is None
     assert response.cost_output == pytest.approx(40 * 0.50 / 1_000_000)
-    assert response.cost_total == pytest.approx(
-        response.cost_input + response.cost_output,
+    assert response.cost_total is None
+
+
+@pytest.mark.unit
+def test_zai_preserves_reported_zero_usage_and_zero_costs(zai_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
     )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        zai_response(prompt_tokens=0, completion_tokens=0, cached_tokens=0),
+    )
+
+    response = adapter.chat([UserMessage("Report zero usage")])
+
+    assert response.usage is not None
+    assert response.usage.input_tokens == 0
+    assert response.usage.output_tokens == 0
+    assert response.usage.total_tokens == 0
+    assert response.usage.cached_tokens == 0
+    assert response.cost_input == 0
+    assert response.cost_output == 0
+    assert response.cost_total == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    (
+        "prompt_tokens",
+        "completion_tokens",
+        "cached_tokens",
+        "expected_input",
+        "expected_output",
+        "expected_cached",
+    ),
+    [
+        (None, 40, None, None, 40, None),
+        (100, None, 0, 100, None, 0),
+    ],
+    ids=["input-omitted", "output-omitted"],
+)
+def test_zai_preserves_partial_usage_and_prices_only_known_components(
+    zai_runtime,
+    prompt_tokens,
+    completion_tokens,
+    cached_tokens,
+    expected_input,
+    expected_output,
+    expected_cached,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=MODEL,
+        api_key="zai-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        zai_response(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
+        ),
+    )
+
+    response = adapter.chat([UserMessage("Preserve partial usage")])
+
+    assert response.usage is not None
+    assert response.usage.input_tokens == expected_input
+    assert response.usage.output_tokens == expected_output
+    assert response.usage.total_tokens is None
+    assert response.usage.cached_tokens == expected_cached
+    if expected_input is None:
+        assert response.cost_input is None
+        assert response.cost_output is None
+    else:
+        assert response.cost_input == pytest.approx(100 * 0.15 / 1_000_000)
+        assert response.cost_output is None
+    assert response.cost_total is None
 
 
 @pytest.mark.unit
@@ -943,7 +1020,6 @@ def test_zai_leaves_cost_unset_when_usage_is_missing(zai_runtime):
     "usage",
     [
         {},
-        {"prompt_tokens": 100, "completion_tokens": 40},
         {
             "prompt_tokens": "100",
             "completion_tokens": 40,
@@ -992,8 +1068,9 @@ def test_zai_does_not_apply_cache_discount_for_invalid_cache_tokens(
 
     assert response.usage is not None
     assert response.usage.cached_tokens is None
-    assert response.cost_input == pytest.approx(100 * 0.15 / 1_000_000)
+    assert response.cost_input is None
     assert response.cost_output == pytest.approx(40 * 0.50 / 1_000_000)
+    assert response.cost_total is None
 
 
 @pytest.mark.unit
