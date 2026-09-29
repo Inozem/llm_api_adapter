@@ -117,6 +117,8 @@ class StreamChunkBuffer:
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
                 total_tokens=usage.total_tokens,
+                cached_tokens=usage.cached_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
             )
         if output_tokens_delta is not None:
             self._output_tokens_delta = output_tokens_delta
@@ -192,16 +194,18 @@ class StreamUsageTracker:
             return
 
         previous_output_tokens = self._last_output_tokens
-        output_tokens_delta = (
-            usage.output_tokens
-            if previous_output_tokens is None
-            else max(0, usage.output_tokens - previous_output_tokens)
-        )
-        self._last_output_tokens = (
-            usage.output_tokens
-            if previous_output_tokens is None
-            else max(previous_output_tokens, usage.output_tokens)
-        )
+        output_tokens_delta = None
+        if usage.output_tokens is not None:
+            output_tokens_delta = (
+                usage.output_tokens
+                if previous_output_tokens is None
+                else max(0, usage.output_tokens - previous_output_tokens)
+            )
+            self._last_output_tokens = (
+                usage.output_tokens
+                if previous_output_tokens is None
+                else max(previous_output_tokens, usage.output_tokens)
+            )
         buffer.update_metadata(
             usage=usage,
             output_tokens_delta=output_tokens_delta,

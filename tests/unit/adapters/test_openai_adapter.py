@@ -88,7 +88,7 @@ def test_pricing_is_applied_when_present_for_responses_api(adapter):
         currency="USD",
     )
     fake_response = {"some": "openai response"}
-    fake_chat_response = ChatResponse()
+    fake_chat_response = ChatResponse(usage=Usage(10, 20, 30))
 
     with (
         patch.object(OpenAISyncClient, "complete", return_value=fake_response) as mock_client,
@@ -142,6 +142,63 @@ def test_chat_extracts_provider_reported_automatic_cache_usage():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("use_responses_api", "details_field"),
+    ((False, "prompt_tokens_details"), (True, "input_tokens_details")),
+)
+@pytest.mark.parametrize(
+    ("cache_field", "reported_value", "expected_value"),
+    (
+        ("cached_tokens", 0, 0),
+        ("cache_write_tokens", 0, 0),
+        ("cached_tokens", -1, None),
+        ("cache_write_tokens", True, None),
+        ("cached_tokens", 1.5, None),
+        ("cache_write_tokens", "4", None),
+    ),
+)
+def test_openai_payload_parser_accepts_only_confirmed_cache_token_counts(
+    adapter,
+    use_responses_api,
+    details_field,
+    cache_field,
+    reported_value,
+    expected_value,
+):
+    usage = (
+        {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}
+        if use_responses_api
+        else {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+    )
+    usage[details_field] = {cache_field: reported_value}
+    response = (
+        {
+            "usage": usage,
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "ok"}],
+            }],
+        }
+        if use_responses_api
+        else {
+            "usage": usage,
+            "choices": [{"message": {"content": "ok"}}],
+        }
+    )
+
+    chat_response = adapter._parse_chat_response(
+        response,
+        use_responses_api=use_responses_api,
+        capture_reasoning=False,
+    )
+
+    attribute = (
+        "cached_tokens" if cache_field == "cached_tokens" else "cache_write_tokens"
+    )
+    assert getattr(chat_response.usage, attribute) == expected_value
+
+
+@pytest.mark.unit
 def test_pricing_is_applied_when_present_for_legacy_api(legacy_adapter):
     legacy_adapter.pricing = Pricing.from_dict(
         [
@@ -154,7 +211,7 @@ def test_pricing_is_applied_when_present_for_legacy_api(legacy_adapter):
         currency="USD",
     )
     fake_response = {"some": "openai response"}
-    fake_chat_response = ChatResponse()
+    fake_chat_response = ChatResponse(usage=Usage(10, 20, 30))
 
     with (
         patch.object(OpenAISyncClient, "complete", return_value=fake_response) as mock_client,

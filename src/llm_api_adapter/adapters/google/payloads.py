@@ -2,12 +2,34 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from ...models.messages.chat_message import Messages
 from ...models.responses.chat_response import ChatResponse
 from ...models.tools import ToolSpec
 from ..structured_output import validate_core_portable_schema
+
+
+def _google_token_count(value: Any) -> Optional[int]:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _apply_cache_usage(
+    chat_response: ChatResponse,
+    response: Mapping[str, Any],
+) -> ChatResponse:
+    if chat_response.usage is not None:
+        usage_metadata = response.get("usageMetadata")
+        cached_tokens = (
+            _google_token_count(usage_metadata.get("cachedContentTokenCount"))
+            if isinstance(usage_metadata, Mapping)
+            else None
+        )
+        chat_response.usage.cached_tokens = cached_tokens
+    return chat_response
+
 
 class _GooglePayloadMixin:
     """Build Gemini payloads while keeping adapter options normalized."""
@@ -147,7 +169,8 @@ class _GooglePayloadMixin:
         capture_reasoning: bool,
     ) -> ChatResponse:
         parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
-        return ChatResponse.from_google_response(response, **parser_kwargs)
+        chat_response = ChatResponse.from_google_response(response, **parser_kwargs)
+        return _apply_cache_usage(chat_response, response)
 
     # These annotations do not affect the Core portable-profile meaning, so
     # the Google wire schema deliberately omits them.

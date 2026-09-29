@@ -664,6 +664,8 @@ class LLMAdapterBase(ABC):
         tier = self.pricing.tier_for_prompt_tokens(
             chat_response.usage.input_tokens
         )
+        if chat_response.usage.output_tokens is None:
+            return
         chat_response.apply_pricing(
             price_input_per_token=tier.in_per_token,
             price_output_per_token=tier.out_per_token,

@@ -107,3 +107,27 @@ def test_usage_tracker_calculates_cumulative_output_token_deltas():
     assert [
         chunk.output_tokens_delta for chunk in (first_chunk, second_chunk, third_chunk)
     ] == [1, 3, 0]
+
+
+@pytest.mark.unit
+def test_usage_tracker_keeps_partial_usage_without_inventing_output_delta():
+    buffer = StreamChunkBuffer(clock=FakeClock(0.0, 0.1, 0.2, 0.3))
+    tracker = StreamUsageTracker()
+
+    tracker.record(buffer, Usage(input_tokens=2, output_tokens=1, total_tokens=3))
+    first_chunk = next(buffer.add("first"))
+    partial_usage = Usage(
+        input_tokens=None,
+        output_tokens=None,
+        total_tokens=None,
+        cached_tokens=4,
+    )
+    tracker.record(buffer, partial_usage)
+    partial_chunk = next(buffer.add("partial"))
+    tracker.record(buffer, Usage(input_tokens=2, output_tokens=4, total_tokens=6))
+    final_chunk = next(buffer.add("last"))
+
+    assert first_chunk.output_tokens_delta == 1
+    assert partial_chunk.usage == partial_usage
+    assert partial_chunk.output_tokens_delta is None
+    assert final_chunk.output_tokens_delta == 3

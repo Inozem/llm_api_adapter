@@ -336,13 +336,14 @@ def test_from_openai_response_handles_missing_choices():
 
 @pytest.mark.unit
 def test_usage_keeps_legacy_positional_fields_and_zero_defaults():
-    usage = Usage(11, 12, 23)
+    usage = Usage(11, 12, 23, 13, 14)
 
     assert (usage.input_tokens, usage.output_tokens, usage.total_tokens) == (11, 12, 23)
-    assert (usage.cached_tokens, usage.cache_write_tokens) == (None, None)
+    assert (usage.cached_tokens, usage.cache_write_tokens) == (13, 14)
     assert Usage().input_tokens == 0
     assert Usage().output_tokens == 0
     assert Usage().total_tokens == 0
+    assert (Usage().cached_tokens, Usage().cache_write_tokens) == (None, None)
 
 
 @pytest.mark.unit
@@ -396,7 +397,7 @@ def test_anthropic_usage_derives_total_only_from_both_reported_components():
 
 
 @pytest.mark.unit
-def test_openai_response_usage_parses_confirmed_cache_read_and_write_counts():
+def test_openai_responses_factory_leaves_cache_wire_fields_for_provider_adapter():
     response = ChatResponse.from_openai_responses_response(
         {
             "usage": {
@@ -412,12 +413,12 @@ def test_openai_response_usage_parses_confirmed_cache_read_and_write_counts():
     )
 
     assert response.usage.input_tokens == 15
-    assert response.usage.cached_tokens == 4
-    assert response.usage.cache_write_tokens == 3
+    assert response.usage.cached_tokens is None
+    assert response.usage.cache_write_tokens is None
 
 
 @pytest.mark.unit
-def test_openai_chat_usage_parses_confirmed_cache_read_and_write_counts():
+def test_openai_chat_factory_leaves_cache_wire_fields_for_provider_adapter():
     response = ChatResponse.from_openai_response(
         {
             "usage": {
@@ -433,12 +434,12 @@ def test_openai_chat_usage_parses_confirmed_cache_read_and_write_counts():
     )
 
     assert response.usage.input_tokens == 15
-    assert response.usage.cached_tokens == 4
-    assert response.usage.cache_write_tokens == 3
+    assert response.usage.cached_tokens is None
+    assert response.usage.cache_write_tokens is None
 
 
 @pytest.mark.unit
-def test_google_usage_parses_confirmed_automatic_cache_read_count():
+def test_google_factory_leaves_cache_wire_fields_for_provider_adapter():
     response = ChatResponse.from_google_response(
         {
             "usageMetadata": {
@@ -451,12 +452,12 @@ def test_google_usage_parses_confirmed_automatic_cache_read_count():
     )
 
     assert response.usage.input_tokens == 15
-    assert response.usage.cached_tokens == 4
+    assert response.usage.cached_tokens is None
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("parser", "api_response", "expected_write"),
+    ("parser", "api_response", "_expected_write"),
     [
         (
             ChatResponse.from_openai_response,
@@ -509,16 +510,16 @@ def test_google_usage_parses_confirmed_automatic_cache_read_count():
         ),
     ],
 )
-def test_provider_parsers_preserve_reported_zero_cache_counts(
+def test_provider_neutral_factories_leave_cache_wire_fields_to_adapters(
     parser,
     api_response,
-    expected_write,
+    _expected_write,
 ):
     usage = parser(api_response).usage
 
     assert usage.input_tokens == 0
-    assert usage.cached_tokens == 0
-    assert usage.cache_write_tokens == expected_write
+    assert usage.cached_tokens is None
+    assert usage.cache_write_tokens is None
 
 
 @pytest.mark.unit
@@ -552,7 +553,7 @@ def test_provider_parsers_preserve_reported_zero_cache_counts(
     ],
 )
 @pytest.mark.parametrize("invalid_count", [-1, True, 1.5, "4"])
-def test_provider_parsers_ignore_malformed_cache_counts(
+def test_provider_neutral_factories_leave_provider_cache_fields_unparsed(
     parser,
     usage_field,
     details_field,

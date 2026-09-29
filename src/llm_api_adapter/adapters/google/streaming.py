@@ -24,6 +24,7 @@ from ...llms.streaming import (
     StreamUsageTracker,
 )
 from ...models.responses.chat_response import ChatResponse, Usage
+from .payloads import _google_token_count
 
 
 @dataclass
@@ -281,10 +282,9 @@ class _GoogleStreamingMixin:
         response_model: Optional[Any],
     ) -> ChatResponse:
         final_response = self._build_stream_response(state)
-        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
-        chat_response = ChatResponse.from_google_response(
+        chat_response = self._parse_chat_response(
             final_response,
-            **parser_kwargs,
+            capture_reasoning=capture_reasoning,
         )
         return super()._finalize_stream_response(
             chat_response,
@@ -326,24 +326,29 @@ class _GoogleStreamingMixin:
         total_tokens = _GoogleStreamingMixin._token_count(
             raw_usage.get("totalTokenCount")
         )
-        if (
-            input_tokens is None
-            and candidate_tokens is None
-            and thoughts_tokens is None
-            and total_tokens is None
+        cached_tokens = _GoogleStreamingMixin._token_count(
+            raw_usage.get("cachedContentTokenCount")
+        )
+        output_tokens = (
+            candidate_tokens + thoughts_tokens
+            if candidate_tokens is not None and thoughts_tokens is not None
+            else None
+        )
+        if all(
+            value is None
+            for value in (input_tokens, output_tokens, total_tokens, cached_tokens)
         ):
             return None
         return Usage(
-            input_tokens=input_tokens or 0,
-            output_tokens=(candidate_tokens or 0) + (thoughts_tokens or 0),
-            total_tokens=total_tokens or 0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
         )
 
     @staticmethod
     def _token_count(value: Any) -> Optional[int]:
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            return value
-        return None
+        return _google_token_count(value)
 
 
 __all__ = ["_GoogleStreamState", "_GoogleStreamingMixin"]

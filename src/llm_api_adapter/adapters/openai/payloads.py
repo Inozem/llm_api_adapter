@@ -2,12 +2,52 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from ...models.messages.chat_message import Messages
 from ...models.responses.chat_response import ChatResponse
 from ...models.tools import ToolSpec
 from ..structured_output import validate_core_portable_schema
+
+
+def _token_count(value: Any) -> Optional[int]:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _cache_token_counts(
+    raw_usage: Any,
+    *,
+    details_field: str,
+) -> tuple[Optional[int], Optional[int]]:
+    if not isinstance(raw_usage, Mapping):
+        return None, None
+    details = raw_usage.get(details_field)
+    if not isinstance(details, Mapping):
+        return None, None
+    return (
+        _token_count(details.get("cached_tokens")),
+        _token_count(details.get("cache_write_tokens")),
+    )
+
+
+def _apply_cache_usage(
+    chat_response: ChatResponse,
+    response: Mapping[str, Any],
+    *,
+    details_field: str,
+) -> ChatResponse:
+    if chat_response.usage is not None:
+        (
+            chat_response.usage.cached_tokens,
+            chat_response.usage.cache_write_tokens,
+        ) = _cache_token_counts(
+            response.get("usage"),
+            details_field=details_field,
+        )
+    return chat_response
+
 
 class _OpenAIPayloadMixin:
     """Build provider payloads while keeping adapter-level options normalized."""
@@ -135,11 +175,21 @@ class _OpenAIPayloadMixin:
     ) -> ChatResponse:
         if use_responses_api:
             parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
-            return ChatResponse.from_openai_responses_response(
+            chat_response = ChatResponse.from_openai_responses_response(
                 response,
                 **parser_kwargs,
             )
-        return ChatResponse.from_openai_response(response)
+            return _apply_cache_usage(
+                chat_response,
+                response,
+                details_field="input_tokens_details",
+            )
+        chat_response = ChatResponse.from_openai_response(response)
+        return _apply_cache_usage(
+            chat_response,
+            response,
+            details_field="prompt_tokens_details",
+        )
 
     def _build_stream_params(
         self,

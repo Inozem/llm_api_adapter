@@ -144,6 +144,7 @@ def _google_response(
         "usageMetadata": {
             "promptTokenCount": 2,
             "candidatesTokenCount": 3,
+            "thoughtsTokenCount": 0,
             "totalTokenCount": 5,
         },
     }
@@ -232,6 +233,7 @@ def _google_stream_events() -> list[SSEEvent]:
                 "usageMetadata": {
                     "promptTokenCount": 2,
                     "candidatesTokenCount": 3,
+                    "thoughtsTokenCount": 0,
                     "totalTokenCount": 5,
                 },
             },

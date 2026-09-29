@@ -11,9 +11,11 @@ from .reasoning_event import ReasoningEvent
 
 @dataclass
 class Usage:
-    input_tokens: int = 0
-    output_tokens: int = 0
-    total_tokens: int = 0
+    input_tokens: Optional[int] = 0
+    output_tokens: Optional[int] = 0
+    total_tokens: Optional[int] = 0
+    cached_tokens: Optional[int] = None
+    cache_write_tokens: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -109,9 +111,9 @@ class ChatResponse:
         usage_data = api_response.get("usage")
         usage = (
             Usage(
-                input_tokens=usage_data.get("prompt_tokens", 0),
-                output_tokens=usage_data.get("completion_tokens", 0),
-                total_tokens=usage_data.get("total_tokens", 0),
+                input_tokens=usage_data.get("prompt_tokens"),
+                output_tokens=usage_data.get("completion_tokens"),
+                total_tokens=usage_data.get("total_tokens"),
             )
             if isinstance(usage_data, dict)
             else None
@@ -200,9 +202,9 @@ class ChatResponse:
         usage_data = api_response.get("usage")
         usage = (
             Usage(
-                input_tokens=usage_data.get("input_tokens", 0),
-                output_tokens=usage_data.get("output_tokens", 0),
-                total_tokens=usage_data.get("total_tokens", 0),
+                input_tokens=usage_data.get("input_tokens"),
+                output_tokens=usage_data.get("output_tokens"),
+                total_tokens=usage_data.get("total_tokens"),
             )
             if isinstance(usage_data, dict)
             else None
@@ -373,14 +375,31 @@ class ChatResponse:
         capture_reasoning: bool = False,
     ) -> "ChatResponse":
         usage_data = api_response.get("usage")
+        input_tokens = (
+            usage_data.get("input_tokens")
+            if isinstance(usage_data, dict)
+            else None
+        )
+        output_tokens = (
+            usage_data.get("output_tokens")
+            if isinstance(usage_data, dict)
+            else None
+        )
+        total_tokens = None
+        if (
+            isinstance(input_tokens, int)
+            and not isinstance(input_tokens, bool)
+            and input_tokens >= 0
+            and isinstance(output_tokens, int)
+            and not isinstance(output_tokens, bool)
+            and output_tokens >= 0
+        ):
+            total_tokens = input_tokens + output_tokens
         usage = (
             Usage(
-                input_tokens=usage_data.get("input_tokens", 0),
-                output_tokens=usage_data.get("output_tokens", 0),
-                total_tokens=(
-                    usage_data.get("input_tokens", 0)
-                    + usage_data.get("output_tokens", 0)
-                ),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
             )
             if isinstance(usage_data, dict)
             else None
@@ -517,11 +536,22 @@ class ChatResponse:
         usage_data = api_response.get("usageMetadata")
         if not isinstance(usage_data, dict):
             return None
-        thoughts_tokens = usage_data.get("thoughtsTokenCount", 0)
+        candidate_tokens = usage_data.get("candidatesTokenCount")
+        thoughts_tokens = usage_data.get("thoughtsTokenCount")
+        output_tokens = None
+        if (
+            isinstance(candidate_tokens, int)
+            and not isinstance(candidate_tokens, bool)
+            and candidate_tokens >= 0
+            and isinstance(thoughts_tokens, int)
+            and not isinstance(thoughts_tokens, bool)
+            and thoughts_tokens >= 0
+        ):
+            output_tokens = candidate_tokens + thoughts_tokens
         return Usage(
-            input_tokens=usage_data.get("promptTokenCount", 0),
-            output_tokens=usage_data.get("candidatesTokenCount", 0) + thoughts_tokens,
-            total_tokens=usage_data.get("totalTokenCount", 0),
+            input_tokens=usage_data.get("promptTokenCount"),
+            output_tokens=output_tokens,
+            total_tokens=usage_data.get("totalTokenCount"),
         )
 
     @classmethod
