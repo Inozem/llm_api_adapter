@@ -92,11 +92,13 @@ def test_pricing_overrides_apply_to_every_tier():
             {
                 "up_to_prompt_tokens": 200_000,
                 "input_per_1m": 1_500,
+                "cache_read_input_per_1m": 10,
                 "output_per_1m": 2_500,
             },
             {
                 "up_to_prompt_tokens": None,
                 "input_per_1m": 3_000,
+                "cache_write_input_per_1m": 20,
                 "output_per_1m": 4_000,
             },
         ],
@@ -109,6 +111,14 @@ def test_pricing_overrides_apply_to_every_tier():
 
     assert [tier.in_per_token for tier in pricing.tiers] == [150 / 1_000_000] * 2
     assert [tier.out_per_token for tier in pricing.tiers] == [250 / 1_000_000] * 2
+    assert [tier.cache_read_in_per_token for tier in pricing.tiers] == [
+        10 / 1_000_000,
+        None,
+    ]
+    assert [tier.cache_write_in_per_token for tier in pricing.tiers] == [
+        None,
+        20 / 1_000_000,
+    ]
     assert pricing.currency == "EUR"
 
 

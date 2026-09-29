@@ -553,6 +553,21 @@ def test_multi_tier_chat_without_provider_usage_leaves_costs_unset():
 
 
 @pytest.mark.unit
+def test_pricing_does_not_select_tier_without_confirmed_input_tokens():
+    adapter = _adapter()
+    response = ChatResponse(
+        usage=Usage(input_tokens=None, output_tokens=10, total_tokens=None)
+    )
+
+    adapter._apply_response_pricing(response)
+
+    assert response.currency is None
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
+
+
+@pytest.mark.unit
 def test_pricing_overrides_apply_to_the_selected_tier():
     adapter = _adapter()
     adapter.pricing.set_in_per_1m(7.0)

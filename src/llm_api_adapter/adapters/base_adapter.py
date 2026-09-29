@@ -654,17 +654,16 @@ class LLMAdapterBase(ABC):
 
     def _apply_response_pricing(self, chat_response: ChatResponse) -> None:
         """Price a response from the provider-reported input-token count."""
-        if not self.pricing:
+        if (
+            not self.pricing
+            or chat_response.usage is None
+            or chat_response.usage.input_tokens is None
+        ):
             return
 
-        if chat_response.usage is None:
-            if len(self.pricing.tiers) != 1:
-                return
-            tier = self.pricing.tiers[0]
-        else:
-            tier = self.pricing.tier_for_prompt_tokens(
-                chat_response.usage.input_tokens
-            )
+        tier = self.pricing.tier_for_prompt_tokens(
+            chat_response.usage.input_tokens
+        )
         chat_response.apply_pricing(
             price_input_per_token=tier.in_per_token,
             price_output_per_token=tier.out_per_token,

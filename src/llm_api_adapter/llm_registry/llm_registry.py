@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field, replace
 from datetime import date
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any, Dict, Mapping, Optional, Sequence
@@ -37,6 +38,19 @@ def _non_negative_rate(value: Any, field_name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
         raise ValueError(f"{field_name} must be a non-negative number")
     return float(value)
+
+
+def _finite_non_negative_rate(value: Any, field_name: str) -> float:
+    message = f"{field_name} must be a finite non-negative number"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(message)
+    try:
+        rate = float(value)
+    except (OverflowError, ValueError):
+        raise ValueError(message) from None
+    if not math.isfinite(rate) or rate < 0:
+        raise ValueError(message)
+    return rate
 
 
 def _non_negative_int(value: Any, field_name: str) -> int:
@@ -254,6 +268,8 @@ class PricingTier:
     up_to_prompt_tokens: Optional[int]
     in_per_token: float
     out_per_token: float
+    cache_read_in_per_token: Optional[float] = None
+    cache_write_in_per_token: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Any) -> "PricingTier":
@@ -264,12 +280,26 @@ class PricingTier:
         if boundary is not None:
             boundary = _positive_int(boundary, "up_to_prompt_tokens")
 
+        cache_read_rate = None
+        if "cache_read_input_per_1m" in data:
+            cache_read_rate = _finite_non_negative_rate(
+                data["cache_read_input_per_1m"], "cache_read_input_per_1m"
+            ) / 1_000_000
+
+        cache_write_rate = None
+        if "cache_write_input_per_1m" in data:
+            cache_write_rate = _finite_non_negative_rate(
+                data["cache_write_input_per_1m"], "cache_write_input_per_1m"
+            ) / 1_000_000
+
         return cls(
             up_to_prompt_tokens=boundary,
             in_per_token=_positive_rate(data.get("input_per_1m"), "input_per_1m")
             / 1_000_000,
             out_per_token=_positive_rate(data.get("output_per_1m"), "output_per_1m")
             / 1_000_000,
+            cache_read_in_per_token=cache_read_rate,
+            cache_write_in_per_token=cache_write_rate,
         )
 
 
