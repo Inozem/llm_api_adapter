@@ -371,11 +371,16 @@ def test_zai_rejects_unknown_reasoning_level_before_http(zai_runtime):
 
 
 @pytest.mark.unit
-def test_zai_rejects_unknown_model_capability_before_http(zai_runtime):
+@pytest.mark.parametrize(
+    "model",
+    ["glm-5.3-flashx", "glm-5.3-flash-latest"],
+    ids=["unverified-model", "unlisted-alias"],
+)
+def test_zai_rejects_unknown_model_capability_before_http(zai_runtime, model):
     with pytest.warns(UserWarning, match="not verified"):
         adapter = UniversalLLMAPIAdapter(
             organization="zai",
-            model="glm-5.3-flashx",
+            model=model,
             api_key="zai-test-key",
         )
     transport = FakeSyncTransport(zai_response())
