@@ -678,14 +678,71 @@ class ChatResponse:
         self,
         price_input_per_token: float,
         price_output_per_token: float,
-        currency: str = "USD"
+        currency: str = "USD",
+        *,
+        price_cache_read_per_token: Optional[float] = None,
+        price_cache_write_per_token: Optional[float] = None,
     ):
-        if not self.usage:
+        if self.usage is None:
             return
         self.currency = currency
-        self.cost_input = self.usage.input_tokens * price_input_per_token
-        self.cost_output = self.usage.output_tokens * price_output_per_token
-        self.cost_total = self.cost_input + self.cost_output
+
+        input_tokens = self.usage.input_tokens
+        cache_read_tokens = self.usage.cached_tokens
+        cache_write_tokens = self.usage.cache_write_tokens
+
+        def valid_count(value: Any) -> bool:
+            return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+        cache_components = (
+            (cache_read_tokens, price_cache_read_per_token),
+            (cache_write_tokens, price_cache_write_per_token),
+        )
+        cache_counts: list[int] = []
+        cache_cost = 0.0
+        cache_accounting_complete = True
+        for count, cache_rate in cache_components:
+            if count is None:
+                if cache_rate is not None:
+                    cache_accounting_complete = False
+                    break
+                # No registry rate means this provider/model has no verified
+                # automatic price for this cache component.
+                cache_counts.append(0)
+                continue
+            if not valid_count(count):
+                cache_accounting_complete = False
+                break
+            if count and cache_rate is None:
+                cache_accounting_complete = False
+                break
+            cache_counts.append(count)
+            if cache_rate is not None:
+                cache_cost += count * cache_rate
+
+        if (
+            not cache_accounting_complete
+            or not valid_count(input_tokens)
+            or sum(cache_counts) > input_tokens
+        ):
+            self.cost_input = None
+        else:
+            ordinary_input_tokens = input_tokens - sum(cache_counts)
+            self.cost_input = (
+                ordinary_input_tokens * price_input_per_token + cache_cost
+            )
+
+        output_tokens = self.usage.output_tokens
+        self.cost_output = (
+            output_tokens * price_output_per_token
+            if valid_count(output_tokens)
+            else None
+        )
+        self.cost_total = (
+            self.cost_input + self.cost_output
+            if self.cost_input is not None and self.cost_output is not None
+            else None
+        )
 
     def apply_cost_breakdown(
         self,
@@ -703,16 +760,16 @@ class ChatResponse:
         self.cost_breakdown = line_items
         if (
             not accounting_complete
-            or self.cost_total is None
+            or self.cost_input is None
+            or self.cost_output is None
             or self.currency is None
             or any(item.currency != self.currency for item in self.cost_breakdown)
         ):
             self.cost_total = None
             return
 
-        token_total = (
-            self.cost_input + self.cost_output
-            if self.cost_input is not None and self.cost_output is not None
-            else self.cost_total
+        self.cost_total = (
+            self.cost_input
+            + self.cost_output
+            + sum(item.cost for item in self.cost_breakdown)
         )
-        self.cost_total = token_total + sum(item.cost for item in self.cost_breakdown)

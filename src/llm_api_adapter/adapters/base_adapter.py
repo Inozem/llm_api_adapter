@@ -664,12 +664,16 @@ class LLMAdapterBase(ABC):
         tier = self.pricing.tier_for_prompt_tokens(
             chat_response.usage.input_tokens
         )
-        if chat_response.usage.output_tokens is None:
-            return
+        cache_rates = {}
+        if tier.cache_read_in_per_token is not None:
+            cache_rates["price_cache_read_per_token"] = tier.cache_read_in_per_token
+        if tier.cache_write_in_per_token is not None:
+            cache_rates["price_cache_write_per_token"] = tier.cache_write_in_per_token
         chat_response.apply_pricing(
             price_input_per_token=tier.in_per_token,
             price_output_per_token=tier.out_per_token,
             currency=self.pricing.currency,
+            **cache_rates,
         )
 
     def _finalize_chat_response(
