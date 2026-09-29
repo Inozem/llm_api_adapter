@@ -56,6 +56,7 @@ from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from llm_api_adapter_deepseek.clients.async_client import DeepSeekResponsesAsyncClient
 from llm_api_adapter_deepseek.clients.sync_client import DeepSeekResponsesSyncClient
+from llm_api_adapter_deepseek.streaming import DeepSeekResponsesStreamParser
 
 
 WEATHER_TOOL = ToolSpec(
@@ -227,8 +228,10 @@ def _reasoning_response() -> dict[str, Any]:
     return response
 
 
-def _stream_events() -> list[SSEEvent]:
-    response = _response()
+def _stream_events(
+    response_payload: dict[str, Any] | None = None,
+) -> list[SSEEvent]:
+    response = dict(response_payload if response_payload is not None else _response())
     response["id"] = "stream-deepseek-flash"
     return [
         SSEEvent(
@@ -771,9 +774,19 @@ def test_facade_chat_maps_text_to_responses_and_normalizes_output(deepseek_runti
 
 
 @pytest.mark.integration
-def test_facade_stream_maps_sse_callbacks_completion_and_close(deepseek_runtime):
+def test_facade_stream_maps_callbacks_and_prices_confirmed_cache_usage(
+    deepseek_runtime,
+    monkeypatch,
+):
+    _freeze_deepseek_dispatch_time(
+        monkeypatch,
+        datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc),
+    )
     adapter = _deepseek_facade()
-    transport = FakeSyncTransport({}, stream_events=_stream_events())
+    transport = FakeSyncTransport(
+        {},
+        stream_events=_stream_events(_deepseek_usage_response()),
+    )
     adapter.adapter._client._sync_transport = transport
     callbacks: list[tuple[str, Any]] = []
 
@@ -805,6 +818,15 @@ def test_facade_stream_maps_sse_callbacks_completion_and_close(deepseek_runtime)
     assert callbacks[-1][0] == "done"
     assert callbacks[-1][1].content == "Hello from DeepSeek."
     assert callbacks[-1][1].response_id == "stream-deepseek-flash"
+    assert callbacks[-1][1].usage is not None
+    assert callbacks[-1][1].usage.cached_tokens == 25
+    assert callbacks[-1][1].cost_input == pytest.approx(
+        (25 * 0.006 + 75 * 0.3) / 1_000_000,
+    )
+    assert callbacks[-1][1].cost_output == pytest.approx(40 * 1.2 / 1_000_000)
+    assert callbacks[-1][1].cost_total == pytest.approx(
+        (25 * 0.006 + 75 * 0.3 + 40 * 1.2) / 1_000_000,
+    )
     assert transport.sse_closed is True
     assert transport.requests[0].payload["stream"] is True
     assert "stream_options" not in transport.requests[0].payload
@@ -1347,16 +1369,26 @@ def test_deepseek_rejects_documents_and_non_image_files_before_transport(
     assert transport.requests == []
 
 
-def _deepseek_usage_response() -> dict[str, Any]:
-    return _response_with_usage(
-        {
-            "input_tokens": 100,
-            "input_tokens_details": {"cached_tokens": 25},
-            "output_tokens": 40,
-            "output_tokens_details": {"reasoning_tokens": 15},
-            "total_tokens": 140,
-        },
-    )
+def _deepseek_usage_response(
+    *,
+    input_tokens: int | None = 100,
+    output_tokens: int | None = 40,
+    cached_tokens: int | None = 25,
+) -> dict[str, Any]:
+    usage: dict[str, Any] = {}
+    if input_tokens is not None:
+        usage["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        usage["output_tokens"] = output_tokens
+    if input_tokens is not None and output_tokens is not None:
+        usage["total_tokens"] = input_tokens + output_tokens
+    if cached_tokens is not None:
+        usage["input_tokens_details"] = {"cached_tokens": cached_tokens}
+    if output_tokens is not None:
+        usage["output_tokens_details"] = {
+            "reasoning_tokens": min(15, output_tokens),
+        }
+    return _response_with_usage(usage)
 
 
 def _freeze_deepseek_dispatch_time(
@@ -1429,6 +1461,162 @@ def test_deepseek_prices_valid_usage_at_peak_and_off_peak_utc_dispatch(
     assert response.cost_input == pytest.approx(expected_input)
     assert response.cost_output == pytest.approx(expected_output)
     assert response.cost_total == pytest.approx(expected_total)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    (
+        "input_tokens",
+        "output_tokens",
+        "cached_tokens",
+        "dispatch_time",
+        "expected_usage",
+        "expected_costs",
+        "expected_currency",
+    ),
+    [
+        pytest.param(
+            0,
+            0,
+            0,
+            datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc),
+            (0, 0, 0, 0),
+            (0, 0, 0),
+            "USD",
+            id="reported-zero",
+        ),
+        pytest.param(
+            100,
+            40,
+            None,
+            datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc),
+            (100, 40, 140, None),
+            (None, 40 * 1.2 / 1_000_000, None),
+            "USD",
+            id="cache-split-missing",
+        ),
+        pytest.param(
+            None,
+            40,
+            None,
+            datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc),
+            (None, 40, None, None),
+            (None, 40 * 1.2 / 1_000_000, None),
+            "USD",
+            id="input-omitted",
+        ),
+        pytest.param(
+            100,
+            None,
+            0,
+            datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc),
+            (100, None, None, 0),
+            (100 * 0.3 / 1_000_000, None, None),
+            "USD",
+            id="output-omitted",
+        ),
+        pytest.param(
+            100,
+            40,
+            25,
+            datetime(2026, 9, 16, 2, 0),
+            (100, 40, 140, 25),
+            (None, None, None),
+            None,
+            id="dispatch-rate-unknown",
+        ),
+    ],
+)
+def test_deepseek_prices_only_confirmed_components_at_known_dispatch_rates(
+    deepseek_runtime,
+    monkeypatch,
+    input_tokens,
+    output_tokens,
+    cached_tokens,
+    dispatch_time,
+    expected_usage,
+    expected_costs,
+    expected_currency,
+):
+    _freeze_deepseek_dispatch_time(monkeypatch, dispatch_time)
+    adapter = _deepseek_facade()
+    adapter.adapter._client._sync_transport = FakeSyncTransport(
+        _deepseek_usage_response(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+        ),
+    )
+
+    response = adapter.chat(messages=[UserMessage("Price reported usage.")])
+
+    assert response.usage is not None
+    assert (
+        response.usage.input_tokens,
+        response.usage.output_tokens,
+        response.usage.total_tokens,
+        response.usage.cached_tokens,
+    ) == expected_usage
+    assert response.currency == expected_currency
+    for actual, expected in zip(
+        (response.cost_input, response.cost_output, response.cost_total),
+        expected_costs,
+    ):
+        if expected is None:
+            assert actual is None
+        else:
+            assert actual == pytest.approx(expected)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw_usage", "expected"),
+    [
+        pytest.param(
+            {
+                "input_tokens": 100,
+                "input_tokens_details": {"cached_tokens": 25},
+                "output_tokens": 40,
+                "total_tokens": 140,
+            },
+            (100, 40, 140, 25),
+            id="cache-hit",
+        ),
+        pytest.param(
+            {
+                "input_tokens": 0,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens": 0,
+                "total_tokens": 0,
+            },
+            (0, 0, 0, 0),
+            id="reported-zero",
+        ),
+        pytest.param(
+            {"output_tokens": 40},
+            (None, 40, None, None),
+            id="input-omitted",
+        ),
+        pytest.param(
+            {"input_tokens": 100},
+            (100, None, None, None),
+            id="output-omitted",
+        ),
+    ],
+)
+def test_deepseek_stream_usage_normalizer_preserves_partial_and_cached_counts(
+    raw_usage,
+    expected,
+):
+    usage = DeepSeekResponsesStreamParser._normalize_usage(raw_usage)
+
+    assert usage is not None
+    assert (
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.total_tokens,
+        usage.cached_tokens,
+    ) == expected
 
 
 @pytest.mark.unit
