@@ -46,15 +46,21 @@ def test_buffer_coalesces_splits_and_flushes_remaining_text():
 
 @pytest.mark.unit
 def test_buffer_preserves_usage_as_a_snapshot_and_consumes_token_delta():
-    usage = Usage(input_tokens=3, output_tokens=5, total_tokens=8)
+    usage = Usage(
+        input_tokens=3,
+        output_tokens=5,
+        total_tokens=8,
+        cached_tokens=1,
+        cache_write_tokens=2,
+    )
     buffer = StreamChunkBuffer(clock=FakeClock(0.0, 0.1, 0.2))
 
     first_chunk = next(buffer.add("first", usage=usage, output_tokens_delta=5))
     usage.output_tokens = 99
     second_chunk = next(buffer.add("second"))
 
-    assert first_chunk.usage == Usage(3, 5, 8)
-    assert second_chunk.usage == Usage(3, 5, 8)
+    assert first_chunk.usage == Usage(3, 5, 8, 1, 2)
+    assert second_chunk.usage == Usage(3, 5, 8, 1, 2)
     assert first_chunk.usage is not second_chunk.usage
     assert first_chunk.output_tokens_delta == 5
     assert second_chunk.output_tokens_delta is None

@@ -326,12 +326,304 @@ def test_from_openai_response_warns_on_empty_content_and_no_tool_calls():
 @pytest.mark.unit
 def test_from_openai_response_handles_missing_choices():
     response = ChatResponse.from_openai_response({"usage": {}})
-    assert response.usage.input_tokens == 0
-    assert response.usage.output_tokens == 0
-    assert response.usage.total_tokens == 0
+    assert response.usage.input_tokens is None
+    assert response.usage.output_tokens is None
+    assert response.usage.total_tokens is None
     assert response.content is None
     assert response.tool_calls is None
     assert response.finish_reason is None
+
+
+@pytest.mark.unit
+def test_usage_keeps_legacy_positional_fields_and_zero_defaults():
+    usage = Usage(11, 12, 23)
+
+    assert (usage.input_tokens, usage.output_tokens, usage.total_tokens) == (11, 12, 23)
+    assert (usage.cached_tokens, usage.cache_write_tokens) == (None, None)
+    assert Usage().input_tokens == 0
+    assert Usage().output_tokens == 0
+    assert Usage().total_tokens == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("parser", "api_response", "expected_input"),
+    [
+        (
+            ChatResponse.from_openai_response,
+            {"usage": {"prompt_tokens": 0}},
+            0,
+        ),
+        (
+            ChatResponse.from_openai_responses_response,
+            {"usage": {"input_tokens": 7}},
+            7,
+        ),
+        (
+            ChatResponse.from_anthropic_response,
+            {"usage": {"input_tokens": 7}},
+            7,
+        ),
+        (
+            ChatResponse.from_google_response,
+            {"usageMetadata": {"promptTokenCount": 0}},
+            0,
+        ),
+    ],
+)
+def test_provider_partial_usage_keeps_omitted_counts_unknown(
+    parser,
+    api_response,
+    expected_input,
+):
+    response = parser(api_response)
+
+    assert response.usage is not None
+    assert response.usage.input_tokens == expected_input
+    assert response.usage.output_tokens is None
+    assert response.usage.total_tokens is None
+
+
+@pytest.mark.unit
+def test_anthropic_usage_derives_total_only_from_both_reported_components():
+    response = ChatResponse.from_anthropic_response(
+        {"usage": {"input_tokens": 0, "output_tokens": 0}}
+    )
+
+    assert response.usage.input_tokens == 0
+    assert response.usage.output_tokens == 0
+    assert response.usage.total_tokens == 0
+
+
+@pytest.mark.unit
+def test_openai_response_usage_parses_confirmed_cache_read_and_write_counts():
+    response = ChatResponse.from_openai_responses_response(
+        {
+            "usage": {
+                "input_tokens": 15,
+                "output_tokens": 2,
+                "total_tokens": 17,
+                "input_tokens_details": {
+                    "cached_tokens": 4,
+                    "cache_write_tokens": 3,
+                },
+            }
+        }
+    )
+
+    assert response.usage.input_tokens == 15
+    assert response.usage.cached_tokens == 4
+    assert response.usage.cache_write_tokens == 3
+
+
+@pytest.mark.unit
+def test_openai_chat_usage_parses_confirmed_cache_read_and_write_counts():
+    response = ChatResponse.from_openai_response(
+        {
+            "usage": {
+                "prompt_tokens": 15,
+                "completion_tokens": 2,
+                "total_tokens": 17,
+                "prompt_tokens_details": {
+                    "cached_tokens": 4,
+                    "cache_write_tokens": 3,
+                },
+            }
+        }
+    )
+
+    assert response.usage.input_tokens == 15
+    assert response.usage.cached_tokens == 4
+    assert response.usage.cache_write_tokens == 3
+
+
+@pytest.mark.unit
+def test_google_usage_parses_confirmed_automatic_cache_read_count():
+    response = ChatResponse.from_google_response(
+        {
+            "usageMetadata": {
+                "promptTokenCount": 15,
+                "candidatesTokenCount": 2,
+                "totalTokenCount": 17,
+                "cachedContentTokenCount": 4,
+            }
+        }
+    )
+
+    assert response.usage.input_tokens == 15
+    assert response.usage.cached_tokens == 4
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("parser", "api_response", "expected_write"),
+    [
+        (
+            ChatResponse.from_openai_response,
+            {
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 0,
+                        "cache_write_tokens": 0,
+                    },
+                },
+                "choices": [{"message": {"content": "ok"}}],
+            },
+            0,
+        ),
+        (
+            ChatResponse.from_openai_responses_response,
+            {
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "input_tokens_details": {
+                        "cached_tokens": 0,
+                        "cache_write_tokens": 0,
+                    },
+                },
+                "output": [{
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "ok"}],
+                }],
+            },
+            0,
+        ),
+        (
+            ChatResponse.from_google_response,
+            {
+                "usageMetadata": {
+                    "promptTokenCount": 0,
+                    "candidatesTokenCount": 0,
+                    "thoughtsTokenCount": 0,
+                    "totalTokenCount": 0,
+                    "cachedContentTokenCount": 0,
+                },
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+            },
+            None,
+        ),
+    ],
+)
+def test_provider_parsers_preserve_reported_zero_cache_counts(
+    parser,
+    api_response,
+    expected_write,
+):
+    usage = parser(api_response).usage
+
+    assert usage.input_tokens == 0
+    assert usage.cached_tokens == 0
+    assert usage.cache_write_tokens == expected_write
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("parser", "usage_field", "details_field", "cache_field"),
+    [
+        (
+            ChatResponse.from_openai_response,
+            "usage",
+            "prompt_tokens_details",
+            "cached_tokens",
+        ),
+        (
+            ChatResponse.from_openai_responses_response,
+            "usage",
+            "input_tokens_details",
+            "cached_tokens",
+        ),
+        (
+            ChatResponse.from_openai_responses_response,
+            "usage",
+            "input_tokens_details",
+            "cache_write_tokens",
+        ),
+        (
+            ChatResponse.from_google_response,
+            "usageMetadata",
+            None,
+            "cachedContentTokenCount",
+        ),
+    ],
+)
+@pytest.mark.parametrize("invalid_count", [-1, True, 1.5, "4"])
+def test_provider_parsers_ignore_malformed_cache_counts(
+    parser,
+    usage_field,
+    details_field,
+    cache_field,
+    invalid_count,
+):
+    details = {cache_field: invalid_count}
+    usage = (
+        {cache_field: invalid_count}
+        if details_field is None
+        else {details_field: details}
+    )
+    if usage_field == "usage":
+        usage.update(
+            {
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "total_tokens": 12,
+                "input_tokens": 10,
+                "output_tokens": 2,
+            }
+        )
+    else:
+        usage.update(
+            {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 2,
+                "totalTokenCount": 12,
+            }
+        )
+    response = parser({usage_field: usage})
+
+    cache_attribute = (
+        "cache_write_tokens" if cache_field == "cache_write_tokens" else "cached_tokens"
+    )
+    assert getattr(response.usage, cache_attribute) is None
+
+
+@pytest.mark.unit
+def test_google_usage_composes_output_only_from_reported_candidate_and_thought_counts():
+    response = ChatResponse.from_google_response(
+        {
+            "usageMetadata": {
+                "promptTokenCount": 3,
+                "candidatesTokenCount": 0,
+                "thoughtsTokenCount": 4,
+                "totalTokenCount": 7,
+            }
+        }
+    )
+
+    assert response.usage.input_tokens == 3
+    assert response.usage.output_tokens == 4
+    assert response.usage.total_tokens == 7
+
+
+@pytest.mark.unit
+def test_google_usage_keeps_composed_output_unknown_when_thought_count_is_omitted():
+    response = ChatResponse.from_google_response(
+        {
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 2,
+                "totalTokenCount": 10,
+            }
+        }
+    )
+
+    assert response.usage.input_tokens == 8
+    assert response.usage.output_tokens is None
+    assert response.usage.total_tokens == 10
 
 
 @pytest.mark.unit

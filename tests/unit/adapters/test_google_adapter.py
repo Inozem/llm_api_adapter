@@ -96,6 +96,29 @@ def test_pricing_is_applied_when_present(adapter):
     )
     assert result is fake_chat_response
 
+
+@pytest.mark.unit
+def test_chat_extracts_provider_reported_automatic_cache_read_usage(adapter):
+    response = {
+        "modelVersion": "gemini-2.5-pro",
+        "candidates": [{
+            "content": {"parts": [{"text": "cached"}]},
+            "finishReason": "STOP",
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 15,
+            "candidatesTokenCount": 2,
+            "totalTokenCount": 17,
+            "cachedContentTokenCount": 4,
+        },
+    }
+
+    with patch.object(GeminiSyncClient, "chat_completion", return_value=response):
+        result = adapter.chat([UserMessage("hi")])
+
+    assert result.usage.input_tokens == 15
+    assert result.usage.cached_tokens == 4
+
 @pytest.mark.unit
 def test_chat_includes_system_instruction_in_payload(adapter):
     from src.llm_api_adapter.models.messages.chat_message import Prompt, UserMessage
@@ -322,6 +345,7 @@ def test_stream_chat_attaches_usage_with_thought_tokens_to_buffered_chunk(adapte
                 "candidatesTokenCount": 3,
                 "thoughtsTokenCount": 4,
                 "totalTokenCount": 9,
+                "cachedContentTokenCount": 1,
             },
         }, event=None),
     ])
@@ -337,9 +361,15 @@ def test_stream_chat_attaches_usage_with_thought_tokens_to_buffered_chunk(adapte
         ))
 
     assert output == ["Hello"]
-    assert chunks[0].usage == Usage(input_tokens=2, output_tokens=7, total_tokens=9)
+    expected_usage = Usage(
+        input_tokens=2,
+        output_tokens=7,
+        total_tokens=9,
+        cached_tokens=1,
+    )
+    assert chunks[0].usage == expected_usage
     assert chunks[0].output_tokens_delta == 7
-    assert done[0].usage == Usage(input_tokens=2, output_tokens=7, total_tokens=9)
+    assert done[0].usage == expected_usage
 
 
 @pytest.mark.unit

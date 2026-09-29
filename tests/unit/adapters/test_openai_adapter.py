@@ -112,6 +112,36 @@ def test_pricing_is_applied_when_present_for_responses_api(adapter):
 
 
 @pytest.mark.unit
+def test_chat_extracts_provider_reported_automatic_cache_usage():
+    cache_adapter = OpenAIAdapter(api_key="test_api_key", model="gpt-5.6-sol")
+    response = {
+        "id": "resp_cache",
+        "model": "gpt-5.6-sol",
+        "status": "completed",
+        "usage": {
+            "input_tokens": 15,
+            "output_tokens": 2,
+            "total_tokens": 17,
+            "input_tokens_details": {
+                "cached_tokens": 4,
+                "cache_write_tokens": 3,
+            },
+        },
+        "output": [{
+            "type": "message",
+            "content": [{"type": "output_text", "text": "cached"}],
+        }],
+    }
+
+    with patch.object(OpenAISyncClient, "complete", return_value=response):
+        result = cache_adapter.chat([UserMessage("hi")])
+
+    assert result.usage.input_tokens == 15
+    assert result.usage.cached_tokens == 4
+    assert result.usage.cache_write_tokens == 3
+
+
+@pytest.mark.unit
 def test_pricing_is_applied_when_present_for_legacy_api(legacy_adapter):
     legacy_adapter.pricing = Pricing.from_dict(
         [
@@ -794,7 +824,15 @@ def test_stream_chat_responses_attaches_late_usage_to_final_buffered_chunk(adapt
                     "id": "resp_123",
                     "model": "gpt-5",
                     "status": "completed",
-                    "usage": {"input_tokens": 2, "output_tokens": 4, "total_tokens": 6},
+                    "usage": {
+                        "input_tokens": 2,
+                        "output_tokens": 4,
+                        "total_tokens": 6,
+                        "input_tokens_details": {
+                            "cached_tokens": 1,
+                            "cache_write_tokens": 2,
+                        },
+                    },
                     "output": [{
                         "type": "message",
                         "content": [{"type": "output_text", "text": "Hello"}],
@@ -815,10 +853,17 @@ def test_stream_chat_responses_attaches_late_usage_to_final_buffered_chunk(adapt
         ))
 
     assert output == ["Hello"]
-    assert chunks[0].usage == Usage(input_tokens=2, output_tokens=4, total_tokens=6)
+    expected_usage = Usage(
+        input_tokens=2,
+        output_tokens=4,
+        total_tokens=6,
+        cached_tokens=1,
+        cache_write_tokens=2,
+    )
+    assert chunks[0].usage == expected_usage
     assert chunks[0].output_tokens_delta == 4
     assert done[0].content == "Hello"
-    assert done[0].usage == Usage(input_tokens=2, output_tokens=4, total_tokens=6)
+    assert done[0].usage == expected_usage
 
 
 @pytest.mark.unit
