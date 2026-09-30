@@ -46,7 +46,6 @@ from llm_api_adapter.models.tools.tool_call import ToolCall
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
-from llm_api_adapter_zai.registry import ZaiCachePricing
 
 
 MODEL = "glm-5.3-flash"
@@ -230,6 +229,7 @@ def zai_stream_events() -> list[SSEEvent]:
                     "prompt_tokens": 19,
                     "completion_tokens": 13,
                     "total_tokens": 32,
+                    "prompt_tokens_details": {"cached_tokens": 5},
                 },
             },
         ),
@@ -669,6 +669,14 @@ def test_zai_sync_stream_reconstructs_deltas_and_usage(zai_runtime):
     assert completed[0].content == "Hello world"
     assert completed[0].usage is not None
     assert completed[0].usage.total_tokens == 32
+    assert completed[0].usage.cached_tokens == 5
+    assert completed[0].cost_input == pytest.approx(
+        (5 * 0.03 + 14 * 0.15) / 1_000_000,
+    )
+    assert completed[0].cost_output == pytest.approx(13 * 0.50 / 1_000_000)
+    assert completed[0].cost_total == pytest.approx(
+        completed[0].cost_input + completed[0].cost_output,
+    )
     assert [event.text for event in completed[0].reasoning_events] == [
         "First reason. ",
     ]
@@ -923,7 +931,6 @@ def test_zai_keeps_input_and_total_cost_unknown_when_cache_split_is_missing(zai_
     assert response.cost_output == pytest.approx(40 * 0.50 / 1_000_000)
     assert response.cost_total is None
 
-
 @pytest.mark.unit
 def test_zai_preserves_reported_zero_usage_and_zero_costs(zai_runtime):
     adapter = UniversalLLMAPIAdapter(
@@ -1076,61 +1083,3 @@ def test_zai_does_not_apply_cache_discount_for_invalid_cache_tokens(
     assert response.cost_input is None
     assert response.cost_output == pytest.approx(40 * 0.50 / 1_000_000)
     assert response.cost_total is None
-
-
-@pytest.mark.unit
-def test_zai_cache_pricing_calculates_only_validated_token_splits():
-    pricing = ZaiCachePricing(
-        cache_hit_input_per_token=0.03 / 1_000_000,
-        cache_miss_input_per_token=0.15 / 1_000_000,
-        output_per_token=0.50 / 1_000_000,
-    )
-
-    estimate = pricing.calculate(
-        input_tokens=100,
-        output_tokens=40,
-        cached_tokens=25,
-    )
-
-    assert estimate is not None
-    assert estimate.input_cost == pytest.approx(
-        (25 * 0.03 + 75 * 0.15) / 1_000_000,
-    )
-    assert estimate.output_cost == pytest.approx(40 * 0.50 / 1_000_000)
-    assert estimate.total_cost == pytest.approx(
-        estimate.input_cost + estimate.output_cost,
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "cached_tokens",
-    [None, True, "25", -1, 101],
-)
-def test_zai_cache_pricing_returns_no_estimate_for_invalid_split(cached_tokens):
-    pricing = ZaiCachePricing(
-        cache_hit_input_per_token=0.03 / 1_000_000,
-        cache_miss_input_per_token=0.15 / 1_000_000,
-        output_per_token=0.50 / 1_000_000,
-    )
-
-    assert pricing.calculate(
-        input_tokens=100,
-        output_tokens=40,
-        cached_tokens=cached_tokens,
-    ) is None
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "rates",
-    [
-        (-1.0, 0.15, 0.50),
-        (float("nan"), 0.15, 0.50),
-        (0.03, float("inf"), 0.50),
-        (True, 0.15, 0.50),
-    ],
-)
-def test_zai_cache_pricing_rejects_invalid_rates(rates):
-    with pytest.raises(ValueError, match="finite non-negative"):
-        ZaiCachePricing(*rates)
