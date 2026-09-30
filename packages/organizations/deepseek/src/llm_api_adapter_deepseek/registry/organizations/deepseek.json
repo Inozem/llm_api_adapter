@@ -31,10 +31,18 @@
       "pricing_tiers": [
         {
           "up_to_prompt_tokens": null,
-          "input_per_1m": 0.3,
-          "output_per_1m": 1.2
+          "input_per_1m": 0.15,
+          "output_per_1m": 0.6,
+          "cache_read_input_per_1m": 0.003
         }
       ],
+      "pricing_schedule": {
+        "timezone": "UTC",
+        "peak_weekdays": [0, 1, 2, 3, 4],
+        "peak_windows": [["01:00", "04:00"], ["06:00", "10:00"]],
+        "peak_multiplier": 2,
+        "off_peak_multiplier": 1
+      },
       "reasoning_capability": {
         "allowed_values": ["none", "low", "high", "max"]
       }

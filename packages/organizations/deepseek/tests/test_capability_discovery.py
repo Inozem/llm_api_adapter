@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -76,6 +75,7 @@ def test_flash_limits_and_thinking_modes_are_exact(discovery_record):
         "capability_exceptions",
         "limits",
         "pricing_tiers",
+        "pricing_schedule",
         "reasoning_capability",
     }
     assert {
@@ -92,21 +92,24 @@ def test_flash_limits_and_thinking_modes_are_exact(discovery_record):
 
 
 @pytest.mark.unit
-def test_dynamic_peak_and_off_peak_pricing_stays_package_owned():
-    from llm_api_adapter_deepseek.registry import (
-        OFF_PEAK_PRICING,
-        PEAK_PRICING,
-        pricing_for_dispatch,
-    )
+def test_dynamic_peak_and_off_peak_pricing_lives_in_registry():
+    model_data = MODEL_METADATA.organization_data["models"]["deepseek-flash"]
 
-    assert PEAK_PRICING.cache_miss_input_per_token == 0.3 / 1_000_000
-    assert OFF_PEAK_PRICING.cache_miss_input_per_token == 0.15 / 1_000_000
-    assert pricing_for_dispatch(
-        datetime(2026, 10, 13, 1, 0, tzinfo=timezone.utc)
-    ) == PEAK_PRICING
-    assert pricing_for_dispatch(
-        datetime(2026, 10, 13, 4, 0, tzinfo=timezone.utc)
-    ) == OFF_PEAK_PRICING
+    assert model_data["pricing_tiers"] == [
+        {
+            "up_to_prompt_tokens": None,
+            "input_per_1m": 0.15,
+            "output_per_1m": 0.6,
+            "cache_read_input_per_1m": 0.003,
+        },
+    ]
+    assert model_data["pricing_schedule"] == {
+        "timezone": "UTC",
+        "peak_weekdays": [0, 1, 2, 3, 4],
+        "peak_windows": [["01:00", "04:00"], ["06:00", "10:00"]],
+        "peak_multiplier": 2,
+        "off_peak_multiplier": 1,
+    }
 
 
 @pytest.mark.unit
