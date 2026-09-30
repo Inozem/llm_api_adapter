@@ -963,13 +963,36 @@ class MistralAdapter(LLMAdapterBase):
     def _parse_usage(value: Any) -> Optional[Usage]:
         if not isinstance(value, Mapping):
             return None
-        input_tokens = _as_non_negative_int(value.get("prompt_tokens"))
-        output_tokens = _as_non_negative_int(value.get("completion_tokens"))
-        total_tokens = _as_non_negative_int(value.get("total_tokens"))
+        input_tokens = _as_optional_non_negative_int(value.get("prompt_tokens"))
+        output_tokens = _as_optional_non_negative_int(value.get("completion_tokens"))
+        total_tokens = _as_optional_non_negative_int(value.get("total_tokens"))
+        cache_details = value.get("prompt_tokens_details")
+        if cache_details is not None and not isinstance(cache_details, Mapping):
+            raise LLMAPIClientError(
+                detail="Mistral prompt_tokens_details must be an object",
+            )
+        cached_tokens = None
+        if isinstance(cache_details, Mapping) and "cached_tokens" in cache_details:
+            cached_tokens = cache_details.get("cached_tokens")
+            if (
+                isinstance(cached_tokens, bool)
+                or not isinstance(cached_tokens, int)
+                or cached_tokens < 0
+            ):
+                raise LLMAPIClientError(
+                    detail="Mistral cached_tokens must be a non-negative integer",
+                )
+        if (
+            total_tokens is None
+            and input_tokens is not None
+            and output_tokens is not None
+        ):
+            total_tokens = input_tokens + output_tokens
         return Usage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            total_tokens=(total_tokens or input_tokens + output_tokens),
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
         )
 
     @classmethod
@@ -1124,8 +1147,10 @@ def _as_optional_int(value: Any) -> Optional[int]:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _as_non_negative_int(value: Any) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+def _as_optional_non_negative_int(value: Any) -> Optional[int]:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 __all__ = ["MistralAdapter"]

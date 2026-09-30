@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional
 
 from llm_api_adapter.adapters.base_adapter import _StreamState
+from llm_api_adapter.errors.llm_api_error import LLMAPIClientError
 from llm_api_adapter.llms.streaming import (
     StreamChunkBuffer,
     StreamReasoningCollector,
@@ -101,10 +102,13 @@ class XAIResponsesStreamParser:
     ) -> ChatResponse:
         """Build the shared response type from a completed or partial stream."""
         response = state.final_response or cls._build_response(state, model=model)
-        return ChatResponse.from_openai_responses_response(
+        chat_response = ChatResponse.from_openai_responses_response(
             response,
             capture_reasoning=capture_reasoning,
         )
+        if isinstance(response.get("usage"), Mapping):
+            chat_response.usage = cls._normalize_usage(response["usage"])
+        return chat_response
 
     @staticmethod
     def _event_usage(payload: Mapping[str, Any], response_data: Any) -> Any:
@@ -128,12 +132,33 @@ class XAIResponsesStreamParser:
         total_tokens = XAIResponsesStreamParser._token_count(
             raw_usage.get("total_tokens"),
         )
-        if input_tokens is None and output_tokens is None and total_tokens is None:
-            return None
+        input_details = raw_usage.get("input_tokens_details")
+        if input_details is not None and not isinstance(input_details, Mapping):
+            raise LLMAPIClientError(
+                detail="xAI input_tokens_details must be an object",
+            )
+        cached_tokens = None
+        if isinstance(input_details, Mapping) and "cached_tokens" in input_details:
+            cached_tokens = input_details.get("cached_tokens")
+            if (
+                isinstance(cached_tokens, bool)
+                or not isinstance(cached_tokens, int)
+                or cached_tokens < 0
+            ):
+                raise LLMAPIClientError(
+                    detail="xAI cached_tokens must be a non-negative integer",
+                )
+        if (
+            total_tokens is None
+            and input_tokens is not None
+            and output_tokens is not None
+        ):
+            total_tokens = input_tokens + output_tokens
         return Usage(
-            input_tokens=input_tokens or 0,
-            output_tokens=output_tokens or 0,
-            total_tokens=total_tokens or 0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
         )
 
     @staticmethod

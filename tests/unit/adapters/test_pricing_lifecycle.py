@@ -568,6 +568,66 @@ def test_pricing_does_not_select_tier_without_confirmed_input_tokens():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("input_tokens", "output_tokens", "expected_input", "expected_output"),
+    [
+        (None, 0, None, 0),
+        (0, 0, 0, 0),
+    ],
+    ids=["omitted-input", "reported-zero"],
+)
+def test_partial_usage_keeps_omitted_counts_distinct_from_zero(
+    input_tokens,
+    output_tokens,
+    expected_input,
+    expected_output,
+):
+    response = ChatResponse(
+        usage=Usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=0,
+            cache_write_tokens=0,
+            total_tokens=(
+                input_tokens + output_tokens
+                if input_tokens is not None and output_tokens is not None
+                else None
+            ),
+        )
+    )
+
+    _apply_cache_pricing(response)
+
+    assert response.usage.input_tokens == expected_input
+    assert response.usage.output_tokens == expected_output
+    if expected_input is None:
+        assert response.cost_input is None
+        assert response.cost_total is None
+    else:
+        assert response.cost_input == 0
+        assert response.cost_total == 0
+
+
+@pytest.mark.unit
+def test_cache_read_tier_selection_uses_inclusive_total_input():
+    adapter = _cache_adapter()
+    response = ChatResponse(
+        usage=Usage(
+            input_tokens=101,
+            output_tokens=5,
+            total_tokens=106,
+            cached_tokens=1,
+            cache_write_tokens=0,
+        )
+    )
+
+    adapter._apply_response_pricing(response)
+
+    assert response.cost_input == pytest.approx((100 * 30 + 1 * 5) / 1_000_000)
+    assert response.cost_output == pytest.approx(5 * 10 / 1_000_000)
+
+
+@pytest.mark.unit
 def test_pricing_overrides_apply_to_the_selected_tier():
     adapter = _adapter()
     adapter.pricing.set_in_per_1m(7.0)

@@ -7,7 +7,10 @@ import json
 from typing import Any, Mapping, Optional
 
 from llm_api_adapter.adapters.base_adapter import _StreamState
-from llm_api_adapter.errors.llm_api_error import InvalidToolArgumentsError
+from llm_api_adapter.errors.llm_api_error import (
+    InvalidToolArgumentsError,
+    LLMAPIClientError,
+)
 from llm_api_adapter.llms.streaming import (
     StreamChunkBuffer,
     StreamReasoningCollector,
@@ -220,12 +223,35 @@ class QwenMessagesStreamParser:
         output_tokens = QwenMessagesStreamParser._token_count(
             raw_usage.get("output_tokens"),
         )
-        if input_tokens is None and output_tokens is None:
+        cache_read_tokens = None
+        if "cache_read_input_tokens" in raw_usage:
+            cache_read_tokens = QwenMessagesStreamParser._token_count(
+                raw_usage.get("cache_read_input_tokens"),
+            )
+            if cache_read_tokens is None:
+                raise LLMAPIClientError(
+                    detail=(
+                        "Qwen cache_read_input_tokens must be a "
+                        "non-negative integer"
+                    ),
+                )
+        if input_tokens is not None and cache_read_tokens is not None:
+            input_tokens += cache_read_tokens
+        if (
+            input_tokens is None
+            and output_tokens is None
+            and cache_read_tokens is None
+        ):
             return None
         return Usage(
-            input_tokens=input_tokens or 0,
-            output_tokens=output_tokens or 0,
-            total_tokens=(input_tokens or 0) + (output_tokens or 0),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=(
+                input_tokens + output_tokens
+                if input_tokens is not None and output_tokens is not None
+                else None
+            ),
+            cached_tokens=cache_read_tokens,
         )
 
     @staticmethod

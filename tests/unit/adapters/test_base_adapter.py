@@ -238,6 +238,47 @@ def test_finalize_chat_response_resolves_pricing_tier_from_usage(
 
 
 @pytest.mark.unit
+def test_finalize_chat_response_prices_cache_with_inclusive_total_input_tier(adapter):
+    adapter.pricing = Pricing.from_dict(
+        [
+            {
+                "up_to_prompt_tokens": 100,
+                "input_per_1m": 10,
+                "output_per_1m": 20,
+                "cache_read_input_per_1m": 2,
+            },
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": 30,
+                "output_per_1m": 40,
+                "cache_read_input_per_1m": 5,
+            },
+        ],
+        currency="USD",
+    )
+    response = ChatResponse(
+        usage=Usage(
+            input_tokens=101,
+            output_tokens=5,
+            total_tokens=106,
+            cached_tokens=1,
+        )
+    )
+
+    adapter._finalize_chat_response(
+        response,
+        effective_schema=None,
+        response_model=None,
+    )
+
+    assert response.cost_input == pytest.approx((100 * 30 + 1 * 5) / 1_000_000)
+    assert response.cost_output == pytest.approx(5 * 40 / 1_000_000)
+    assert response.cost_total == pytest.approx(
+        response.cost_input + response.cost_output
+    )
+
+
+@pytest.mark.unit
 def test_post_init_sets_reasoning_flag_from_registry(monkeypatch):
     organization = SimpleNamespace(
         models={"m-reason": SimpleNamespace(pricing=None, is_reasoning=True, is_adaptive_thinking=False)}
