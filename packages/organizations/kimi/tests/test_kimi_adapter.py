@@ -218,6 +218,9 @@ def kimi_chat_sse_events(model: str = "kimi-k3") -> list[SSEEvent]:
         "created": 1_789_721_600,
         "model": model,
     }
+    prompt_details = {"cached_tokens": 12}
+    if model == "kimi-k3":
+        prompt_details["cache_write_tokens"] = 5
     return [
         SSEEvent(
             event=None,
@@ -271,6 +274,7 @@ def kimi_chat_sse_events(model: str = "kimi-k3") -> list[SSEEvent]:
                     "completion_tokens": 13,
                     "total_tokens": 32,
                     "cached_tokens": 12,
+                    "prompt_tokens_details": prompt_details,
                 },
             },
         ),
@@ -390,8 +394,8 @@ def test_kimi_plugin_registers_each_declared_model(kimi_runtime, model):
 
 
 @pytest.mark.unit
-def test_kimi_metadata_uses_standard_fields_and_cache_pricing_extension():
-    from llm_api_adapter_kimi.registry import CACHE_PRICING, ORGANIZATION_DATA
+def test_kimi_metadata_uses_standard_pricing_tiers():
+    from llm_api_adapter_kimi.registry import ORGANIZATION_DATA
 
     assert tuple(ORGANIZATION_DATA["models"]) == KIMI_MODELS
     expected_exceptions = {
@@ -419,15 +423,29 @@ def test_kimi_metadata_uses_standard_fields_and_cache_pricing_extension():
             "pricing_tiers",
             "reasoning_capability",
             "request_rules",
-            "cache_pricing",
             "capability_exceptions",
         }
         assert {
             exception["capability_id"]
             for exception in model_data["capability_exceptions"]
         } == expected_exceptions[model]
-        assert CACHE_PRICING[model].cache_hit_input_per_token > 0
-        assert CACHE_PRICING[model].cache_miss_input_per_token > 0
+    assert ORGANIZATION_DATA["models"]["kimi-k3"]["pricing_tiers"] == [
+        {
+            "up_to_prompt_tokens": None,
+            "input_per_1m": 3.0,
+            "output_per_1m": 15.0,
+            "cache_read_input_per_1m": 0.3,
+            "cache_write_input_per_1m": 3,
+        },
+    ]
+    assert ORGANIZATION_DATA["models"]["kimi-k2.6"]["pricing_tiers"] == [
+        {
+            "up_to_prompt_tokens": None,
+            "input_per_1m": 0.95,
+            "output_per_1m": 4.0,
+            "cache_read_input_per_1m": 0.16,
+        },
+    ]
 
 
 @pytest.mark.unit
@@ -1354,6 +1372,19 @@ def test_kimi_stream_reconstructs_chat_completion_and_callback_order(
     assert completed[0].usage is not None
     assert completed[0].usage.total_tokens == 32
     assert completed[0].usage.cached_tokens == 12
+    if model == "kimi-k3":
+        assert completed[0].usage.cache_write_tokens == 5
+        expected_input_cost = (12 * 0.30 + 5 * 3.00 + 2 * 3.00) / 1_000_000
+        output_rate = 15.00
+    else:
+        assert completed[0].usage.cache_write_tokens is None
+        expected_input_cost = (12 * 0.16 + 7 * 0.95) / 1_000_000
+        output_rate = 4.00
+    assert completed[0].cost_input == pytest.approx(expected_input_cost)
+    assert completed[0].cost_output == pytest.approx(13 * output_rate / 1_000_000)
+    assert completed[0].cost_total == pytest.approx(
+        completed[0].cost_input + completed[0].cost_output,
+    )
     assert completed[0].currency == "USD"
     assert [event.text for event in completed[0].reasoning_events] == [
         "First reason. "

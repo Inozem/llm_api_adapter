@@ -47,11 +47,6 @@
           "cache_write_input_per_1m": 3
         }
       ],
-      "cache_pricing": {
-        "cache_hit_input_per_1m": 0.3,
-        "cache_miss_input_per_1m": 3.0,
-        "output_per_1m": 15.0
-      },
       "reasoning_capability": {
         "allowed_values": ["low", "high", "max"]
       },
@@ -119,11 +114,6 @@
           "cache_read_input_per_1m": 0.16
         }
       ],
-      "cache_pricing": {
-        "cache_hit_input_per_1m": 0.16,
-        "cache_miss_input_per_1m": 0.95,
-        "output_per_1m": 4.0
-      },
       "reasoning_capability": {
         "allowed_values": ["none", "enabled"]
       },
