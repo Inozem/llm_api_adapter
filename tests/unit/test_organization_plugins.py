@@ -173,7 +173,55 @@ def test_external_organization_is_discovered_after_its_distribution_is_available
         "mistral",
         "test-model",
     ) is adapter.adapter.model_spec
+    assert adapter.chat(messages=[]) == {"response": "ok"}
+
+    second_adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="test-model",
+        api_key="test-key",
+    )
+    assert second_adapter.chat(messages=[]) == {"response": "ok"}
+    assert isolated_plugin_runtime[0].get("mistral") is PluginTestAdapter
+    assert isolated_plugin_runtime[1].failures == ()
     assert entry_point.load_calls == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "organization",
+    ("kimi", "mistral", "qwen", "xai", "deepseek", "zai"),
+)
+def test_known_external_organization_has_install_guidance_without_its_plugin(
+    monkeypatch,
+    isolated_plugin_runtime,
+    organization: str,
+) -> None:
+    registry, discovery, _ = isolated_plugin_runtime
+    searched_groups: list[str] = []
+
+    def no_installed_plugins(*, group: str):
+        searched_groups.append(group)
+        return ()
+
+    monkeypatch.setattr(registry_module, "entry_points", no_installed_plugins)
+
+    with pytest.raises(OrganizationNotInstalledError) as raised:
+        UniversalLLMAPIAdapter(
+            organization=organization,
+            model="test-model",
+            api_key="test-key",
+        )
+
+    distribution = f"llm-api-adapter-{organization}"
+    assert raised.value.organization == organization
+    assert raised.value.distribution == distribution
+    assert str(raised.value) == (
+        f"Organization '{organization}' is not installed. "
+        f"Install it with: pip install {distribution}"
+    )
+    assert searched_groups == [ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP]
+    assert registry.get(organization) is None
+    assert discovery.failures == ()
 
 
 @pytest.mark.unit
@@ -564,15 +612,10 @@ def test_builtin_organization_does_not_load_external_plugins(
     monkeypatch,
     isolated_plugin_runtime,
 ):
-    entry_point = FakeEntryPoint(
-        name="broken-organization",
-        value="broken.plugin:PLUGIN",
-        error=RuntimeError("plugin should remain unloaded"),
-    )
     monkeypatch.setattr(
         registry_module,
         "entry_points",
-        lambda *, group: (entry_point,),
+        lambda *, group: pytest.fail("Built-in organization searched external plugins"),
     )
 
     adapter = UniversalLLMAPIAdapter(
@@ -582,7 +625,6 @@ def test_builtin_organization_does_not_load_external_plugins(
     )
 
     assert isinstance(adapter.adapter, AnthropicAdapter)
-    assert entry_point.load_calls == 0
 
 
 @pytest.mark.unit

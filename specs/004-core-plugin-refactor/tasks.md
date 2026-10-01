@@ -133,7 +133,7 @@
 ### Tests
 
 - [x] T047 [P] [US4] Write failing fixture-based metadata tests in `tests/unit/test_external_organization_metadata.py` for all six external organizations and missing package/extra/entry point/E2E profile/CI lane, duplicate key, and normalized distribution-name mismatch cases.
-- [ ] T048 [P] [US4] Add facade and plugin-compatibility assertions in `tests/unit/test_organization_plugins.py` for lazy discovery, known-but-uninstalled guidance, and unchanged registration behavior after metadata cleanup.
+- [x] T048 [P] [US4] Add facade and plugin-compatibility assertions in `tests/unit/test_organization_plugins.py` for lazy discovery, known-but-uninstalled guidance, and unchanged registration behavior after metadata cleanup.
 
 ### Implementation
 
