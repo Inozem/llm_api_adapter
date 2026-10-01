@@ -175,7 +175,7 @@ def test_equivalent_normalized_distribution_names_are_accepted(
         (
             "e2e_profile",
             E2E_PROFILES,
-            '    distribution="llm-api-adapter-qwen",',
+            '    distribution=KNOWN_ORGANIZATION_PACKAGES["qwen"].distribution,',
             '    distribution="llm-api-adapter-other",',
         ),
         (

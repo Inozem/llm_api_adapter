@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import pytest
 
 from llm_api_adapter.llm_registry.llm_registry import LLM_REGISTRY, ModelSpec
+from llm_api_adapter.organization_registry import KNOWN_ORGANIZATION_PACKAGES
 from llm_api_adapter.universal_adapter import (
     ORGANIZATION_PLUGIN_DISCOVERY,
     SERVICE_PROVIDER_REGISTRY,
@@ -70,27 +71,27 @@ _GOOGLE_E2E_PROFILE = E2EOrganizationProfile(
 _MISTRAL_E2E_PROFILE = E2EOrganizationProfile(
     name="mistral",
     organization_names=("mistral",),
-    distribution="llm-api-adapter-mistral",
+    distribution=KNOWN_ORGANIZATION_PACKAGES["mistral"].distribution,
     api_key_is_required=True,
 )
 _XAI_E2E_PROFILE = E2EOrganizationProfile(
     name="xai",
     organization_names=("xai",),
-    distribution="llm-api-adapter-xai",
+    distribution=KNOWN_ORGANIZATION_PACKAGES["xai"].distribution,
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
 )
 _KIMI_E2E_PROFILE = E2EOrganizationProfile(
     name="kimi",
     organization_names=("kimi",),
-    distribution="llm-api-adapter-kimi",
+    distribution=KNOWN_ORGANIZATION_PACKAGES["kimi"].distribution,
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
 )
 _QWEN_E2E_PROFILE = E2EOrganizationProfile(
     name="qwen",
     organization_names=("qwen",),
-    distribution="llm-api-adapter-qwen",
+    distribution=KNOWN_ORGANIZATION_PACKAGES["qwen"].distribution,
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
     operation_kwargs_env=(("workspace_id", "QWEN_WORKSPACE_ID"),),
@@ -98,14 +99,14 @@ _QWEN_E2E_PROFILE = E2EOrganizationProfile(
 _DEEPSEEK_E2E_PROFILE = E2EOrganizationProfile(
     name="deepseek",
     organization_names=("deepseek",),
-    distribution="llm-api-adapter-deepseek",
+    distribution=KNOWN_ORGANIZATION_PACKAGES["deepseek"].distribution,
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
 )
 _ZAI_E2E_PROFILE = E2EOrganizationProfile(
     name="zai",
     organization_names=("zai",),
-    distribution="llm-api-adapter-zai",
+    distribution=KNOWN_ORGANIZATION_PACKAGES["zai"].distribution,
     api_key_is_required=True,
     missing_api_key_is_usage_error=True,
 )
