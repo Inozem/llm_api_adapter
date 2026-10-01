@@ -59,6 +59,23 @@ def test_six_external_organizations_have_consistent_metadata(
 
 
 @pytest.mark.unit
+def test_checked_out_repository_has_all_external_organization_metadata() -> None:
+    from tests.external_organization_metadata import (
+        read_external_organization_metadata,
+    )
+
+    metadata = read_external_organization_metadata(REPOSITORY_ROOT)
+    for source in (
+        metadata.known_packages,
+        metadata.extras,
+        metadata.packages,
+        metadata.entry_points,
+    ):
+        assert set(source) == set(ORGANIZATIONS)
+    assert not _validate(REPOSITORY_ROOT)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("organization", ORGANIZATIONS)
 @pytest.mark.parametrize(
     "missing_source",
@@ -117,6 +134,32 @@ def test_missing_external_metadata_reports_organization_and_source(
         )
 
     _assert_issue(_validate(metadata_repository), organization, expected_source)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    (
+        ("    qwen_e2e: bool\n", "", "missing field"),
+        (
+            "        qwen_e2e=(\n",
+            "        unused_qwen_e2e=(\n",
+            "missing selector route",
+        ),
+    ),
+    ids=("selection-field", "selection-route"),
+)
+def test_missing_ci_selection_metadata_is_reported(
+    metadata_repository: Path,
+    old: str,
+    new: str,
+    expected: str,
+) -> None:
+    _replace_once(metadata_repository, CI_LANES, old, new)
+
+    issues = _validate(metadata_repository)
+    _assert_issue(issues, "qwen", CI_LANES)
+    assert any(expected in issue for issue in issues), issues
 
 
 @pytest.mark.unit
