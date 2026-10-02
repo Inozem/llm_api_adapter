@@ -20,6 +20,7 @@ Supports Python 3.10–3.14.
 - [Installation](#installation)
 - [Getting Started](#getting-started)
 - [Model-specific request compatibility](#model-specific-request-compatibility)
+- [Built-in model exceptions](#built-in-model-exceptions)
 - [Streaming](#streaming)
 - [Async API](#async-api)
 - [Optional HTTPX Sync Transport](#optional-httpx-sync-transport)
@@ -60,11 +61,11 @@ Supports Python 3.10–3.14.
 - **Vision Input**: Send images alongside text via `ImagePart` as a URL, raw bytes, or data URI when the selected organization supports that form.
 - **PDF Documents**: Send PDF URLs or bytes via `DocumentPart`; provider-specific file/document payloads are generated automatically.
 - **Tool / Function Calling**: Provider-agnostic tool definitions and normalized tool calls in `ChatResponse.tool_calls`.
-- **Portable Structured Output**: Pass a documented portable JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` across all supported organizations.
+- **Portable Structured Output**: Pass a documented portable JSON Schema to `chat()` and get a parsed object in `ChatResponse.parsed_json` across all built-in adapters (the optional Z.ai package does not support portable structured output).
 - **Pydantic Integration**: Pass a portable Pydantic model as `response_model` and get a typed instance back in `ChatResponse.parsed_model` — no manual schema writing required.
 - **Request Timeouts**: Per-request timeout control via `timeout_s`; raises `LLMAPITimeoutError` on expiry.
 - **Flexible Configuration**: `temperature`, `max_tokens`, `top_p`, and other parameters are translated to a verified provider payload; known unsupported fields are omitted predictably.
-- **Pricing Registry**: Model prices stored in a bundled JSON registry with per-model input/output rates; overridable per instance.
+- **Pricing Registry**: Bundled model tiers contain ordinary input/output rates and verified automatic cache rates; ordinary rates are overridable per instance.
 
 ## Installation
 
@@ -229,7 +230,7 @@ unknown OpenAI model uses Chat Completions rather than the Responses API. Use a
 listed model or request a verified registry addition when a provider adds a new
 alias or model.
 
-For `gemini-3.7-flash`, `gemini-3.6-flash`, and
+For `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, and
 `gemini-3.5-flash-lite`, Google does not support sampling controls. The adapter
 omits `temperature` and `top_p` from these model requests; non-default values
 produce the compatibility warning described above.
@@ -243,6 +244,20 @@ supported effort, `low`, with a `UserWarning`.
 `reasoning_level="none"`. With any higher reasoning effort, OpenAI does not
 accept `temperature` or `top_p`; the adapter omits them using the same warning
 policy.
+
+### Built-in model exceptions
+
+Each registered model declares a `capability_exceptions` list; an empty list
+means no exception. Each entry identifies the affected capability and behavior
+and describes the exception in `behavior`. Exact supported values and payload
+transformations remain in `reasoning_capability` and `request_rules`.
+
+See the [OpenAI](src/llm_api_adapter/llm_registry/organizations/openai.json),
+[Anthropic](src/llm_api_adapter/llm_registry/organizations/anthropic.json), and
+[Google](src/llm_api_adapter/llm_registry/organizations/google.json) registries
+for current model details. The [project constitution](.specify/memory/constitution.md)
+defines the baseline and exception policy; optional organization packages have
+their own [package READMEs](#installation).
 
 ### Alternative Message Format
 
@@ -1123,44 +1138,97 @@ same fields, while `StreamChunk.usage` is populated when the provider reports
 usage during streaming. `cost_input` and `cost_output` are reserved for token
 costs; non-token components use `cost_breakdown`.
 
-### Tiered standard-rate estimates
+### Provider-reported usage
+
+The adapter exposes provider-reported counts without estimating missing tokens.
+If no usage is reported, `response.usage` is `None`. A partial usage object may
+contain `None` in any unreported count; an explicitly reported zero stays `0`.
+
+| `Usage` field | Meaning |
+| --- | --- |
+| `input_tokens` | Total reported input, including confirmed cache-read and cache-write subsets. |
+| `output_tokens` | Reported generated tokens, including reasoning tokens where the provider exposes the required counts. |
+| `total_tokens` | Reported total, or a sum of confirmed input and output counts when the provider format requires it. |
+| `cached_tokens` | Confirmed input tokens read from cache. `None` means no valid count was reported. |
+| `cache_write_tokens` | Confirmed input tokens charged as a separate cache write. `None` means no valid count was reported. |
+
+These are counts, not the cached text or a list of token IDs. Output tokens are
+priced at the output rate; there is no separate output-cache component.
+
+### Tiered estimates and automatic caching
 
 Costs are a standard-rate estimate, not a provider invoice. When a provider
-reports usage, the adapter selects the first pricing tier whose
+reports a valid input count, the adapter selects the first pricing tier whose
 `up_to_prompt_tokens` is greater than or equal to `usage.input_tokens`. The
-boundary is inclusive; the final tier has no boundary. Its input and output
-rates are both applied to the entire request.
+boundary is inclusive; the final tier has no boundary. Total input, including
+cache subsets, selects the tier. The selected rates apply to the entire
+request, rather than pricing successive portions in different bands.
 
 - `context_window_tokens` is the combined input and generated-output capacity.
 - `max_output_tokens` is the generated-output capacity.
 - A pricing-tier boundary only selects a price; it is not a request limit.
-- If the provider does not report `usage`, the adapter does not estimate tokens
-  locally. `usage`, `currency`, and `cost_*` remain `None`.
+- Missing input prevents automatic tier selection. Missing usage leaves token
+  cost fields unset; separately metered operations can still have entries in
+  `cost_breakdown`.
 
-For providers with one static registry tier, the estimate covers bundled
-standard text input/output rates only. It excludes cached input, cache
-write/storage, batch, flex, priority, modality-specific, provider-hosted tool,
-and negotiated-volume charges. Do not use it to reconcile a provider invoice.
+An exact-model `pricing_tiers` entry may additionally contain
+`cache_read_input_per_1m` and `cache_write_input_per_1m`. Each is an independent,
+verified rate: zero is valid, and an absent rate has no fallback to the ordinary
+input rate or the other cache rate. With complete counts and rates converted
+to a per-token basis:
 
-Kimi is the narrow exception when the provider reports an explicit
-`usage.cached_tokens` split: its organization package applies registered
-cache-hit and cache-miss input rates and can calculate `cost_total`. If Kimi
-does not return that split, `cost_input` and `cost_total` stay unset rather than
-assuming all input was uncached. This does not enable Kimi caching; it only
-accounts for provider-reported usage. See the
-[Kimi package README](packages/organizations/kimi/README.md#usage-cache-aware-pricing-and-errors).
+```text
+ordinary_input = input_tokens - cached_tokens - cache_write_tokens
+cost_input = ordinary_input * ordinary_rate
+           + cached_tokens * cache_read_rate
+           + cache_write_tokens * cache_write_rate
+cost_output = output_tokens * output_rate
+```
 
-DeepSeek `deepseek-flash` is another package-local exception. Its Responses
-usage reports `input_tokens_details.cached_tokens` and
-`output_tokens_details.reasoning_tokens`; the package applies the verified
-cache-hit/cache-miss and UTC peak/off-peak rates only when those values and the
-dispatch window are valid. Missing or inconsistent usage leaves the relevant
-cost fields unavailable. DeepSeek context caching is provider-managed and the
-estimate is not an invoice. See the [DeepSeek usage and pricing
-boundary](packages/organizations/deepseek/README.md#usage-and-standard-rate-estimates)
-and the [official pricing table](https://api-docs.deepseek.com/quick_start/pricing/).
+The formula applies to the cache components the provider meters; it does not
+require a separate counter for a component the model does not meter. Cache
+counts must be nonnegative integers with a sum no greater than total input.
+
+| Built-in organization | Automatic cache usage and registered pricing |
+| --- | --- |
+| OpenAI | Responses reads `input_tokens_details.cached_tokens` and `cache_write_tokens`; Chat Completions reads the same fields from `prompt_tokens_details`. All registered models have a cache-read rate. `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` also have a separately priced automatic cache-write component. |
+| Google | `usageMetadata.cachedContentTokenCount` becomes `cached_tokens`, a subset of `promptTokenCount`. Automatic reads have registered rates except for `gemini-3-flash-preview`, whose cache-read rate is unverified. There is no separately priced automatic cache-write component. |
+| Anthropic | The adapter does not enable opt-in prompt caching, and the registry has no automatic cache-read or cache-write rates. Ordinary input/output pricing applies to its supported requests. |
+
+The same accounting consumes automatic cache usage from installed organization
+packages. See their [package READMEs](#installation) for model-specific usage
+formats and rate schedules.
+
+Only cache components returned for ordinary requests without opt-in caching
+are covered. Explicit cache resources, cache-control settings, selectable TTLs,
+and storage charges are outside this accounting. The adapter does not enable
+those modes. Batch, flex, priority, modality-specific, provider-hosted tool,
+and negotiated-volume charges are also outside the bundled token estimate.
+
+### Incomplete costs
+
+- If a registered cache rate requires a split that the provider omits, or the
+  split is invalid or exceeds input, `cost_input` and `cost_total` are `None`.
+- A positive reported cache component with no verified rate also leaves
+  `cost_input` and `cost_total` unknown. For example, a cache hit on
+  `gemini-3-flash-preview` cannot be priced from its bundled tier.
+- A confirmed zero cache count incurs no cache charge, even without a cache
+  rate. An unreported count remains `None`; it is not rewritten as zero.
+- `cost_output` can remain known when only input accounting is incomplete.
+  Missing output leaves `cost_output` and `cost_total` unknown.
+- `cost_total` is available only when input, output, and any incurred non-token
+  operations are fully priced in the same currency. `cost_breakdown` retains
+  known non-token items even when the total is unknown.
+
+An unknown cost is not a free request. Callers can use the reported usage for
+their own accounting, but the adapter does not fabricate a missing split or
+substitute the ordinary price for an unknown cache rate.
 
 ### Token Usage and Pricing Example
+
+Provider-parsed `Usage.input_tokens`, `output_tokens`, and `total_tokens` may
+be `None` even when `response.usage` exists. Check each count before
+arithmetic, and check costs before formatting or adding them to a budget:
 
 ```python
 google = UniversalLLMAPIAdapter(
@@ -1171,21 +1239,33 @@ google = UniversalLLMAPIAdapter(
 
 response = google.chat(**chat_params)
 
-if response.usage is None:
-    print("Provider did not report usage; cost is unavailable.")
+usage = response.usage
+if usage is None:
+    print("Provider did not report usage.")
 else:
-    print(response.usage.input_tokens, "tokens", f"({response.cost_input} {response.currency})")
-    print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")
-    print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
+    if usage.input_tokens is not None and usage.output_tokens is not None:
+        print("Input plus output:", usage.input_tokens + usage.output_tokens)
+    if usage.total_tokens is not None:
+        print("Total tokens:", usage.total_tokens)
+    print("Cache reads:", usage.cached_tokens)
+    print("Cache writes:", usage.cache_write_tokens)
+
+if response.cost_total is not None:
+    print(f"Estimated total: {response.cost_total:.6f} {response.currency}")
+else:
+    print("Complete cost is unavailable.")
 ```
 
-Prices are updated with each release to reflect provider changes. Bundled prices reflect each provider's standard API rates — batch pricing, cached-token discounts, and volume agreements are not accounted for. Use `set_in_per_1m` / `set_out_per_1m` to apply your actual rates if needed:
+Avoid `count or 0` or `cost or 0` when an unknown value must stay visible in
+your accounting.
 
 ### Overriding Pricing or Currency
 
-An override replaces that rate in every pricing tier for the selected model.
-It affects token pricing only; it does not change registered metered-operation
-rates.
+`set_in_per_1m` and `set_out_per_1m` replace the ordinary input or output rate in
+every pricing tier for the selected model. They preserve cache rates and do
+not change registered metered-operation rates. `set_currency` changes the
+currency label; it does not perform a currency conversion. Bundled rates are
+maintained in the registry and can become outdated as providers change prices.
 
 ```python
 google = UniversalLLMAPIAdapter(
