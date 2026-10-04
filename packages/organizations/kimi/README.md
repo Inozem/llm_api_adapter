@@ -1,9 +1,10 @@
 # llm-api-adapter-kimi
 
-Official direct Kimi / Moonshot Chat Completions API support for
-[llm-api-adapter](https://github.com/Inozem/llm_api_adapter/). The package uses
-only `POST /v1/chat/completions`; it does not install the Kimi SDK or add
-provider-specific public APIs.
+An optional Kimi / Moonshot organization package for
+[LLM API Adapter](https://github.com/Inozem/llm_api_adapter/), a Python SDK with
+one shared interface for calling LLM APIs.
+
+Calls Kimi / Moonshot through `POST /v1/chat/completions` without a provider SDK.
 
 ## Installation
 
@@ -50,10 +51,12 @@ response = adapter.chat(
 print(response.content)
 ```
 
-## Supported models and capabilities
+## Supported models
 
-The package deliberately exposes fixed model IDs, not moving aliases:
-`kimi-k3` and `kimi-k2.6`.
+- `kimi-k3`
+- `kimi-k2.6`
+
+## Capabilities
 
 | Capability | Supported models |
 | --- | --- |
@@ -61,13 +64,19 @@ The package deliberately exposes fixed model IDs, not moving aliases:
 | Public `ImagePart` URLs and every `DocumentPart` PDF URL or byte | Unsupported; rejected before HTTP |
 
 `reasoning_level` is resolved automatically from registry metadata. K3 cannot
-disable reasoning, so `reasoning_level="none"` warns. K2.6 maps `"none"` to
-disabled thinking and every other valid level to enabled thinking. When
-omitted, no thinking control is sent and Kimi's native default is preserved.
+disable reasoning, so `reasoning_level="none"` uses the registered minimum and
+warns. K2.6 maps `"none"` to disabled thinking and every other valid level to
+enabled thinking. When omitted, no thinking control is sent and Kimi's native
+default is preserved.
 Reasoning is never mixed into visible text; use
 `capture_reasoning=True` for opt-in observability.
 
-## History, files, and pricing
+Both models reject named tool choice before transport. `kimi-k3` accepts
+`tool_choice="any"`; `kimi-k2.6` rejects it and accepts only automatic or
+disabled tool choice. Exact supported values, request rules, and exceptions
+are recorded in the [Kimi registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/kimi/src/llm_api_adapter_kimi/registry/organizations/kimi.json).
+
+## History and files
 
 Kimi Chat Completions is stateless: `previous_response` is accepted for the
 shared API but is not serialized. Send the complete `messages` history on
@@ -78,14 +87,24 @@ Image bytes are encoded as data URIs. Public image URLs and every
 extracted text rather than a Chat Completions attachment, so the adapter does
 not upload, retain, download, extract, or delete caller files.
 
-Cost fields use registered standard USD rates. When Kimi reports
-`usage.cached_tokens`, the adapter applies cache-hit and cache-miss input
-rates; without that split, it retains the standard cache-miss estimate. This
-does not enable Kimi context caching, and the result is not an invoice.
-
 Kimi maps authentication/authorization (401/403), rate-limit (429), timeout
 (408/504), documented token/quota, and server failures to the matching public
 `LLMAPI*Error`; other client or SSE failures become `LLMAPIClientError`.
+
+## Automatic cache usage and pricing
+
+`usage.prompt_tokens_details.cached_tokens` becomes `Usage.cached_tokens`;
+the legacy `usage.cached_tokens` field is also accepted. K3 additionally
+reports `prompt_tokens_details.cache_write_tokens` as `Usage.cache_write_tokens`
+for its automatic cache-write component. Both are disjoint subsets of total
+`Usage.input_tokens`. K2.6 has registered automatic cache-read pricing only.
+
+Input cost uses ordinary, read, and applicable write rates from the USD
+registry tier without double counting. If a required read or write count is
+omitted, `cost_input` and `cost_total` stay `None`; known output cost can still
+be exposed. An explicitly reported zero stays zero. The adapter does not enable
+opt-in cache modes or account for selectable TTLs or storage charges. See the
+shared [usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
 
 See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
 for the shared API contract, error mapping, and E2E/release documentation.

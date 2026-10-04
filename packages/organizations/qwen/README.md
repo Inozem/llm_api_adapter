@@ -1,8 +1,11 @@
 # llm-api-adapter-qwen
 
-Official Model Studio Frankfurt/Global support for Qwen in
-[llm-api-adapter](https://github.com/Inozem/llm_api_adapter/). The package uses
-the Anthropic-compatible Messages API directly.
+An optional Qwen organization package for
+[LLM API Adapter](https://github.com/Inozem/llm_api_adapter/), a Python SDK with
+one shared interface for calling LLM APIs.
+
+Uses Model Studio's Frankfurt Global deployment through its
+Anthropic-compatible Messages API.
 
 ## Installation
 
@@ -50,7 +53,7 @@ response = adapter.chat(
 print(response.content)
 ```
 
-Qwen 0.1.0 supports only Model Studio's Frankfurt Global deployment. Pass the
+The package supports only Model Studio's Frankfurt Global deployment. Pass the
 required `workspace_id` explicitly to every `chat`, `stream_chat`, `achat`,
 and `astream_chat` call; it is never read from an environment variable. The
 package uses:
@@ -59,10 +62,14 @@ package uses:
 https://{workspace_id}.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages
 ```
 
-## Supported models and capabilities
+## Supported models
 
-The package deliberately exposes fixed model IDs, not moving aliases:
-`qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`.
+- `qwen3.8-max`
+- `qwen3.8-flash`
+- `qwen3.7-plus`
+- `qwen3.7-flash`
+
+## Capabilities
 
 | Capability | Supported models |
 | --- | --- |
@@ -77,24 +84,35 @@ With thinking enabled, Model Studio's reported `usage.output_tokens` can also
 include thinking tokens, so it can exceed `max_tokens` even when the visible
 answer respects that output limit.
 
-Cost fields use Frankfurt Global standard CNY text rates. They exclude cached,
-batch, promotional, and negotiated pricing.
-
 Qwen permits `tool_choice="auto"` and `"none"` in thinking mode, but not a
 forced `"any"` or named tool. For a forced tool call, the adapter automatically
 disables thinking and issues a `UserWarning`; pass `reasoning_level="none"` to
 make that choice explicit without a warning.
 
+Both forced tool-choice modes are declared `pass` exceptions: the adapter
+handles the provider restriction while preserving the tool-call contract.
+`previous_response` is accepted but ignored; supply complete `messages`
+history, including assistant tool calls and tool results, on each turn.
+Exact rules and exceptions are recorded in the [Qwen registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/qwen/src/llm_api_adapter_qwen/registry/organizations/qwen.json).
+
 ## PDF input
 
-Qwen 0.1.0 supports images, but not PDFs. `DocumentPart` URLs and bytes are
-rejected before any HTTP request:
+The package rejects `DocumentPart` URLs and bytes before any HTTP request.
+It does not upload documents or run OCR.
 
-```text
-Qwen does not support DocumentPart; PDF and OCR are unavailable in Qwen 0.1.0.
-```
+## Automatic cache usage and pricing
 
-The package does not make a partial PDF/OCR request or upload document bytes.
+Model Studio's Messages usage reports ordinary `input_tokens` separately from
+`cache_read_input_tokens`. When both counts are present, the adapter adds them
+to normalize total `Usage.input_tokens` and exposes cache reads as
+`Usage.cached_tokens`. The registry tier is selected from this total, then
+ordinary and cached input use their own Frankfurt Global CNY rates.
+
+No automatic cache-write component is priced, and `cache_write_tokens` remains
+`None`. An omitted cache-read split leaves `cost_input` and `cost_total` unknown;
+known output cost can remain available. Opt-in caching, TTLs, storage, batch,
+promotional, and negotiated rates are excluded. See the shared
+[usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
 
 See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
 for the shared API contract and examples.

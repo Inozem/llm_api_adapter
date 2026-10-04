@@ -1,7 +1,10 @@
 # llm-api-adapter-mistral
 
-Official direct-API support for Mistral in
-[llm-api-adapter](https://github.com/Inozem/llm_api_adapter/).
+An optional Mistral organization package for
+[LLM API Adapter](https://github.com/Inozem/llm_api_adapter/), a Python SDK with
+one shared interface for calling LLM APIs.
+
+Uses the official Mistral API directly.
 
 ## Installation
 
@@ -51,28 +54,19 @@ for the shared API contract and examples.
 
 ## Structured-output portability
 
-This package requires `llm-api-adapter>=0.9.2,<1.0.0` and enforces the same
-Core portable JSON Schema profile as OpenAI, Anthropic, Google, and xAI. The
-profile guarantees that every object is strict, every property is required,
-optional values are nullable, and only direct,
-non-recursive local `#/$defs/...` references are resolved before the request.
-
-Use `json_schema` for parsed JSON only. Use a Pydantic `response_model` when
-the final result must also be locally validated and returned as
-`ChatResponse.parsed_model`; each nested Pydantic model must use
-`ConfigDict(extra="forbid")`. Refusal and incomplete terminal responses set
-`ChatResponse.refusal` or `ChatResponse.incomplete_reason` and leave parsed
-fields unset. Invalid completed JSON or failed Pydantic validation raises
-`JSONSchemaError`.
-
-The complete schema vocabulary and examples are in the main
-[Structured Output guide](https://github.com/Inozem/llm_api_adapter/#structured-output).
+The package uses the Core portable profile for `json_schema` and Pydantic
+`response_model`. See the main [Structured Output guide](https://github.com/Inozem/llm_api_adapter/#structured-output)
+for schema validation, parsed results, refusal, and incomplete responses.
 
 ## Supported models
 
 - `mistral-small-2603`
 - `mistral-medium-3-5`
 - `mistral-large-2512`
+
+`mistral-large-2512` has no reasoning control: a supplied `reasoning_level`
+emits a warning and is not sent to Mistral. Exact capabilities, request rules,
+and exceptions are recorded in the [Mistral registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/mistral/src/llm_api_adapter_mistral/registry/organizations/mistral.json).
 
 ## PDF input
 
@@ -83,6 +77,9 @@ resulting Markdown to the selected chat model. This creates a separate OCR API
 request. The adapter reads `usage_info.pages_processed` from each OCR response
 and records an `ocr` page line in `ChatResponse.cost_breakdown` at the
 registered standard rate.
+
+For all three models, PDF URLs and bytes are declared `pass` exceptions:
+the OCR adaptation preserves the public PDF contract.
 
 ```python
 from llm_api_adapter.models.messages.chat_message import UserMessage
@@ -120,8 +117,20 @@ chat model's token cost and OCR cost.
 
 `ChatResponse.usage`, `cost_input`, and `cost_output` remain the selected chat
 model's token values. `cost_total` combines those token costs and OCR lines
-only when every OCR response has a valid page count and the OCR meter is
-available. Otherwise known OCR lines remain visible but `cost_total` is
-`None`; page counts are never inferred from Markdown or document bytes. These
-are standard-rate estimates, not an invoice, and apply consistently to sync,
-async, and streaming calls.
+only when token pricing is complete, every OCR response has a valid page count,
+and the OCR meter uses the same currency. Otherwise known OCR lines remain
+visible but `cost_total` is `None`; page counts are never inferred from Markdown
+or document bytes. These are standard-rate estimates, not an invoice, and apply
+consistently to sync, async, and streaming calls.
+
+## Automatic cache usage and pricing
+
+`usage.prompt_tokens_details.cached_tokens` becomes `Usage.cached_tokens`,
+a subset of total `Usage.input_tokens`. All three models use ordinary and
+cache-read rates from their registry tiers. There is no separately priced
+automatic cache write, so `cache_write_tokens` remains `None`.
+
+An omitted cache-read count leaves `cost_input` and `cost_total` unknown;
+known output and OCR costs can still be exposed. The package accounts for
+provider-managed automatic reads without enabling opt-in cache modes, TTLs,
+or storage pricing. See the shared [usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).

@@ -1,8 +1,11 @@
 # llm-api-adapter-zai
 
-Official direct Z.ai / GLM Chat Completions API support for
-[llm-api-adapter](https://github.com/Inozem/llm_api_adapter/). The package
-targets Core `>=0.9.7,<1.0.0` and does not install a provider SDK.
+An optional Z.ai / GLM organization package for
+[LLM API Adapter](https://github.com/Inozem/llm_api_adapter/), a Python SDK with
+one shared interface for calling LLM APIs.
+
+Uses Z.ai / GLM's official Chat Completions API. The package targets Core
+`>=0.9.7,<1.0.0` without a provider SDK.
 
 ## Installation
 
@@ -49,10 +52,11 @@ response = adapter.chat(
 print(response.content)
 ```
 
-## Supported model and capabilities
+## Supported models
 
-The package deliberately exposes one exact, verified model ID:
-`glm-5.3-flash`.
+- `glm-5.3-flash`
+
+## Capabilities
 
 | Capability | `glm-5.3-flash` |
 | --- | --- |
@@ -70,6 +74,24 @@ tool choices, parallel-tool control, provider-built-in tools, and every
 `DocumentPart` URL or byte form fail locally before the transport is called.
 The adapter accepts only the official endpoint and the `ZAI_API_KEY` bearer
 credential.
+
+`reasoning_level="none"` uses the minimum registered effort and emits a
+warning. `previous_response` is accepted but ignored: send complete `messages`
+history, including assistant tool calls and tool results, on each turn; no
+provider continuation identifier is sent. Exact values and exceptions are
+recorded in the [Z.ai registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/zai/src/llm_api_adapter_zai/registry/organizations/zai.json).
+
+## Automatic cache usage and pricing
+
+`usage.prompt_tokens_details.cached_tokens` becomes `Usage.cached_tokens`,
+a subset of total input. The model uses its registry's ordinary and cache-read
+USD rates. No separately priced automatic cache-write component is registered,
+so `cache_write_tokens` remains `None`.
+
+An omitted cache-read split leaves `cost_input` and `cost_total` unknown;
+known output cost can remain available. The adapter does not enable opt-in
+cache controls or price selectable TTLs or storage. See the shared
+[usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
 
 See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
 for the shared API contract and transport behavior.

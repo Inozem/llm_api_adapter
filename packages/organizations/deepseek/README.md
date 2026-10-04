@@ -1,7 +1,10 @@
 # llm-api-adapter-deepseek
 
-Official direct DeepSeek API support for
-[llm-api-adapter](https://github.com/Inozem/llm_api_adapter/).
+An optional DeepSeek organization package for
+[LLM API Adapter](https://github.com/Inozem/llm_api_adapter/), a Python SDK with
+one shared interface for calling LLM APIs.
+
+Uses the official DeepSeek Responses API directly.
 
 This independently versioned package targets Core `>=0.9.6,<1.0.0` and adds no
 DeepSeek SDK dependency. Select it through the existing
@@ -61,10 +64,13 @@ response = adapter.chat(
 print(response.content)
 ```
 
-## Supported model and compatibility
+## Supported models
 
-The package exposes one exact, verified model ID: `deepseek-flash`. It uses the
-official Responses API and keeps the public Core request shape unchanged.
+- `deepseek-flash`
+
+## Capabilities
+
+The package uses the official Responses API with the shared Core request shape.
 
 | Capability | `deepseek-flash` |
 | --- | --- |
@@ -80,6 +86,11 @@ official Responses API and keeps the public Core request shape unchanged.
 The adapter rejects unsupported capabilities before either the synchronous or
 asynchronous client is invoked. It does not infer support from model prefixes,
 retired aliases, or an endpoint name.
+
+Named tool selection is a `pass` exception: disabling reasoning adapts the
+provider restriction while preserving the tool-call contract. Exact request
+behavior, limits, and exceptions are recorded in the
+[DeepSeek registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/organizations/deepseek.json).
 
 ## Images and the file boundary
 
@@ -117,20 +128,22 @@ normal reasoning callbacks.
 
 DeepSeek reports normalized `input_tokens`, `output_tokens`, and
 `total_tokens`, plus optional `usage.input_tokens_details.cached_tokens` and
-`usage.output_tokens_details.reasoning_tokens`. The package retains those
-details when they are valid and calculates a USD standard-rate estimate from
-the UTC request-dispatch window:
+`usage.output_tokens_details.reasoning_tokens`. Confirmed cache reads become
+`Usage.cached_tokens`, a subset of total input. There is no separately priced
+automatic write component; `cache_write_tokens` remains `None`.
 
-| Window | Cache-hit input / 1M | Cache-miss input / 1M | Output / 1M |
-| --- | ---: | ---: | ---: |
-| Peak (weekdays 01:00–04:00 and 06:00–10:00 UTC) | $0.006 | $0.30 | $1.20 |
-| Off-peak (all other times) | $0.003 | $0.15 | $0.60 |
+The USD estimate uses `pricing_tiers` and the UTC `pricing_schedule` in the
+registry. The request-dispatch window selects the multiplier for ordinary
+input, cached input, and output rates; ordinary input excludes the reported
+cache-read subset. No rates or time windows are inferred from model names.
 
-These values are a standard estimate, not an invoice. Context caching is
-managed by DeepSeek; the SDK does not store or control a cache. If usage,
-cached-token details, the dispatch timestamp, or the selected rate cannot be
-verified, the relevant cost field remains unavailable rather than being
-guessed. See the [DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing/)
+An omitted cache split leaves `cost_input` and `cost_total` unknown while known
+output cost can remain available. Missing or invalid pricing context prevents
+the estimate; no locally guessed counts or rates are substituted. Caching is
+provider-managed, and opt-in controls, selectable TTLs, and storage pricing
+are excluded. These are standard-rate estimates, not an invoice. See the
+shared [usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing),
+[DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing/)
 and [Responses usage](https://api-docs.deepseek.com/guides/responses_api/)
 documentation for provider semantics.
 
