@@ -95,7 +95,9 @@ python -m coverage report --show-missing --fail-under=90
 
 E2E tests make real provider requests and may incur charges. Run them only deliberately, outside pull-request and Python-version matrix jobs.
 
-The full E2E marker runs the scenarios under `tests/e2e/`. The synchronous feature and structured-output scenarios traverse the models registered for each organization profile, so this command can make more than one request per provider:
+The full E2E marker collects shared and package-local scenarios. The shared
+sync/async scenarios traverse exact registered models and select evidence from
+their exception profiles, so this command can make multiple requests per provider:
 
 ```bash
 python -m pytest -v -m e2e
@@ -103,12 +105,12 @@ python -m pytest -v -m e2e
 
 ### Standard for a new organization package
 
-Every new optional organization package must use the shared E2E architecture, not a separate
-provider-only substitute:
+Every new optional organization package must use the shared E2E architecture:
 
-1. Add a named organization profile and marker to the Core E2E infrastructure. Declare exactly
-   the portable capabilities that the package supports; Core tests then run every applicable
-   scenario and deselect only explicitly unsupported ones.
+1. Add a named organization profile in `tests/e2e/conftest.py` and a provider marker in
+   `pytest.ini`. Declare each model's exceptions in its registry as described under
+   [Registry verification](#registry-verification); shared tests select the baseline or
+   declared replacement evidence for that exact model.
 2. Add package-local E2E tests only for provider-specific protocol behavior, model variants, and
    explicit rejection boundaries that the shared scenarios cannot express.
 3. Make the provider's maintainer and post-publish release commands collect both `tests/e2e` and
@@ -116,8 +118,26 @@ provider-only substitute:
    against the exact candidate artifacts, outside pull-request matrices, with only that provider's
    key.
 
-An unsupported capability must be declared and gated; it is not a reason to omit the rest of the
-Core contract. A failing, costly, or flaky supported scenario must be fixed rather than excluded.
+Reuse existing shared scenarios. Package-local checks must preserve unrelated
+shared scenarios. Unsupported capabilities need declared rejection evidence;
+failing, costly, or flaky supported scenarios must be fixed.
+
+### Credential-free collection
+
+Before requesting a live run, verify collection without provider credentials:
+
+```bash
+python -m pytest --collect-only -q --import-mode=importlib -m e2e_openai tests/e2e
+python -m pytest --collect-only -q --import-mode=importlib -m e2e_zai --rootdir=. tests/e2e packages/organizations/zai/tests/e2e
+```
+
+Repeat with the relevant provider marker and package path. Install the package
+being changed first: an absent optional distribution may collect only a skipped
+placeholder. Collection must not require API keys or operation credentials such
+as `QWEN_WORKSPACE_ID`, construct a live client, or send requests. A successful
+collection checks selection and imports; it does not prove live provider behavior.
+
+### Authorized live runs
 
 The required environment variables are:
 
@@ -126,9 +146,13 @@ The required environment variables are:
 - `GOOGLE_API_KEY`
 - `MISTRAL_API_KEY` (with the independently installed Mistral package)
 - `XAI_API_KEY` (with the independently installed xAI package)
+- `QWEN_API_KEY` (with the independently installed Qwen package)
 - `KIMI_API_KEY` (with the independently installed Kimi package)
 - `DEEPSEEK_API_KEY` (with the independently installed DeepSeek package)
 - `ZAI_API_KEY` (with the independently installed Z.ai package)
+
+The Qwen E2E harness also requires `QWEN_WORKSPACE_ID` for live execution and
+passes it as a request argument. The adapter itself does not read this variable.
 
 Run one built-in organization independently with its dedicated marker:
 
@@ -161,8 +185,8 @@ python -m pytest -v --import-mode=importlib -m e2e_deepseek --rootdir=. tests/e2
 ```
 
 It runs every applicable shared and package-local E2E contract for the canonical
-`deepseek-flash` profile. Direct document-input scenarios are excluded by the
-declared capability gate because DeepSeek does not support them. The package-local
+`deepseek-flash` profile. Direct document-input scenarios are replaced by
+package-local rejection evidence according to the exact-model exception. The package-local
 DeepSeek suite and the Core discovery/selector checks remain credential-free;
 never add `DEEPSEEK_API_KEY` to those commands.
 
@@ -174,22 +198,23 @@ python -m pytest -v --import-mode=importlib -m e2e_zai --rootdir=. tests/e2e pac
 ```
 
 It runs every applicable shared and package-local E2E contract for
-`glm-5.3-flash`. Portable structured output and all document forms are excluded
-by the declared capability gate and rejected locally. The deterministic Z.ai
+`glm-5.3-flash`. Portable structured-output and document scenarios use the declared
+package-local rejection evidence. The deterministic Z.ai
 package suite and Core discovery/selector checks remain credential-free; never
 add `ZAI_API_KEY` to those commands.
 
-`test_json_schema.py` makes one portable structured-output request for every configured registered model. It must return the exact expected JSON without a refusal or incomplete state; advertised structured-output support is not skipped after the request.
+`test_json_schema.py` makes one portable structured-output request for every
+configured registered model whose profile selects the baseline scenario. It
+must return the exact expected JSON without a refusal or incomplete state;
+advertised support is not skipped after the request.
 
-The heavyweight async suite uses one latest registered model for each provider
-by default; override it only when needed with
-`ASYNC_E2E_<ORGANIZATION>_MODEL`. The synchronous HTTPX suite uses the same
-bounded selection through `SYNC_HTTPX_E2E_<ORGANIZATION>_MODEL`, and makes one
-paid `chat()` request plus one paid `achat()` request for that selected model
+The synchronous HTTPX transport suite uses one latest registered model per
+provider by default, configurable through `SYNC_HTTPX_E2E_<ORGANIZATION>_MODEL`.
+It makes one paid `chat()` request plus one paid `achat()` request for that selected model
 per configured provider. The HTTPX requests reserve 512 generated tokens so
 models that think by default still have room for visible text.
 
-For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, apply every affected provider's documented pre-promotion gate and record only sanitized results. After those checks pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage. The Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai package workflows run their respective unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
+For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. Record any explicitly authorized manual pre-merge E2E as a preflight with sanitized results; the final gate is the post-publish lane described below. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage. The Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai package workflows run their respective unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
 
 Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change selects the affected independent OpenAI, Anthropic, and Google E2E lanes. A shared Core dependency additionally runs the Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai lanes; a provider-specific built-in adapter, client, or registry change runs only that Core organization lane. Shared E2E infrastructure runs every applicable lane. Each core lane receives only its own API key; `e2e_builtin` is not used in CI. A Mistral, xAI, Qwen, Kimi, DeepSeek, or Z.ai package change publishes only that organization package and runs its corresponding lane. Each lane installs the exact TestPyPI versions through the matching optional extra, verifies plugin discovery when needed, then makes provider calls. Core and organization packages are independently versioned: use the versions declared in the root `pyproject.toml` and the changed package's `pyproject.toml`; release-specific target pairs belong in the relevant quickstart or release notes. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
 
@@ -203,12 +228,69 @@ Only after the staging pull request is merged does the [dev release workflow](.g
 
 ## Registry verification
 
-The bundled registry contains only published standard text input/output rates;
-it is not an invoice calculator. For every registry-data update, verify the
+The [project constitution](.specify/memory/constitution.md) defines the shared
+baseline and exception policy. For every registry-data update, verify the
 model identifier, context window, maximum output, tier boundaries, reasoning
-capabilities, request rules, aliases, and deprecation status against the
-provider's official documentation. Do not infer a value when the provider does
-not publish it.
+capabilities, request rules, exceptions, aliases, and deprecation status against
+the provider's official documentation. Record source links, verification date,
+and applicable API, region, currency, and pricing context in review evidence.
+Do not infer unpublished support, counts, or rates.
+
+### Exact-model exceptions and evidence
+
+1. Every first-party model in Core or an organization package must contain an
+   explicit `capability_exceptions` list, including `[]` when no exception
+   applies. Each entry has `capability_id`, `behavior_id`, and descriptive
+   `behavior`. Legacy third-party registration may omit a profile, but that
+   does not establish conformance.
+2. Keep exact values in their owning fields, such as
+   `reasoning_capability.allowed_values` or `request_rules`. Reuse semantic,
+   value-independent behavior IDs across organizations: `pass` means the adapter
+   preserves the baseline despite a provider deviation, and `unsupported`
+   means the capability is wholly unsupported. Reuse other established behavior
+   IDs; add a custom ID only when existing behavior and structured metadata
+   cannot express the result. Never store pytest node IDs in a registry.
+3. Preserve deterministic positive evidence for supported behavior and add
+   focused fixture or mocked-transport evidence for each changed exception,
+   including adapter compensation for `pass`. Derive expected values from the
+   structured fields and verify preflight rejection or request transformation.
+   Always-on Core invariants cannot be disabled by model exceptions.
+4. For capabilities backed by shared E2E scenarios, update the test-only map
+   [tests/capability_scenarios.py](tests/capability_scenarios.py).
+   `BASELINE_SCENARIOS` applies when no exception exists or its ID is `pass`.
+   `EXCEPTION_SCENARIOS` maps a non-`pass` behavior to shared or package-local
+   replacement evidence, keyed by `(capability_id, behavior_id, organization)`;
+   `organization=None` supplies a shared route. `ALWAYS_ON_SCENARIOS` retains
+   unconditional evidence. This map covers existing scenarios, not every
+   capability or every repository test, and is not a runtime routing mechanism.
+5. Use the existing `e2e_capability` marker and exact-model parameters when
+   attaching evidence to a routed scenario. Reuse shared tests and add a
+   package-local replacement only when needed to prove the declared behavior.
+   A routed non-`pass` exception must resolve to exactly one collected evidence
+   scenario. Missing profiles, unknown scoped behaviors, missing or duplicate
+   evidence, and contradictions with structured metadata must fail deterministic
+   validation.
+
+Run the focused profile and routing checks without provider keys:
+
+```bash
+python -m pytest -q -m unit tests/unit/llm_registry/test_model_profile.py tests/unit/llm_registry/test_model_profile_inventory.py tests/unit/conformance/test_capability_selection.py
+```
+
+Then perform [credential-free collection](#credential-free-collection) for each
+affected provider. Changes to provider behavior should update the relevant
+compatibility guide; detailed exception inventories remain in the registries.
+
+### Sources and automatic cache pricing
+
+Registry token estimates cover ordinary input/output and verified automatic
+cache reads or separately priced automatic cache writes. For each cache rate,
+verify the exact response count fields, whether input includes or excludes the
+cache component, and any tier or dispatch-time conditions. Unreported counts
+and unverified rates remain unknown; an explicitly reported zero remains zero.
+Do not activate or record opt-in cache controls, selectable TTLs, or storage
+rates. See [usage and pricing](README.md#token-usage-and-pricing) for incomplete
+cost behavior.
 
 Update the root manifest's `effective_date` whenever the built-in core registry
 data changes, and keep the source list below current for both core and plugin
@@ -221,20 +303,15 @@ organizations.
 | Google | `src/llm_api_adapter/llm_registry/organizations/google.json` | [Gemini models](https://ai.google.dev/gemini-api/docs/models), [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing), [Gemini thinking](https://ai.google.dev/gemini-api/docs/generate-content/thinking), and [deprecations](https://ai.google.dev/gemini-api/docs/deprecations) |
 | Mistral | `packages/organizations/mistral/src/llm_api_adapter_mistral/registry/organizations/mistral.json` | [Model cards](https://docs.mistral.ai/models/), [pricing](https://docs.mistral.ai/inference/pricing), [reasoning](https://docs.mistral.ai/studio/conversations/reasoning), and [model lifecycle](https://docs.mistral.ai/inference/model-lifecycle) |
 | xAI | `packages/organizations/xai/src/llm_api_adapter_xai/registry/organizations/xai.json` | [Models](https://docs.x.ai/developers/models), [pricing](https://docs.x.ai/developers/pricing), and [reasoning](https://docs.x.ai/developers/model-capabilities/text/reasoning) |
+| Qwen | `packages/organizations/qwen/src/llm_api_adapter_qwen/registry/organizations/qwen.json` | [Models](https://help.aliyun.com/en/model-studio/models), [Anthropic-compatible Messages API](https://help.aliyun.com/en/model-studio/anthropic-api-messages), [pricing](https://help.aliyun.com/en/model-studio/model-pricing), and [context caching](https://help.aliyun.com/en/model-studio/context-cache) |
 | Kimi | `packages/organizations/kimi/src/llm_api_adapter_kimi/registry/organizations/kimi.json` | [Models](https://platform.kimi.ai/docs/models), [Chat Completions API](https://platform.kimi.ai/docs/api/chat), and [pricing](https://platform.kimi.ai/docs/pricing/chat) |
 | DeepSeek | `packages/organizations/deepseek/src/llm_api_adapter_deepseek/registry/organizations/deepseek.json` | [Models and pricing](https://api-docs.deepseek.com/quick_start/pricing/), [Responses API](https://api-docs.deepseek.com/guides/responses_api/), [Vision](https://api-docs.deepseek.com/guides/vision/), and [context caching](https://api-docs.deepseek.com/guides/kv_cache/) |
 | Z.ai | `packages/organizations/zai/src/llm_api_adapter_zai/registry/organizations/zai.json` | [Models](https://docs.z.ai/guides/overview/models), [Chat Completions API](https://docs.z.ai/api-reference/llm/chat-completion), and [pricing](https://docs.z.ai/guides/overview/pricing) |
 
-This verification excludes cache write/storage, batch, flex, priority,
-modality-specific, provider-hosted tool, and negotiated-volume charges. Kimi is
-the cache-aware exception in the standard registry: verify its cache-hit and
-cache-miss rates against official evidence, and apply them only when
-`usage.cached_tokens` is reported. DeepSeek is a package-local pricing
-exception: its `deepseek-flash` estimate selects the published peak/off-peak
-UTC schedule and cache-hit/miss details from provider-reported usage; it is a
-standard estimate, not an invoice, and provider-managed caching is not exposed
-as client state. Record any unsupported modality-specific rate as an explicit
-registry limitation rather than silently applying a text rate.
+Token estimates exclude batch, flex, priority, modality-specific, provider-hosted
+tool, and negotiated-volume charges. Record an unsupported rate as an explicit
+limitation instead of silently applying a text rate. Separately metered
+operations use their own verified rates and `cost_breakdown`.
 
 ## Reasoning smoke script
 
@@ -253,6 +330,7 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
 ## Documentation maintenance
 
 - Keep README focused on the public package contract, installation, and user-facing examples.
+- Keep version-specific changes and migration notes in GitHub release descriptions.
 - Keep contributor setup, test commands, provider-key rules, CI details, and release procedures in this guide.
 - Update the constitution when the provider-neutral baseline changes, and update the relevant compatibility and architecture documentation when public behavior, provider mappings, or test workflows change.
 - When structured-output behavior changes, update the README's portable-profile contract, the organization-package READMEs, and deterministic conformance tests together. Do not claim arbitrary JSON Schema compatibility.
@@ -290,8 +368,8 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
    ```
 
 4. Open or update the pull request to `main`. Wait for review and the deterministic main CI to pass.
-5. Run each affected provider's documented maintainer-controlled pre-promotion E2E gate. Verify only the required environment variables are present, never place credentials in commands, and record only sanitized results; do not promote the candidate if a required gate fails.
-6. The maintainer opens and merges a staging pull request containing that exact candidate commit into protected `dev`. The dev release workflow publishes only changed distributions to TestPyPI, then runs the E2E lanes affected by those changes. Core organization lanes run independently; provide the matching key for each through CI Secrets only. The current synchronous scenarios may exercise every registered model of that lane.
+5. If the maintainer explicitly authorizes a manual pre-merge E2E run, use the affected provider's marker and record sanitized results. Verify only the required environment variables are present and never place credentials in commands. This run is a preflight; it does not satisfy the final release gate.
+6. The maintainer opens and merges a staging pull request containing that exact candidate commit into protected `dev`. The dev release workflow publishes only changed distributions to TestPyPI, then installs exact candidate artifacts in clean environments and runs every applicable shared and package-local scenario in the affected provider lanes. Core organization lanes run independently; provide the matching key for each through CI Secrets only. Final E2E remains pending until these artifacts exist and the post-publish lanes pass.
 7. After the E2E jobs pass, the maintainer manually installs the changed package set from TestPyPI. For Mistral, verify the public installation path:
 
    ```bash
@@ -334,6 +412,9 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
 8. Merge the already verified pull request into `main`.
 9. After the pull request is merged, create one final tag for each changed distribution: `v<core-version>` for the core package, `mistral-v<mistral-version>` for Mistral, `xai-v<xai-version>` for xAI, `kimi-v<kimi-version>` for Kimi, and `deepseek-v<deepseek-version>` for DeepSeek. The tags may point to the same commit. The main workflow publishes only the distribution selected by its tag.
 
-The post-publish E2E job is a release-candidate gate, not a general development check. Keep it out of pull-request jobs and Python-version matrices so paid provider calls remain bounded.
+Keep the post-publish E2E gate separate from pull-request jobs and Python-version
+matrices. Each lane receives only its matching provider credential. Local builds
+and pre-merge manual runs do not replace the final check against exact TestPyPI
+artifacts.
 
 To keep this gate maintainer-controlled, protect `dev` with an active repository ruleset that targets only `dev`, requires a pull request before merging, restricts updates, blocks force pushes, and grants bypass only to the approved repository administrators. The `Require a pull request before merging` rule is essential: `Restrict updates` alone still permits an administrator to push directly to `dev`.
