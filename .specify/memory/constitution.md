@@ -100,9 +100,9 @@ capability limits and compatibility exceptions are exact-model registry data. Un
 receive no inferred special behavior.
 
 Usage and cost fields depend on provider-reported values. Missing usage MUST remain unset rather
-than be locally estimated. Non-token metered operations MUST be represented separately from token
-cost. `previous_response` remains an optional provider optimization: unsupported adapters accept
-it without serializing an unsupported provider request and use the caller-supplied history.
+than be locally estimated, and non-token metered operations MUST be represented separately from
+token cost. `previous_response` remains an optional provider optimization: unsupported adapters
+accept it without serializing an unsupported provider request and use the caller-supplied history.
 
 ## Canonical Provider-Neutral Baseline
 
@@ -172,10 +172,15 @@ work before the corrected behavior may be used for a release decision.
   identifier or opaque replay material MAY be sent only when the exact model and adapter declare
   that behavior; otherwise the adapter MUST use caller-provided history and serialize no unsupported
   continuation field.
-- Usage and costs MUST be based only on valid provider-reported data and verified rates. Missing or
-  contradictory counts MUST remain unavailable. Cached input MUST be a provider-confirmed subset of
-  input; separately metered operations MUST remain separate from token cost; total cost MUST remain
-  unavailable whenever any incurred component cannot be priced completely.
+- Usage and costs MUST use provider-reported data and verified rates. Missing or contradictory
+  usage MUST NOT be estimated or treated as zero. Reported cache reads and writes MUST be confirmed
+  input components, remain distinct, and never be double-counted. Parsed omitted input/output counts
+  MUST remain `None`; an explicitly reported zero remains `0`. Cache rates apply only to components
+  that may occur automatically during ordinary requests and whose quantities providers report.
+  A calculated total MUST remain unavailable whenever an incurred component cannot be priced
+  completely. A complete provider-reported total MAY remain available without a component
+  breakdown; the SDK MUST NOT invent missing component costs. Non-token metered operations MUST
+  remain separate from token cost.
 - Known authorization, rate-limit, token-limit, client, server, timeout, usage-limit, tool-input,
   tool-argument, tool-choice, structured-output, and configuration failures MUST map to the public
   error hierarchy. Common validation failures and declared unsupported inputs MUST fail before an
@@ -257,4 +262,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.5.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-09-28
+**Version**: 0.5.1 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-10-04

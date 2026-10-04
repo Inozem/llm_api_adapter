@@ -84,3 +84,21 @@ CI configuration in `.github/workflows/ci-dev.yml` covers Python 3.10, 3.11, 3.1
 ## Later release gate
 
 After a staging pull request merges to `dev`, the established post-publish workflow builds and installs exact TestPyPI candidates, then runs each affected provider's applicable common and package-local E2E scenarios in its own job with only its own credential. A pre-merge or local live run is a preflight and does not replace that gate. No E2E or publication is performed by `$speckit-plan`.
+
+## T058 documentation audit and remaining gates (2026-10-04)
+
+The constitution clarifies cache-read/write accounting, partial usage, pricing compatibility, and
+authoritative provider totals. The architecture records exact-model profile certification,
+test-only scenario selection, AST/TOML metadata validation, and usage/pricing ownership. T057's
+local evidence above remains the recorded validation; remote CI and TestPyPI status were not
+verified for this audit.
+
+Primary review confirmed this documentation-only scope. Independent targeted validation passed:
+**327 passed, 17 warnings** (`.pytest_cache/t058/primary-validation.log`).
+
+Pending gates remain the Python 3.10-3.13 CI results and canonical Python 3.10 coverage result
+noted above; merge the staging PR to `dev`; install the exact prepared TestPyPI candidates cleanly
+and verify plugin discovery; then pass every applicable shared and package-local E2E scenario in
+each affected provider's own lane with only that provider's key. Promote to `main` only after all
+gates pass. Local and pre-merge live results are preflight only. No publication or provider calls
+were performed.

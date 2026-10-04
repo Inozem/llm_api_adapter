@@ -82,6 +82,12 @@ select an API variant, restrict normalized tool choice, rename a supported reque
 a documented unsupported field. It may not execute arbitrary callbacks or infer behavior from a
 model prefix.
 
+Every first-party exact-model profile supplies `capability_exceptions`, including `[]` when no
+deviation applies. Exception IDs describe semantic, value-independent behavior, not model values
+or pytest IDs. An absent exception or `pass` retains positive baseline evidence. Legacy third-party
+registrations without a profile remain usable but uncertified; profile requirements apply at
+certification, not ordinary plugin discovery.
+
 Unknown models remain selectable through the chosen adapter but receive no inferred pricing,
 reasoning capability, or request transformation. Only documented direct organization snapshot
 forms inherit registered base metadata.
@@ -119,12 +125,27 @@ before dispatching an invalid native request.
 
 ## Usage and Cost Boundary
 
-Usage is provider-reported; the common layer does not estimate it. Provider-confirmed cached input
-is a subset of input and is priced only when a verified cached-input rate exists. Standard text
-token cost is calculated from a selected verified tier when usable provider input usage exists.
-Separately metered provider operations are represented as independent cost line items. A total is
-available only when every incurred component is known and priceable; absent or contradictory data
-stays absent.
+Usage is provider-reported; the common layer does not estimate it. `cached_tokens` means confirmed
+automatic cache-read/cache-hit input; separately reported automatic cache writes use
+`cache_write_tokens`. Disjoint components normalize to inclusive input only when provider semantics
+establish exact counts, without double counting; reads and separately counted writes are disjoint
+subsets of inclusive input and their sum cannot exceed it. Organization-owned normalization supplies common
+`Usage`/`ChatResponse`; `ChatResponse` owns arithmetic, and `LLMAdapterBase` selects the verified
+pricing tier by full input and forwards its rates.
+Registry cache-read and cache-write rates are independent and present only for components that can
+occur automatically during ordinary adapter requests and whose quantities are provider-reported;
+rates are not inferred for opt-in controls, TTLs, resources, or storage. Missing required split
+data, an unverified rate for a positive component, or contradictory usage leaves calculated input
+and total unavailable; output can remain independently known when its usage and rate are known.
+Parsed omitted input/output counts remain `None`, explicit zero remains zero, and wholly absent
+usage remains absent, while direct `Usage` construction keeps its first
+three positional zero defaults. Existing direct `apply_pricing(input_rate, output_rate, currency)`
+and `apply_cost_breakdown(...)` calls remain compatible. Cache is token input, while other metered
+operations are cost line items. An SDK-calculated total requires every incurred component and a
+compatible currency to be known. An authoritative complete provider total, such as xAI's reported
+`cost_in_usd_ticks`, may be present with component costs `None`; absent component costs are not
+fabricated or treated as zero. DeepSeek's conditional rate schedule remains registry-owned, with
+package-owned dispatch selecting the applicable rate rather than flattening the schedule.
 
 ## Dependency and Extension Boundary
 
@@ -143,6 +164,19 @@ not a second product contract or an inventory of every test. Exact-model registr
 the applicable shared or package-local route. Provider E2E validation is deliberately bounded,
 organization-specific, and performed only through explicit manual verification or designated
 post-publish CI lanes. Core and organization packages are independently versioned and released.
+
+That test-only map assigns `BASELINE`, `EXCEPTION`, and `ALWAYS_ON` roles to existing shared
+scenarios through `BASELINE_SCENARIOS`, `EXCEPTION_SCENARIOS`, and `ALWAYS_ON_SCENARIOS`. It is
+scoped to current shared request forms and one common application-tool loop per model, not every
+capability/test. A non-pass exception redirects only that capability; missing or duplicate evidence in
+the scoped shared E2E selection fails. Selection uses no runtime pytest IDs or new requests/tool
+variants, stays inside the provider lane, and does not select CI jobs or grant secrets.
+`tests/external_organization_metadata.py` compares
+`KNOWN_ORGANIZATION_PACKAGES`, Core extras, package manifests and entry points, E2E profiles, and
+the CI selector by reading Python AST/TOML without executing or importing optional providers. E2E
+profiles derive distribution names from `KNOWN_ORGANIZATION_PACKAGES`; the validator detects drift.
+Runtime does not read repository TOML or install absent plugins. Publication jobs and credential
+boundaries remain explicit.
 
 The executable source of truth for workflow triggers and release mechanics remains the repository
 workflow configuration. This artifact preserves the stable boundary, not a copied workflow index.
