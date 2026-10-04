@@ -40,9 +40,12 @@ task-to-issues skill:
 specify init --here --force --integration codex --script ps
 ```
 
-Commit feature artifacts under `specs/` and the project-specific
-`.agents/skills/speckit-taskstoissues/SKILL.md`. Do not commit the generated
-`.specify/` directory or other bundled Spec Kit agent skills. The
+Keep feature artifacts under `specs/` locally. Include relevant scope and
+validation results in pull requests. Commit the
+[constitution](.specify/memory/constitution.md), the
+[living architecture](.specify/memory/architecture.md), and the project-specific
+`.agents/skills/speckit-taskstoissues/SKILL.md`. Other generated `.specify/`
+files and bundled Spec Kit agent skills stay local. The
 `speckit-taskstoissues` skill requires a locally initialized `.specify/`
 directory and a feature `tasks.md` before it can create GitHub issues.
 

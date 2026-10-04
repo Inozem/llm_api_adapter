@@ -174,10 +174,12 @@ graphify-out/
 .claude/settings.json
 .mcp.json
 
-# Spec Kit is installed locally; keep feature specifications and the shared
-# constitution under version control. Agent skills stay local.
+# Spec Kit task artifacts and generated tooling stay local. Keep the shared
+# constitution and living architecture under version control.
+/specs/
 /.specify/*
 !/.specify/memory/
 /.specify/memory/*
 !/.specify/memory/constitution.md
+!/.specify/memory/architecture.md
 /.agents/skills/
