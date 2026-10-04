@@ -4,8 +4,7 @@ An optional Z.ai / GLM organization package for
 [LLM API Adapter](https://github.com/Inozem/llm_api_adapter/), a Python SDK with
 one shared interface for calling LLM APIs.
 
-Uses Z.ai / GLM's official Chat Completions API. The package targets Core
-`>=0.9.7,<1.0.0` without a provider SDK.
+Uses Z.ai / GLM's official Chat Completions API without a provider SDK.
 
 ## Installation
 

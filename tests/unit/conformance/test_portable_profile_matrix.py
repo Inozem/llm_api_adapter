@@ -538,7 +538,12 @@ def _mistral_metered_chat_response() -> dict[str, Any]:
     return {
         "model": "mistral-small-2603",
         "choices": [{"message": {"content": "Summary."}}],
-        "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+        "usage": {
+            "prompt_tokens": 2,
+            "completion_tokens": 3,
+            "total_tokens": 5,
+            "prompt_tokens_details": {"cached_tokens": 0},
+        },
     }
 
 
@@ -557,6 +562,7 @@ def _mistral_metered_stream_events() -> list[SSEEvent]:
                     "prompt_tokens": 2,
                     "completion_tokens": 3,
                     "total_tokens": 5,
+                    "prompt_tokens_details": {"cached_tokens": 0},
                 },
             },
         )

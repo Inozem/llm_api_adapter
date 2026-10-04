@@ -50,9 +50,9 @@ def test_zai_project_declares_core_dependency_extras_and_entry_point():
 
     assert 'name = "llm-api-adapter-zai"' in metadata
     assert 'version = "0.1.1"' in metadata
-    assert 'dependencies = ["llm-api-adapter>=0.9.7,<1.0.0"]' in metadata
-    assert 'async = ["llm-api-adapter[async]>=0.9.7,<1.0.0"]' in metadata
-    assert 'httpx = ["llm-api-adapter[httpx]>=0.9.7,<1.0.0"]' in metadata
+    assert 'dependencies = ["llm-api-adapter>=0.9.8,<1.0.0"]' in metadata
+    assert 'async = ["llm-api-adapter[async]>=0.9.8,<1.0.0"]' in metadata
+    assert 'httpx = ["llm-api-adapter[httpx]>=0.9.8,<1.0.0"]' in metadata
     assert 'zai = "llm_api_adapter_zai.plugin:PLUGIN"' in metadata
     assert 'dependencies = ["llm-api-adapter-zai' not in metadata
 

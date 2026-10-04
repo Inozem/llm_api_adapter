@@ -6,8 +6,7 @@ one shared interface for calling LLM APIs.
 
 Uses the official DeepSeek Responses API directly.
 
-This independently versioned package targets Core `>=0.9.6,<1.0.0` and adds no
-DeepSeek SDK dependency. Select it through the existing
+The package adds no DeepSeek SDK dependency. Select it through the existing
 `UniversalLLMAPIAdapter` facade with organization `deepseek` and the canonical
 model `deepseek-flash`.
 

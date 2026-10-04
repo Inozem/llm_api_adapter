@@ -46,7 +46,7 @@ Supports Python 3.10–3.14.
 
 ### Which library should you choose?
 
-- **[LiteLLM](https://docs.litellm.ai/docs/):** LiteLLM provides much broader model coverage, an OpenAI-style interface, routing, and a gateway. `llm-api-adapter` focuses on direct calls to a smaller model catalog and does not include routing or a gateway. For the compared releases, the [`llm-api-adapter` 0.9.7](https://pypi.org/project/llm-api-adapter/0.9.7/) universal wheel is 110 kB with one direct base dependency (`requests`); the [`litellm` 1.102.1](https://pypi.org/project/litellm/1.102.1/) Linux x86-64 wheel is 27.4 MB (about 249 times larger) with 14 direct base dependencies. LiteLLM uses the [OpenAI SDK](https://docs.litellm.ai/docs/providers/openai_compatible) to call OpenAI and OpenAI-compatible endpoints, but installs it as a [base dependency](https://pypi.org/pypi/litellm/1.102.1/json) even when you only call another provider; `llm-api-adapter` does not require provider SDKs. Wheel sizes exclude dependencies, direct counts exclude transitive dependencies and extras, and neither figure measures cold-start time. Choose LiteLLM when provider breadth or routing infrastructure matters more than a small direct-call client.
+- **[LiteLLM](https://docs.litellm.ai/docs/):** LiteLLM provides much broader model coverage, an OpenAI-style interface, routing, and a gateway. `llm-api-adapter` focuses on direct calls to a smaller model catalog and does not include routing or a gateway. For the compared releases, the [`llm-api-adapter`](https://pypi.org/project/llm-api-adapter/0.9.7/) universal wheel is 110 kB with one direct base dependency (`requests`); the [`litellm`](https://pypi.org/project/litellm/1.102.1/) Linux x86-64 wheel is 27.4 MB (about 249 times larger) with 14 direct base dependencies. LiteLLM uses the [OpenAI SDK](https://docs.litellm.ai/docs/providers/openai_compatible) to call OpenAI and OpenAI-compatible endpoints, but installs it as a [base dependency](https://pypi.org/pypi/litellm/1.102.1/json) even when you only call another provider; `llm-api-adapter` does not require provider SDKs. Wheel sizes exclude dependencies, direct counts exclude transitive dependencies and extras, and neither figure measures cold-start time. Choose LiteLLM when provider breadth or routing infrastructure matters more than a small direct-call client.
 - **[AISuite](https://github.com/andrewyng/aisuite):** AISuite provides an OpenAI-style interface, agents, and MCP integration. Some of its provider integrations rely on vendor SDKs (for example, [Anthropic](https://github.com/andrewyng/aisuite/blob/main/aisuite/providers/anthropic_provider.py) and [Mistral](https://github.com/andrewyng/aisuite/blob/main/aisuite/providers/mistral_provider.py)). `llm-api-adapter` provides its own typed messages and `ChatResponse`, plus registered model-specific request rules and cost fields on the response, without provider SDKs; it does not include agents or MCP integration. Choose AISuite when its OpenAI-shaped interface or agent features are more important than this model-aware direct-call contract.
 - **[LangChain](https://docs.langchain.com/oss/python/learn):** LangChain combines chat-model integrations with retrieval/RAG and agent components. Some of its provider integrations rely on vendor SDKs (for example, [OpenAI](https://github.com/langchain-ai/langchain/blob/master/libs/partners/openai/pyproject.toml) and [Anthropic](https://github.com/langchain-ai/langchain/blob/master/libs/partners/anthropic/pyproject.toml)). `llm-api-adapter` calls all nine supported organizations with `requests` and no provider SDKs, but does not implement retrieval or agent execution. Choose LangChain when your application needs those higher-level components.
 - **Provider SDK:** A provider's SDK gives direct access to that provider's native features. `llm-api-adapter` gives supported models a shared message, tool, response, error, and `reasoning_level` interface, but does not expose every native feature. Choose the provider SDK when you need an unsupported or newly released native feature.
@@ -1052,7 +1052,7 @@ messages = [{
 response = adapter.chat(messages=messages, max_tokens=200)
 ```
 
-Kimi 0.1.0 accepts image bytes and data URIs for all three admitted models, but
+Kimi accepts image bytes and data URIs for its supported models, but
 does not fetch public image URLs. `ImagePart(url=...)` is rejected before HTTP;
 use `ImagePart(data=..., media_type="image/...")` instead. See the
 [Kimi package README](packages/organizations/kimi/README.md#history-images-files-and-data-handling).
@@ -1063,7 +1063,7 @@ image forms before HTTP and enforces the provider's URL, inline-size, and
 per-request image-count limits. See the [DeepSeek image and file boundary](packages/organizations/deepseek/README.md#images-and-the-file-boundary)
 and the [official Vision guide](https://api-docs.deepseek.com/guides/vision/).
 
-> **Note:** `ImagePart` is supported in v0.5.0; `DocumentPart` is introduced in v0.5.1. Google already supports audio input, but `AudioPart` is postponed because Anthropic does not support audio and OpenAI uses a separate audio API, so there is no common provider-neutral contract yet.
+> **Note:** Google already supports audio input, but `AudioPart` is postponed because Anthropic does not support audio and OpenAI uses a separate audio API, so there is no common provider-neutral contract yet.
 
 ## Document Input
 
@@ -1114,17 +1114,17 @@ For bytes, the adapter sends the PDF as base64 data in the provider-specific req
 | DocumentPart (URL) | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | DocumentPart (bytes) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 
-Qwen 0.1.0 supports images, but rejects every `DocumentPart` URL or byte before
+Qwen supports images, but rejects every `DocumentPart` URL or byte before
 HTTP: PDF and OCR input are outside its package contract. See the
 [Qwen package README](packages/organizations/qwen/README.md#pdf-input).
 
-Kimi 0.1.0 also rejects every `DocumentPart` URL or byte before HTTP. Kimi's
+Kimi also rejects every `DocumentPart` URL or byte before HTTP. Kimi's
 Files API exposes extracted text rather than a Chat Completions attachment, so
 it cannot meet the same bytes-and-URL contract without hidden URL retrieval.
 The adapter does not upload or delete files for Kimi. See the
 [Kimi package README](packages/organizations/kimi/README.md#history-images-files-and-data-handling).
 
-DeepSeek 0.1.0 rejects every `DocumentPart`, generic non-image `FilePart`,
+DeepSeek rejects every `DocumentPart`, generic non-image `FilePart`,
 OCR/upload/conversion route, and unsupported image form before either client
 is called. It does not fetch document URLs, upload files, process PDFs locally,
 or silently fall back to another endpoint or model. See the [DeepSeek package

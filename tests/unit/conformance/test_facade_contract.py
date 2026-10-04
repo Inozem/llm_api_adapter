@@ -87,7 +87,12 @@ def _openai_response(
         "id": "resp_123",
         "model": "gpt-5-nano",
         "status": "completed",
-        "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+        "usage": {
+            "input_tokens": 2,
+            "output_tokens": 3,
+            "total_tokens": 5,
+            "input_tokens_details": {"cached_tokens": 0},
+        },
         "output": output,
     }
 
@@ -145,6 +150,7 @@ def _google_response(
             "promptTokenCount": 2,
             "candidatesTokenCount": 3,
             "thoughtsTokenCount": 0,
+            "cachedContentTokenCount": 0,
             "totalTokenCount": 5,
         },
     }
@@ -234,6 +240,7 @@ def _google_stream_events() -> list[SSEEvent]:
                     "promptTokenCount": 2,
                     "candidatesTokenCount": 3,
                     "thoughtsTokenCount": 0,
+                    "cachedContentTokenCount": 0,
                     "totalTokenCount": 5,
                 },
             },
@@ -644,7 +651,12 @@ def test_facade_chat_normalizes_messages_response_usage_and_pricing(case):
     assert payload["model"] == case.model
     assert payload[case.message_key]
     assert response.content == "ok"
-    assert response.usage == Usage(input_tokens=2, output_tokens=3, total_tokens=5)
+    assert response.usage == Usage(
+        input_tokens=2,
+        output_tokens=3,
+        total_tokens=5,
+        cached_tokens=0 if case.organization in {"openai", "google"} else None,
+    )
     assert response.currency == "USD"
     assert response.cost_total is not None
 
@@ -662,7 +674,12 @@ async def test_facade_achat_matches_sync_response_contract(case):
     assert payload["model"] == case.model
     assert payload[case.message_key]
     assert response.content == "ok"
-    assert response.usage == Usage(input_tokens=2, output_tokens=3, total_tokens=5)
+    assert response.usage == Usage(
+        input_tokens=2,
+        output_tokens=3,
+        total_tokens=5,
+        cached_tokens=0 if case.organization in {"openai", "google"} else None,
+    )
     assert response.cost_total is not None
 
 
