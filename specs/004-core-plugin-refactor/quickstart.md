@@ -50,6 +50,37 @@ Expected: baseline-positive scenarios are collected for each exact model with no
 
 Expected: Core and affected package deterministic suites pass with no network or provider credentials. The Python 3.10–3.14 CI matrix remains authoritative for cross-version compatibility; its canonical Python 3.10 lane keeps the 90% coverage floor. Inspect the final diff and matching README/contributor/package pricing documentation before review.
 
+## T057 validation evidence (2026-10-04)
+
+Executed from the repository root with Python 3.14.3. Every pytest subprocess had `PYTHON_DOTENV_DISABLED=1`; environment variables ending in `_API_KEY` or `_WORKSPACE_ID`, and variables named like tokens, secrets, or credentials, were removed. No provider calls were made.
+
+Focused checks passed:
+
+- Section 1 registry, conformance, and organization plugin command: **436 passed**.
+- Section 2 first command, response models and adapter/pricing/streaming checks: **326 passed**.
+- Section 2 second command, Z.ai/Kimi/DeepSeek package tests with package E2E ignored: **198 passed, 6 deselected**.
+- Section 2 third command, Mistral/xAI/Qwen adapter tests: **229 passed, 3 deselected**.
+- Section 3 metadata, CI lane selection, and organization plugin command: **109 passed**.
+- Affected integration files (`tests/integration/test_llm_adapter_chat.py` and `tests/integration/test_streaming.py`) with `--import-mode=importlib -m integration`: **35 passed**.
+
+Provider E2E collection used `python -m pytest --collect-only -q --import-mode=importlib --rootdir=. -m e2e_<provider> tests/e2e` for each marker below. When present, `packages/organizations/<provider>/tests/e2e` was included in that provider's collection. These counts include shared and existing package-local scenarios; the collected cases include real model parameters.
+
+| Provider marker | Collected |
+| --- | ---: |
+| `e2e_openai` | 204 |
+| `e2e_anthropic` | 124 |
+| `e2e_google` | 114 |
+| `e2e_mistral` | 34 |
+| `e2e_xai` | 34 |
+| `e2e_kimi` | 24 |
+| `e2e_qwen` | 42 |
+| `e2e_deepseek` | 15 |
+| `e2e_zai` | 15 |
+
+The full deterministic command, `python -m pytest -q --disable-warnings --import-mode=importlib -m "unit or integration"`, passed: **1,868 passed, 796 deselected, 21 warnings**. Full output is retained in the ignored `.pytest_cache/t057/full-suite-final.log` file.
+
+CI configuration in `.github/workflows/ci-dev.yml` covers Python 3.10, 3.11, 3.12, 3.13, and 3.14; unit and integration coverage is accumulated, and `coverage report --show-missing --fail-under=90` is gated to Python 3.10. Only Python 3.14.3 was executed locally. Python 3.10-3.13 matrix results and the canonical Python 3.10 coverage result remain pending CI evidence; local validation does not claim those lanes.
+
 ## Later release gate
 
 After a staging pull request merges to `dev`, the established post-publish workflow builds and installs exact TestPyPI candidates, then runs each affected provider's applicable common and package-local E2E scenarios in its own job with only its own credential. A pre-merge or local live run is a preflight and does not replace that gate. No E2E or publication is performed by `$speckit-plan`.

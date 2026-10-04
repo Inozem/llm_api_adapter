@@ -719,6 +719,7 @@ _BUFFERED_STREAM_SCENARIOS = [
                     "usageMetadata": {
                         "promptTokenCount": 2,
                         "candidatesTokenCount": 2,
+                        "thoughtsTokenCount": 0,
                         "totalTokenCount": 4,
                     },
                 },
