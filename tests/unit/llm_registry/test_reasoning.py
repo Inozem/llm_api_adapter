@@ -116,6 +116,7 @@ def test_categorical_projection_without_none_uses_the_working_scale(
     [
         ("google", "gemini-3.1-pro-preview"),
         ("openai", "gpt-6-astra"),
+        ("openai", "gpt-6.1-sol"),
     ],
 )
 def test_categorical_none_falls_back_to_minimum_when_disable_is_unavailable(

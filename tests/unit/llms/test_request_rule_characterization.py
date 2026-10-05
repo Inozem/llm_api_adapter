@@ -107,13 +107,14 @@ def test_openai_preserves_native_none_when_registry_allows_it(client_class):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
-def test_openai_maps_unsupported_none_to_the_first_native_effort_for_gpt6_astra(
-    client_class,
+@pytest.mark.parametrize("model", ("gpt-6-astra", "gpt-6.1-sol"))
+def test_openai_maps_unsupported_none_to_the_first_native_effort(
+    client_class, model
 ):
     client = client_class(api_key="test_api_key")
 
     payload = client._prepare_responses_payload_for_model(
-        "gpt-6-astra",
+        model,
         {"reasoning_effort": "none"},
     )
 
@@ -238,15 +239,16 @@ def test_openai_warns_once_when_omitting_non_default_temperature_for_gpt5_nano(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
-def test_openai_astra_warns_when_omitting_unsupported_sampling_parameters(
-    client_class,
+@pytest.mark.parametrize("model", ("gpt-6-astra", "gpt-6.1-sol"))
+def test_openai_warns_when_omitting_unsupported_sampling_parameters(
+    client_class, model
 ):
     client = client_class(api_key="test_api_key")
 
     with _captured_warnings() as caught:
-        warnings.simplefilter("always")
+        warnings.simplefilter("always", UserWarning)
         payload = client._prepare_responses_payload_for_model(
-            "gpt-6-astra",
+            model,
             {"temperature": 0.2, "top_p": 0.2},
         )
 
@@ -257,7 +259,7 @@ def test_openai_astra_warns_when_omitting_unsupported_sampling_parameters(
         "temperature",
         "top_p",
     }
-    assert all("gpt-6-astra" in str(warning.message) for warning in caught)
+    assert all(model in str(warning.message) for warning in caught)
 
 
 @pytest.mark.unit

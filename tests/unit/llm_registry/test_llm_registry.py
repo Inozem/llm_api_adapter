@@ -37,6 +37,7 @@ from src.llm_api_adapter.llm_registry.request_rules import (
         ("anthropic", "claude-sonnet-5-5", "claude-sonnet-5-5"),
         ("anthropic", "claude-sonnet-4-5-20250929", "claude-sonnet-4-5"),
         ("openai", "gpt-5-2025-08-07", "gpt-5"),
+        ("openai", "gpt-6.1-sol", "gpt-6.1-sol"),
         ("openai", "gpt-4.1-2025-04-14", "gpt-4.1"),
         ("google", "gemini-2.5-flash-preview-04-17", None),
         ("anthropic", "claude-sonnet-4-5-20251301", None),
