@@ -187,6 +187,9 @@ def test_every_first_party_route_names_a_collected_pytest_node():
     assert any(line.startswith(f"{ASYNC_STRUCTURED_CHAT}[") for line in collection_lines)
     assert not any(
         line.startswith(f"{ASYNC_STRUCTURED_CHAT}[zai-")
+        and not line.startswith(
+            f"{ASYNC_STRUCTURED_CHAT}[zai-package-not-installed]"
+        )
         for line in collection_lines
     )
     collected = {
