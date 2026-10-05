@@ -38,6 +38,43 @@
         }
       ]
     },
+    "gpt-6.1-sol": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        }
+      ],
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high", "xhigh", "max"]
+      },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter", "arguments": {"path": "top_p", "default": 1.0}},
+        {"handler": "drop_parameter", "arguments": {"path": "temperature", "default": 1.0}}
+      ],
+      "limits": {
+        "context_window_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": 272000,
+          "input_per_1m": 2.0,
+          "output_per_1m": 10.0,
+          "cache_read_input_per_1m": 0.1,
+          "cache_write_input_per_1m": 2.5
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 4.0,
+          "output_per_1m": 15.0,
+          "cache_read_input_per_1m": 0.2,
+          "cache_write_input_per_1m": 5.0
+        }
+      ]
+    },
     "gpt-6-sol": {
       "capability_exceptions": [],
       "reasoning_capability": {

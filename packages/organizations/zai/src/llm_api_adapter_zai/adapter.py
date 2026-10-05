@@ -503,7 +503,7 @@ class ZaiAdapter(LLMAdapterBase):
         )
         if json_schema is not None or response_model is not None:
             raise NotImplementedError(
-                "Z.ai glm-5.3-flash does not support portable structured output",
+                f"Z.ai model {self.model!r} does not support portable structured output",
             )
 
         request_context = self._prepare_chat_request(
@@ -572,19 +572,17 @@ class ZaiAdapter(LLMAdapterBase):
             mapped_tools.append({"type": "function", "function": function})
         return mapped_tools
 
-    @staticmethod
-    def _map_tool_choice(tool_choice: str) -> str:
+    def _map_tool_choice(self, tool_choice: str) -> str:
         if tool_choice != "auto":
             raise ToolChoiceError(
                 detail=(
-                    "Z.ai glm-5.3-flash supports only tool_choice='auto'; "
+                    f"Z.ai model {self.model!r} supports only tool_choice='auto'; "
                     f"received {tool_choice!r}"
                 ),
             )
         return "auto"
 
-    @staticmethod
-    def _reject_unsupported_file_parts(messages: Messages) -> None:
+    def _reject_unsupported_file_parts(self, messages: Messages) -> None:
         """Reject documents while preserving URL/data-URL image serialization."""
 
         for message in messages.items:
@@ -593,7 +591,7 @@ class ZaiAdapter(LLMAdapterBase):
             for file_part in message.files:
                 if isinstance(file_part, DocumentPart):
                     raise ValueError(
-                        "Z.ai glm-5.3-flash does not support DocumentPart yet",
+                        f"Z.ai model {self.model!r} does not support DocumentPart yet",
                     )
 
     def _validate_max_tokens(self, max_tokens: Optional[int]) -> Optional[int]:

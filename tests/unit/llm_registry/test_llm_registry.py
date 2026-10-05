@@ -34,8 +34,10 @@ from src.llm_api_adapter.llm_registry.request_rules import (
 @pytest.mark.parametrize(
     ("provider_name", "model_name", "expected_base_name"),
     (
+        ("anthropic", "claude-sonnet-5-5", "claude-sonnet-5-5"),
         ("anthropic", "claude-sonnet-4-5-20250929", "claude-sonnet-4-5"),
         ("openai", "gpt-5-2025-08-07", "gpt-5"),
+        ("openai", "gpt-6.1-sol", "gpt-6.1-sol"),
         ("openai", "gpt-4.1-2025-04-14", "gpt-4.1"),
         ("google", "gemini-2.5-flash-preview-04-17", None),
         ("anthropic", "claude-sonnet-4-5-20251301", None),
@@ -725,7 +727,8 @@ def test_request_rule_schemas_are_scoped_to_their_organization():
 @pytest.mark.unit
 def test_sampling_rule_schema_is_shared_by_openai_and_anthropic():
     assert AnthropicRequestRuleRegistry.droppable_parameter_defaults == {
-        "top_p": 1.0
+        "top_p": 1.0,
+        "temperature": 1.0,
     }
     assert OpenAIRequestRuleRegistry.droppable_parameter_defaults["top_p"] == 1.0
     assert SamplingRequestRuleRegistry.DROP_PARAMETER == (

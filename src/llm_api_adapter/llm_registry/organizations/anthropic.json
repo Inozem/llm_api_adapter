@@ -178,6 +178,55 @@
         }
       ]
     },
+    "claude-sonnet-5-5": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
+        },
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high", "xhigh", "max"]
+      },
+      "is_adaptive_thinking": true,
+      "request_rules": [
+        {
+          "handler": "restrict_tool_choice",
+          "arguments": {"allowed_values": ["auto", "none"]}
+        },
+        {
+          "handler": "drop_parameter",
+          "arguments": {"path": "temperature", "default": 1.0}
+        }
+      ],
+      "limits": {
+        "context_window_tokens": 1000000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 2.0,
+          "output_per_1m": 10.0
+        }
+      ]
+    },
     "claude-opus-4-8": {
       "capability_exceptions": [
         {
