@@ -31,6 +31,10 @@ from src.llm_api_adapter.service_provider_registry import (
     ServiceProviderRegistry,
 )
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from tests.external_organization_metadata import (
+    read_project_metadata,
+    requirement_target,
+)
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -576,35 +580,19 @@ def test_qwen_is_known_before_installation_and_loads_only_through_its_plugin(
 
 
 @pytest.mark.unit
-def test_core_declares_the_qwen_optional_extra():
-    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+@pytest.mark.parametrize("organization", ("qwen", "kimi", "deepseek", "zai"))
+def test_core_declares_organization_extra_without_base_dependency(organization):
+    project = read_project_metadata(_REPOSITORY_ROOT / "pyproject.toml")
+    distribution = f"llm-api-adapter-{organization}"
 
-    assert 'qwen = ["llm-api-adapter-qwen>=0.1.0,<0.2.0"]' in pyproject
-
-
-@pytest.mark.unit
-def test_core_declares_the_kimi_optional_extra():
-    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-
-    assert 'kimi = ["llm-api-adapter-kimi>=0.1.0,<0.2.0"]' in pyproject
-
-
-@pytest.mark.unit
-def test_core_declares_the_deepseek_optional_extra_without_base_dependency():
-    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-
-    assert '"deepseek"' in pyproject.split("keywords =", 1)[1].split("]", 1)[0]
-    assert 'deepseek = ["llm-api-adapter-deepseek>=0.1.0,<0.2.0"]' in pyproject
-    assert 'dependencies = ["llm-api-adapter-deepseek' not in pyproject
-
-
-@pytest.mark.unit
-def test_core_declares_the_zai_optional_extra_without_base_dependency():
-    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-
-    assert '"zai"' in pyproject.split("keywords =", 1)[1].split("]", 1)[0]
-    assert 'zai = ["llm-api-adapter-zai>=0.1.0,<0.2.0"]' in pyproject
-    assert 'dependencies = ["llm-api-adapter-zai' not in pyproject
+    assert organization in project["keywords"]
+    assert [
+        requirement_target(item)
+        for item in project["optional-dependencies"][organization]
+    ] == [distribution]
+    assert distribution not in {
+        requirement_target(item) for item in project["dependencies"]
+    }
 
 
 @pytest.mark.unit

@@ -20,6 +20,10 @@ from llm_api_adapter.organization_registry import (
     ORGANIZATION_PLUGIN_API_VERSION,
     OrganizationPlugin,
 )
+from tests.external_organization_metadata import (
+    read_project_metadata,
+    requirement_target,
+)
 
 
 @pytest.mark.unit
@@ -33,9 +37,16 @@ def test_kimi_plugin_entry_point_matches_the_core_contract():
 
 @pytest.mark.unit
 def test_kimi_project_forwards_only_core_transport_extras():
-    metadata = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    project = read_project_metadata(PACKAGE_ROOT / "pyproject.toml")
 
-    assert 'dependencies = ["llm-api-adapter>=0.9.8,<1.0.0"]' in metadata
-    assert 'async = ["llm-api-adapter[async]>=0.9.8,<1.0.0"]' in metadata
-    assert 'httpx = ["llm-api-adapter[httpx]>=0.9.8,<1.0.0"]' in metadata
-    assert 'kimi = "llm_api_adapter_kimi.plugin:PLUGIN"' in metadata
+    assert [requirement_target(item) for item in project["dependencies"]] == [
+        "llm-api-adapter"
+    ]
+    for extra in ("async", "httpx"):
+        assert [
+            requirement_target(item)
+            for item in project["optional-dependencies"][extra]
+        ] == [f"llm-api-adapter[{extra}]"]
+    assert project["entry-points"]["llm_api_adapter.organizations"]["kimi"] == (
+        "llm_api_adapter_kimi.plugin:PLUGIN"
+    )

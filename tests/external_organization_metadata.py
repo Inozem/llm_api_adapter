@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from packaging.requirements import Requirement
+
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10 test jobs use the backport.
@@ -19,6 +21,19 @@ REGISTRY = "src/llm_api_adapter/organization_registry.py"
 E2E_PROFILES = "tests/e2e/conftest.py"
 CI_LANES = ".github/scripts/select_e2e_lanes.py"
 ENTRY_POINT_GROUP = "llm_api_adapter.organizations"
+
+
+def read_project_metadata(path: Path) -> dict[str, Any]:
+    """Read project metadata from a package manifest."""
+    with path.open("rb") as source:
+        return tomllib.load(source)["project"]
+
+
+def requirement_target(requirement: str) -> str:
+    """Return the distribution and extras without release constraints."""
+    parsed = Requirement(requirement)
+    extras = f"[{','.join(sorted(parsed.extras))}]" if parsed.extras else ""
+    return _normalized_distribution(parsed.name) + extras
 
 
 @dataclass
