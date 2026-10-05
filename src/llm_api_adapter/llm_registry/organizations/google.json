@@ -2,6 +2,18 @@
   "currency": "USD",
   "models": {
     "gemini-3.8-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high"]
       },
@@ -17,11 +29,24 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.75,
-          "output_per_1m": 3.75
+          "output_per_1m": 3.75,
+          "cache_read_input_per_1m": 0.075
         }
       ]
     },
     "gemini-3.7-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high"]
       },
@@ -37,11 +62,24 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.75,
-          "output_per_1m": 3.75
+          "output_per_1m": 3.75,
+          "cache_read_input_per_1m": 0.075
         }
       ]
     },
     "gemini-3.6-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -57,11 +95,24 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.75,
-          "output_per_1m": 3.75
+          "output_per_1m": 3.75,
+          "cache_read_input_per_1m": 0.075
         }
       ]
     },
     "gemini-3.5-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -73,11 +124,24 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 1.5,
-          "output_per_1m": 9.0
+          "output_per_1m": 9.0,
+          "cache_read_input_per_1m": 0.15
         }
       ]
     },
     "gemini-3.5-flash-lite": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -93,11 +157,24 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.3,
-          "output_per_1m": 2.5
+          "output_per_1m": 2.5,
+          "cache_read_input_per_1m": 0.03
         }
       ]
     },
     "gemini-3.1-pro-preview": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high"]
       },
@@ -109,16 +186,30 @@
         {
           "up_to_prompt_tokens": 200000,
           "input_per_1m": 2.0,
-          "output_per_1m": 12.0
+          "output_per_1m": 12.0,
+          "cache_read_input_per_1m": 0.2
         },
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 4.0,
-          "output_per_1m": 18.0
+          "output_per_1m": 18.0,
+          "cache_read_input_per_1m": 0.4
         }
       ]
     },
     "gemini-3.1-flash-lite": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -130,11 +221,24 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.25,
-          "output_per_1m": 1.5
+          "output_per_1m": 1.5,
+          "cache_read_input_per_1m": 0.025
         }
       ]
     },
     "gemini-3-flash-preview": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["minimal", "low", "medium", "high"]
       },
@@ -151,6 +255,18 @@
       ]
     },
     "gemini-2.5-pro": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "min_budget_tokens": 128,
         "max_budget_tokens": 32768
@@ -166,16 +282,25 @@
         {
           "up_to_prompt_tokens": 200000,
           "input_per_1m": 1.25,
-          "output_per_1m": 10.0
+          "output_per_1m": 10.0,
+          "cache_read_input_per_1m": 0.125
         },
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 2.5,
-          "output_per_1m": 15.0
+          "output_per_1m": 15.0,
+          "cache_read_input_per_1m": 0.25
         }
       ]
     },
     "gemini-2.5-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "min_budget_tokens": 0,
         "max_budget_tokens": 24576,
@@ -192,11 +317,19 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.3,
-          "output_per_1m": 2.5
+          "output_per_1m": 2.5,
+          "cache_read_input_per_1m": 0.03
         }
       ]
     },
     "gemini-2.5-flash-lite": {
+      "capability_exceptions": [
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "min_budget_tokens": 512,
         "max_budget_tokens": 24576,
@@ -210,7 +343,8 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.1,
-          "output_per_1m": 0.4
+          "output_per_1m": 0.4,
+          "cache_read_input_per_1m": 0.01
         }
       ]
     }

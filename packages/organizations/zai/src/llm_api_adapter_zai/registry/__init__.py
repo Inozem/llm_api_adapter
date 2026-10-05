@@ -9,7 +9,6 @@ from typing import Any
 from llm_api_adapter.llm_registry.llm_registry import OrganizationModelMetadata
 
 from ..request_rules import ZAI_REQUEST_RULE_REGISTRY
-from .cache_pricing import CACHE_PRICING, ZaiCacheCost, ZaiCachePricing
 
 
 def _load_organization_data() -> dict[str, Any]:
@@ -30,9 +29,6 @@ MODEL_METADATA = OrganizationModelMetadata(
 
 
 __all__ = [
-    "CACHE_PRICING",
     "MODEL_METADATA",
     "ORGANIZATION_DATA",
-    "ZaiCacheCost",
-    "ZaiCachePricing",
 ]

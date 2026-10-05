@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -9,6 +10,8 @@ import pytest
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _SELECTOR_PATH = _REPOSITORY_ROOT / ".github" / "scripts" / "select_e2e_lanes.py"
 _WORKFLOW_PATH = _REPOSITORY_ROOT / ".github" / "workflows" / "ci-dev-release.yml"
+_PR_WORKFLOW_PATH = _REPOSITORY_ROOT / ".github" / "workflows" / "ci-dev.yml"
+_EXTERNAL_ORGANIZATIONS = ("kimi", "mistral", "xai", "qwen", "deepseek", "zai")
 _MODULE_SPEC = importlib.util.spec_from_file_location(
     "ci_e2e_lane_selector", _SELECTOR_PATH
 )
@@ -17,6 +20,15 @@ assert _MODULE_SPEC.loader is not None
 _SELECTOR = importlib.util.module_from_spec(_MODULE_SPEC)
 sys.modules[_MODULE_SPEC.name] = _SELECTOR
 _MODULE_SPEC.loader.exec_module(_SELECTOR)
+
+
+def _workflow_job(workflow: str, name: str) -> str:
+    match = re.search(
+        rf"(?ms)^  {re.escape(name)}:\n(.*?)(?=^  [\w-]+:|\Z)",
+        workflow,
+    )
+    assert match is not None, f"Missing workflow job: {name}"
+    return match.group(1)
 
 
 @pytest.mark.unit
@@ -127,6 +139,106 @@ def test_select_e2e_lanes_classifies_shared_and_organization_paths(
         assert outputs[f"core_{organization}_e2e"] == str(
             organization in organizations
         ).lower()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "changed_path",
+    ("tests/capability_scenarios.py", "tests/capability_selection.py"),
+)
+def test_capability_routing_changes_select_every_e2e_lane(changed_path):
+    selection = _SELECTOR.select_e2e_lanes([changed_path])
+
+    assert selection.core is False
+    assert selection.shared_core is False
+    assert selection.core_organizations == ("openai", "anthropic", "google")
+    assert not any(
+        (
+            selection.kimi,
+            selection.mistral,
+            selection.xai,
+            selection.qwen,
+            selection.deepseek,
+            selection.zai,
+        )
+    )
+    assert all(
+        (
+            selection.kimi_e2e,
+            selection.mistral_e2e,
+            selection.xai_e2e,
+            selection.qwen_e2e,
+            selection.deepseek_e2e,
+            selection.zai_e2e,
+        )
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("organization", _EXTERNAL_ORGANIZATIONS)
+def test_external_manifest_change_selects_only_its_candidate_and_live_lane(
+    organization: str,
+) -> None:
+    path = f"packages/organizations/{organization}/pyproject.toml"
+    outputs = _SELECTOR.select_e2e_lanes([path]).github_outputs()
+
+    assert outputs["core"] == "false"
+    for candidate in _EXTERNAL_ORGANIZATIONS:
+        expected = str(candidate == organization).lower()
+        assert outputs[candidate] == expected
+        assert outputs[f"{candidate}_e2e"] == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("organization", _EXTERNAL_ORGANIZATIONS)
+def test_each_external_organization_has_independent_publish_and_e2e_jobs(
+    organization: str,
+) -> None:
+    workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
+    main_workflow = (_WORKFLOW_PATH.parent / "ci-main.yml").read_text(
+        encoding="utf-8"
+    )
+    publish = _workflow_job(workflow, f"publish-{organization}-testpypi")
+    live = _workflow_job(workflow, f"post-publish-{organization}-e2e")
+    public_publish = _workflow_job(
+        main_workflow, f"publish-{organization}-pypi"
+    )
+    api_key = f"{organization.upper()}_API_KEY"
+
+    assert f"needs.changes.outputs.{organization} == 'true'" in publish
+    assert f"packages-dir: packages/organizations/{organization}/dist/" in publish
+    assert "secrets.TEST_PYPI_API_TOKEN" in publish
+    assert f"publish-{organization}-testpypi" in live
+    assert f"needs.changes.outputs.{organization}_e2e == 'true'" in live
+    assert f"{api_key}: ${{{{ secrets.{api_key} }}}}" in live
+    assert f"pytest -v --import-mode=importlib -m e2e_{organization}" in live
+    assert f"needs: test-{organization}" in public_publish
+    assert f"refs/tags/{organization}-v" in public_publish
+    assert (
+        f"packages-dir: packages/organizations/{organization}/dist/"
+        in public_publish
+    )
+    for other in _EXTERNAL_ORGANIZATIONS:
+        if other != organization:
+            assert f"secrets.{other.upper()}_API_KEY" not in live
+
+
+@pytest.mark.unit
+def test_pull_request_workflow_has_no_provider_or_publication_credentials() -> None:
+    workflow = _PR_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "pull_request:" in workflow
+    assert "  publish-" not in workflow
+    assert "  post-publish-" not in workflow
+    assert "secrets.TEST_PYPI_API_TOKEN" not in workflow
+    assert "secrets.PYPI_API_TOKEN" not in workflow
+    for organization in (
+        "openai",
+        "anthropic",
+        "google",
+        *_EXTERNAL_ORGANIZATIONS,
+    ):
+        assert f"secrets.{organization.upper()}_API_KEY" not in workflow
 
 
 @pytest.mark.unit

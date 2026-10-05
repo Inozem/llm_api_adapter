@@ -26,7 +26,7 @@ from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIError
 from llm_api_adapter.llms.transports import SyncTransport, create_sync_transport
 from llm_api_adapter.models.messages.chat_message import Message, Messages, UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart
-from llm_api_adapter.models.responses.chat_response import ChatResponse
+from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 
 from .clients.async_client import QwenMessagesAsyncClient
@@ -567,19 +567,60 @@ class QwenAdapter(LLMAdapterBase):
             raise LLMAPIClientError(
                 detail="Qwen Messages response.usage must be an object when present",
             )
-        if isinstance(usage, Mapping) and any(
-            isinstance(usage.get(field), bool)
-            or not isinstance(usage.get(field), int)
-            for field in ("input_tokens", "output_tokens")
-            if field in usage
-        ):
-            raise LLMAPIClientError(
-                detail="Qwen Messages usage token counts must be integers",
-            )
-        return ChatResponse.from_anthropic_response(
+        if isinstance(usage, Mapping):
+            for field in ("input_tokens", "output_tokens"):
+                if field not in usage:
+                    continue
+                token_count = usage[field]
+                if (
+                    isinstance(token_count, bool)
+                    or not isinstance(token_count, int)
+                    or token_count < 0
+                ):
+                    raise LLMAPIClientError(
+                        detail=(
+                            "Qwen Messages usage token counts must be "
+                            "non-negative integers"
+                        ),
+                    )
+            cache_read_tokens = None
+            if "cache_read_input_tokens" in usage:
+                cache_read_tokens = usage["cache_read_input_tokens"]
+                if (
+                    isinstance(cache_read_tokens, bool)
+                    or not isinstance(cache_read_tokens, int)
+                    or cache_read_tokens < 0
+                ):
+                    raise LLMAPIClientError(
+                        detail=(
+                            "Qwen cache_read_input_tokens must be a "
+                            "non-negative integer"
+                        ),
+                    )
+        else:
+            cache_read_tokens = None
+
+        chat_response = ChatResponse.from_anthropic_response(
             dict(response),
             **({"capture_reasoning": True} if capture_reasoning else {}),
         )
+        if isinstance(usage, Mapping):
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            if input_tokens is not None and cache_read_tokens is not None:
+                input_tokens += cache_read_tokens
+            total_tokens = (
+                input_tokens + output_tokens
+                if input_tokens is not None and output_tokens is not None
+                else None
+            )
+            chat_response.usage = Usage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                cached_tokens=cache_read_tokens,
+            )
+        return chat_response
 
 
 __all__ = ["QwenAdapter"]

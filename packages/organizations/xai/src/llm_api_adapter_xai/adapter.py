@@ -866,10 +866,15 @@ class XAIAdapter(LLMAdapterBase):
             raise LLMAPIClientError(
                 detail="xAI Responses API response.output must be an array",
             )
-        return ChatResponse.from_openai_responses_response(
+        chat_response = ChatResponse.from_openai_responses_response(
             response,
             capture_reasoning=capture_reasoning,
         )
+        if isinstance(response.get("usage"), dict):
+            chat_response.usage = XAIResponsesStreamParser._normalize_usage(
+                response["usage"],
+            )
+        return chat_response
 
 
 __all__ = ["XAIAdapter"]

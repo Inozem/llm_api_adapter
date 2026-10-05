@@ -2,6 +2,38 @@
   "currency": "USD",
   "models": {
     "kimi-k3": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_named",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
+        },
+        {
+          "capability_id": "image_url",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects URL-backed ImagePart input before transport; image bytes and data URIs are sent inline."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects DocumentPart URLs before transport; Kimi's Files API extracts file content separately and does not attach a PDF to Chat Completions."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects DocumentPart bytes before transport; Kimi's Files API extracts file content separately and does not attach a PDF to Chat Completions."
+        },
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "limits": {
         "context_window_tokens": 1048576,
         "max_output_tokens": 1048576
@@ -10,14 +42,11 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 3.0,
-          "output_per_1m": 15.0
+          "output_per_1m": 15.0,
+          "cache_read_input_per_1m": 0.3,
+          "cache_write_input_per_1m": 3
         }
       ],
-      "cache_pricing": {
-        "cache_hit_input_per_1m": 0.3,
-        "cache_miss_input_per_1m": 3.0,
-        "output_per_1m": 15.0
-      },
       "reasoning_capability": {
         "allowed_values": ["low", "high", "max"]
       },
@@ -41,6 +70,38 @@
       ]
     },
     "kimi-k2.6": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
+        },
+        {
+          "capability_id": "image_url",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects URL-backed ImagePart input before transport; image bytes and data URIs are sent inline."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects DocumentPart URLs before transport; Kimi's Files API extracts file content separately and does not attach a PDF to Chat Completions."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects DocumentPart bytes before transport; Kimi's Files API extracts file content separately and does not attach a PDF to Chat Completions."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "limits": {
         "context_window_tokens": 262144,
         "max_output_tokens": 32768
@@ -49,14 +110,10 @@
         {
           "up_to_prompt_tokens": null,
           "input_per_1m": 0.95,
-          "output_per_1m": 4.0
+          "output_per_1m": 4.0,
+          "cache_read_input_per_1m": 0.16
         }
       ],
-      "cache_pricing": {
-        "cache_hit_input_per_1m": 0.16,
-        "cache_miss_input_per_1m": 0.95,
-        "output_per_1m": 4.0
-      },
       "reasoning_capability": {
         "allowed_values": ["none", "enabled"]
       },

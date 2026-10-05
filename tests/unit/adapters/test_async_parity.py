@@ -109,6 +109,7 @@ def _google_response() -> Dict[str, Any]:
         "usageMetadata": {
             "promptTokenCount": 2,
             "candidatesTokenCount": 1,
+            "thoughtsTokenCount": 0,
             "totalTokenCount": 3,
         },
     }
@@ -238,6 +239,7 @@ async def _google_stream() -> AsyncIterator[SSEEvent]:
             "usageMetadata": {
                 "promptTokenCount": 2,
                 "candidatesTokenCount": 2,
+                "thoughtsTokenCount": 0,
                 "totalTokenCount": 4,
             },
         },

@@ -2,6 +2,28 @@
   "currency": "USD",
   "models": {
     "claude-fable-5-1": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
+        },
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -25,6 +47,18 @@
       ]
     },
     "claude-fable-5": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -42,6 +76,28 @@
       ]
     },
     "claude-opus-5-5": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The adapter rejects this unsupported tool-choice mode before transport according to the exact-model request rules."
+        },
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -65,6 +121,18 @@
       ]
     },
     "claude-opus-5": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -82,6 +150,18 @@
       ]
     },
     "claude-sonnet-5": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -99,6 +179,18 @@
       ]
     },
     "claude-opus-4-8": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -116,6 +208,18 @@
       ]
     },
     "claude-opus-4-7": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "xhigh", "max"]
       },
@@ -133,6 +237,18 @@
       ]
     },
     "claude-opus-4-6": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "max"]
       },
@@ -150,6 +266,18 @@
       ]
     },
     "claude-sonnet-4-6": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "allowed_values": ["low", "medium", "high", "max"]
       },
@@ -167,6 +295,18 @@
       ]
     },
     "claude-opus-4-5": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "min_budget_tokens": 1024,
         "max_budget_tokens": 128000
@@ -187,6 +327,18 @@
       ]
     },
     "claude-sonnet-4-5": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "min_budget_tokens": 1024,
         "max_budget_tokens": 64000
@@ -207,6 +359,18 @@
       ]
     },
     "claude-haiku-4-5": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "reasoning_capability": {
         "min_budget_tokens": 1024,
         "max_budget_tokens": 64000

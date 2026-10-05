@@ -11,9 +11,11 @@ from .reasoning_event import ReasoningEvent
 
 @dataclass
 class Usage:
-    input_tokens: int = 0
-    output_tokens: int = 0
-    total_tokens: int = 0
+    input_tokens: Optional[int] = 0
+    output_tokens: Optional[int] = 0
+    total_tokens: Optional[int] = 0
+    cached_tokens: Optional[int] = None
+    cache_write_tokens: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -109,9 +111,9 @@ class ChatResponse:
         usage_data = api_response.get("usage")
         usage = (
             Usage(
-                input_tokens=usage_data.get("prompt_tokens", 0),
-                output_tokens=usage_data.get("completion_tokens", 0),
-                total_tokens=usage_data.get("total_tokens", 0),
+                input_tokens=usage_data.get("prompt_tokens"),
+                output_tokens=usage_data.get("completion_tokens"),
+                total_tokens=usage_data.get("total_tokens"),
             )
             if isinstance(usage_data, dict)
             else None
@@ -200,9 +202,9 @@ class ChatResponse:
         usage_data = api_response.get("usage")
         usage = (
             Usage(
-                input_tokens=usage_data.get("input_tokens", 0),
-                output_tokens=usage_data.get("output_tokens", 0),
-                total_tokens=usage_data.get("total_tokens", 0),
+                input_tokens=usage_data.get("input_tokens"),
+                output_tokens=usage_data.get("output_tokens"),
+                total_tokens=usage_data.get("total_tokens"),
             )
             if isinstance(usage_data, dict)
             else None
@@ -373,14 +375,31 @@ class ChatResponse:
         capture_reasoning: bool = False,
     ) -> "ChatResponse":
         usage_data = api_response.get("usage")
+        input_tokens = (
+            usage_data.get("input_tokens")
+            if isinstance(usage_data, dict)
+            else None
+        )
+        output_tokens = (
+            usage_data.get("output_tokens")
+            if isinstance(usage_data, dict)
+            else None
+        )
+        total_tokens = None
+        if (
+            isinstance(input_tokens, int)
+            and not isinstance(input_tokens, bool)
+            and input_tokens >= 0
+            and isinstance(output_tokens, int)
+            and not isinstance(output_tokens, bool)
+            and output_tokens >= 0
+        ):
+            total_tokens = input_tokens + output_tokens
         usage = (
             Usage(
-                input_tokens=usage_data.get("input_tokens", 0),
-                output_tokens=usage_data.get("output_tokens", 0),
-                total_tokens=(
-                    usage_data.get("input_tokens", 0)
-                    + usage_data.get("output_tokens", 0)
-                ),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
             )
             if isinstance(usage_data, dict)
             else None
@@ -517,11 +536,22 @@ class ChatResponse:
         usage_data = api_response.get("usageMetadata")
         if not isinstance(usage_data, dict):
             return None
-        thoughts_tokens = usage_data.get("thoughtsTokenCount", 0)
+        candidate_tokens = usage_data.get("candidatesTokenCount")
+        thoughts_tokens = usage_data.get("thoughtsTokenCount")
+        output_tokens = None
+        if (
+            isinstance(candidate_tokens, int)
+            and not isinstance(candidate_tokens, bool)
+            and candidate_tokens >= 0
+            and isinstance(thoughts_tokens, int)
+            and not isinstance(thoughts_tokens, bool)
+            and thoughts_tokens >= 0
+        ):
+            output_tokens = candidate_tokens + thoughts_tokens
         return Usage(
-            input_tokens=usage_data.get("promptTokenCount", 0),
-            output_tokens=usage_data.get("candidatesTokenCount", 0) + thoughts_tokens,
-            total_tokens=usage_data.get("totalTokenCount", 0),
+            input_tokens=usage_data.get("promptTokenCount"),
+            output_tokens=output_tokens,
+            total_tokens=usage_data.get("totalTokenCount"),
         )
 
     @classmethod
@@ -648,14 +678,71 @@ class ChatResponse:
         self,
         price_input_per_token: float,
         price_output_per_token: float,
-        currency: str = "USD"
+        currency: str = "USD",
+        *,
+        price_cache_read_per_token: Optional[float] = None,
+        price_cache_write_per_token: Optional[float] = None,
     ):
-        if not self.usage:
+        if self.usage is None:
             return
         self.currency = currency
-        self.cost_input = self.usage.input_tokens * price_input_per_token
-        self.cost_output = self.usage.output_tokens * price_output_per_token
-        self.cost_total = self.cost_input + self.cost_output
+
+        input_tokens = self.usage.input_tokens
+        cache_read_tokens = self.usage.cached_tokens
+        cache_write_tokens = self.usage.cache_write_tokens
+
+        def valid_count(value: Any) -> bool:
+            return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+        cache_components = (
+            (cache_read_tokens, price_cache_read_per_token),
+            (cache_write_tokens, price_cache_write_per_token),
+        )
+        cache_counts: list[int] = []
+        cache_cost = 0.0
+        cache_accounting_complete = True
+        for count, cache_rate in cache_components:
+            if count is None:
+                if cache_rate is not None:
+                    cache_accounting_complete = False
+                    break
+                # No registry rate means this provider/model has no verified
+                # automatic price for this cache component.
+                cache_counts.append(0)
+                continue
+            if not valid_count(count):
+                cache_accounting_complete = False
+                break
+            if count and cache_rate is None:
+                cache_accounting_complete = False
+                break
+            cache_counts.append(count)
+            if cache_rate is not None:
+                cache_cost += count * cache_rate
+
+        if (
+            not cache_accounting_complete
+            or not valid_count(input_tokens)
+            or sum(cache_counts) > input_tokens
+        ):
+            self.cost_input = None
+        else:
+            ordinary_input_tokens = input_tokens - sum(cache_counts)
+            self.cost_input = (
+                ordinary_input_tokens * price_input_per_token + cache_cost
+            )
+
+        output_tokens = self.usage.output_tokens
+        self.cost_output = (
+            output_tokens * price_output_per_token
+            if valid_count(output_tokens)
+            else None
+        )
+        self.cost_total = (
+            self.cost_input + self.cost_output
+            if self.cost_input is not None and self.cost_output is not None
+            else None
+        )
 
     def apply_cost_breakdown(
         self,
@@ -673,16 +760,16 @@ class ChatResponse:
         self.cost_breakdown = line_items
         if (
             not accounting_complete
-            or self.cost_total is None
+            or self.cost_input is None
+            or self.cost_output is None
             or self.currency is None
             or any(item.currency != self.currency for item in self.cost_breakdown)
         ):
             self.cost_total = None
             return
 
-        token_total = (
-            self.cost_input + self.cost_output
-            if self.cost_input is not None and self.cost_output is not None
-            else self.cost_total
+        self.cost_total = (
+            self.cost_input
+            + self.cost_output
+            + sum(item.cost for item in self.cost_breakdown)
         )
-        self.cost_total = token_total + sum(item.cost for item in self.cost_breakdown)

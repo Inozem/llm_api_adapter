@@ -7,9 +7,10 @@ import binascii
 from copy import deepcopy
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 import json
 import logging
+from math import isfinite
 from typing import Any, AsyncIterator, Iterator, List, Mapping, Optional
 from urllib.parse import urlparse
 import warnings
@@ -53,10 +54,7 @@ from .clients.sync_client import (
     DeepSeekResponsesSyncClient,
 )
 from .clients.async_client import DeepSeekResponsesAsyncClient
-from .registry.cache_pricing import (
-    DeepSeekFlashPricing,
-    pricing_for_dispatch,
-)
+from .registry import ORGANIZATION_DATA
 from .streaming import (
     DeepSeekResponsesStreamParser,
     DeepSeekResponsesStreamState,
@@ -883,23 +881,31 @@ class DeepSeekAdapter(LLMAdapterBase):
 
     @staticmethod
     def _normalize_deepseek_usage(raw_usage: Any) -> Optional[DeepSeekUsage]:
-        """Normalize only complete, internally consistent provider usage."""
+        """Normalize confirmed usage counts while retaining omitted values."""
         if not isinstance(raw_usage, Mapping):
             return None
 
-        input_tokens = raw_usage.get("input_tokens")
-        output_tokens = raw_usage.get("output_tokens")
-        total_tokens = raw_usage.get("total_tokens")
-        required = (input_tokens, output_tokens, total_tokens)
-        if any(
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or value < 0
-            for value in required
-        ):
+        def valid_count(value: Any) -> bool:
+            return (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 0
+            )
+
+        counts = tuple(
+            raw_usage.get(field)
+            for field in ("input_tokens", "output_tokens", "total_tokens")
+        )
+        if any(value is not None and not valid_count(value) for value in counts):
             return None
-        if total_tokens != input_tokens + output_tokens:
+        input_tokens, output_tokens, total_tokens = counts
+        if input_tokens is None and output_tokens is None and total_tokens is None:
             return None
+        if input_tokens is not None and output_tokens is not None:
+            exact_total = input_tokens + output_tokens
+            if total_tokens is not None and total_tokens != exact_total:
+                return None
+            total_tokens = exact_total
 
         cached_tokens: Optional[int] = None
         input_details = raw_usage.get("input_tokens_details")
@@ -908,11 +914,12 @@ class DeepSeekAdapter(LLMAdapterBase):
                 return None
             if "cached_tokens" in input_details:
                 cached_tokens = input_details.get("cached_tokens")
-                if cached_tokens is not None and (
-                    isinstance(cached_tokens, bool)
-                    or not isinstance(cached_tokens, int)
-                    or cached_tokens < 0
-                    or cached_tokens > input_tokens
+                if cached_tokens is not None and not valid_count(cached_tokens):
+                    return None
+                if (
+                    cached_tokens is not None
+                    and input_tokens is not None
+                    and cached_tokens > input_tokens
                 ):
                     return None
 
@@ -923,11 +930,12 @@ class DeepSeekAdapter(LLMAdapterBase):
                 return None
             if "reasoning_tokens" in output_details:
                 reasoning_tokens = output_details.get("reasoning_tokens")
-                if reasoning_tokens is not None and (
-                    isinstance(reasoning_tokens, bool)
-                    or not isinstance(reasoning_tokens, int)
-                    or reasoning_tokens < 0
-                    or reasoning_tokens > output_tokens
+                if reasoning_tokens is not None and not valid_count(reasoning_tokens):
+                    return None
+                if (
+                    reasoning_tokens is not None
+                    and output_tokens is not None
+                    and reasoning_tokens > output_tokens
                 ):
                     return None
 
@@ -962,7 +970,7 @@ class DeepSeekAdapter(LLMAdapterBase):
         return chat_response
 
     def _apply_response_pricing(self, chat_response: ChatResponse) -> None:
-        """Apply only verifiable DeepSeek time-of-use standard estimates."""
+        """Pass verified dispatch-time rates to shared token accounting."""
         chat_response.currency = None
         chat_response.cost_input = None
         chat_response.cost_output = None
@@ -972,31 +980,99 @@ class DeepSeekAdapter(LLMAdapterBase):
         if usage is None or not isinstance(usage, Usage):
             return
 
-        dispatch_time = _DEEPSEEK_DISPATCH_TIME.get() or _utc_now()
-        pricing = pricing_for_dispatch(dispatch_time)
-        if (
-            not isinstance(pricing, DeepSeekFlashPricing)
-            or not pricing.is_valid()
-            or self.model != "deepseek-flash"
-            or self.model_spec is None
-        ):
+        pricing = self.pricing
+        if pricing is None or self.model_spec is None:
             return
 
-        if isinstance(usage, DeepSeekUsage) and usage.cached_tokens is not None:
-            uncached_tokens = usage.input_tokens - usage.cached_tokens
-            chat_response.cost_input = (
-                usage.cached_tokens * pricing.cache_hit_input_per_token
-                + uncached_tokens * pricing.cache_miss_input_per_token
-            )
-        chat_response.cost_output = usage.output_tokens * pricing.output_per_token
-        chat_response.currency = "USD"
-        if (
-            chat_response.cost_input is not None
-            and chat_response.cost_output is not None
+        dispatch_time = _DEEPSEEK_DISPATCH_TIME.get() or _utc_now()
+        multiplier = self._dispatch_pricing_multiplier(dispatch_time)
+        if multiplier is None:
+            return
+
+        if usage.input_tokens is not None:
+            tier = pricing.tier_for_prompt_tokens(usage.input_tokens)
+        elif (
+            len(pricing.tiers) == 1
+            and pricing.tiers[0].up_to_prompt_tokens is None
         ):
-            chat_response.cost_total = (
-                chat_response.cost_input + chat_response.cost_output
+            tier = pricing.tiers[0]
+        else:
+            return
+
+        chat_response.apply_pricing(
+            price_input_per_token=tier.in_per_token * multiplier,
+            price_output_per_token=tier.out_per_token * multiplier,
+            currency=pricing.currency,
+            price_cache_read_per_token=(
+                tier.cache_read_in_per_token * multiplier
+                if tier.cache_read_in_per_token is not None
+                else None
+            ),
+        )
+
+    def _dispatch_pricing_multiplier(
+        self,
+        dispatch_time: datetime,
+    ) -> Optional[float]:
+        """Resolve the model's UTC time window and multiplier from its registry."""
+        models = ORGANIZATION_DATA.get("models")
+        model = models.get(self.model) if isinstance(models, Mapping) else None
+        schedule = model.get("pricing_schedule") if isinstance(model, Mapping) else None
+        if not isinstance(schedule, Mapping) or schedule.get("timezone") != "UTC":
+            return None
+        if (
+            not isinstance(dispatch_time, datetime)
+            or dispatch_time.tzinfo is None
+            or dispatch_time.utcoffset() is None
+        ):
+            return None
+        try:
+            pricing_time = dispatch_time.astimezone(timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+
+        weekdays = schedule.get("peak_weekdays")
+        windows = schedule.get("peak_windows")
+        if (
+            not isinstance(weekdays, list)
+            or any(
+                isinstance(day, bool)
+                or not isinstance(day, int)
+                or day not in range(7)
+                for day in weekdays
             )
+            or not isinstance(windows, list)
+        ):
+            return None
+
+        peak = pricing_time.weekday() in weekdays
+        if peak:
+            current_time = pricing_time.time()
+            for window in windows:
+                if not isinstance(window, list) or len(window) != 2:
+                    return None
+                try:
+                    start, end = (time.fromisoformat(value) for value in window)
+                except (TypeError, ValueError):
+                    return None
+                if start.tzinfo is not None or end.tzinfo is not None or start >= end:
+                    return None
+                if start <= current_time < end:
+                    break
+            else:
+                peak = False
+
+        multiplier = schedule.get(
+            "peak_multiplier" if peak else "off_peak_multiplier",
+        )
+        if (
+            isinstance(multiplier, bool)
+            or not isinstance(multiplier, (int, float))
+            or not isfinite(multiplier)
+            or multiplier < 0
+        ):
+            return None
+        return float(multiplier)
 
     def _store_reasoning_replay(
         self,

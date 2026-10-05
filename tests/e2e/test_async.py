@@ -2,7 +2,6 @@ import json
 
 import pytest
 
-from llm_api_adapter.errors import JSONSchemaError
 from llm_api_adapter.errors.llm_api_error import (
     LLMAPIAuthorizationError,
     LLMAPITimeoutError,
@@ -15,6 +14,7 @@ from llm_api_adapter.models.messages.chat_message import (
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.tools import ToolSpec
 from tests.e2e import harness
+from tests.e2e.conftest import e2e_model_case_parameters
 
 
 pytest.importorskip("httpx")
@@ -68,255 +68,248 @@ def _assert_usage_and_pricing(response):
 
 @pytest.mark.asyncio
 @pytest.mark.e2e
-@pytest.mark.e2e_feature("structured_output")
+@pytest.mark.e2e_capability("async_chat", "structured_output_schema")
+@pytest.mark.parametrize("e2e_model_case", e2e_model_case_parameters())
 async def test_async_chat_returns_structured_response_and_pricing(
-    subtests,
-    configured_async_e2e_models,
+    e2e_model_case,
+    e2e_model_organization,
     async_chat_with_retry,
     e2e_adapter,
 ):
-    if not configured_async_e2e_models:
-        pytest.skip("No provider API keys are configured")
+    model = e2e_model_case.model_spec
+    assert model is not None
+    if not e2e_model_organization["api_key"]:
+        pytest.skip("No organization API key is configured")
 
-    for provider, model in configured_async_e2e_models:
-        with subtests.test(provider=provider["name"], model=model):
-            try:
-                response = await async_chat_with_retry(
-                    e2e_adapter(provider, model),
-                    messages=[
-                        UserMessage(
-                            'Return JSON with name="Alice" and age=30.'
-                        )
-                    ],
-                    max_tokens=1024,
-                    json_schema=SIMPLE_SCHEMA,
-                    timeout_s=60,
-                )
-            except JSONSchemaError as exc:
-                pytest.skip(f"Model returned non-JSON in schema mode: {exc}")
+    response = await async_chat_with_retry(
+        e2e_adapter(e2e_model_organization, model.name),
+        messages=[UserMessage('Return JSON with name="Alice" and age=30.')],
+        max_tokens=1024,
+        json_schema=SIMPLE_SCHEMA,
+        timeout_s=60,
+    )
 
-            if response.content is None:
-                pytest.skip(
-                    "Model returned no visible content "
-                    f"(finish_reason={response.finish_reason!r})"
-                )
-
-            assert isinstance(response.content, str)
-            assert response.parsed_json == {"name": "Alice", "age": 30}
-            _assert_usage_and_pricing(response)
+    assert response.refusal is None
+    assert response.incomplete_reason is None
+    assert isinstance(response.content, str)
+    assert response.parsed_json == {"name": "Alice", "age": 30}
+    _assert_usage_and_pricing(response)
 
 
 @pytest.mark.asyncio
 @pytest.mark.e2e
+@pytest.mark.e2e_capability("async_streaming")
+@pytest.mark.parametrize("e2e_model_case", e2e_model_case_parameters())
 async def test_async_streaming_preserves_callbacks_and_final_response(
-    subtests,
-    configured_async_e2e_models,
+    e2e_model_case,
+    e2e_model_organization,
     async_stream_with_retry,
     e2e_adapter,
 ):
-    if not configured_async_e2e_models:
-        pytest.skip("No provider API keys are configured")
+    model = e2e_model_case.model_spec
+    assert model is not None
+    if not e2e_model_organization["api_key"]:
+        pytest.skip("No organization API key is configured")
 
-    for provider, model in configured_async_e2e_models:
-        with subtests.test(provider=provider["name"], model=model):
-            chunks = []
-            deltas = []
-            completed = []
+    chunks = []
+    deltas = []
+    completed = []
 
-            async def on_chunk(chunk):
-                chunks.append(chunk)
+    async def on_chunk(chunk):
+        chunks.append(chunk)
 
-            async def on_delta(text):
-                deltas.append(text)
+    async def on_delta(text):
+        deltas.append(text)
 
-            async def on_done(response):
-                completed.append(response)
+    async def on_done(response):
+        completed.append(response)
 
-            def reset_observers():
-                chunks.clear()
-                deltas.clear()
-                completed.clear()
+    def reset_observers():
+        chunks.clear()
+        deltas.clear()
+        completed.clear()
 
-            text_chunks = await async_stream_with_retry(
-                e2e_adapter(provider, model),
-                messages=[UserMessage("Reply with exactly: OK")],
-                max_tokens=1024,
-                timeout_s=60,
-                buffer_chars=8,
-                on_chunk=on_chunk,
-                on_delta=on_delta,
-                on_done=on_done,
-                on_retry=reset_observers,
-            )
+    text_chunks = await async_stream_with_retry(
+        e2e_adapter(e2e_model_organization, model.name),
+        messages=[UserMessage("Reply with exactly: OK")],
+        max_tokens=1024,
+        timeout_s=60,
+        buffer_chars=8,
+        on_chunk=on_chunk,
+        on_delta=on_delta,
+        on_done=on_done,
+        on_retry=reset_observers,
+    )
 
-            streamed_text = "".join(text_chunks)
-            assert streamed_text.strip()
-            assert [chunk.text for chunk in chunks] == text_chunks
-            assert deltas == text_chunks
-            assert all(len(chunk.text) <= 8 for chunk in chunks)
-            assert [chunk.index for chunk in chunks] == list(range(len(chunks)))
-            assert len(completed) == 1
-            assert completed[0].content == streamed_text
-            assert completed[0].finish_reason
+    streamed_text = "".join(text_chunks)
+    assert streamed_text.strip()
+    assert [chunk.text for chunk in chunks] == text_chunks
+    assert deltas == text_chunks
+    assert all(len(chunk.text) <= 8 for chunk in chunks)
+    assert [chunk.index for chunk in chunks] == list(range(len(chunks)))
+    assert len(completed) == 1
+    assert completed[0].content == streamed_text
+    assert completed[0].finish_reason
 
 
 @pytest.mark.asyncio
 @pytest.mark.e2e
+@pytest.mark.e2e_capability("application_tools")
+@pytest.mark.parametrize("e2e_model_case", e2e_model_case_parameters())
 async def test_async_tools_round_trip_with_previous_response(
-    subtests,
-    configured_async_e2e_models,
+    e2e_model_case,
+    e2e_model_organization,
     async_chat_with_retry,
     tool_choice_for_model,
     e2e_adapter,
 ):
-    if not configured_async_e2e_models:
-        pytest.skip("No provider API keys are configured")
+    model = e2e_model_case.model_spec
+    assert model is not None
+    organization = e2e_model_organization
+    if not organization["api_key"]:
+        pytest.skip("No organization API key is configured")
 
-    for provider, model in configured_async_e2e_models:
-        tool_choice = tool_choice_for_model(
-            provider["name"],
-            model,
-            KUDIBLOID_TOOL.name,
+    tool_choice = tool_choice_for_model(
+        organization["name"],
+        model.name,
+        KUDIBLOID_TOOL.name,
+    )
+    adapter = e2e_adapter(organization, model.name)
+    messages = [
+        UserMessage(
+            "Retrieve the kudibloid count for 7 brankiches. The count is "
+            "not available in this prompt: call lookup_kudibloids to "
+            "obtain it. After the tool returns, answer with its "
+            "kudibloids value; do not guess."
         )
-        with subtests.test(
-            provider=provider["name"],
-            model=model,
-            tool_choice=tool_choice,
-        ):
-            adapter = e2e_adapter(provider, model)
-            messages = [
-                UserMessage(
-                    "Retrieve the kudibloid count for 7 brankiches. The count is "
-                    "not available in this prompt: call lookup_kudibloids to "
-                    "obtain it. After the tool returns, answer with its "
-                    "kudibloids value; do not guess."
-                )
-            ]
-            first = await async_chat_with_retry(
-                adapter,
-                messages=messages,
-                tools=[KUDIBLOID_TOOL],
-                tool_choice=tool_choice,
-                max_tokens=512,
-                timeout_s=60,
-            )
+    ]
+    first = await async_chat_with_retry(
+        adapter,
+        messages=messages,
+        tools=[KUDIBLOID_TOOL],
+        tool_choice=tool_choice,
+        max_tokens=512,
+        timeout_s=60,
+    )
 
-            assert first.tool_calls
-            messages.append(AIMessage(content=first.content or "", tool_calls=first.tool_calls))
-            for tool_call in first.tool_calls:
-                assert tool_call.name == KUDIBLOID_TOOL.name
-                brankiches = tool_call.arguments["brankiches"]
-                assert brankiches in KUDIBLOID_COUNTS
-                messages.append(
-                    ToolMessage(
-                        tool_call_id=tool_call.call_id,
-                        content=json.dumps(
-                            {
-                                "brankiches": brankiches,
-                                "kudibloids": KUDIBLOID_COUNTS[brankiches],
-                            }
-                        ),
-                    )
-                )
-
-            final = await async_chat_with_retry(
-                adapter,
-                messages=messages,
-                max_tokens=512,
-                timeout_s=60,
-                previous_response=first,
+    assert first.tool_calls
+    messages.append(AIMessage(content=first.content or "", tool_calls=first.tool_calls))
+    for tool_call in first.tool_calls:
+        assert tool_call.name == KUDIBLOID_TOOL.name
+        brankiches = tool_call.arguments["brankiches"]
+        assert brankiches in KUDIBLOID_COUNTS
+        messages.append(
+            ToolMessage(
+                tool_call_id=tool_call.call_id,
+                content=json.dumps(
+                    {
+                        "brankiches": brankiches,
+                        "kudibloids": KUDIBLOID_COUNTS[brankiches],
+                    }
+                ),
             )
-            assert final.content and final.content.strip()
-            assert str(KUDIBLOID_COUNTS[7]) in final.content
-            assert not final.tool_calls
+        )
+
+    final = await async_chat_with_retry(
+        adapter,
+        messages=messages,
+        max_tokens=512,
+        timeout_s=60,
+        previous_response=first,
+    )
+    assert final.content and final.content.strip()
+    assert str(KUDIBLOID_COUNTS[7]) in final.content
+    assert not final.tool_calls
 
 
 @pytest.mark.asyncio
 @pytest.mark.e2e
-@pytest.mark.e2e_feature("image_input")
+@pytest.mark.e2e_capability("image_bytes")
+@pytest.mark.parametrize("e2e_model_case", e2e_model_case_parameters())
 async def test_async_image_input_returns_text(
-    subtests,
-    configured_async_e2e_models,
+    e2e_model_case,
+    e2e_model_organization,
     vision_image_bytes,
     async_chat_with_retry,
     e2e_adapter,
 ):
-    if not configured_async_e2e_models:
-        pytest.skip("No provider API keys are configured")
+    model = e2e_model_case.model_spec
+    assert model is not None
+    if not e2e_model_organization["api_key"]:
+        pytest.skip("No organization API key is configured")
 
-    for provider, model in configured_async_e2e_models:
-        with subtests.test(provider=provider["name"], model=model, input="image"):
-            image_response = await async_chat_with_retry(
-                e2e_adapter(provider, model),
-                messages=[
-                    UserMessage(
-                        "Describe this image in one short sentence.",
-                        files=[ImagePart(data=vision_image_bytes, media_type="image/png")],
-                    )
-                ],
-                max_tokens=512,
-                timeout_s=60,
+    image_response = await async_chat_with_retry(
+        e2e_adapter(e2e_model_organization, model.name),
+        messages=[
+            UserMessage(
+                "Describe this image in one short sentence.",
+                files=[ImagePart(data=vision_image_bytes, media_type="image/png")],
             )
-            assert image_response.content and image_response.content.strip()
+        ],
+        max_tokens=512,
+        timeout_s=60,
+    )
+    assert image_response.content and image_response.content.strip()
 
 
 @pytest.mark.asyncio
 @pytest.mark.e2e
-@pytest.mark.e2e_feature("document_input")
+@pytest.mark.e2e_capability("pdf_bytes")
+@pytest.mark.parametrize("e2e_model_case", e2e_model_case_parameters())
 async def test_async_document_input_returns_text(
-    subtests,
-    configured_async_e2e_models,
+    e2e_model_case,
+    e2e_model_organization,
     pdf_bytes,
     async_chat_with_retry,
     e2e_adapter,
 ):
-    if not configured_async_e2e_models:
-        pytest.skip("No provider API keys are configured")
+    model = e2e_model_case.model_spec
+    assert model is not None
+    if not e2e_model_organization["api_key"]:
+        pytest.skip("No organization API key is configured")
 
-    for provider, model in configured_async_e2e_models:
-        with subtests.test(provider=provider["name"], model=model, input="pdf"):
-            document_response = await async_chat_with_retry(
-                e2e_adapter(provider, model),
-                messages=[
-                    harness.make_document_message(
-                        "Summarize this document in one sentence.",
-                        DocumentPart(data=pdf_bytes, media_type="application/pdf"),
-                    )
-                ],
-                max_tokens=512,
-                timeout_s=60,
+    document_response = await async_chat_with_retry(
+        e2e_adapter(e2e_model_organization, model.name),
+        messages=[
+            harness.make_document_message(
+                "Summarize this document in one sentence.",
+                DocumentPart(data=pdf_bytes, media_type="application/pdf"),
             )
-            assert document_response.content and document_response.content.strip()
+        ],
+        max_tokens=512,
+        timeout_s=60,
+    )
+    assert document_response.content and document_response.content.strip()
 
 
 @pytest.mark.asyncio
 @pytest.mark.e2e
-@pytest.mark.e2e_feature("error_normalization")
+@pytest.mark.e2e_capability("error_normalization")
+@pytest.mark.parametrize("e2e_model_case", e2e_model_case_parameters())
 async def test_async_errors_are_normalized(
-    subtests,
-    async_e2e_models,
-    configured_async_e2e_models,
+    e2e_model_case,
+    e2e_model_organization,
     e2e_adapter,
 ):
-    for provider, model in async_e2e_models:
-        with subtests.test(provider=provider["name"], model=model, error="auth"):
-            with pytest.raises(LLMAPIAuthorizationError):
-                await e2e_adapter(
-                    {**provider, "api_key": "NON_VALID_KEY"}, model
-                ).achat(
-                    messages=[UserMessage("Say OK")],
-                    max_tokens=32,
-                    timeout_s=10,
-                )
+    model = e2e_model_case.model_spec
+    assert model is not None
+    organization = e2e_model_organization
 
-    if not configured_async_e2e_models:
-        pytest.skip("No provider API keys are configured for timeout checks")
+    with pytest.raises(LLMAPIAuthorizationError):
+        await e2e_adapter(
+            {**organization, "api_key": "NON_VALID_KEY"}, model.name
+        ).achat(
+            messages=[UserMessage("Say OK")],
+            max_tokens=32,
+            timeout_s=10,
+        )
 
-    for provider, model in configured_async_e2e_models:
-        with subtests.test(provider=provider["name"], model=model, error="timeout"):
-            with pytest.raises(LLMAPITimeoutError):
-                await e2e_adapter(provider, model).achat(
-                    messages=[UserMessage("Say OK")],
-                    max_tokens=32,
-                    timeout_s=0.1,
-                )
+    if not organization["api_key"]:
+        pytest.skip("No organization API key is configured for timeout checks")
+
+    with pytest.raises(LLMAPITimeoutError):
+        await e2e_adapter(organization, model.name).achat(
+            messages=[UserMessage("Say OK")],
+            max_tokens=32,
+            timeout_s=0.1,
+        )

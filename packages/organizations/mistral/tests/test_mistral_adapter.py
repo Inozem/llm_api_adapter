@@ -21,7 +21,10 @@ import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 import llm_api_adapter_mistral.adapter as mistral_adapter_module
 import llm_api_adapter_mistral.clients.async_client as mistral_async_client_module
-from llm_api_adapter.errors.llm_api_error import LLMAPITokenLimitError
+from llm_api_adapter.errors.llm_api_error import (
+    LLMAPIClientError,
+    LLMAPITokenLimitError,
+)
 from llm_api_adapter.llm_registry.llm_registry import (
     RegistrySpec,
     resolve_metered_operation_spec,
@@ -135,6 +138,7 @@ def test_universal_chat_builds_direct_mistral_payload_and_finalizes_pricing(
                 "prompt_tokens": 10,
                 "completion_tokens": 20,
                 "total_tokens": 30,
+                "prompt_tokens_details": {"cached_tokens": 0},
             },
         }
     )
@@ -282,6 +286,7 @@ def test_mistral_processes_document_bytes_and_urls_through_ocr(
                     "prompt_tokens": 2,
                     "completion_tokens": 3,
                     "total_tokens": 5,
+                    "prompt_tokens_details": {"cached_tokens": 0},
                 },
             },
         ],
@@ -367,7 +372,11 @@ def test_mistral_keeps_known_ocr_costs_when_another_usage_is_unavailable(
             {
                 "model": "mistral-large-2512",
                 "choices": [{"message": {"content": "A summary."}}],
-                "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                "usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 3,
+                    "prompt_tokens_details": {"cached_tokens": 0},
+                },
             },
         ],
     )
@@ -745,6 +754,7 @@ def test_mistral_streams_text_tools_reasoning_and_usage(mistral_runtime):
                         "prompt_tokens": 5,
                         "completion_tokens": 6,
                         "total_tokens": 11,
+                        "prompt_tokens_details": {"cached_tokens": 0},
                     },
                 },
             ),
@@ -822,7 +832,11 @@ def test_mistral_async_chat_and_stream_use_shared_async_transport(
             "id": "cmpl-mistral-async-1",
             "model": "mistral-small-2603",
             "choices": [{"message": {"content": "Async hello"}}],
-            "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+            "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "prompt_tokens_details": {"cached_tokens": 0},
+            },
         }
 
     def fake_async_stream_request(url, **kwargs):
@@ -958,7 +972,11 @@ def test_mistral_async_chat_processes_document_through_ocr(
         return {
             "model": "mistral-large-2512",
             "choices": [{"message": {"content": "Async summary."}}],
-            "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+            "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "prompt_tokens_details": {"cached_tokens": 0},
+            },
         }
 
     monkeypatch.setattr(
@@ -1035,6 +1053,7 @@ def test_mistral_async_stream_includes_ocr_costs(mistral_runtime, monkeypatch):
                         "prompt_tokens": 2,
                         "completion_tokens": 3,
                         "total_tokens": 5,
+                        "prompt_tokens_details": {"cached_tokens": 0},
                     },
                 },
             )
@@ -1087,4 +1106,139 @@ def test_mistral_maps_context_errors_to_shared_error_hierarchy():
             status_code=400,
             error_type="context_length_exceeded",
             detail="context is too long",
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    (
+        "usage",
+        "expected_input",
+        "expected_output",
+        "expected_total",
+        "expected_cache",
+    ),
+    [
+        ({"completion_tokens": 13}, None, 13, None, None),
+        (
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "prompt_tokens_details": {"cached_tokens": 0},
+            },
+            0,
+            0,
+            0,
+            0,
+        ),
+    ],
+    ids=["input-omitted", "reported-zero"],
+)
+def test_mistral_preserves_omitted_and_reported_zero_usage(
+    usage,
+    expected_input,
+    expected_output,
+    expected_total,
+    expected_cache,
+):
+    parsed = MistralAdapter._parse_usage(usage)
+
+    assert parsed is not None
+    assert parsed.input_tokens == expected_input
+    assert parsed.output_tokens == expected_output
+    assert parsed.total_tokens == expected_total
+    assert parsed.cached_tokens == expected_cache
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cached_tokens", [-1, True, 1.5, "2"])
+def test_mistral_rejects_malformed_automatic_cache_counts(cached_tokens):
+    with pytest.raises(LLMAPIClientError, match="cached_tokens"):
+        MistralAdapter._parse_usage(
+            {
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "prompt_tokens_details": {"cached_tokens": cached_tokens},
+            }
+        )
+
+
+@pytest.mark.integration
+def test_mistral_sync_async_and_stream_share_cache_read_accounting(
+    mistral_runtime,
+    monkeypatch,
+):
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 5,
+        "total_tokens": 105,
+        "prompt_tokens_details": {"cached_tokens": 20},
+    }
+    response_payload = {
+        "id": "cmpl-mistral-cache-parity",
+        "model": "mistral-small-2603",
+        "choices": [{"message": {"content": "cached"}}],
+        "usage": usage,
+    }
+    stream_events = [
+        SSEEvent(
+            event=None,
+            data={
+                "id": response_payload["id"],
+                "model": response_payload["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "cached"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": usage,
+            },
+        )
+    ]
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-small-2603",
+        api_key="mistral-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        response_payload,
+        events=stream_events,
+    )
+    sync_response = adapter.chat([{"role": "user", "content": "cached"}])
+    completed = []
+    list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "cached"}],
+            on_done=completed.append,
+        )
+    )
+
+    async def fake_async_request(url, **kwargs):
+        return response_payload
+
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_request",
+        fake_async_request,
+    )
+    async_response = asyncio.run(
+        adapter.achat([{"role": "user", "content": "cached"}])
+    )
+
+    expected_input_cost = (80 * 0.15 + 20 * 0.015) / 1_000_000
+    expected_output_cost = 5 * 0.6 / 1_000_000
+    for result in (sync_response, async_response, completed[0]):
+        assert result.usage is not None
+        assert result.usage.input_tokens == 100
+        assert result.usage.output_tokens == 5
+        assert result.usage.total_tokens == 105
+        assert result.usage.cached_tokens == 20
+        assert result.usage.cache_write_tokens is None
+        assert result.cost_input == pytest.approx(expected_input_cost)
+        assert result.cost_output == pytest.approx(expected_output_cost)
+        assert result.cost_total == pytest.approx(
+            expected_input_cost + expected_output_cost
         )

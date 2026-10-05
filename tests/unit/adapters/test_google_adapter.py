@@ -71,7 +71,7 @@ def test_pricing_is_applied_when_present(adapter):
         currency="USD",
     )
     fake_response = {"some": "google response"}
-    fake_chat_response = ChatResponse()
+    fake_chat_response = ChatResponse(usage=Usage(10, 20, 30))
     patch_chat_completion = patch.object(
         GeminiSyncClient, "chat_completion", return_value=fake_response
     )
@@ -95,6 +95,60 @@ def test_pricing_is_applied_when_present(adapter):
         currency=adapter.pricing.currency,
     )
     assert result is fake_chat_response
+
+
+@pytest.mark.unit
+def test_chat_extracts_provider_reported_automatic_cache_read_usage(adapter):
+    response = {
+        "modelVersion": "gemini-2.5-pro",
+        "candidates": [{
+            "content": {"parts": [{"text": "cached"}]},
+            "finishReason": "STOP",
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 15,
+            "candidatesTokenCount": 2,
+            "totalTokenCount": 17,
+            "cachedContentTokenCount": 4,
+        },
+    }
+
+    with patch.object(GeminiSyncClient, "chat_completion", return_value=response):
+        result = adapter.chat([UserMessage("hi")])
+
+    assert result.usage.input_tokens == 15
+    assert result.usage.cached_tokens == 4
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("reported_value", "expected_value"),
+    ((0, 0), (-1, None), (True, None), (1.5, None), ("4", None)),
+)
+def test_google_payload_parser_accepts_only_confirmed_cache_token_counts(
+    adapter,
+    reported_value,
+    expected_value,
+):
+    response = {
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 2,
+            "thoughtsTokenCount": 0,
+            "totalTokenCount": 12,
+            "cachedContentTokenCount": reported_value,
+        },
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+    }
+
+    chat_response = adapter._parse_chat_response(
+        response,
+        capture_reasoning=False,
+    )
+
+    assert chat_response.usage.cached_tokens == expected_value
+    assert chat_response.usage.cache_write_tokens is None
+
 
 @pytest.mark.unit
 def test_chat_includes_system_instruction_in_payload(adapter):
@@ -322,6 +376,7 @@ def test_stream_chat_attaches_usage_with_thought_tokens_to_buffered_chunk(adapte
                 "candidatesTokenCount": 3,
                 "thoughtsTokenCount": 4,
                 "totalTokenCount": 9,
+                "cachedContentTokenCount": 1,
             },
         }, event=None),
     ])
@@ -337,9 +392,15 @@ def test_stream_chat_attaches_usage_with_thought_tokens_to_buffered_chunk(adapte
         ))
 
     assert output == ["Hello"]
-    assert chunks[0].usage == Usage(input_tokens=2, output_tokens=7, total_tokens=9)
+    expected_usage = Usage(
+        input_tokens=2,
+        output_tokens=7,
+        total_tokens=9,
+        cached_tokens=1,
+    )
+    assert chunks[0].usage == expected_usage
     assert chunks[0].output_tokens_delta == 7
-    assert done[0].usage == Usage(input_tokens=2, output_tokens=7, total_tokens=9)
+    assert done[0].usage == expected_usage
 
 
 @pytest.mark.unit

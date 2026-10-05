@@ -9,7 +9,6 @@ from typing import Any
 from llm_api_adapter.llm_registry.llm_registry import OrganizationModelMetadata
 
 from ..request_rules import KIMI_REQUEST_RULE_REGISTRY
-from .cache_pricing import KimiCachePricing, load_cache_pricing
 
 
 def _load_organization_data() -> dict[str, Any]:
@@ -22,7 +21,6 @@ def _load_organization_data() -> dict[str, Any]:
 
 
 ORGANIZATION_DATA = _load_organization_data()
-CACHE_PRICING: dict[str, KimiCachePricing] = load_cache_pricing(ORGANIZATION_DATA)
 MODEL_METADATA = OrganizationModelMetadata(
     organization="kimi",
     organization_data=ORGANIZATION_DATA,
@@ -30,4 +28,4 @@ MODEL_METADATA = OrganizationModelMetadata(
 )
 
 
-__all__ = ["CACHE_PRICING", "KimiCachePricing", "MODEL_METADATA"]
+__all__ = ["MODEL_METADATA", "ORGANIZATION_DATA"]

@@ -1,10 +1,15 @@
 from dataclasses import dataclass, field, replace
 from datetime import date
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any, Dict, Mapping, Optional, Sequence
 
+from .model_capabilities import (
+    ALWAYS_ON_CAPABILITY_IDS,
+    MODEL_DEPENDENT_CAPABILITY_IDS,
+)
 from .request_rules import (
     RequestRuleRegistry,
     RequestRules,
@@ -33,6 +38,19 @@ def _non_negative_rate(value: Any, field_name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
         raise ValueError(f"{field_name} must be a non-negative number")
     return float(value)
+
+
+def _finite_non_negative_rate(value: Any, field_name: str) -> float:
+    message = f"{field_name} must be a finite non-negative number"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(message)
+    try:
+        rate = float(value)
+    except (OverflowError, ValueError):
+        raise ValueError(message) from None
+    if not math.isfinite(rate) or rate < 0:
+        raise ValueError(message)
+    return rate
 
 
 def _non_negative_int(value: Any, field_name: str) -> int:
@@ -157,12 +175,101 @@ def _reasoning_capability_from_dict(data: Any) -> ReasoningCapability:
 
 
 @dataclass(frozen=True)
+class CapabilityException:
+    """One exact-model capability limitation and its adapter behavior."""
+
+    capability_id: str
+    behavior: str
+    behavior_id: str
+
+    @classmethod
+    def from_dict(cls, model_name: str, data: Any) -> "CapabilityException":
+        if not isinstance(data, Mapping):
+            raise ValueError(
+                f"Model '{model_name}' capability exception must be an object"
+            )
+
+        capability_id = data.get("capability_id")
+        if not isinstance(capability_id, str) or not capability_id:
+            raise ValueError(
+                f"Model '{model_name}' capability exception must name a capability_id"
+            )
+
+        allowed_fields = {"capability_id", "behavior_id", "behavior"}
+        unknown_fields = set(data) - allowed_fields
+        if unknown_fields:
+            names = ", ".join(sorted(str(field) for field in unknown_fields))
+            raise ValueError(
+                f"Model '{model_name}' capability exception '{capability_id}' "
+                f"contains unsupported fields: {names}"
+            )
+
+        if capability_id in ALWAYS_ON_CAPABILITY_IDS:
+            raise ValueError(
+                f"Model '{model_name}' cannot except always-on capability "
+                f"'{capability_id}'"
+            )
+        if capability_id not in MODEL_DEPENDENT_CAPABILITY_IDS:
+            raise ValueError(
+                f"Model '{model_name}' has unknown capability exception "
+                f"'{capability_id}'"
+            )
+
+        behavior_id = data.get("behavior_id")
+        if not isinstance(behavior_id, str) or not re.fullmatch(
+            r"[a-z][a-z0-9_]*", behavior_id
+        ):
+            raise ValueError(
+                f"Model '{model_name}' capability exception '{capability_id}' "
+                "must have a behavior_id matching [a-z][a-z0-9_]*"
+            )
+
+        behavior = data.get("behavior")
+        if not isinstance(behavior, str) or not behavior.strip():
+            raise ValueError(
+                f"Model '{model_name}' capability exception '{capability_id}' "
+                "must have a non-empty behavior"
+            )
+
+        return cls(
+            capability_id=capability_id,
+            behavior=behavior,
+            behavior_id=behavior_id,
+        )
+
+
+def _capability_exceptions_from_data(
+    model_name: str,
+    data: Any,
+) -> tuple[CapabilityException, ...]:
+    if not isinstance(data, list):
+        raise ValueError(
+            f"Model '{model_name}' capability_exceptions must be an array"
+        )
+
+    exceptions: list[CapabilityException] = []
+    seen_capability_ids: set[str] = set()
+    for raw_exception in data:
+        exception = CapabilityException.from_dict(model_name, raw_exception)
+        if exception.capability_id in seen_capability_ids:
+            raise ValueError(
+                f"Model '{model_name}' has duplicate capability exception "
+                f"'{exception.capability_id}'"
+            )
+        seen_capability_ids.add(exception.capability_id)
+        exceptions.append(exception)
+    return tuple(exceptions)
+
+
+@dataclass(frozen=True)
 class PricingTier:
     """One standard-rate band selected by reported prompt-token usage."""
 
     up_to_prompt_tokens: Optional[int]
     in_per_token: float
     out_per_token: float
+    cache_read_in_per_token: Optional[float] = None
+    cache_write_in_per_token: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Any) -> "PricingTier":
@@ -173,12 +280,26 @@ class PricingTier:
         if boundary is not None:
             boundary = _positive_int(boundary, "up_to_prompt_tokens")
 
+        cache_read_rate = None
+        if "cache_read_input_per_1m" in data:
+            cache_read_rate = _finite_non_negative_rate(
+                data["cache_read_input_per_1m"], "cache_read_input_per_1m"
+            ) / 1_000_000
+
+        cache_write_rate = None
+        if "cache_write_input_per_1m" in data:
+            cache_write_rate = _finite_non_negative_rate(
+                data["cache_write_input_per_1m"], "cache_write_input_per_1m"
+            ) / 1_000_000
+
         return cls(
             up_to_prompt_tokens=boundary,
             in_per_token=_positive_rate(data.get("input_per_1m"), "input_per_1m")
             / 1_000_000,
             out_per_token=_positive_rate(data.get("output_per_1m"), "output_per_1m")
             / 1_000_000,
+            cache_read_in_per_token=cache_read_rate,
+            cache_write_in_per_token=cache_write_rate,
         )
 
 
@@ -306,11 +427,20 @@ class ModelSpec:
     reasoning_capability: Optional[ReasoningCapability] = None
     is_adaptive_thinking: bool = False
     request_rules: RequestRules = RequestRules()
+    capability_exceptions: Optional[tuple[CapabilityException, ...]] = None
 
     @property
     def is_reasoning(self) -> bool:
         """Backward-compatible marker derived from verified capability metadata."""
         return self.reasoning_capability is not None
+
+    def require_capability_profile(self) -> tuple[CapabilityException, ...]:
+        """Return the profile for certification, rejecting legacy unprofiled models."""
+        if self.capability_exceptions is None:
+            raise ValueError(
+                f"Model '{self.name}' is uncertified: capability profile is missing"
+            )
+        return self.capability_exceptions
 
     @classmethod
     def from_dict(
@@ -337,6 +467,11 @@ class ModelSpec:
         reasoning_capability = (
             _reasoning_capability_from_dict(data["reasoning_capability"])
             if "reasoning_capability" in data
+            else None
+        )
+        capability_exceptions = (
+            _capability_exceptions_from_data(name, data["capability_exceptions"])
+            if "capability_exceptions" in data
             else None
         )
         is_adaptive_thinking = data.get("is_adaptive_thinking", False)
@@ -381,6 +516,7 @@ class ModelSpec:
             reasoning_capability=reasoning_capability,
             is_adaptive_thinking=is_adaptive_thinking,
             request_rules=request_rules,
+            capability_exceptions=capability_exceptions,
         )
 
 

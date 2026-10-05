@@ -229,10 +229,13 @@ class DeepSeekResponsesStreamParser:
         completed_response = dict(response)
         completed_response.setdefault("model", model)
         completed_response.setdefault("status", "completed")
-        return ChatResponse.from_openai_responses_response(
+        chat_response = ChatResponse.from_openai_responses_response(
             completed_response,
             capture_reasoning=capture_reasoning,
         )
+        if state.usage is not None:
+            chat_response.usage = state.usage
+        return chat_response
 
     @classmethod
     def _record_terminal(
@@ -557,22 +560,49 @@ class DeepSeekResponsesStreamParser:
     def _normalize_usage(raw_usage: Any) -> Optional[Usage]:
         if not isinstance(raw_usage, Mapping):
             return None
-        values = [
-            raw_usage.get("input_tokens"),
-            raw_usage.get("output_tokens"),
-            raw_usage.get("total_tokens"),
-        ]
-        if any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in values
-        ):
+
+        def valid_count(value: Any) -> bool:
+            return (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 0
+            )
+
+        input_tokens = raw_usage.get("input_tokens")
+        output_tokens = raw_usage.get("output_tokens")
+        total_tokens = raw_usage.get("total_tokens")
+        counts = (input_tokens, output_tokens, total_tokens)
+        if any(value is not None and not valid_count(value) for value in counts):
             return None
-        if values[2] != values[0] + values[1]:
+        if input_tokens is None and output_tokens is None and total_tokens is None:
             return None
+        if input_tokens is not None and output_tokens is not None:
+            exact_total = input_tokens + output_tokens
+            if total_tokens is not None and total_tokens != exact_total:
+                return None
+            total_tokens = exact_total
+
+        cached_tokens = None
+        input_details = raw_usage.get("input_tokens_details")
+        if input_details is not None:
+            if not isinstance(input_details, Mapping):
+                return None
+            if "cached_tokens" in input_details:
+                cached_tokens = input_details.get("cached_tokens")
+                if cached_tokens is not None and not valid_count(cached_tokens):
+                    return None
+                if (
+                    cached_tokens is not None
+                    and input_tokens is not None
+                    and cached_tokens > input_tokens
+                ):
+                    return None
+
         return Usage(
-            input_tokens=values[0],
-            output_tokens=values[1],
-            total_tokens=values[2],
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
         )
 
 

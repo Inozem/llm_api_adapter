@@ -27,6 +27,7 @@ from ...llms.streaming import (
 from ...models.messages.chat_message import Message, Messages
 from ...models.responses.chat_response import ChatResponse, Usage
 from ...models.tools import ToolSpec
+from .payloads import _apply_cache_usage, _cache_token_counts
 
 
 @dataclass
@@ -417,10 +418,10 @@ class _OpenAIStreamingMixin:
             final_response = self._build_responses_stream_response(state)
         else:
             final_response = state.final_response
-        parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
-        chat_response = ChatResponse.from_openai_responses_response(
+        chat_response = self._parse_chat_response(
             final_response,
-            **parser_kwargs,
+            use_responses_api=True,
+            capture_reasoning=capture_reasoning,
         )
         return self._finalize_stream_response(
             chat_response,
@@ -622,12 +623,32 @@ class _OpenAIStreamingMixin:
         input_tokens = _OpenAIStreamingMixin._token_count(raw_usage.get(input_field))
         output_tokens = _OpenAIStreamingMixin._token_count(raw_usage.get(output_field))
         total_tokens = _OpenAIStreamingMixin._token_count(raw_usage.get("total_tokens"))
-        if input_tokens is None and output_tokens is None and total_tokens is None:
+        details_field = (
+            "input_tokens_details"
+            if input_field == "input_tokens"
+            else "prompt_tokens_details"
+        )
+        cached_tokens, cache_write_tokens = _cache_token_counts(
+            raw_usage,
+            details_field=details_field,
+        )
+        if all(
+            value is None
+            for value in (
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cached_tokens,
+                cache_write_tokens,
+            )
+        ):
             return None
         return Usage(
-            input_tokens=input_tokens or 0,
-            output_tokens=output_tokens or 0,
-            total_tokens=total_tokens or 0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
 
     @staticmethod
@@ -706,4 +727,9 @@ class _OpenAIStreamingMixin:
         if tool_calls:
             message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
         legacy_response["choices"] = [{"message": message, "finish_reason": finish_reason}]
-        return ChatResponse.from_openai_response(legacy_response)
+        chat_response = ChatResponse.from_openai_response(legacy_response)
+        return _apply_cache_usage(
+            chat_response,
+            legacy_response,
+            details_field="prompt_tokens_details",
+        )

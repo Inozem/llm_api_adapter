@@ -45,7 +45,6 @@ from llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 
 from .clients import KimiAsyncClient, KimiSyncClient
-from .registry import CACHE_PRICING, KimiCachePricing
 
 
 @dataclass
@@ -455,21 +454,10 @@ class KimiAdapter(LLMAdapterBase):
 
     @staticmethod
     def _stream_usage(raw_usage: Any) -> Optional[Usage]:
-        if not isinstance(raw_usage, Mapping):
+        try:
+            return KimiAdapter._parse_usage(raw_usage)
+        except LLMAPIClientError:
             return None
-        input_tokens = raw_usage.get("prompt_tokens")
-        output_tokens = raw_usage.get("completion_tokens")
-        total_tokens = raw_usage.get("total_tokens")
-        if any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in (input_tokens, output_tokens, total_tokens)
-        ):
-            return None
-        return Usage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=total_tokens,
-        )
 
     def _record_stream_reasoning(
         self,
@@ -565,7 +553,6 @@ class KimiAdapter(LLMAdapterBase):
             effective_schema=effective_schema,
             response_model=response_model,
         )
-        self._apply_cache_aware_pricing(chat_response)
         return chat_response
 
     def _prepare_request_payload(
@@ -805,32 +792,65 @@ class KimiAdapter(LLMAdapterBase):
             raise LLMAPIClientError(
                 detail="Kimi Chat Completions response.usage must be an object",
             )
-        required_tokens = ("prompt_tokens", "completion_tokens", "total_tokens")
-        if any(
-            isinstance(usage.get(field), bool) or not isinstance(usage.get(field), int)
-            for field in required_tokens
-        ):
-            raise LLMAPIClientError(
-                detail="Kimi Chat Completions usage token counts must be integers",
-            )
-        cached_tokens = usage.get("cached_tokens")
-        if cached_tokens is not None and (
-            isinstance(cached_tokens, bool) or not isinstance(cached_tokens, int)
-        ):
-            raise LLMAPIClientError(
-                detail="Kimi Chat Completions usage.cached_tokens must be an integer",
-            )
-        if cached_tokens is not None and not 0 <= cached_tokens <= usage["prompt_tokens"]:
-            raise LLMAPIClientError(
-                detail="Kimi Chat Completions usage.cached_tokens must not exceed prompt_tokens",
-            )
-        chat_response.usage = KimiUsage(
-            input_tokens=usage["prompt_tokens"],
-            output_tokens=usage["completion_tokens"],
-            total_tokens=usage["total_tokens"],
-            cached_tokens=cached_tokens,
-        )
+        chat_response.usage = KimiAdapter._parse_usage(usage)
         return chat_response
+
+    @staticmethod
+    def _parse_usage(raw_usage: Any) -> Optional[KimiUsage]:
+        """Normalize only counts reported by Kimi, retaining omitted values."""
+        if not isinstance(raw_usage, Mapping):
+            return None
+
+        def read_count(value: Any, field_name: str) -> int | None:
+            if value is None:
+                return None
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise LLMAPIClientError(
+                    detail=(
+                        "Kimi Chat Completions usage token counts: "
+                        f"{field_name} must be a non-negative integer"
+                    ),
+                )
+            return value
+
+        input_tokens = read_count(raw_usage.get("prompt_tokens"), "prompt_tokens")
+        output_tokens = read_count(raw_usage.get("completion_tokens"), "completion_tokens")
+        total_tokens = read_count(raw_usage.get("total_tokens"), "total_tokens")
+        if input_tokens is None and output_tokens is None and total_tokens is None:
+            raise LLMAPIClientError(
+                detail="Kimi Chat Completions usage token counts must include a count",
+            )
+        if input_tokens is not None and output_tokens is not None:
+            total_tokens = total_tokens if total_tokens is not None else input_tokens + output_tokens
+
+        prompt_details = raw_usage.get("prompt_tokens_details")
+        details = prompt_details if isinstance(prompt_details, Mapping) else {}
+        cached_tokens = read_count(
+            details.get("cached_tokens")
+            if details.get("cached_tokens") is not None
+            else raw_usage.get("cached_tokens"),
+            "cached_tokens",
+        )
+        cache_write_tokens = read_count(details.get("cache_write_tokens"), "cache_write_tokens")
+        if input_tokens is not None:
+            cache_components = sum(
+                count for count in (cached_tokens, cache_write_tokens) if count is not None
+            )
+            if cache_components > input_tokens:
+                raise LLMAPIClientError(
+                    detail=(
+                        "Kimi Chat Completions cached and cache-write tokens "
+                        "must not exceed prompt_tokens"
+                    ),
+                )
+
+        return KimiUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
+        )
 
     def _finalize_kimi_chat_response(
         self,
@@ -845,25 +865,7 @@ class KimiAdapter(LLMAdapterBase):
             effective_schema=effective_schema,
             response_model=response_model,
         )
-        self._apply_cache_aware_pricing(chat_response)
         return chat_response
-
-    def _apply_cache_aware_pricing(self, chat_response: ChatResponse) -> None:
-        """Replace the generic cache-miss estimate only when the split is reported."""
-        cache_pricing: KimiCachePricing | None = CACHE_PRICING.get(self.model)
-        usage = chat_response.usage
-        if cache_pricing is None or not isinstance(usage, KimiUsage):
-            return
-        if usage.cached_tokens is None:
-            return
-        uncached_tokens = usage.input_tokens - usage.cached_tokens
-        chat_response.currency = "USD"
-        chat_response.cost_input = (
-            usage.cached_tokens * cache_pricing.cache_hit_input_per_token
-            + uncached_tokens * cache_pricing.cache_miss_input_per_token
-        )
-        chat_response.cost_output = usage.output_tokens * cache_pricing.output_per_token
-        chat_response.cost_total = chat_response.cost_input + chat_response.cost_output
 
 
 __all__ = ["KimiAdapter", "KimiUsage"]

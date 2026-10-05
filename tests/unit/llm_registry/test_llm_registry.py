@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -91,11 +92,13 @@ def test_pricing_overrides_apply_to_every_tier():
             {
                 "up_to_prompt_tokens": 200_000,
                 "input_per_1m": 1_500,
+                "cache_read_input_per_1m": 10,
                 "output_per_1m": 2_500,
             },
             {
                 "up_to_prompt_tokens": None,
                 "input_per_1m": 3_000,
+                "cache_write_input_per_1m": 20,
                 "output_per_1m": 4_000,
             },
         ],
@@ -108,6 +111,14 @@ def test_pricing_overrides_apply_to_every_tier():
 
     assert [tier.in_per_token for tier in pricing.tiers] == [150 / 1_000_000] * 2
     assert [tier.out_per_token for tier in pricing.tiers] == [250 / 1_000_000] * 2
+    assert [tier.cache_read_in_per_token for tier in pricing.tiers] == [
+        10 / 1_000_000,
+        None,
+    ]
+    assert [tier.cache_write_in_per_token for tier in pricing.tiers] == [
+        None,
+        20 / 1_000_000,
+    ]
     assert pricing.currency == "EUR"
 
 
@@ -145,6 +156,77 @@ def test_pricing_tier_for_prompt_tokens_uses_inclusive_boundaries():
     assert pricing.tier_for_prompt_tokens(201) is pricing.tiers[1]
     with pytest.raises(ValueError, match="non-negative integer"):
         pricing.tier_for_prompt_tokens(-1)
+
+
+@pytest.mark.unit
+def test_pricing_tiers_parse_automatic_cache_rates_and_select_by_total_input_tokens():
+    pricing = Pricing.from_dict(
+        [
+            {
+                "up_to_prompt_tokens": 100,
+                "input_per_1m": 4,
+                "cache_read_input_per_1m": 0,
+                "output_per_1m": 8,
+            },
+            {
+                "up_to_prompt_tokens": 200,
+                "input_per_1m": 6,
+                "cache_read_input_per_1m": 2,
+                "cache_write_input_per_1m": 7,
+                "output_per_1m": 10,
+            },
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": 8,
+                "cache_write_input_per_1m": 1,
+                "output_per_1m": 12,
+            },
+        ],
+        currency="USD",
+    )
+    cache_read_tokens = 40
+    cache_write_tokens = 20
+    ordinary_input_tokens = 50
+    total_input_tokens = (
+        cache_read_tokens + cache_write_tokens + ordinary_input_tokens
+    )
+
+    assert pricing.tiers[0].cache_read_in_per_token == 0
+    assert pricing.tiers[0].cache_write_in_per_token is None
+    assert pricing.tier_for_prompt_tokens(total_input_tokens) is pricing.tiers[1]
+    assert pricing.tiers[1].cache_read_in_per_token == pytest.approx(2 / 1_000_000)
+    assert pricing.tiers[1].cache_write_in_per_token == pytest.approx(7 / 1_000_000)
+    assert pricing.tiers[2].cache_read_in_per_token is None
+    assert pricing.tiers[2].cache_write_in_per_token == pytest.approx(1 / 1_000_000)
+    assert pricing.tiers[2].in_per_token == pytest.approx(8 / 1_000_000)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field_name",
+    ("cache_read_input_per_1m", "cache_write_input_per_1m"),
+)
+@pytest.mark.parametrize(
+    "cache_rate",
+    (None, True, -1, math.nan, math.inf, -math.inf, "1"),
+)
+def test_automatic_cache_rate_requires_a_finite_nonnegative_number(
+    field_name, cache_rate
+):
+    tiers = [
+        {
+            "up_to_prompt_tokens": None,
+            "input_per_1m": 4,
+            field_name: cache_rate,
+            "output_per_1m": 8,
+        }
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=rf"{field_name} must be a finite non-negative number",
+    ):
+        Pricing.from_dict(tiers, currency="USD")
 
 
 @pytest.mark.unit
@@ -828,11 +910,15 @@ def test_legacy_flat_pricing_is_rejected():
                 {
                     "up_to_prompt_tokens": None,
                     "input_per_1m": 1,
+                    "cache_read_input_per_1m": 0,
+                    "cache_write_input_per_1m": 0,
                     "output_per_1m": 1,
                 },
                 {
                     "up_to_prompt_tokens": 200,
                     "input_per_1m": 1,
+                    "cache_read_input_per_1m": 0,
+                    "cache_write_input_per_1m": 0,
                     "output_per_1m": 1,
                 },
             ],
@@ -843,16 +929,22 @@ def test_legacy_flat_pricing_is_rejected():
                 {
                     "up_to_prompt_tokens": 200,
                     "input_per_1m": 1,
+                    "cache_read_input_per_1m": 0,
+                    "cache_write_input_per_1m": 0,
                     "output_per_1m": 1,
                 },
                 {
                     "up_to_prompt_tokens": 200,
                     "input_per_1m": 1,
+                    "cache_read_input_per_1m": 0,
+                    "cache_write_input_per_1m": 0,
                     "output_per_1m": 1,
                 },
                 {
                     "up_to_prompt_tokens": None,
                     "input_per_1m": 1,
+                    "cache_read_input_per_1m": 0,
+                    "cache_write_input_per_1m": 0,
                     "output_per_1m": 1,
                 },
             ],

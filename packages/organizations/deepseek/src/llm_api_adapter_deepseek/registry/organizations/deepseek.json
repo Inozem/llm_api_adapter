@@ -2,6 +2,28 @@
   "currency": "USD",
   "models": {
     "deepseek-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_named",
+          "behavior_id": "pass",
+          "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "DocumentPart URLs, including PDFs, are rejected before transport; the Responses API does not support file inputs and this package accepts image inputs only."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "DocumentPart bytes, including PDFs, are rejected before transport; the Responses API does not support file inputs and this package accepts image inputs only."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "stateless_reasoning_replay",
+          "behavior": "The Responses API is stateless and does not support previous_response_id; callers send full messages history, while previous_response carries only matching opaque reasoning replay material."
+        }
+      ],
       "limits": {
         "context_window_tokens": 1000000,
         "max_output_tokens": 384000
@@ -9,10 +31,18 @@
       "pricing_tiers": [
         {
           "up_to_prompt_tokens": null,
-          "input_per_1m": 0.3,
-          "output_per_1m": 1.2
+          "input_per_1m": 0.15,
+          "output_per_1m": 0.6,
+          "cache_read_input_per_1m": 0.003
         }
       ],
+      "pricing_schedule": {
+        "timezone": "UTC",
+        "peak_weekdays": [0, 1, 2, 3, 4],
+        "peak_windows": [["01:00", "04:00"], ["06:00", "10:00"]],
+        "peak_multiplier": 2,
+        "off_peak_multiplier": 1
+      },
       "reasoning_capability": {
         "allowed_values": ["none", "low", "high", "max"]
       }

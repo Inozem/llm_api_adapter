@@ -62,26 +62,24 @@ async def test_profiled_e2e_adapter_forwards_operation_kwargs_to_every_operation
 
 
 @pytest.mark.unit
-def test_qwen_e2e_profile_selects_only_portable_document_free_features():
+def test_qwen_e2e_profile_keeps_lane_install_and_operation_settings():
     profile = e2e_conftest._QWEN_E2E_PROFILE
 
+    assert profile.name == "qwen"
+    assert profile.organization_names == ("qwen",)
     assert profile.distribution == "llm-api-adapter-qwen"
     assert profile.operation_kwargs_env == (("workspace_id", "QWEN_WORKSPACE_ID"),)
-    assert e2e_conftest._profile_supports_features(profile, frozenset({"image_input"}))
-    assert not e2e_conftest._profile_supports_features(
-        profile,
-        frozenset({"document_input"}),
-    )
+    assert not hasattr(profile, "supported_features")
 
 
 @pytest.mark.unit
-def test_kimi_e2e_profile_selects_only_portable_document_free_features():
+def test_kimi_e2e_profile_keeps_lane_install_and_key_settings():
     profile = e2e_conftest._KIMI_E2E_PROFILE
 
+    assert profile.name == "kimi"
+    assert profile.organization_names == ("kimi",)
     assert profile.distribution == "llm-api-adapter-kimi"
     assert profile.operation_kwargs_env == ()
-    assert e2e_conftest._profile_supports_features(profile, frozenset({"image_input"}))
-    assert not e2e_conftest._profile_supports_features(
-        profile,
-        frozenset({"document_input"}),
-    )
+    assert profile.api_key_is_required
+    assert profile.missing_api_key_is_usage_error
+    assert not hasattr(profile, "supported_features")

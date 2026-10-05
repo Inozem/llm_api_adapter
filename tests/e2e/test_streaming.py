@@ -1,70 +1,67 @@
 import pytest
 
 from llm_api_adapter.models.messages.chat_message import UserMessage
+from tests.e2e.conftest import e2e_model_case_parameters
 
 
 @pytest.mark.e2e
+@pytest.mark.e2e_capability("sync_streaming")
+@pytest.mark.parametrize("e2e_model_case", e2e_model_case_parameters())
 def test_stream_chat_returns_text_and_finalized_response(
-    subtests,
-    iter_organization_models,
+    e2e_model_case,
+    e2e_model_organization,
     stream_with_retry,
     e2e_adapter,
 ):
-    configured_models = 0
+    model = e2e_model_case.model_spec
+    assert model is not None
+    if not e2e_model_organization["api_key"]:
+        pytest.skip("No organization API key is configured")
 
-    for organization, model in iter_organization_models():
-        if not organization["api_key"]:
-            continue
-        configured_models += 1
+    adapter = e2e_adapter(e2e_model_organization, model.name)
+    completed_responses = []
+    observed_chunks = []
 
-        with subtests.test(organization=organization["name"], model=model):
-            adapter = e2e_adapter(organization, model)
-            completed_responses = []
-            observed_chunks = []
+    def reset_observers():
+        completed_responses.clear()
+        observed_chunks.clear()
 
-            def reset_observers():
-                completed_responses.clear()
-                observed_chunks.clear()
+    text_chunks = stream_with_retry(
+        adapter,
+        messages=[UserMessage("Reply with exactly: OK")],
+        max_tokens=1026,
+        timeout_s=60,
+        buffer_chars=8,
+        on_chunk=observed_chunks.append,
+        on_done=completed_responses.append,
+        on_retry=reset_observers,
+    )
 
-            text_chunks = stream_with_retry(
-                adapter,
-                messages=[UserMessage("Reply with exactly: OK")],
-                max_tokens=1026,
-                timeout_s=60,
-                buffer_chars=8,
-                on_chunk=observed_chunks.append,
-                on_done=completed_responses.append,
-                on_retry=reset_observers,
-            )
+    streamed_text = "".join(text_chunks)
+    assert streamed_text.strip()
+    assert [chunk.text for chunk in observed_chunks] == text_chunks
+    assert all(len(chunk.text) <= 8 for chunk in observed_chunks)
+    assert [chunk.index for chunk in observed_chunks] == list(
+        range(len(observed_chunks))
+    )
+    assert [chunk.elapsed_s for chunk in observed_chunks] == sorted(
+        chunk.elapsed_s for chunk in observed_chunks
+    )
+    assert all(chunk.delta_s >= 0 for chunk in observed_chunks)
+    assert len(completed_responses) == 1
 
-            streamed_text = "".join(text_chunks)
-            assert streamed_text.strip()
-            assert [chunk.text for chunk in observed_chunks] == text_chunks
-            assert all(len(chunk.text) <= 8 for chunk in observed_chunks)
-            assert [chunk.index for chunk in observed_chunks] == list(
-                range(len(observed_chunks))
-            )
-            assert [chunk.elapsed_s for chunk in observed_chunks] == sorted(
-                chunk.elapsed_s for chunk in observed_chunks
-            )
-            assert all(chunk.delta_s >= 0 for chunk in observed_chunks)
-            assert len(completed_responses) == 1
-
-            response = completed_responses[0]
-            assert isinstance(response.model, str) and response.model
-            assert response.content == streamed_text
-            if response.usage is not None:
-                assert response.usage.input_tokens >= 0
-                assert response.usage.output_tokens >= 0
-                assert response.usage.total_tokens >= response.usage.input_tokens
-            for chunk in observed_chunks:
-                if chunk.usage is not None:
-                    assert chunk.usage.input_tokens >= 0
-                    assert chunk.usage.output_tokens >= 0
-                    assert chunk.usage.total_tokens >= chunk.usage.input_tokens
-                if chunk.output_tokens_delta is not None:
-                    assert chunk.output_tokens_delta >= 0
-            assert isinstance(response.finish_reason, str) and response.finish_reason
-
-    if configured_models == 0:
-        pytest.skip("No organization API keys are configured")
+    response = completed_responses[0]
+    assert isinstance(response.model, str) and response.model
+    assert response.content == streamed_text
+    if response.usage is not None:
+        assert response.usage.input_tokens >= 0
+        assert response.usage.output_tokens >= 0
+        assert response.usage.total_tokens >= response.usage.input_tokens
+    for chunk in observed_chunks:
+        if chunk.usage is not None:
+            assert chunk.usage.input_tokens >= 0
+            assert chunk.usage.output_tokens >= 0
+            assert chunk.usage.total_tokens >= chunk.usage.input_tokens
+        if chunk.output_tokens_delta is not None:
+            assert chunk.output_tokens_delta >= 0
+    assert isinstance(response.finish_reason, str) and response.finish_reason
