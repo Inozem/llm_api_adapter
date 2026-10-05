@@ -105,19 +105,13 @@ def select_tool_choice_for_model(
     )
 
 
-def chat_with_transient_retry(
-    adapter, *, expected_error: type[LLMAPIError] | None = None, **kwargs
-):
-    """Retry transient chat failures, propagating an expected test error immediately."""
+def chat_with_transient_retry(adapter, **kwargs):
+    """Retry ``adapter.chat()`` on transient errors or model refusals."""
     for attempt in range(_MAX_ATTEMPTS):
         try:
             response = adapter.chat(**kwargs)
         except LLMAPIError as error:
-            if (
-                (expected_error is not None and isinstance(error, expected_error))
-                or not _is_transient_error(error)
-                or attempt == _MAX_ATTEMPTS - 1
-            ):
+            if not _is_transient_error(error) or attempt == _MAX_ATTEMPTS - 1:
                 raise
             time.sleep(_RETRY_DELAYS[attempt])
             continue
