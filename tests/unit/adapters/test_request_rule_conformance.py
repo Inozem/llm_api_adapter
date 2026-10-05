@@ -455,10 +455,10 @@ def test_adapter_rejects_all_unregistered_tool_choice_modes(case):
 async def test_adapter_chat_silently_applies_registered_payload_defaults(case):
     kwargs = _request_kwargs(case, non_default=False)
     with warnings.catch_warnings(record=True) as sync_warnings:
-        warnings.simplefilter("always")
+        warnings.simplefilter("always", UserWarning)
         sync_response, sync_payload = _sync_chat(case, dict(kwargs))
     with warnings.catch_warnings(record=True) as async_warnings:
-        warnings.simplefilter("always")
+        warnings.simplefilter("always", UserWarning)
         async_response, async_payload = await _async_chat(case, dict(kwargs))
 
     assert sync_response.content == async_response.content == "ok"
@@ -476,10 +476,10 @@ async def test_adapter_chat_silently_applies_registered_payload_defaults(case):
 async def test_adapter_chat_warns_for_registered_non_default_payload_values(case):
     kwargs = _request_kwargs(case, non_default=True)
     with warnings.catch_warnings(record=True) as sync_warnings:
-        warnings.simplefilter("always")
+        warnings.simplefilter("always", UserWarning)
         sync_response, sync_payload = _sync_chat(case, dict(kwargs))
     with warnings.catch_warnings(record=True) as async_warnings:
-        warnings.simplefilter("always")
+        warnings.simplefilter("always", UserWarning)
         async_response, async_payload = await _async_chat(case, dict(kwargs))
 
     assert sync_response.content == async_response.content == "ok"
