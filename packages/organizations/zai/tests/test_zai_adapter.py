@@ -49,6 +49,7 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
 MODEL = "glm-5.3-flash"
+FLASHX_MODEL = "glm-5.3-flashx"
 WEATHER_TOOL = ToolSpec(
     name="get_weather",
     description="Return the weather for a city.",
@@ -371,12 +372,36 @@ def test_zai_rejects_unknown_reasoning_level_before_http(zai_runtime):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "model",
-    ["glm-5.3-flashx", "glm-5.3-flash-latest"],
-    ids=["unverified-model", "unlisted-alias"],
-)
-def test_zai_rejects_unknown_model_capability_before_http(zai_runtime, model):
+def test_zai_registers_flashx_profile_and_sends_selected_model(zai_runtime):
+    model_spec = zai_runtime.organizations["zai"].models[FLASHX_MODEL]
+    assert model_spec.limits.context_window_tokens == 1_000_000
+    assert model_spec.limits.max_output_tokens == 131_072
+    assert model_spec.reasoning_capability.allowed_values == ("low", "high", "max")
+    tier = model_spec.pricing_tiers.tiers[0]
+    assert tier.in_per_token == pytest.approx(0.37 / 1_000_000)
+    assert tier.out_per_token == pytest.approx(1.25 / 1_000_000)
+    assert tier.cache_read_in_per_token == pytest.approx(0.075 / 1_000_000)
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=FLASHX_MODEL,
+        api_key="zai-test-key",
+    )
+    transport = FakeSyncTransport(
+        zai_response(prompt_tokens=100, completion_tokens=40, cached_tokens=25),
+    )
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat([UserMessage("Price this FlashX request")])
+
+    assert transport.requests[0].payload["model"] == FLASHX_MODEL
+    assert response.cost_input == pytest.approx((25 * 0.075 + 75 * 0.37) / 1_000_000)
+    assert response.cost_output == pytest.approx(40 * 1.25 / 1_000_000)
+
+
+@pytest.mark.unit
+def test_zai_rejects_unlisted_model_capability_before_http(zai_runtime):
+    model = "glm-5.3-flash-latest"
     with pytest.warns(UserWarning, match="not verified"):
         adapter = UniversalLLMAPIAdapter(
             organization="zai",

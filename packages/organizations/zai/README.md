@@ -54,19 +54,20 @@ print(response.content)
 ## Supported models
 
 - `glm-5.3-flash`
+- `glm-5.3-flashx`
 
 ## Capabilities
 
-| Capability | `glm-5.3-flash` |
-| --- | --- |
-| Text chat; sync/async streaming | Supported through the official Chat Completions endpoint |
-| Application function tools | `tool_choice="auto"` only; at most 128 declarations |
-| Reasoning | Core `reasoning_level` is mapped to Z.ai effort; kept separate from visible text |
-| Image input | User-message URL, bytes, and data-URL forms |
-| Usage | Valid provider usage only; missing or malformed usage is unavailable |
-| Portable JSON Schema / Pydantic output | Unsupported; rejected before HTTP |
-| Documents and generic files | Unsupported; rejected before HTTP |
-| Deployments, uploads, OCR, retries, continuation, and video | Unsupported |
+| Capability | `glm-5.3-flash` | `glm-5.3-flashx` |
+| --- | --- | --- |
+| Text chat; sync/async streaming | Supported through the official Chat Completions endpoint | Supported through the official Chat Completions endpoint |
+| Application function tools | `tool_choice="auto"` only; at most 128 declarations | `tool_choice="auto"` only; at most 128 declarations |
+| Reasoning | Core `reasoning_level` is mapped to Z.ai effort; kept separate from visible text | Core `reasoning_level` is mapped to Z.ai effort; kept separate from visible text |
+| Image input | User-message URL, bytes, and data-URL forms | User-message URL, bytes, and data-URL forms |
+| Usage | Valid provider usage only; missing or malformed usage is unavailable | Valid provider usage only; missing or malformed usage is unavailable |
+| Portable JSON Schema / Pydantic output | Unsupported; rejected before HTTP | Unsupported; rejected before HTTP |
+| Documents and generic files | Unsupported; rejected before HTTP | Unsupported; rejected before HTTP |
+| Deployments, uploads, OCR, retries, continuation, and video | Unsupported | Unsupported |
 
 Unknown, retired, aliased, or unverified model IDs are not inferred. Unsupported
 tool choices, parallel-tool control, provider-built-in tools, and every
