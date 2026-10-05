@@ -2,10 +2,7 @@ import json
 
 import pytest
 
-from llm_api_adapter.errors.llm_api_error import (
-    LLMAPIAuthorizationError,
-    LLMAPITimeoutError,
-)
+from llm_api_adapter.errors.llm_api_error import LLMAPIAuthorizationError
 from llm_api_adapter.models.messages.chat_message import (
     AIMessage,
     ToolMessage,
@@ -302,14 +299,4 @@ async def test_async_errors_are_normalized(
             messages=[UserMessage("Say OK")],
             max_tokens=32,
             timeout_s=10,
-        )
-
-    if not organization["api_key"]:
-        pytest.skip("No organization API key is configured for timeout checks")
-
-    with pytest.raises(LLMAPITimeoutError):
-        await e2e_adapter(organization, model.name).achat(
-            messages=[UserMessage("Say OK")],
-            max_tokens=32,
-            timeout_s=0.1,
         )

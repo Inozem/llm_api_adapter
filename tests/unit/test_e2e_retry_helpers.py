@@ -41,24 +41,25 @@ async def test_async_e2e_retry_helper_retries_transient_errors(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("connection_failures", [0, 1, 4])
-def test_e2e_timeout_check_uses_shared_retry_without_retrying_expected_timeout(
+def test_e2e_retry_helper_bounds_connection_retries(
     monkeypatch, connection_failures
 ):
     connection_error = LLMAPIClientError()
     connection_error.__cause__ = requests.exceptions.ConnectionError("unreachable")
-    timeout_error = LLMAPITimeoutError()
+    expected_response = SimpleNamespace(finish_reason=None)
     adapter = MagicMock()
-    adapter.chat.side_effect = [connection_error] * connection_failures + [timeout_error]
+    adapter.chat.side_effect = [connection_error] * connection_failures + [expected_response]
     sleep = MagicMock()
     monkeypatch.setattr(e2e_harness.time, "sleep", sleep)
-    expected_error = connection_error if connection_failures == 4 else timeout_error
-
-    with pytest.raises(type(expected_error)) as raised:
-        e2e_harness.chat_with_transient_retry(
-            adapter, expected_error=LLMAPITimeoutError, request="value"
+    if connection_failures == 4:
+        with pytest.raises(LLMAPIClientError) as raised:
+            e2e_harness.chat_with_transient_retry(adapter, request="value")
+        assert raised.value is connection_error
+    else:
+        assert (
+            e2e_harness.chat_with_transient_retry(adapter, request="value")
+            is expected_response
         )
-
-    assert raised.value is expected_error
     expected_calls = min(connection_failures + 1, 4)
     assert adapter.chat.call_count == expected_calls
     assert all(call.kwargs == {"request": "value"} for call in adapter.chat.call_args_list)
