@@ -5,9 +5,13 @@ from collections.abc import Mapping
 import time
 from typing import Any
 
+import httpx
 import pytest
+import requests
 
 from llm_api_adapter.errors import (
+    LLMAPIClientError,
+    LLMAPIError,
     LLMAPIRateLimitError,
     LLMAPIServerError,
     LLMAPITimeoutError,
@@ -25,6 +29,16 @@ _TRANSIENT_ERRORS = (
     LLMAPIRateLimitError,
     LLMAPITimeoutError,
 )
+
+
+def _is_transient_error(error: LLMAPIError) -> bool:
+    return isinstance(error, _TRANSIENT_ERRORS) or (
+        isinstance(error, LLMAPIClientError)
+        and isinstance(
+            error.__cause__,
+            (requests.exceptions.ConnectionError, httpx.ConnectError),
+        )
+    )
 
 
 class ProfiledE2EAdapter:
@@ -91,13 +105,19 @@ def select_tool_choice_for_model(
     )
 
 
-def chat_with_transient_retry(adapter, **kwargs):
-    """Retry ``adapter.chat()`` on transient errors or model refusals."""
+def chat_with_transient_retry(
+    adapter, *, expected_error: type[LLMAPIError] | None = None, **kwargs
+):
+    """Retry transient chat failures, propagating an expected test error immediately."""
     for attempt in range(_MAX_ATTEMPTS):
         try:
             response = adapter.chat(**kwargs)
-        except _TRANSIENT_ERRORS:
-            if attempt == _MAX_ATTEMPTS - 1:
+        except LLMAPIError as error:
+            if (
+                (expected_error is not None and isinstance(error, expected_error))
+                or not _is_transient_error(error)
+                or attempt == _MAX_ATTEMPTS - 1
+            ):
                 raise
             time.sleep(_RETRY_DELAYS[attempt])
             continue
@@ -113,8 +133,8 @@ def stream_with_transient_retry(adapter, **kwargs) -> list[str]:
     for attempt in range(_MAX_ATTEMPTS):
         try:
             return list(adapter.stream_chat(**kwargs))
-        except _TRANSIENT_ERRORS:
-            if attempt == _MAX_ATTEMPTS - 1:
+        except LLMAPIError as error:
+            if not _is_transient_error(error) or attempt == _MAX_ATTEMPTS - 1:
                 raise
             if on_retry is not None:
                 on_retry()
@@ -127,8 +147,8 @@ async def async_chat_with_transient_retry(adapter, **kwargs):
     for attempt in range(_MAX_ATTEMPTS):
         try:
             response = await adapter.achat(**kwargs)
-        except _TRANSIENT_ERRORS:
-            if attempt == _MAX_ATTEMPTS - 1:
+        except LLMAPIError as error:
+            if not _is_transient_error(error) or attempt == _MAX_ATTEMPTS - 1:
                 raise
             await asyncio.sleep(_RETRY_DELAYS[attempt])
             continue
@@ -147,8 +167,8 @@ async def async_stream_with_transient_retry(adapter, **kwargs) -> list[str]:
             async for chunk in adapter.astream_chat(**kwargs):
                 chunks.append(chunk)
             return chunks
-        except _TRANSIENT_ERRORS:
-            if attempt == _MAX_ATTEMPTS - 1:
+        except LLMAPIError as error:
+            if not _is_transient_error(error) or attempt == _MAX_ATTEMPTS - 1:
                 raise
             if on_retry is not None:
                 on_retry()

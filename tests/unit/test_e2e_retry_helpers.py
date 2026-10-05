@@ -1,19 +1,33 @@
 from unittest.mock import AsyncMock, MagicMock
 from types import SimpleNamespace
 
+import httpx
 import pytest
+import requests
 
-from llm_api_adapter.errors import LLMAPITimeoutError
+from llm_api_adapter.errors import LLMAPIClientError, LLMAPITimeoutError
 from tests.e2e import conftest as e2e_conftest
 from tests.e2e import harness as e2e_harness
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_async_e2e_retry_helper_retries_timeout(monkeypatch):
+@pytest.mark.parametrize(
+    ("error_type", "cause"),
+    [
+        (LLMAPITimeoutError, None),
+        (LLMAPIClientError, requests.exceptions.ConnectionError("unreachable")),
+        (LLMAPIClientError, httpx.ConnectError("unreachable")),
+    ],
+)
+async def test_async_e2e_retry_helper_retries_transient_errors(
+    monkeypatch, error_type, cause
+):
     expected_response = SimpleNamespace(finish_reason=None)
+    error = error_type()
+    error.__cause__ = cause
     adapter = AsyncMock()
-    adapter.achat.side_effect = [LLMAPITimeoutError(), expected_response]
+    adapter.achat.side_effect = [error, expected_response]
     sleep = AsyncMock()
     monkeypatch.setattr(e2e_harness.asyncio, "sleep", sleep)
 
@@ -23,6 +37,50 @@ async def test_async_e2e_retry_helper_retries_timeout(monkeypatch):
     assert adapter.achat.await_args_list[0].kwargs == {"request": "value"}
     assert adapter.achat.await_count == 2
     sleep.assert_awaited_once_with(2)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("connection_failures", [0, 1, 4])
+def test_e2e_timeout_check_uses_shared_retry_without_retrying_expected_timeout(
+    monkeypatch, connection_failures
+):
+    connection_error = LLMAPIClientError()
+    connection_error.__cause__ = requests.exceptions.ConnectionError("unreachable")
+    timeout_error = LLMAPITimeoutError()
+    adapter = MagicMock()
+    adapter.chat.side_effect = [connection_error] * connection_failures + [timeout_error]
+    sleep = MagicMock()
+    monkeypatch.setattr(e2e_harness.time, "sleep", sleep)
+    expected_error = connection_error if connection_failures == 4 else timeout_error
+
+    with pytest.raises(type(expected_error)) as raised:
+        e2e_harness.chat_with_transient_retry(
+            adapter, expected_error=LLMAPITimeoutError, request="value"
+        )
+
+    assert raised.value is expected_error
+    expected_calls = min(connection_failures + 1, 4)
+    assert adapter.chat.call_count == expected_calls
+    assert all(call.kwargs == {"request": "value"} for call in adapter.chat.call_args_list)
+    assert [call.args[0] for call in sleep.call_args_list] == [2, 4, 8][:expected_calls - 1]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cause", [None, requests.exceptions.HTTPError("bad request")])
+def test_e2e_retry_helper_propagates_other_client_errors(monkeypatch, cause):
+    error = LLMAPIClientError()
+    error.__cause__ = cause
+    adapter = MagicMock()
+    adapter.chat.side_effect = error
+    sleep = MagicMock()
+    monkeypatch.setattr(e2e_harness.time, "sleep", sleep)
+
+    with pytest.raises(LLMAPIClientError) as raised:
+        e2e_harness.chat_with_transient_retry(adapter, request="value")
+
+    assert raised.value is error
+    adapter.chat.assert_called_once_with(request="value")
+    sleep.assert_not_called()
 
 
 @pytest.mark.unit
