@@ -144,7 +144,10 @@ _ADAPTER_PROFILES = {
         async_client_class=ClaudeAsyncClient,
         message_key="messages",
         required_kwargs={"max_tokens": 64},
-        public_kwargs_by_payload_path={"top_p": "top_p"},
+        public_kwargs_by_payload_path={
+            "temperature": "temperature",
+            "top_p": "top_p",
+        },
         response_factory=_anthropic_response,
     ),
     "google": _AdapterProfile(
