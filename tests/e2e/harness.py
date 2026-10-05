@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Mapping
+from math import isclose
 import time
 from typing import Any
 
@@ -29,6 +30,38 @@ _TRANSIENT_ERRORS = (
     LLMAPIRateLimitError,
     LLMAPITimeoutError,
 )
+
+
+def assert_usage_contract(usage) -> None:
+    """Validate reported counts while preserving unknown values."""
+    assert usage is not None
+    counts = (usage.input_tokens, usage.output_tokens, usage.total_tokens)
+    for count in counts:
+        if count is not None:
+            assert count >= 0
+    if usage.total_tokens is not None:
+        assert usage.total_tokens >= sum(
+            count for count in counts[:2] if count is not None
+        )
+
+
+def assert_usage_and_pricing(response) -> None:
+    """Validate available usage and costs without requiring a complete breakdown."""
+    assert_usage_contract(response.usage)
+    assert response.currency
+    costs = (response.cost_input, response.cost_output, response.cost_total)
+    for cost in costs:
+        if cost is not None:
+            assert cost >= 0
+    if all(cost is not None for cost in costs):
+        assert isclose(
+            response.cost_total,
+            response.cost_input
+            + response.cost_output
+            + sum(item.cost for item in response.cost_breakdown or []),
+            rel_tol=0,
+            abs_tol=1e-9,
+        )
 
 
 def _is_transient_error(error: LLMAPIError) -> bool:

@@ -2,6 +2,7 @@ import pytest
 
 from llm_api_adapter.models.messages.chat_message import UserMessage
 from tests.e2e.conftest import e2e_model_case_parameters
+from tests.e2e.harness import assert_usage_contract
 
 
 @pytest.mark.e2e
@@ -54,14 +55,10 @@ def test_stream_chat_returns_text_and_finalized_response(
     assert isinstance(response.model, str) and response.model
     assert response.content == streamed_text
     if response.usage is not None:
-        assert response.usage.input_tokens >= 0
-        assert response.usage.output_tokens >= 0
-        assert response.usage.total_tokens >= response.usage.input_tokens
+        assert_usage_contract(response.usage)
     for chunk in observed_chunks:
         if chunk.usage is not None:
-            assert chunk.usage.input_tokens >= 0
-            assert chunk.usage.output_tokens >= 0
-            assert chunk.usage.total_tokens >= chunk.usage.input_tokens
+            assert_usage_contract(chunk.usage)
         if chunk.output_tokens_delta is not None:
             assert chunk.output_tokens_delta >= 0
     assert isinstance(response.finish_reason, str) and response.finish_reason
