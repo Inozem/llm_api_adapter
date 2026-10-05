@@ -49,20 +49,6 @@ KUDIBLOID_TOOL = ToolSpec(
 )
 
 
-def _assert_usage_and_pricing(response):
-    assert response.usage is not None
-    assert response.usage.input_tokens >= 0
-    assert response.usage.output_tokens >= 0
-    assert response.usage.total_tokens >= response.usage.input_tokens
-    assert response.currency
-    assert response.cost_total is not None and response.cost_total >= 0
-    if response.cost_input is None or response.cost_output is None:
-        assert response.cost_input is response.cost_output is None
-        return
-    assert response.cost_input >= 0
-    assert response.cost_output >= 0
-
-
 @pytest.mark.asyncio
 @pytest.mark.e2e
 @pytest.mark.e2e_capability("async_chat", "structured_output_schema")
@@ -90,7 +76,7 @@ async def test_async_chat_returns_structured_response_and_pricing(
     assert response.incomplete_reason is None
     assert isinstance(response.content, str)
     assert response.parsed_json == {"name": "Alice", "age": 30}
-    _assert_usage_and_pricing(response)
+    harness.assert_usage_and_pricing(response)
 
 
 @pytest.mark.asyncio
