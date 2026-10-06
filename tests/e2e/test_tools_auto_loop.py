@@ -110,6 +110,7 @@ def test_basic_tool_loop_with_previous_response(
         adapter,
         messages=messages,
         tools=_TOOLS,
+        tool_choice="none",
         max_tokens=512,
         timeout_s=60,
         previous_response=first,
