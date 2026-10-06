@@ -3,6 +3,7 @@
 import pytest
 
 from llm_api_adapter.models.messages.chat_message import UserMessage
+from tests.e2e.harness import assert_usage_and_pricing
 
 
 pytest.importorskip("httpx")
@@ -12,17 +13,7 @@ def _assert_usage_and_pricing(response):
     assert isinstance(response.content, str)
     assert response.content.strip()
     assert isinstance(response.finish_reason, str)
-    assert response.usage is not None
-    assert response.usage.input_tokens >= 0
-    assert response.usage.output_tokens >= 0
-    assert response.usage.total_tokens >= response.usage.input_tokens
-    assert response.currency
-    assert response.cost_total is not None and response.cost_total >= 0
-    if response.cost_input is None or response.cost_output is None:
-        assert response.cost_input is response.cost_output is None
-    else:
-        assert response.cost_input >= 0
-        assert response.cost_output >= 0
+    assert_usage_and_pricing(response)
 
 
 def _chat_kwargs():

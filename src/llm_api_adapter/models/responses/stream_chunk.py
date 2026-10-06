@@ -32,5 +32,7 @@ class StreamChunk:
                     input_tokens=self.usage.input_tokens,
                     output_tokens=self.usage.output_tokens,
                     total_tokens=self.usage.total_tokens,
+                    cached_tokens=self.usage.cached_tokens,
+                    cache_write_tokens=self.usage.cache_write_tokens,
                 ),
             )

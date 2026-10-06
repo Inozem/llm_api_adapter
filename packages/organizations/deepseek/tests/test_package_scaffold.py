@@ -21,17 +21,27 @@ from llm_api_adapter.organization_registry import (
     OrganizationPlugin,
 )
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
+from tests.external_organization_metadata import (
+    read_project_metadata,
+    requirement_target,
+)
 
 
 @pytest.mark.unit
 def test_deepseek_project_declares_core_dependency_extras_and_entry_point():
-    metadata = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    project = read_project_metadata(PACKAGE_ROOT / "pyproject.toml")
 
-    assert 'version = "0.1.0"' in metadata
-    assert 'dependencies = ["llm-api-adapter>=0.9.6,<1.0.0"]' in metadata
-    assert 'async = ["llm-api-adapter[async]>=0.9.6,<1.0.0"]' in metadata
-    assert 'httpx = ["llm-api-adapter[httpx]>=0.9.6,<1.0.0"]' in metadata
-    assert 'deepseek = "llm_api_adapter_deepseek.plugin:PLUGIN"' in metadata
+    assert [requirement_target(item) for item in project["dependencies"]] == [
+        "llm-api-adapter"
+    ]
+    for extra in ("async", "httpx"):
+        assert [
+            requirement_target(item)
+            for item in project["optional-dependencies"][extra]
+        ] == [f"llm-api-adapter[{extra}]"]
+    assert project["entry-points"]["llm_api_adapter.organizations"]["deepseek"] == (
+        "llm_api_adapter_deepseek.plugin:PLUGIN"
+    )
 
 
 @pytest.mark.unit

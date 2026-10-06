@@ -42,6 +42,8 @@ _CORE_ONLY_SHARED_PATHS = (
     "src/llm_api_adapter/llms/__init__.py",
 )
 _E2E_HARNESS_PATHS = (
+    "tests/capability_scenarios.py",
+    "tests/capability_selection.py",
     "tests/e2e/",
     "tests/fixtures/",
     "tests/requirements-test.txt",

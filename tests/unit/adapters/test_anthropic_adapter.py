@@ -61,7 +61,10 @@ def test_pricing_is_applied_when_present(adapter):
         currency="USD",
     )
     fake_response = {"some": "anthropic response"}
-    fake_chat_response = ChatResponse(content="fake")
+    fake_chat_response = ChatResponse(
+        content="fake",
+        usage=Usage(2, 3, 5),
+    )
     patch_chat_completion = patch.object(
         ClaudeSyncClient, "chat_completion", return_value=fake_response
     )

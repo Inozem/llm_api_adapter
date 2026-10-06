@@ -1,7 +1,10 @@
 # llm-api-adapter-xai
 
-Official xAI Responses API support for
-[llm-api-adapter](https://github.com/Inozem/llm_api_adapter/).
+An optional xAI organization package for
+[LLM API Adapter](https://github.com/Inozem/llm_api_adapter/), a Python SDK with
+one shared interface for calling LLM APIs.
+
+Uses xAI's official Responses API.
 
 ## Installation
 
@@ -48,10 +51,13 @@ response = adapter.chat(
 print(response.content)
 ```
 
-## Supported models and capabilities
+## Supported models
 
-The package deliberately exposes fixed model IDs, not moving aliases:
-`grok-4.7`, `grok-4.6`, and `grok-4.5`.
+- `grok-4.7`
+- `grok-4.6`
+- `grok-4.5`
+
+## Capabilities
 
 | Capability | Supported models |
 | --- | --- |
@@ -60,14 +66,15 @@ The package deliberately exposes fixed model IDs, not moving aliases:
 For `grok-4.5`, `grok-4.6`, and `grok-4.7`, xAI cannot disable reasoning: a requested
 `"none"` is mapped to the documented minimum and produces a warning.
 
+`grok-4.5` additionally accepts `xhigh` effort with `high` behavior. Exact
+reasoning values, limits, prices, and exceptions are recorded in the
+[xAI registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/xai/src/llm_api_adapter_xai/registry/organizations/xai.json).
+
 ## Structured-output portability
 
-This package requires `llm-api-adapter>=0.9.2,<1.0.0` and enforces the same
-Core portable JSON Schema profile as OpenAI, Anthropic, Google, and Mistral.
-The profile guarantees that every object is strict, every property is required,
-optional values are nullable, and only
-direct, non-recursive local `#/$defs/...` references are resolved before the
-request.
+The package uses the Core portable profile for `json_schema` and Pydantic
+`response_model`. The main [Structured Output guide](https://github.com/Inozem/llm_api_adapter/#structured-output)
+defines schema validation and parsed, refusal, and incomplete results.
 
 xAI's documented immediate schema failures are an additive local overlay, not
 a replacement for the Core boundary. The adapter rejects boolean property
@@ -75,15 +82,6 @@ schemas, empty `enum` or `anyOf`, `minContains`/`maxContains`, tuple `items`
 arrays, and unsupported regular expressions before the request. See xAI's
 [structured-output documentation](https://docs.x.ai/developers/model-capabilities/text/structured-outputs)
 for xAI-specific details.
-
-Use `json_schema` for parsed JSON only. Use a Pydantic `response_model` when
-the final result must also be locally validated and returned as
-`ChatResponse.parsed_model`; each nested Pydantic model must use
-`ConfigDict(extra="forbid")`. Refusal and incomplete terminal responses set
-`ChatResponse.refusal` or `ChatResponse.incomplete_reason` and leave parsed
-fields unset. Invalid completed JSON or failed Pydantic validation raises
-`JSONSchemaError`. The complete portable vocabulary and examples are in the
-main [Structured Output guide](https://github.com/Inozem/llm_api_adapter/#structured-output).
 
 ## Conversations, files, and costs
 
@@ -105,14 +103,29 @@ is performed.
 
 Attaching a PDF activates xAI's `attachment_search` tool. That makes the
 request agentic and adds tool-invocation charges to normal token charges.
-Storage for an uploaded file is also billed by xAI until it expires. Treat
-`ChatResponse.cost_total` as the exact request cost only when xAI returns it;
-consult xAI billing for storage and any charges not included in that response.
+Storage for an uploaded file is also billed by xAI until it expires. Consult
+xAI billing for storage and any charges outside the reported request cost.
 
 See the official xAI documentation for
 [Responses storage](https://docs.x.ai/developers/model-capabilities/text/comparison),
 [files and expiry](https://docs.x.ai/developers/files/managing-files), and
 [file-search pricing](https://docs.x.ai/developers/pricing).
+
+## Automatic cache usage and costs
+
+`usage.input_tokens_details.cached_tokens` becomes `Usage.cached_tokens`,
+a subset of total input. Registry tiers use total input, including cache hits,
+and price ordinary and cached input separately. There is no separately priced
+automatic cache write; `cache_write_tokens` remains `None`. Without the required
+cache split, estimated `cost_input` and `cost_total` are unknown while known
+output cost can remain available. Opt-in cache controls, TTLs, and storage
+pricing are outside this estimate.
+
+When xAI reports a valid `usage.cost_in_usd_ticks`, it takes precedence over
+the token estimate: `cost_total` is that value divided by 10,000,000,000 in USD.
+`cost_input` and `cost_output` remain `None` because this total does not itemize
+token costs. A known provider total can therefore coexist with unknown input
+and output costs. See the shared [usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
 
 See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
 for the shared API contract and examples.

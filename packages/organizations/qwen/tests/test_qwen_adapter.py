@@ -449,6 +449,7 @@ def test_qwen_finalizes_each_declared_frankfurt_pricing_tier(
             "usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
+                "cache_read_input_tokens": 0,
             },
         }
     )
@@ -2041,3 +2042,141 @@ async def test_qwen_astream_delivers_completed_tool_call_before_done(
     assert callbacks[1][2] is not None
     assert callbacks[1][2][0].arguments == {"city": "Tel Aviv"}
     assert requests[0][1]["payload"]["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("usage", "expected_input", "expected_output", "expected_total"),
+    [
+        ({"output_tokens": 0}, None, 0, None),
+        ({"input_tokens": 0, "output_tokens": 0}, 0, 0, 0),
+    ],
+    ids=["input-omitted", "reported-zero"],
+)
+def test_qwen_preserves_omitted_and_reported_zero_usage(
+    usage,
+    expected_input,
+    expected_output,
+    expected_total,
+):
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+
+    parsed = QwenAdapter._parse_response(
+        {
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": usage,
+        },
+        capture_reasoning=False,
+    )
+
+    assert parsed.usage is not None
+    assert parsed.usage.input_tokens == expected_input
+    assert parsed.usage.output_tokens == expected_output
+    assert parsed.usage.total_tokens == expected_total
+    assert parsed.usage.cached_tokens is None
+    stream_usage = QwenMessagesStreamParser._normalize_usage(usage)
+    assert stream_usage is not None
+    assert stream_usage.input_tokens == expected_input
+    assert stream_usage.output_tokens == expected_output
+    assert stream_usage.total_tokens == expected_total
+    assert stream_usage.cached_tokens is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cache_read_tokens", [-1, True, 1.5, "2"])
+def test_qwen_rejects_malformed_automatic_cache_counts(cache_read_tokens):
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+
+    with pytest.raises(LLMAPIClientError, match="cache_read_input_tokens"):
+        QwenAdapter._parse_response(
+            {
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 2,
+                    "cache_read_input_tokens": cache_read_tokens,
+                },
+            },
+            capture_reasoning=False,
+        )
+
+    with pytest.raises(LLMAPIClientError, match="cache_read_input_tokens"):
+        QwenMessagesStreamParser._normalize_usage(
+            {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_read_input_tokens": cache_read_tokens,
+            }
+        )
+
+
+@pytest.mark.integration
+def test_qwen_sync_async_and_stream_share_cache_read_pricing(qwen_runtime, monkeypatch):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    usage = {
+        "input_tokens": 256_000,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 1,
+    }
+    response_payload = {
+        "id": "msg-qwen-cache-parity",
+        "model": "qwen3.7-plus",
+        "content": [{"type": "text", "text": "cached"}],
+        "stop_reason": "end_turn",
+        "usage": usage,
+    }
+    events = qwen_messages_sse_events("qwen3.7-plus")
+    events[0].data["message"]["usage"] = usage
+    events[-2].data["usage"] = usage
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.7-plus",
+        api_key="qwen-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        response_payload,
+        events=events,
+    )
+    sync_response = adapter.chat(
+        [{"role": "user", "content": "cached"}],
+        max_tokens=16,
+        workspace_id="frankfurt-workspace",
+    )
+    completed = []
+    list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "cached"}],
+            max_tokens=16,
+            workspace_id="frankfurt-workspace",
+            on_done=completed.append,
+        )
+    )
+
+    async def fake_async_request(url, **kwargs):
+        return response_payload
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    async_response = asyncio.run(
+        adapter.achat(
+            [{"role": "user", "content": "cached"}],
+            max_tokens=16,
+            workspace_id="frankfurt-workspace",
+        )
+    )
+
+    expected_input_cost = (256_000 * 6.0 + 1 * 1.2) / 1_000_000
+    expected_output_cost = 5 * 24.0 / 1_000_000
+    for result in (sync_response, async_response, completed[0]):
+        assert result.usage is not None
+        assert result.usage.input_tokens == 256_001
+        assert result.usage.output_tokens == 5
+        assert result.usage.total_tokens == 256_006
+        assert result.usage.cached_tokens == 1
+        assert result.usage.cache_write_tokens is None
+        assert result.cost_input == pytest.approx(expected_input_cost)
+        assert result.cost_output == pytest.approx(expected_output_cost)
+        assert result.cost_total == pytest.approx(
+            expected_input_cost + expected_output_cost
+        )

@@ -40,6 +40,16 @@ or a narrowly scoped new abstraction rather than hardcoded duplicates. Registry 
 be checked against official organization documentation; unsupported or missing provider data MUST
 remain explicit rather than inferred.
 
+Dedicated structured registry fields MUST be the sole source of exact model values, limits, and
+supported-value sets. Capability exceptions MUST record only the observable class of a baseline
+deviation or behavior that existing structured metadata cannot express; they MUST NOT duplicate
+exact values or become an alternative source of truth. Adapters and tests MUST derive the concrete
+result from the owning structured field. The same observable behavior MUST reuse the same semantic,
+value-independent `behavior_id` across models and organizations. A custom `behavior_id` is
+permitted only when neither an existing shared behavior nor structured metadata can express the
+result. Any contradiction between structured metadata and an exception MUST fail deterministic
+validation.
+
 Rationale: centralized metadata and reuse prevent drift across adapters and transports.
 
 ### IV. Deterministic Contract Evidence and Baseline Profiles
@@ -56,13 +66,13 @@ to `dev`, against exact TestPyPI candidate artifacts in a clean environment, thr
 provider-specific post-publish lane, with only that provider's credential. It MUST cover every
 applicable shared Core and package-local E2E scenario before the candidate is promoted to `main`.
 
-`specs/001-baseline-contract/spec.md` is the canonical specification of the SDK's stable,
-externally observable provider-neutral contract. Every new optional organization package MUST
-declare a capability profile against that baseline and run every applicable shared conformance and
-Core E2E scenario. A scenario may be excluded only when the package explicitly declares the
-corresponding capability unsupported; missing implementation, flaky behavior, or cost is not a
-valid exclusion. A model or organization is not required to support every baseline capability,
-but every declared difference MUST be explicit in its compatibility documentation and tests.
+This constitution is the sole normative source for the SDK's stable, externally observable
+provider-neutral baseline. Every new optional organization package MUST declare a capability
+profile against that baseline and run every applicable shared conformance and Core E2E scenario.
+A scenario may be excluded only when the exact-model profile explicitly declares the corresponding
+capability exception; missing implementation, flaky behavior, or cost is not a valid exclusion. A
+model or organization is not required to support every baseline capability, but every declared
+difference MUST be explicit in registry metadata, compatibility documentation, and tests.
 
 Rationale: the repository already separates reliable local evidence from bounded live-provider
 validation, and capability profiles make permitted provider differences reviewable.
@@ -90,26 +100,132 @@ capability limits and compatibility exceptions are exact-model registry data. Un
 receive no inferred special behavior.
 
 Usage and cost fields depend on provider-reported values. Missing usage MUST remain unset rather
-than be locally estimated. Non-token metered operations MUST be represented separately from token
-cost. `previous_response` remains an optional provider optimization: unsupported adapters accept
-it without serializing an unsupported provider request and use the caller-supplied history.
+than be locally estimated, and non-token metered operations MUST be represented separately from
+token cost. `previous_response` remains an optional provider optimization: unsupported adapters
+accept it without serializing an unsupported provider request and use the caller-supplied history.
 
-## Canonical Baseline Contract
+## Canonical Provider-Neutral Baseline
 
-`specs/001-baseline-contract/spec.md` defines the current stable contract that feature
-specifications, provider-package plans, compatibility matrices, and release gates MUST use as
-their baseline. The implementation, deterministic tests, and this constitution remain the
-authoritative evidence for resolving a demonstrated conflict; any resulting baseline correction
-MUST be reviewed and recorded before relying on it for a release decision.
+This section defines the current stable SDK contract. Feature specifications, provider-package
+plans, compatibility matrices, implementation, tests, and release gates MUST conform to it and
+MUST NOT establish a competing baseline. A demonstrated conflict requires a reviewed constitution
+amendment together with the necessary implementation, registry, test, migration, and documentation
+work before the corrected behavior may be used for a release decision.
 
-New provider packages MUST retain the common facade and declare their supported subset through a
-named capability profile. That profile determines the shared conformance and Core E2E scenarios
-that apply; it is the sole basis for an exclusion. Provider-specific tests add evidence for native
-behavior but MUST NOT replace the applicable shared scenarios.
+### Public facade and distribution boundary
+
+- `UniversalLLMAPIAdapter` MUST select an adapter from the caller's organization, exact model,
+  API key, optional service provider, and documented transport without changing the common API.
+- OpenAI, Anthropic, and Google remain built into Core. Mistral, xAI, Qwen, Kimi, DeepSeek, and
+  Z.ai remain independently installable organization packages discovered through the established
+  entry point. A known but absent optional package, an unknown organization, and an unsupported
+  service provider MUST produce distinct actionable errors.
+- The base installation MUST retain its minimal dependency boundary. HTTPX, async support, and
+  organization packages MUST remain optional installations unless an approved breaking change
+  explicitly revises that boundary.
+
+### Requests, responses, and streaming
+
+- Typed messages and supported OpenAI-style dictionaries, including mixed input, MUST normalize
+  system, user, assistant, and tool-result turns without losing their roles or supported content.
+- The common API MUST expose synchronous chat, asynchronous chat, synchronous visible-text
+  streaming, and asynchronous visible-text streaming with the same applicable request and response
+  concepts. Completed responses MAY include visible content, normalized tool calls, provider
+  response identity, refusal or incomplete state, provider-reported usage, cost, parsed structured
+  output, and opt-in reasoning events.
+- Streams MUST yield normalized visible text only. Buffer limits MUST be positive and MUST NOT be
+  exceeded. Reasoning and raw provider events MUST remain separate from visible text. Successful
+  streams MUST flush pending visible text before completion and deliver completed tool calls before
+  the final callback; failed, cancelled, or caller-closed streams MUST NOT emit pending text as a
+  successful final chunk or invoke final completion.
+- Sync and async streaming callbacks MAY be synchronous or awaitable as documented. Callback
+  failures remain caller failures and MUST NOT be reclassified as provider failures.
+
+### Tools, structured output, files, and reasoning
+
+- Tool definitions and supported automatic, disabled, any-tool, and named-tool choices MUST be
+  validated and normalized before transport. A named tool MUST exist in the supplied tool list.
+  Completed calls MUST expose normalized names, parsed arguments, and provider call identifiers
+  where available; the SDK MUST NOT execute application tools.
+- Portable JSON Schema and compatible response-model requests MUST be validated before transport.
+  Valid completed JSON MUST populate parsed output, response models MUST additionally validate the
+  typed result, and incompatible schemas, combinations, or completed output MUST raise the public
+  schema error. Refusal and incomplete outcomes MUST leave parsed fields unavailable.
+- The common message model MUST accept supported image and PDF forms. Every unsupported URL, byte,
+  document, or non-image file form MUST be declared by the exact-model profile and rejected before
+  an invalid provider request. A verified package adaptation such as OCR MAY satisfy the public
+  contract and remains visible as a `pass` exception.
+- Reasoning capture MUST be opt-in and separate from visible text. When requested reasoning data is
+  unavailable, the response MUST expose no synthesized reasoning. Reasoning controls and their
+  fallback or ignored behavior MUST come from exact-model registry metadata.
+
+### Registry, continuation, usage, pricing, and errors
+
+- The organization registry MUST own verified model limits, standard token rates, reasoning
+  capability, request rules, aliases, snapshot inheritance, and capability exceptions. Only
+  documented direct Anthropic and OpenAI snapshot forms MAY inherit registered base metadata while
+  retaining their requested wire model identifiers. Other aliases, fine-tuned identifiers, and
+  unknown models MUST receive no inferred special behavior.
+- Request rules MUST either reject an unsupported request before transport or apply their declared
+  transformation and warning behavior. Removing a declared default value MUST remain silent.
+- `previous_response` MUST be accepted as a common compatibility input. A provider continuation
+  identifier or opaque replay material MAY be sent only when the exact model and adapter declare
+  that behavior; otherwise the adapter MUST use caller-provided history and serialize no unsupported
+  continuation field.
+- Usage and costs MUST use provider-reported data and verified rates. Missing or contradictory
+  usage MUST NOT be estimated or treated as zero. Reported cache reads and writes MUST be confirmed
+  input components, remain distinct, and never be double-counted. Parsed omitted input/output counts
+  MUST remain `None`; an explicitly reported zero remains `0`. Cache rates apply only to components
+  that may occur automatically during ordinary requests and whose quantities providers report.
+  A calculated total MUST remain unavailable whenever an incurred component cannot be priced
+  completely. A complete provider-reported total MAY remain available without a component
+  breakdown; the SDK MUST NOT invent missing component costs. Non-token metered operations MUST
+  remain separate from token cost.
+- Known authorization, rate-limit, token-limit, client, server, timeout, usage-limit, tool-input,
+  tool-argument, tool-choice, structured-output, and configuration failures MUST map to the public
+  error hierarchy. Common validation failures and declared unsupported inputs MUST fail before an
+  outbound provider request.
+
+### Capability and E2E evidence catalogue
+
+The version-controlled capability catalogue in
+`src/llm_api_adapter/llm_registry/model_capabilities.py` classifies the following exact-model
+capabilities as `model-dependent`: `sync_chat`, `async_chat`, `sync_streaming`,
+`async_streaming`, `application_tools`, `tool_choice_auto`, `tool_choice_none`,
+`tool_choice_any`, `tool_choice_named`, `structured_output_schema`,
+`structured_output_model`, `image_url`, `image_bytes`, `image_data_url`, `pdf_url`,
+`pdf_bytes`, `reasoning_control`, `reasoning_events`, `provider_continuation`,
+`usage_reporting`, `refusal_outcome`, and `incomplete_outcome`.
+
+The following capabilities are `always-on` Core invariants and MUST NOT be disabled by a model
+profile: `facade_discovery`, `message_normalization`, `response_normalization`,
+`transport_parity`, `stream_cleanup`, `tool_validation`, `schema_validation`,
+`error_normalization`, `registry_exactness`, `request_rule_fidelity`, `pricing_correctness`, and
+`missing_usage_honesty`.
+
+`tests/capability_scenarios.py` is the canonical test-only evidence map for the capabilities backed
+by current shared scenarios. `BASELINE_SCENARIOS` maps supported model-dependent capabilities to
+positive evidence, `EXCEPTION_SCENARIOS` maps non-`pass` behavior to common or package-local
+replacement evidence, and `ALWAYS_ON_SCENARIOS` maps unconditional Core invariants. It MUST NOT be
+treated as a second product contract or as an inventory of every repository test. Registry metadata
+MUST contain semantic capability and behavior IDs, never pytest node IDs.
+
+An absent exception and a `pass` exception MUST retain the baseline-positive route. A non-`pass`
+exception MUST replace only the affected route and MUST resolve to exactly one collected evidence
+scenario within the shared E2E scope. A request exercising several marked capabilities MUST run
+only when none of them redirects to another non-`pass` scenario. Missing profiles, unknown or
+duplicate exceptions, unknown behavior routes, missing evidence, duplicate evidence, and attempts
+to except an always-on capability MUST fail deterministic validation.
+
+Every optional organization package MUST declare a named Core E2E profile and provider marker.
+The provider release lane MUST collect the applicable shared Core scenarios and its package-local
+scenarios against the exact candidate distributions. Package-local tests add evidence for native
+behavior and explicit rejection boundaries; they MUST NOT remove unrelated shared scenarios or
+replace an applicable shared scenario without a declared exact-model exception.
 
 ## Change Analysis and Delivery Discipline
 
-Planning MUST begin with the canonical baseline contract and the actual repository: inspect the
+Planning MUST begin with this canonical provider-neutral baseline and the actual repository: inspect the
 affected source, registry/configuration, public API, adapter implementations, callers, tests, and
 documentation. Contributors MUST use existing repository conventions where the evidence is clear
 and MUST NOT ask the user questions that can be answered reliably from that evidence.
@@ -122,7 +238,7 @@ git commit unless the user explicitly requests that action.
 
 Before review, run the affected deterministic test commands and inspect the diff for unintended
 artifacts or sensitive data. User-visible behavior, provider mappings, configuration, test flow,
-or packaging changes MUST update the matching README, contributor guide, baseline specification,
+or packaging changes MUST update this constitution and the matching README, contributor guide,
 and living architecture artifact when those artifacts are in scope. Releases use protected pull
 requests, independently versioned distributions, TestPyPI candidates, and bounded
 provider-specific E2E lanes. A staging pull request merges into `dev` only after deterministic
@@ -146,4 +262,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.3.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-09-23
+**Version**: 0.5.1 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-10-04

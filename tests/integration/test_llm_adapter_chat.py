@@ -315,8 +315,14 @@ def test_google_usage_and_pricing(google_client_mock):
     resp = adapter.chat(messages=messages)
 
     assert resp.usage.total_tokens == 42
-    assert resp.cost_total == 0
-    assert resp.currency == "EUR"
+    assert resp.usage.input_tokens is None
+    assert resp.usage.output_tokens is None
+    assert resp.usage.cached_tokens is None
+    assert resp.cost_input is None
+    assert resp.cost_output is None
+    assert resp.cost_total is None
+    assert adapter.pricing.currency == "EUR"
+    assert resp.currency is None
 
 
 @pytest.mark.integration

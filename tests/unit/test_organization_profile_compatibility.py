@@ -23,10 +23,18 @@ for source in (
 
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
+import llm_api_adapter.organization_registry as organization_registry_module
+import llm_api_adapter.universal_adapter as universal_adapter_module
 from llm_api_adapter.errors.llm_api_error import JSONSchemaError
-from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
+from llm_api_adapter.llm_registry.llm_registry import (
+    RegistrySpec,
+    resolve_model_spec,
+)
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.organization_registry import OrganizationPluginDiscovery
+from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from llm_api_adapter_mistral.adapter import MistralAdapter
 from llm_api_adapter_mistral.plugin import PLUGIN as MISTRAL_PLUGIN
 from llm_api_adapter_xai.adapter import XAIAdapter
@@ -80,6 +88,18 @@ class _RecordedTransport:
         return iter(self.stream_events)
 
 
+@dataclass
+class _PluginEntryPoint:
+    name: str
+    value: str
+    plugin: Any
+    load_calls: int = 0
+
+    def load(self) -> Any:
+        self.load_calls += 1
+        return self.plugin
+
+
 @pytest.fixture
 def organization_package_registry(monkeypatch):
     registry = RegistrySpec()
@@ -88,6 +108,98 @@ def organization_package_registry(monkeypatch):
         assert registry.register_organization_metadata(plugin.model_metadata) is True
     monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", registry)
     return registry
+
+
+@pytest.mark.unit
+def test_profile_parsing_preserves_registry_resolution_plugin_discovery_and_facade(
+    monkeypatch,
+):
+    registry = RegistrySpec()
+    base_spec = resolve_model_spec(registry, "openai", "gpt-6-astra")
+
+    assert base_spec is not None
+    assert tuple(
+        (exception.capability_id, exception.behavior_id)
+        for exception in base_spec.capability_exceptions or ()
+    ) == (("reasoning_control", "none_falls_back_to_minimum"),)
+    assert resolve_model_spec(registry, "openai", "gpt-6-astra") is base_spec
+    snapshot_model = "gpt-6-astra-2026-07-01"
+    assert resolve_model_spec(registry, "openai", snapshot_model) is base_spec
+    assert resolve_model_spec(registry, "openai", "gpt-6-astra-2026-02-30") is None
+
+    providers = ServiceProviderRegistry(
+        {"openai": universal_adapter_module.OpenAIAdapter}
+    )
+    discovery = OrganizationPluginDiscovery()
+    entry_point = _PluginEntryPoint(
+        name="mistral",
+        value="llm_api_adapter_mistral.plugin:PLUGIN",
+        plugin=MISTRAL_PLUGIN,
+    )
+
+    def get_entry_points(*, group: str):
+        assert (
+            group
+            == organization_registry_module.ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP
+        )
+        return (entry_point,)
+
+    monkeypatch.setattr(
+        organization_registry_module,
+        "entry_points",
+        get_entry_points,
+    )
+    monkeypatch.setattr(
+        universal_adapter_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        providers,
+    )
+    monkeypatch.setattr(
+        universal_adapter_module,
+        "ORGANIZATION_PLUGIN_DISCOVERY",
+        discovery,
+    )
+    monkeypatch.setattr(universal_adapter_module, "LLM_REGISTRY", registry)
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", registry)
+
+    alias_facade = UniversalLLMAPIAdapter(
+        organization="openai",
+        model=snapshot_model,
+        api_key="openai-test-key",
+    )
+    assert alias_facade.adapter.model == snapshot_model
+    assert alias_facade.adapter.model_spec is base_spec
+
+    facade = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-small-2603",
+        api_key="mistral-test-key",
+    )
+    external_spec = resolve_model_spec(
+        registry,
+        "mistral",
+        "mistral-small-2603",
+    )
+    assert external_spec is not None
+    assert tuple(
+        (exception.capability_id, exception.behavior_id)
+        for exception in external_spec.capability_exceptions or ()
+    ) == (
+        ("pdf_url", "pass"),
+        ("pdf_bytes", "pass"),
+        ("provider_continuation", "ignored"),
+    )
+    assert resolve_model_spec(registry, "mistral", "unknown-model") is None
+    assert isinstance(facade.adapter, MistralAdapter)
+    assert facade.adapter.model_spec is external_spec
+    assert entry_point.load_calls == 1
+
+    transport = _RecordedTransport(_mistral_response("compatibility"))
+    facade.adapter._sync_transport = transport
+    response = facade.chat(messages=[UserMessage("Check facade compatibility.")])
+
+    assert response.content == "compatibility"
+    assert transport.requests[0].payload["model"] == "mistral-small-2603"
 
 
 def _mistral_response(content: str) -> dict[str, Any]:

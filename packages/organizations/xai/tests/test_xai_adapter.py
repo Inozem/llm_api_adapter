@@ -59,6 +59,7 @@ from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 from llm_api_adapter_xai.adapter import XAIAdapter
+from llm_api_adapter_xai.streaming import XAIResponsesStreamParser
 import llm_api_adapter_xai.clients.async_client as xai_async_client_module
 from llm_api_adapter_xai.clients.sync_client import XAIResponsesSyncClient
 from llm_api_adapter_xai.plugin import PLUGIN, register
@@ -147,6 +148,7 @@ def _response(*, model: str) -> dict[str, Any]:
             "input_tokens": 20,
             "output_tokens": 5,
             "total_tokens": 25,
+            "input_tokens_details": {"cached_tokens": 0},
         },
     }
 
@@ -1733,3 +1735,114 @@ def test_facade_preserves_normalized_xai_errors(installed_xai_plugin):
     adapter.adapter._client.create = lambda **_: {"object": "response"}
     with pytest.raises(LLMAPIClientError, match="response.output"):
         adapter.chat(messages=[UserMessage("Hello")])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    (
+        "usage",
+        "expected_input",
+        "expected_output",
+        "expected_total",
+        "expected_cache",
+    ),
+    [
+        ({"output_tokens": 0}, None, 0, None, None),
+        (
+            {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "input_tokens_details": {"cached_tokens": 0},
+            },
+            0,
+            0,
+            0,
+            0,
+        ),
+    ],
+    ids=["input-omitted", "reported-zero"],
+)
+def test_xai_preserves_omitted_and_reported_zero_usage(
+    usage,
+    expected_input,
+    expected_output,
+    expected_total,
+    expected_cache,
+):
+    parsed = XAIResponsesStreamParser._normalize_usage(usage)
+
+    assert parsed is not None
+    assert parsed.input_tokens == expected_input
+    assert parsed.output_tokens == expected_output
+    assert parsed.total_tokens == expected_total
+    assert parsed.cached_tokens == expected_cache
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cached_tokens", [-1, True, 1.5, "2"])
+def test_xai_rejects_malformed_automatic_cache_counts(cached_tokens):
+    response = _response(model="grok-4.6")
+    response["usage"]["input_tokens_details"] = {"cached_tokens": cached_tokens}
+
+    with pytest.raises(LLMAPIClientError, match="cached_tokens"):
+        XAIAdapter._parse_response(response)
+
+
+@pytest.mark.integration
+def test_xai_sync_async_and_stream_share_cache_read_accounting(
+    xai_runtime,
+    monkeypatch,
+):
+    usage = {
+        "input_tokens": 200_000,
+        "output_tokens": 5,
+        "total_tokens": 200_005,
+        "input_tokens_details": {"cached_tokens": 50_000},
+    }
+    response_payload = _response(model="grok-4.6")
+    response_payload["usage"] = usage
+    events = _stream_events(model="grok-4.6")
+    events[-1].data["response"]["usage"] = usage
+
+    adapter = XAIAdapter(api_key="test-key", model="grok-4.6")
+    adapter._client._sync_transport = FakeSyncTransport(
+        response_payload,
+        stream_events=events,
+    )
+    sync_response = adapter.chat([UserMessage("cached")])
+    completed = []
+    list(adapter.stream_chat([UserMessage("cached")], on_done=completed.append))
+
+    async def fake_async_request(
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float | None,
+        http_error_handler,
+    ) -> dict[str, Any]:
+        del url, headers, payload, timeout, http_error_handler
+        return response_payload
+
+    monkeypatch.setattr(
+        xai_async_client_module,
+        "async_request",
+        fake_async_request,
+    )
+    async_response = asyncio.run(adapter.achat([UserMessage("cached")]))
+
+    expected_input_cost = (150_000 * 4.0 + 50_000 * 1.0) / 1_000_000
+    expected_output_cost = 5 * 12.0 / 1_000_000
+    for result in (sync_response, async_response, completed[0]):
+        assert result.usage is not None
+        assert result.usage.input_tokens == 200_000
+        assert result.usage.output_tokens == 5
+        assert result.usage.total_tokens == 200_005
+        assert result.usage.cached_tokens == 50_000
+        assert result.usage.cache_write_tokens is None
+        assert result.cost_input == pytest.approx(expected_input_cost)
+        assert result.cost_output == pytest.approx(expected_output_cost)
+        assert result.cost_total == pytest.approx(
+            expected_input_cost + expected_output_cost
+        )

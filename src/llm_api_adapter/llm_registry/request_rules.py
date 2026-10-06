@@ -226,6 +226,10 @@ class AnthropicRequestRuleRegistry(SamplingRequestRuleRegistry):
         {RequestRuleRegistry.RESTRICT_TOOL_CHOICE}
     )
     supported_tool_choice_modes = frozenset({"auto", "none", "any", "tool"})
+    droppable_parameter_defaults = {
+        **SamplingRequestRuleRegistry.droppable_parameter_defaults,
+        "temperature": 1.0,
+    }
 
 
 class GoogleRequestRuleRegistry(RequestRuleRegistry):

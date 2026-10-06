@@ -42,7 +42,6 @@ from llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 
 from .clients import ZaiAsyncClient, ZaiSyncClient
-from .registry import CACHE_PRICING
 from .streaming import ZaiStreamAssembler, assemble_zai_response
 
 
@@ -458,24 +457,7 @@ class ZaiAdapter(LLMAdapterBase):
     def _stream_usage(event: SSEEvent) -> Optional[Usage]:
         payload = event.data if isinstance(event.data, Mapping) else None
         raw_usage = payload.get("usage") if payload is not None else None
-        if not isinstance(raw_usage, Mapping):
-            return None
-        values = tuple(
-            raw_usage.get(field_name)
-            for field_name in ("prompt_tokens", "completion_tokens", "total_tokens")
-        )
-        if any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in values
-        ):
-            return None
-        if values[2] != values[0] + values[1]:
-            return None
-        return Usage(
-            input_tokens=values[0],
-            output_tokens=values[1],
-            total_tokens=values[2],
-        )
+        return ZaiAdapter._parse_usage(raw_usage)
 
     def _finalize_stream(
         self,
@@ -498,7 +480,6 @@ class ZaiAdapter(LLMAdapterBase):
             effective_schema=effective_schema,
             response_model=response_model,
         )
-        self._apply_cache_aware_pricing(chat_response)
         return chat_response
 
     def _prepare_request_payload(
@@ -522,7 +503,7 @@ class ZaiAdapter(LLMAdapterBase):
         )
         if json_schema is not None or response_model is not None:
             raise NotImplementedError(
-                "Z.ai glm-5.3-flash does not support portable structured output",
+                f"Z.ai model {self.model!r} does not support portable structured output",
             )
 
         request_context = self._prepare_chat_request(
@@ -591,19 +572,17 @@ class ZaiAdapter(LLMAdapterBase):
             mapped_tools.append({"type": "function", "function": function})
         return mapped_tools
 
-    @staticmethod
-    def _map_tool_choice(tool_choice: str) -> str:
+    def _map_tool_choice(self, tool_choice: str) -> str:
         if tool_choice != "auto":
             raise ToolChoiceError(
                 detail=(
-                    "Z.ai glm-5.3-flash supports only tool_choice='auto'; "
+                    f"Z.ai model {self.model!r} supports only tool_choice='auto'; "
                     f"received {tool_choice!r}"
                 ),
             )
         return "auto"
 
-    @staticmethod
-    def _reject_unsupported_file_parts(messages: Messages) -> None:
+    def _reject_unsupported_file_parts(self, messages: Messages) -> None:
         """Reject documents while preserving URL/data-URL image serialization."""
 
         for message in messages.items:
@@ -612,7 +591,7 @@ class ZaiAdapter(LLMAdapterBase):
             for file_part in message.files:
                 if isinstance(file_part, DocumentPart):
                     raise ValueError(
-                        "Z.ai glm-5.3-flash does not support DocumentPart yet",
+                        f"Z.ai model {self.model!r} does not support DocumentPart yet",
                     )
 
     def _validate_max_tokens(self, max_tokens: Optional[int]) -> Optional[int]:
@@ -708,33 +687,45 @@ class ZaiAdapter(LLMAdapterBase):
     def _parse_usage(raw_usage: Any) -> Optional[ZaiUsage]:
         if not isinstance(raw_usage, Mapping):
             return None
-        values = tuple(
-            raw_usage.get(field_name)
-            for field_name in ("prompt_tokens", "completion_tokens", "total_tokens")
-        )
-        if any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in values
-        ):
+
+        def read_count(field_name: str) -> int | None:
+            if field_name not in raw_usage or raw_usage[field_name] is None:
+                return None
+            value = raw_usage[field_name]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"invalid Z.ai usage count: {field_name}")
+            return value
+
+        try:
+            input_tokens = read_count("prompt_tokens")
+            output_tokens = read_count("completion_tokens")
+            total_tokens = read_count("total_tokens")
+        except ValueError:
             return None
-        if values[2] != values[0] + values[1]:
+
+        if input_tokens is None and output_tokens is None and total_tokens is None:
             return None
+        if input_tokens is not None and output_tokens is not None:
+            exact_total = input_tokens + output_tokens
+            if total_tokens is not None and total_tokens != exact_total:
+                return None
+            total_tokens = exact_total
 
         cached_tokens: int | None = None
         details = raw_usage.get("prompt_tokens_details")
-        if isinstance(details, Mapping):
+        if input_tokens is not None and isinstance(details, Mapping):
             raw_cached = details.get("cached_tokens")
             if (
                 isinstance(raw_cached, int)
                 and not isinstance(raw_cached, bool)
-                and 0 <= raw_cached <= values[0]
+                and 0 <= raw_cached <= input_tokens
             ):
                 cached_tokens = raw_cached
 
         return ZaiUsage(
-            input_tokens=values[0],
-            output_tokens=values[1],
-            total_tokens=values[2],
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
             cached_tokens=cached_tokens,
         )
 
@@ -751,27 +742,7 @@ class ZaiAdapter(LLMAdapterBase):
             effective_schema=effective_schema,
             response_model=response_model,
         )
-        self._apply_cache_aware_pricing(chat_response)
         return chat_response
-
-    def _apply_cache_aware_pricing(self, chat_response: ChatResponse) -> None:
-        pricing = CACHE_PRICING.get(self.model)
-        usage = chat_response.usage
-        if pricing is None or not isinstance(usage, ZaiUsage):
-            return
-        if usage.cached_tokens is None:
-            return
-        estimate = pricing.calculate(
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            cached_tokens=usage.cached_tokens,
-        )
-        if estimate is None:
-            return
-        chat_response.currency = "USD"
-        chat_response.cost_input = estimate.input_cost
-        chat_response.cost_output = estimate.output_cost
-        chat_response.cost_total = estimate.total_cost
 
 
 __all__ = ["ZaiAdapter", "ZaiUsage"]

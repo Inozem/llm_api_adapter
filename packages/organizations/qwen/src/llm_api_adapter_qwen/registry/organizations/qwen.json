@@ -2,29 +2,137 @@
   "currency": "CNY",
   "models": {
     "qwen3.8-max": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior_id": "pass",
+          "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior_id": "pass",
+          "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
-      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 12.0, "output_per_1m": 36.0}],
+      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 12.0, "output_per_1m": 36.0, "cache_read_input_per_1m": 1.5}],
       "reasoning_capability": {"allowed_values": ["none", "low", "medium", "xhigh"]}
     },
     "qwen3.8-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior_id": "pass",
+          "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior_id": "pass",
+          "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
-      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 0.8, "output_per_1m": 2.7}],
+      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 0.8, "output_per_1m": 2.7, "cache_read_input_per_1m": 0.1}],
       "reasoning_capability": {"allowed_values": ["none", "low", "medium", "xhigh"]}
     },
     "qwen3.7-plus": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior_id": "pass",
+          "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior_id": "pass",
+          "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [
-        {"up_to_prompt_tokens": 256000, "input_per_1m": 2.0, "output_per_1m": 8.0},
-        {"up_to_prompt_tokens": null, "input_per_1m": 6.0, "output_per_1m": 24.0}
+        {"up_to_prompt_tokens": 256000, "input_per_1m": 2.0, "output_per_1m": 8.0, "cache_read_input_per_1m": 0.4},
+        {"up_to_prompt_tokens": null, "input_per_1m": 6.0, "output_per_1m": 24.0, "cache_read_input_per_1m": 1.2}
       ],
       "reasoning_capability": {"min_budget_tokens": 1, "max_budget_tokens": 262144, "can_disable_thinking": true}
     },
     "qwen3.7-flash": {
+      "capability_exceptions": [
+        {
+          "capability_id": "tool_choice_any",
+          "behavior_id": "pass",
+          "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
+        },
+        {
+          "capability_id": "tool_choice_named",
+          "behavior_id": "pass",
+          "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
+        },
+        {
+          "capability_id": "pdf_url",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "pdf_bytes",
+          "behavior_id": "rejected_before_transport",
+          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [
-        {"up_to_prompt_tokens": 32000, "input_per_1m": 0.2, "output_per_1m": 0.8},
-        {"up_to_prompt_tokens": 256000, "input_per_1m": 0.6, "output_per_1m": 2.4},
-        {"up_to_prompt_tokens": null, "input_per_1m": 1.2, "output_per_1m": 4.8}
+        {"up_to_prompt_tokens": 32000, "input_per_1m": 0.2, "output_per_1m": 0.8, "cache_read_input_per_1m": 0.04},
+        {"up_to_prompt_tokens": 256000, "input_per_1m": 0.6, "output_per_1m": 2.4, "cache_read_input_per_1m": 0.12},
+        {"up_to_prompt_tokens": null, "input_per_1m": 1.2, "output_per_1m": 4.8, "cache_read_input_per_1m": 0.24}
       ],
       "reasoning_capability": {"min_budget_tokens": 1, "max_budget_tokens": 262144, "can_disable_thinking": true}
     }

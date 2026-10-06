@@ -12,7 +12,7 @@ from llm_api_adapter.models.messages.file_parts import DocumentPart
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
-_MODEL = "glm-5.3-flash"
+_MODELS = ("glm-5.3-flash", "glm-5.3-flashx")
 
 
 class _ResponseModel:
@@ -28,6 +28,7 @@ def _require_installed_package() -> None:
 
 @pytest.mark.e2e
 @pytest.mark.e2e_zai
+@pytest.mark.parametrize("model", _MODELS, ids=_MODELS)
 @pytest.mark.parametrize(
     "request_kwargs",
     [
@@ -36,12 +37,15 @@ def _require_installed_package() -> None:
     ],
     ids=["json-schema", "response-model"],
 )
-def test_zai_rejects_structured_output_before_provider_transport(request_kwargs):
+def test_zai_rejects_structured_output_before_provider_transport(
+    request_kwargs,
+    model,
+):
     """The unsupported portable output forms must stay a local boundary."""
     _require_installed_package()
     adapter = UniversalLLMAPIAdapter(
         organization="zai",
-        model=_MODEL,
+        model=model,
         api_key="zai-boundary-test-key",
     )
 
@@ -55,6 +59,7 @@ def test_zai_rejects_structured_output_before_provider_transport(request_kwargs)
 
 @pytest.mark.e2e
 @pytest.mark.e2e_zai
+@pytest.mark.parametrize("model", _MODELS, ids=_MODELS)
 @pytest.mark.parametrize(
     "document",
     [
@@ -63,12 +68,15 @@ def test_zai_rejects_structured_output_before_provider_transport(request_kwargs)
     ],
     ids=["document-url", "document-bytes"],
 )
-def test_zai_rejects_document_forms_before_provider_transport(document):
+def test_zai_rejects_document_forms_before_provider_transport(
+    document,
+    model,
+):
     """Both withheld PDF forms must remain local until the live document gate."""
     _require_installed_package()
     adapter = UniversalLLMAPIAdapter(
         organization="zai",
-        model=_MODEL,
+        model=model,
         api_key="zai-boundary-test-key",
     )
 

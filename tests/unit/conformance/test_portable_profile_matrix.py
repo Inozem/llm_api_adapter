@@ -171,27 +171,6 @@ CASES: Final = (
 )
 
 
-# This matrix is intentionally exact at organization, model, and endpoint
-# granularity.  It is the only source of skips in the terminal-outcome tests:
-# Mistral Chat Completions exposes no documented distinct refusal terminal
-# signal, while every other case has a response shape that carries one.
-_TERMINAL_OUTCOME_CAPABILITIES: Final = {
-    ("openai", "gpt-5-nano", "responses"): frozenset({"refusal", "incomplete"}),
-    ("anthropic", "claude-sonnet-4-5", "messages"): frozenset({"refusal", "incomplete"}),
-    ("google", "gemini-2.5-flash", "generate_content"): frozenset({"refusal", "incomplete"}),
-    ("mistral", "mistral-small-2603", "chat_completions"): frozenset({"incomplete"}),
-    ("xai", "grok-4.6", "responses"): frozenset({"refusal", "incomplete"}),
-}
-
-_ENDPOINTS: Final = {
-    "openai": "responses",
-    "anthropic": "messages",
-    "google": "generate_content",
-    "mistral": "chat_completions",
-    "xai": "responses",
-}
-
-
 @pytest.fixture
 def installed_organization_plugins(monkeypatch):
     """Register the two installed organization plugins beside Core adapters."""
@@ -213,6 +192,7 @@ def installed_organization_plugins(monkeypatch):
         "SERVICE_PROVIDER_REGISTRY",
         service_providers,
     )
+    return registry
 
 
 def _facade(case: PortableProfileCase) -> UniversalLLMAPIAdapter:
@@ -387,6 +367,8 @@ def test_portable_profile_raw_schema_matrix_uses_exact_native_payloads(
         else source_schema
     )
     assert response.parsed_json == {"answer": "ok"}
+    assert response.refusal is None
+    assert response.incomplete_reason is None
     _assert_native_format(
         case.organization,
         _sync_payload(case, transport),
@@ -441,6 +423,9 @@ async def test_portable_profile_response_model_has_sync_async_payload_parity(
     expected_model = NestedPydanticResponse(contact={"name": "Ada"})
     assert sync_response.parsed_model == expected_model
     assert async_response.parsed_model == expected_model
+    for response in (sync_response, async_response):
+        assert response.refusal is None
+        assert response.incomplete_reason is None
     expected_schema = _schema_from_payload(
         case.organization,
         _sync_payload(case, sync_transport),
@@ -553,7 +538,12 @@ def _mistral_metered_chat_response() -> dict[str, Any]:
     return {
         "model": "mistral-small-2603",
         "choices": [{"message": {"content": "Summary."}}],
-        "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+        "usage": {
+            "prompt_tokens": 2,
+            "completion_tokens": 3,
+            "total_tokens": 5,
+            "prompt_tokens_details": {"cached_tokens": 0},
+        },
     }
 
 
@@ -572,6 +562,7 @@ def _mistral_metered_stream_events() -> list[SSEEvent]:
                     "prompt_tokens": 2,
                     "completion_tokens": 3,
                     "total_tokens": 5,
+                    "prompt_tokens_details": {"cached_tokens": 0},
                 },
             },
         )
@@ -858,6 +849,8 @@ def _terminal_response(
                     "finishMessage": "Blocked by safety policy.",
                 }],
             }
+        if case.organization == "mistral":
+            raise AssertionError("No distinct Mistral refusal response fixture")
         return {
             **_xai_response("unused"),
             "output": [{"type": "message", "content": [{
@@ -916,6 +909,8 @@ def _terminal_kwargs(case: PortableProfileCase, outcome: str) -> dict[str, Any]:
 def _assert_terminal_outcome(outcome: str, response: Any) -> None:
     if outcome == "valid":
         assert response.parsed_json == {"answer": "ok"}
+        assert response.refusal is None
+        assert response.incomplete_reason is None
         return
     if outcome == "refusal":
         assert response.refusal
@@ -929,28 +924,51 @@ def _assert_terminal_outcome(outcome: str, response: Any) -> None:
     assert response.parsed_model is None
 
 
+_TERMINAL_CASES = tuple(
+    pytest.param(case.values[0], outcome, id=f"{case.id}-{outcome}")
+    for case in CASES
+    for outcome in (
+        "valid",
+        "refusal",
+        "incomplete",
+        "invalid_json",
+        "pydantic_validation_error",
+    )
+    # The Mistral fixture has no explicit refusal signal to normalize.
+    if outcome != "refusal" or case.values[0].organization != "mistral"
+)
+
+
 @pytest.mark.asyncio
 @pytest.mark.unit
-@pytest.mark.parametrize("case", CASES)
-@pytest.mark.parametrize(
-    "outcome",
-    ("valid", "refusal", "incomplete", "invalid_json", "pydantic_validation_error"),
-)
+@pytest.mark.parametrize(("case", "outcome"), _TERMINAL_CASES)
 async def test_portable_profile_terminal_outcomes_keep_sync_async_contracts(
     case,
     outcome,
     installed_organization_plugins,
 ):
-    capabilities = _TERMINAL_OUTCOME_CAPABILITIES[(
-        case.organization,
-        case.model,
-        _ENDPOINTS[case.organization],
-    )]
-    if outcome in {"refusal", "incomplete"} and outcome not in capabilities:
-        pytest.skip(
-            f"{case.organization}/{case.model}/{_ENDPOINTS[case.organization]} "
-            f"does not expose a distinct {outcome} terminal signal",
+    if outcome in {"refusal", "incomplete"}:
+        capability_id = f"{outcome}_outcome"
+        model_spec = installed_organization_plugins.organizations[
+            case.organization
+        ].models[case.model]
+        exception_behavior = next(
+            (
+                exception.behavior_id
+                for exception in model_spec.require_capability_profile()
+                if exception.capability_id == capability_id
+            ),
+            None,
         )
+        assert exception_behavior in {None, "pass"}, (
+            f"{case.organization}/{case.model} declares {capability_id}/"
+            f"{exception_behavior}; this positive case needs matching evidence"
+        )
+
+    expect_schema_error = outcome in {
+        "invalid_json",
+        "pydantic_validation_error",
+    }
 
     sync_facade = _facade(case)
     _, sync_patcher = _sync_payload_mock(
@@ -959,7 +977,7 @@ async def test_portable_profile_terminal_outcomes_keep_sync_async_contracts(
         _terminal_response(case, outcome),
     )
     kwargs = _terminal_kwargs(case, outcome)
-    if outcome in {"invalid_json", "pydantic_validation_error"}:
+    if expect_schema_error:
         if sync_patcher is None:
             with pytest.raises(JSONSchemaError):
                 sync_facade.chat(**kwargs)
@@ -978,7 +996,7 @@ async def test_portable_profile_terminal_outcomes_keep_sync_async_contracts(
         async_facade,
         _terminal_response(case, outcome),
     )
-    if outcome in {"invalid_json", "pydantic_validation_error"}:
+    if expect_schema_error:
         if async_patcher is None:
             with pytest.raises(JSONSchemaError):
                 await async_facade.achat(**kwargs)

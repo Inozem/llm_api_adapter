@@ -31,6 +31,10 @@ from src.llm_api_adapter.service_provider_registry import (
     ServiceProviderRegistry,
 )
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from tests.external_organization_metadata import (
+    read_project_metadata,
+    requirement_target,
+)
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -173,6 +177,93 @@ def test_external_organization_is_discovered_after_its_distribution_is_available
         "mistral",
         "test-model",
     ) is adapter.adapter.model_spec
+    assert adapter.chat(messages=[]) == {"response": "ok"}
+
+    second_adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="test-model",
+        api_key="test-key",
+    )
+    assert second_adapter.chat(messages=[]) == {"response": "ok"}
+    assert isolated_plugin_runtime[0].get("mistral") is PluginTestAdapter
+    assert isolated_plugin_runtime[1].failures == ()
+    assert entry_point.load_calls == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "organization",
+    ("kimi", "mistral", "qwen", "xai", "deepseek", "zai"),
+)
+def test_known_external_organization_has_install_guidance_without_its_plugin(
+    monkeypatch,
+    isolated_plugin_runtime,
+    organization: str,
+) -> None:
+    registry, discovery, _ = isolated_plugin_runtime
+    searched_groups: list[str] = []
+
+    def no_installed_plugins(*, group: str):
+        searched_groups.append(group)
+        return ()
+
+    monkeypatch.setattr(registry_module, "entry_points", no_installed_plugins)
+
+    with pytest.raises(OrganizationNotInstalledError) as raised:
+        UniversalLLMAPIAdapter(
+            organization=organization,
+            model="test-model",
+            api_key="test-key",
+        )
+
+    distribution = f"llm-api-adapter-{organization}"
+    assert raised.value.organization == organization
+    assert raised.value.distribution == distribution
+    assert str(raised.value) == (
+        f"Organization '{organization}' is not installed. "
+        f"Install it with: pip install {distribution}"
+    )
+    assert searched_groups == [ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP]
+    assert registry.get(organization) is None
+    assert discovery.failures == ()
+
+
+@pytest.mark.unit
+def test_legacy_third_party_plugin_without_profile_still_serves_requests(
+    monkeypatch,
+    isolated_plugin_runtime,
+):
+    registry, discovery, model_registry = isolated_plugin_runtime
+    organization = "legacy-third-party"
+    entry_point = FakeEntryPoint(
+        name=organization,
+        value="legacy_third_party.plugin:PLUGIN",
+        plugin=_test_plugin(
+            organization=organization,
+            model_metadata=_organization_model_metadata(organization),
+        ),
+    )
+    monkeypatch.setattr(
+        registry_module,
+        "entry_points",
+        lambda *, group: (entry_point,),
+    )
+
+    discovery.discover(registry, model_registry=model_registry)
+
+    model = resolve_model_spec(model_registry, organization, "test-model")
+    assert model is not None
+    assert model.capability_exceptions is None
+    with pytest.raises(ValueError, match="uncertified") as raised:
+        model.require_capability_profile()
+    assert "test-model" in str(raised.value)
+
+    adapter = UniversalLLMAPIAdapter(
+        organization=organization,
+        model="test-model",
+        api_key="test-key",
+    )
+    assert adapter.chat(messages=[]) == {"response": "ok"}
     assert entry_point.load_calls == 1
 
 
@@ -489,35 +580,19 @@ def test_qwen_is_known_before_installation_and_loads_only_through_its_plugin(
 
 
 @pytest.mark.unit
-def test_core_declares_the_qwen_optional_extra():
-    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+@pytest.mark.parametrize("organization", ("qwen", "kimi", "deepseek", "zai"))
+def test_core_declares_organization_extra_without_base_dependency(organization):
+    project = read_project_metadata(_REPOSITORY_ROOT / "pyproject.toml")
+    distribution = f"llm-api-adapter-{organization}"
 
-    assert 'qwen = ["llm-api-adapter-qwen>=0.1.0,<0.2.0"]' in pyproject
-
-
-@pytest.mark.unit
-def test_core_declares_the_kimi_optional_extra():
-    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-
-    assert 'kimi = ["llm-api-adapter-kimi>=0.1.0,<0.2.0"]' in pyproject
-
-
-@pytest.mark.unit
-def test_core_declares_the_deepseek_optional_extra_without_base_dependency():
-    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-
-    assert '"deepseek"' in pyproject.split("keywords =", 1)[1].split("]", 1)[0]
-    assert 'deepseek = ["llm-api-adapter-deepseek>=0.1.0,<0.2.0"]' in pyproject
-    assert 'dependencies = ["llm-api-adapter-deepseek' not in pyproject
-
-
-@pytest.mark.unit
-def test_core_declares_the_zai_optional_extra_without_base_dependency():
-    pyproject = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-
-    assert '"zai"' in pyproject.split("keywords =", 1)[1].split("]", 1)[0]
-    assert 'zai = ["llm-api-adapter-zai>=0.1.0,<0.2.0"]' in pyproject
-    assert 'dependencies = ["llm-api-adapter-zai' not in pyproject
+    assert organization in project["keywords"]
+    assert [
+        requirement_target(item)
+        for item in project["optional-dependencies"][organization]
+    ] == [distribution]
+    assert distribution not in {
+        requirement_target(item) for item in project["dependencies"]
+    }
 
 
 @pytest.mark.unit
@@ -525,15 +600,10 @@ def test_builtin_organization_does_not_load_external_plugins(
     monkeypatch,
     isolated_plugin_runtime,
 ):
-    entry_point = FakeEntryPoint(
-        name="broken-organization",
-        value="broken.plugin:PLUGIN",
-        error=RuntimeError("plugin should remain unloaded"),
-    )
     monkeypatch.setattr(
         registry_module,
         "entry_points",
-        lambda *, group: (entry_point,),
+        lambda *, group: pytest.fail("Built-in organization searched external plugins"),
     )
 
     adapter = UniversalLLMAPIAdapter(
@@ -543,7 +613,6 @@ def test_builtin_organization_does_not_load_external_plugins(
     )
 
     assert isinstance(adapter.adapter, AnthropicAdapter)
-    assert entry_point.load_calls == 0
 
 
 @pytest.mark.unit

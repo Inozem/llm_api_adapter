@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-api-adapter-qwen"
-version = "0.1.1"
+version = "0.1.2"
 description = "Qwen Model Studio package for llm-api-adapter"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,11 +22,11 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
 ]
-dependencies = ["llm-api-adapter>=0.9.3,<1.0.0"]
+dependencies = ["llm-api-adapter>=0.9.8,<1.0.0"]
 
 [project.optional-dependencies]
-async = ["llm-api-adapter[async]>=0.9.3,<1.0.0"]
-httpx = ["llm-api-adapter[httpx]>=0.9.3,<1.0.0"]
+async = ["llm-api-adapter[async]>=0.9.8,<1.0.0"]
+httpx = ["llm-api-adapter[httpx]>=0.9.8,<1.0.0"]
 
 [project.entry-points."llm_api_adapter.organizations"]
 qwen = "llm_api_adapter_qwen.plugin:PLUGIN"

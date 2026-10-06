@@ -47,6 +47,32 @@ async def test_achat_uses_async_client_and_preserves_response_contract(adapter):
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_achat_extracts_provider_reported_automatic_cache_read_usage(adapter):
+    response = {
+        "modelVersion": "gemini-2.5-pro",
+        "candidates": [{
+            "content": {"parts": [{"text": "cached"}]},
+            "finishReason": "STOP",
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 15,
+            "candidatesTokenCount": 2,
+            "totalTokenCount": 17,
+            "cachedContentTokenCount": 4,
+        },
+    }
+    chat_completion = AsyncMock(return_value=response)
+
+    with patch.object(GeminiAsyncClient, "chat_completion", chat_completion):
+        result = await adapter.achat([UserMessage("hi")])
+
+    assert result.usage.input_tokens == 15
+    assert result.usage.cached_tokens == 4
+    chat_completion.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_astream_chat_awaits_reasoning_and_completion_callbacks(adapter):
     async def events():
         yield SSEEvent(
@@ -106,3 +132,37 @@ async def test_astream_chat_awaits_reasoning_and_completion_callbacks(adapter):
         ("delta", "Answer"),
         ("done", "Answer"),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_astream_chat_extracts_automatic_cache_read_usage(adapter):
+    async def events():
+        yield SSEEvent(
+            event=None,
+            data={
+                "candidates": [{
+                    "content": {"parts": [{"text": "cached"}]},
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 15,
+                    "candidatesTokenCount": 2,
+                    "totalTokenCount": 17,
+                    "cachedContentTokenCount": 4,
+                },
+            },
+        )
+
+    done = []
+    with patch.object(GeminiAsyncClient, "stream", return_value=events()):
+        output = [
+            text
+            async for text in adapter.astream_chat(
+                [UserMessage("hi")],
+                on_done=done.append,
+            )
+        ]
+
+    assert output == ["cached"]
+    assert done[0].usage.cached_tokens == 4

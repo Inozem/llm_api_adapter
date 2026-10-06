@@ -25,6 +25,7 @@ from packages.organizations.deepseek.tests.fixtures.deepseek_capability_discover
     CLOSED_MODEL_IDS,
     DEEPSEEK_CAPABILITY_DISCOVERY,
     EXPECTED_CAPABILITIES,
+    EXPECTED_CAPABILITY_EXCEPTIONS,
     EXPECTED_LIMITS,
     EXPECTED_THINKING_MODES,
     MATRIX_CAPABILITIES,
@@ -71,16 +72,44 @@ def test_flash_limits_and_thinking_modes_are_exact(discovery_record):
     model_data = MODEL_METADATA.organization_data["models"]["deepseek-flash"]
 
     assert set(model_data) == {
+        "capability_exceptions",
         "limits",
         "pricing_tiers",
+        "pricing_schedule",
         "reasoning_capability",
     }
+    assert {
+        exception["capability_id"]: exception["behavior"]
+        for exception in model_data["capability_exceptions"]
+    } == EXPECTED_CAPABILITY_EXCEPTIONS
+    assert "cache_pricing" not in model_data
     assert model_data["limits"] == EXPECTED_LIMITS
     assert expected_model["limits"] == EXPECTED_LIMITS
     assert model_data["reasoning_capability"]["allowed_values"] == list(
         EXPECTED_THINKING_MODES
     )
     assert expected_model["reasoning_modes"] == EXPECTED_THINKING_MODES
+
+
+@pytest.mark.unit
+def test_dynamic_peak_and_off_peak_pricing_lives_in_registry():
+    model_data = MODEL_METADATA.organization_data["models"]["deepseek-flash"]
+
+    assert model_data["pricing_tiers"] == [
+        {
+            "up_to_prompt_tokens": None,
+            "input_per_1m": 0.15,
+            "output_per_1m": 0.6,
+            "cache_read_input_per_1m": 0.003,
+        },
+    ]
+    assert model_data["pricing_schedule"] == {
+        "timezone": "UTC",
+        "peak_weekdays": [0, 1, 2, 3, 4],
+        "peak_windows": [["01:00", "04:00"], ["06:00", "10:00"]],
+        "peak_multiplier": 2,
+        "off_peak_multiplier": 1,
+    }
 
 
 @pytest.mark.unit
