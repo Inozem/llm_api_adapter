@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,8 @@ from llm_api_adapter.llm_registry.llm_registry import (
     resolve_model_spec,
 )
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
+from llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
+from llm_api_adapter.llms.requests_transport import RequestsSyncTransport
 from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
@@ -66,6 +70,37 @@ class FakeSyncTransport:
         return iter(self.events)
 
 
+def _mistral_large_4_messages():
+    return [
+        UserMessage("Typed user message"),
+        {"role": "assistant", "content": "Dict assistant message"},
+        UserMessage("Typed follow-up"),
+    ]
+
+
+def _mistral_large_4_expected_messages():
+    return [
+        {"role": "user", "content": "Typed user message"},
+        {"role": "assistant", "content": "Dict assistant message"},
+        {"role": "user", "content": "Typed follow-up"},
+    ]
+
+
+def _assert_mistral_large_4_recognized(adapter, caught_warnings, caplog):
+    assert adapter.adapter.model_spec is not None
+    assert adapter.adapter.model_spec.name == "mistral-large-4"
+    assert not any(
+        "mistral-large-4" in str(item.message)
+        and "not verified" in str(item.message)
+        for item in caught_warnings
+    )
+    assert not any(
+        record.levelno >= logging.WARNING
+        and "Unverified model used: mistral-large-4" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 @pytest.fixture
 def mistral_runtime(monkeypatch):
     model_registry = RegistrySpec()
@@ -82,6 +117,201 @@ def mistral_runtime(monkeypatch):
     )
     monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", model_registry)
     return model_registry
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("transport", "transport_class"),
+    [
+        ("requests", RequestsSyncTransport),
+        ("httpx", HttpxSyncTransport),
+    ],
+)
+def test_mistral_large_4_sync_chat_recognition_and_transport(
+    mistral_runtime,
+    monkeypatch,
+    caplog,
+    transport,
+    transport_class,
+):
+    caplog.set_level(logging.WARNING)
+    response_payload = {
+        "id": "cmpl-mistral-large-4-sync",
+        "model": "mistral-large-4",
+        "choices": [{"message": {"role": "assistant", "content": "Done"}}],
+        "usage": {"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11},
+    }
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        adapter = UniversalLLMAPIAdapter(
+            organization="mistral",
+            model="mistral-large-4",
+            api_key="mistral-test-key",
+            transport=transport,
+        )
+        assert isinstance(adapter.adapter._sync_transport, transport_class)
+        fake_transport = FakeSyncTransport(response_payload)
+        adapter.adapter._sync_transport = fake_transport
+
+        response = adapter.chat(_mistral_large_4_messages())
+
+    assert response.response_id == "cmpl-mistral-large-4-sync"
+    assert response.usage is not None
+    assert response.usage.total_tokens == 11
+    request = fake_transport.requests[0]
+    assert request.payload["model"] == "mistral-large-4"
+    assert request.payload["messages"] == _mistral_large_4_expected_messages()
+    _assert_mistral_large_4_recognized(adapter, caught_warnings, caplog)
+
+
+@pytest.mark.integration
+def test_mistral_large_4_sync_stream_preserves_response_metadata(
+    mistral_runtime,
+    caplog,
+):
+    caplog.set_level(logging.WARNING)
+    stream_event = SSEEvent(
+        event=None,
+        data={
+            "id": "cmpl-mistral-large-4-sync-stream",
+            "model": "mistral-large-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "Streamed"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 6, "completion_tokens": 2, "total_tokens": 8},
+        },
+    )
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        adapter = UniversalLLMAPIAdapter(
+            organization="mistral",
+            model="mistral-large-4",
+            api_key="mistral-test-key",
+        )
+        fake_transport = FakeSyncTransport({}, events=[stream_event])
+        adapter.adapter._sync_transport = fake_transport
+        completed = []
+        streamed = list(
+            adapter.stream_chat(
+                _mistral_large_4_messages(),
+                on_done=completed.append,
+            )
+        )
+
+    assert streamed == ["Streamed"]
+    assert len(completed) == 1
+    assert completed[0].response_id == "cmpl-mistral-large-4-sync-stream"
+    assert completed[0].usage is not None
+    assert completed[0].usage.total_tokens == 8
+    payload = fake_transport.stream_requests[0].payload
+    assert payload["model"] == "mistral-large-4"
+    assert payload["messages"] == _mistral_large_4_expected_messages()
+    _assert_mistral_large_4_recognized(adapter, caught_warnings, caplog)
+
+
+@pytest.mark.integration
+def test_mistral_large_4_async_chat_and_stream_preserve_request_and_response(
+    mistral_runtime,
+    monkeypatch,
+    caplog,
+):
+    caplog.set_level(logging.WARNING)
+    request_calls = []
+    stream_calls = []
+
+    async def fake_async_request(url, **kwargs):
+        request_calls.append((url, kwargs))
+        return {
+            "id": "cmpl-mistral-large-4-async",
+            "model": "mistral-large-4",
+            "choices": [{"message": {"role": "assistant", "content": "Async done"}}],
+            "usage": {
+                "prompt_tokens": 9,
+                "completion_tokens": 3,
+                "total_tokens": 12,
+            },
+        }
+
+    def fake_async_stream_request(url, **kwargs):
+        stream_calls.append((url, kwargs))
+
+        async def events():
+            yield SSEEvent(
+                event=None,
+                data={
+                    "id": "cmpl-mistral-large-4-async-stream",
+                    "model": "mistral-large-4",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "Async streamed"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 8,
+                        "completion_tokens": 5,
+                        "total_tokens": 13,
+                    },
+                },
+            )
+
+        return events()
+
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_request",
+        fake_async_request,
+    )
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        adapter = UniversalLLMAPIAdapter(
+            organization="mistral",
+            model="mistral-large-4",
+            api_key="mistral-test-key",
+        )
+
+        async def run_calls():
+            response = await adapter.achat(_mistral_large_4_messages())
+            completed = []
+            streamed = [
+                text
+                async for text in adapter.astream_chat(
+                    _mistral_large_4_messages(),
+                    on_done=completed.append,
+                )
+            ]
+            return response, streamed, completed
+
+        response, streamed, completed = asyncio.run(run_calls())
+
+    assert response.response_id == "cmpl-mistral-large-4-async"
+    assert response.usage is not None
+    assert response.usage.total_tokens == 12
+    assert streamed == ["Async streamed"]
+    assert len(completed) == 1
+    assert completed[0].response_id == "cmpl-mistral-large-4-async-stream"
+    assert completed[0].usage is not None
+    assert completed[0].usage.total_tokens == 13
+    assert request_calls[0][1]["payload"]["model"] == "mistral-large-4"
+    assert request_calls[0][1]["payload"]["messages"] == (
+        _mistral_large_4_expected_messages()
+    )
+    assert stream_calls[0][1]["payload"]["model"] == "mistral-large-4"
+    assert stream_calls[0][1]["payload"]["messages"] == (
+        _mistral_large_4_expected_messages()
+    )
+    _assert_mistral_large_4_recognized(adapter, caught_warnings, caplog)
 
 
 @pytest.mark.integration
