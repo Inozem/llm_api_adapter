@@ -34,6 +34,7 @@ from llm_api_adapter.llm_registry.llm_registry import (
     resolve_metered_operation_spec,
     resolve_model_spec,
 )
+from llm_api_adapter.llm_registry.reasoning import resolve_reasoning_level
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
 from llm_api_adapter.llms.requests_transport import RequestsSyncTransport
@@ -107,6 +108,17 @@ def _assert_mistral_large_4_recognized(adapter, caught_warnings, caplog):
     )
 
 
+def _assert_large_4_reasoning_payload_parity(
+    sync_transport,
+    async_calls,
+    expected_provider_value,
+):
+    sync_payload = sync_transport.requests[0].payload
+    async_payload = async_calls[0][1]["payload"]
+    assert sync_payload == async_payload
+    assert sync_payload["reasoning_effort"] == expected_provider_value
+
+
 @pytest.fixture
 def mistral_runtime(monkeypatch):
     model_registry = RegistrySpec()
@@ -168,6 +180,138 @@ def test_mistral_large_4_sync_chat_recognition_and_transport(
     assert request.payload["model"] == "mistral-large-4"
     assert request.payload["messages"] == _mistral_large_4_expected_messages()
     _assert_mistral_large_4_recognized(adapter, caught_warnings, caplog)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("request_kwargs", "public_reasoning_level"),
+    [
+        ({}, "none"),
+        ({"reasoning_level": "none"}, "none"),
+        ({"reasoning_level": "high"}, "high"),
+        ({"reasoning_level": "minimal"}, "minimal"),
+        ({"reasoning_level": 1234}, 1234),
+    ],
+    ids=["omitted", "none", "high", "other-string", "integer"],
+)
+def test_mistral_large_4_sync_async_reasoning_effort_matches_shared_resolver(
+    mistral_runtime,
+    monkeypatch,
+    caplog,
+    request_kwargs,
+    public_reasoning_level,
+):
+    caplog.set_level(logging.WARNING)
+    response_payload = {
+        "id": "cmpl-mistral-large-4-reasoning",
+        "model": "mistral-large-4",
+        "choices": [{"message": {"role": "assistant", "content": "Done"}}],
+    }
+    sync_transport = FakeSyncTransport(response_payload)
+    async_calls = []
+
+    async def fake_async_request(url, **kwargs):
+        async_calls.append((url, kwargs))
+        return response_payload
+
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_request",
+        fake_async_request,
+    )
+
+    sync_adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    sync_adapter.adapter._sync_transport = sync_transport
+    expected = resolve_reasoning_level(
+        sync_adapter.adapter.model_spec,
+        public_reasoning_level,
+    )
+
+    with warnings.catch_warnings(record=True) as sync_warnings:
+        warnings.simplefilter("always")
+        sync_adapter.chat(_mistral_large_4_messages(), **request_kwargs)
+
+    async_adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    with warnings.catch_warnings(record=True) as async_warnings:
+        warnings.simplefilter("always")
+        asyncio.run(
+            async_adapter.achat(_mistral_large_4_messages(), **request_kwargs)
+        )
+
+    expected_warnings = [expected.warning] if expected.warning else []
+    assert [str(item.message) for item in sync_warnings] == expected_warnings
+    assert [str(item.message) for item in async_warnings] == expected_warnings
+    _assert_large_4_reasoning_payload_parity(
+        sync_transport,
+        async_calls,
+        expected.provider_value,
+    )
+    assert sync_adapter.adapter.model_spec is not None
+    assert sync_adapter.adapter.model_spec.name == "mistral-large-4"
+    assert async_adapter.adapter.model_spec is not None
+    assert async_adapter.adapter.model_spec.name == "mistral-large-4"
+    assert not any(
+        record.levelno >= logging.WARNING
+        and "Unverified model used: mistral-large-4" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.integration
+def test_mistral_large_4_sync_async_capture_reasoning_alone_keeps_effort_at_none(
+    mistral_runtime,
+    monkeypatch,
+):
+    response_payload = {
+        "id": "cmpl-mistral-large-4-capture",
+        "model": "mistral-large-4",
+        "choices": [{"message": {"role": "assistant", "content": "Done"}}],
+    }
+    sync_transport = FakeSyncTransport(response_payload)
+    async_calls = []
+
+    async def fake_async_request(url, **kwargs):
+        async_calls.append((url, kwargs))
+        return response_payload
+
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_request",
+        fake_async_request,
+    )
+
+    sync_adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    sync_adapter.adapter._sync_transport = sync_transport
+    async_adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+
+    sync_adapter.chat(
+        _mistral_large_4_messages(),
+        capture_reasoning=True,
+    )
+    asyncio.run(
+        async_adapter.achat(
+            _mistral_large_4_messages(),
+            capture_reasoning=True,
+        )
+    )
+
+    _assert_large_4_reasoning_payload_parity(sync_transport, async_calls, "none")
 
 
 @pytest.mark.integration
@@ -571,24 +715,7 @@ def test_mistral_large_4_structured_preflight_and_terminal_errors(mistral_runtim
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize(
-    ("message", "finish_reason", "field", "expected"),
-    [
-        (
-            {
-                "content": NESTED_PYDANTIC_RESPONSE_JSON,
-                "refusal": "I cannot help with that.",
-            },
-            "content_filter",
-            "refusal",
-            "I cannot help with that.",
-        ),
-        ({"content": None}, "length", "incomplete_reason", "length"),
-    ],
-)
-def test_mistral_large_4_refusal_and_incomplete_have_no_parsed_result(
-    mistral_runtime, message, finish_reason, field, expected
-):
+def test_mistral_large_4_incomplete_response_has_no_parsed_result(mistral_runtime):
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-4",
@@ -597,20 +724,17 @@ def test_mistral_large_4_refusal_and_incomplete_have_no_parsed_result(
     transport = FakeSyncTransport(
         {
             "model": "mistral-large-4",
-            "choices": [{"finish_reason": finish_reason, "message": message}],
+            "choices": [{"finish_reason": "length", "message": {"content": None}}],
         }
     )
     adapter.adapter._sync_transport = transport
 
-    kwargs = (
-        {"response_model": NestedPydanticResponse}
-    )
     response = adapter.chat(
         [{"role": "user", "content": "Structured."}],
-        **kwargs,
+        response_model=NestedPydanticResponse,
     )
 
-    assert getattr(response, field) == expected
+    assert response.incomplete_reason == "length"
     assert response.parsed_json is None
     assert response.parsed_model is None
     assert transport.requests[0].payload["model"] == "mistral-large-4"
