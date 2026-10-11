@@ -315,6 +315,334 @@ def test_mistral_large_4_sync_async_capture_reasoning_alone_keeps_effort_at_none
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("api_kind", ["sync", "async"])
+@pytest.mark.parametrize("capture_reasoning", [False, True])
+@pytest.mark.parametrize(
+    ("content", "expected_visible", "expected_reasoning"),
+    [
+        ("Plain string answer", "Plain string answer", []),
+        (
+            [
+                {
+                    "type": "thinking",
+                    "thinking": [
+                        {"type": "text", "text": "First thought."},
+                        {"type": "text", "text": "Second thought."},
+                    ],
+                },
+                {"type": "text", "text": "Visible answer."},
+            ],
+            "Visible answer.",
+            ["First thought.", "Second thought."],
+        ),
+        (
+            [
+                {
+                    "type": "thinking",
+                    "thinking": [{"type": "text", "text": "Only thought."}],
+                }
+            ],
+            None,
+            ["Only thought."],
+        ),
+        ([], None, []),
+        (None, None, []),
+    ],
+    ids=["plain-string", "mixed", "thinking-only", "empty", "absent-reasoning"],
+)
+def test_mistral_large_4_chat_captures_provider_reasoning_separately(
+    mistral_runtime,
+    monkeypatch,
+    api_kind,
+    capture_reasoning,
+    content,
+    expected_visible,
+    expected_reasoning,
+):
+    response_payload = {
+        "id": "cmpl-mistral-large-4-chat-reasoning",
+        "model": "mistral-large-4",
+        "choices": [{"message": {"content": content}}],
+    }
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    if api_kind == "sync":
+        adapter.adapter._sync_transport = FakeSyncTransport(response_payload)
+        response = adapter.chat(
+            _mistral_large_4_messages(),
+            capture_reasoning=capture_reasoning,
+        )
+    else:
+        async def fake_async_request(url, **kwargs):
+            return response_payload
+
+        monkeypatch.setattr(
+            mistral_async_client_module,
+            "async_request",
+            fake_async_request,
+        )
+        response = asyncio.run(
+            adapter.achat(
+                _mistral_large_4_messages(),
+                capture_reasoning=capture_reasoning,
+            )
+        )
+
+    assert response.content == expected_visible
+    expected_events = expected_reasoning if capture_reasoning else []
+    assert [event.text for event in response.reasoning_events] == expected_events
+    if response.content is not None:
+        assert all(text not in response.content for text in expected_reasoning)
+
+
+def _mistral_large_4_reasoning_stream_events():
+    return [
+        SSEEvent(
+            event=None,
+            data={
+                "id": "cmpl-mistral-large-4-reasoning-stream",
+                "model": "mistral-large-4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "content": [
+                                {
+                                    "type": "thinking",
+                                    "thinking": [
+                                        {"type": "text", "text": "Plan "},
+                                        {"type": "text", "text": "carefully."},
+                                    ],
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "content": [
+                                {
+                                    "type": "thinking",
+                                    "thinking": [
+                                        {"type": "text", "text": "Closing thought."}
+                                    ],
+                                },
+                                {"type": "text", "text": "Hello"},
+                                {"type": "text", "text": " world"},
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+        ),
+        SSEEvent(
+            event=None,
+            data={
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "!"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        ),
+    ]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("api_kind", ["sync", "async"])
+@pytest.mark.parametrize("capture_reasoning", [False, True])
+def test_mistral_large_4_stream_keeps_reasoning_out_of_visible_text(
+    mistral_runtime,
+    monkeypatch,
+    api_kind,
+    capture_reasoning,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    if api_kind == "sync":
+        adapter.adapter._sync_transport = FakeSyncTransport(
+            {}, events=_mistral_large_4_reasoning_stream_events()
+        )
+    else:
+        def fake_async_stream_request(url, **kwargs):
+            async def events():
+                for event in _mistral_large_4_reasoning_stream_events():
+                    yield event
+
+            return events()
+
+        monkeypatch.setattr(
+            mistral_async_client_module,
+            "async_stream_request",
+            fake_async_stream_request,
+        )
+
+    deltas = []
+    chunks = []
+    reasoning = []
+    completed = []
+    if api_kind == "sync":
+        streamed = list(
+            adapter.stream_chat(
+                _mistral_large_4_messages(),
+                capture_reasoning=capture_reasoning,
+                buffer_chars=100,
+                on_delta=deltas.append,
+                on_chunk=chunks.append,
+                on_reasoning=reasoning.append,
+                on_done=completed.append,
+            )
+        )
+    else:
+        async def collect_stream():
+            async def on_delta(text):
+                deltas.append(text)
+
+            async def on_chunk(chunk):
+                chunks.append(chunk)
+
+            async def on_reasoning(event):
+                reasoning.append(event)
+
+            async def on_done(response):
+                completed.append(response)
+
+            return [
+                text
+                async for text in adapter.astream_chat(
+                    _mistral_large_4_messages(),
+                    capture_reasoning=capture_reasoning,
+                    buffer_chars=100,
+                    on_delta=on_delta,
+                    on_chunk=on_chunk,
+                    on_reasoning=on_reasoning,
+                    on_done=on_done,
+                )
+            ]
+
+        streamed = asyncio.run(collect_stream())
+
+    expected_reasoning = (
+        ["Plan ", "carefully.", "Closing thought."]
+        if capture_reasoning
+        else []
+    )
+    assert "".join(streamed) == "Hello world!"
+    assert "".join(deltas) == "Hello world!"
+    assert "".join(chunk.text for chunk in chunks) == "Hello world!"
+    assert [event.text for event in reasoning] == expected_reasoning
+    assert len(completed) == 1
+    assert completed[0].content == "Hello world!"
+    assert [event.text for event in completed[0].reasoning_events] == (
+        expected_reasoning
+    )
+    for visible_fragments in (streamed, deltas, [chunk.text for chunk in chunks]):
+        assert all(
+            reasoning_text not in fragment
+            for reasoning_text in expected_reasoning
+            for fragment in visible_fragments
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("api_kind", ["sync", "async"])
+@pytest.mark.parametrize("capture_reasoning", [False, True])
+def test_mistral_large_4_text_only_stream_does_not_synthesize_reasoning(
+    mistral_runtime,
+    monkeypatch,
+    api_kind,
+    capture_reasoning,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    event = SSEEvent(
+        event=None,
+        data={
+            "id": "cmpl-mistral-large-4-text-only-stream",
+            "model": "mistral-large-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "Visible answer only."},
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+    )
+    if api_kind == "sync":
+        adapter.adapter._sync_transport = FakeSyncTransport({}, events=[event])
+    else:
+        def fake_async_stream_request(url, **kwargs):
+            async def events():
+                yield event
+
+            return events()
+
+        monkeypatch.setattr(
+            mistral_async_client_module,
+            "async_stream_request",
+            fake_async_stream_request,
+        )
+
+    reasoning = []
+    completed = []
+    if api_kind == "sync":
+        streamed = list(
+            adapter.stream_chat(
+                _mistral_large_4_messages(),
+                capture_reasoning=capture_reasoning,
+                on_reasoning=reasoning.append,
+                on_done=completed.append,
+            )
+        )
+    else:
+        async def collect_stream():
+            async def on_reasoning(reasoning_event):
+                reasoning.append(reasoning_event)
+
+            async def on_done(response):
+                completed.append(response)
+
+            return [
+                text
+                async for text in adapter.astream_chat(
+                    _mistral_large_4_messages(),
+                    capture_reasoning=capture_reasoning,
+                    on_reasoning=on_reasoning,
+                    on_done=on_done,
+                )
+            ]
+
+        streamed = asyncio.run(collect_stream())
+
+    assert "".join(streamed) == "Visible answer only."
+    assert reasoning == []
+    assert len(completed) == 1
+    assert completed[0].content == "Visible answer only."
+    assert completed[0].reasoning_events == []
+
+
+@pytest.mark.integration
 def test_mistral_large_4_sync_stream_preserves_response_metadata(
     mistral_runtime,
     caplog,
