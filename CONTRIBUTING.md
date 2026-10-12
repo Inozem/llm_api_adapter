@@ -233,11 +233,21 @@ Only after the staging pull request is merged does the [dev release workflow](.g
 
 The [project constitution](.specify/memory/constitution.md) defines the shared
 baseline and exception policy. For every registry-data update, verify the
-model identifier, context window, maximum output, tier boundaries, reasoning
+model identifier, context window, output-limit meaning, tier boundaries, reasoning
 capabilities, request rules, exceptions, aliases, and deprecation status against
 the provider's official documentation. Record source links, verification date,
 and applicable API, region, currency, and pricing context in review evidence.
 Do not infer unpublished support, counts, or rates.
+
+Keep exact limits, allowed sets, and prices in their structured registry fields.
+If official documentation publishes only a combined input/output context budget,
+the registered `max_output_tokens` value may be a shared-budget upper bound; it
+must not be documented as an independent or attainable generation maximum.
+Provider-specific support documentation must explicitly say when no independent
+generation cap is published. For such a model, ensure the prompt plus requested
+`max_tokens` fits within the documented combined context budget. Registered
+limits remain verified positive integers, and tier boundaries remain pricing
+thresholds only.
 
 ### Exact-model exceptions and evidence
 

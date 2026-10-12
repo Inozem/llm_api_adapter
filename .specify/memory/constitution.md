@@ -50,6 +50,15 @@ permitted only when neither an existing shared behavior nor structured metadata 
 result. Any contradiction between structured metadata and an exception MUST fail deterministic
 validation.
 
+Registered model limits remain verified constraints. When official provider documentation
+establishes only a combined input/output context budget and does not publish an independent
+generation maximum, the registry's `max_output_tokens` value MAY represent a shared-budget upper
+bound; it MUST NOT be described as a separately published or attainable maximum generation length.
+Provider-specific support documentation MUST state that no independent generation cap is
+published. In this case, a request's prompt plus requested `max_tokens` MUST fit within the
+documented combined context budget. This clarification does not change the positive-integer
+requirement for registered limits or other provider-neutral invariants.
+
 Rationale: centralized metadata and reuse prevent drift across adapters and transports.
 
 ### IV. Deterministic Contract Evidence and Baseline Profiles
@@ -262,4 +271,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.5.1 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-10-04
+**Version**: 0.5.2 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-10-12
