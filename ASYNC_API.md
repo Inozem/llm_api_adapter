@@ -628,11 +628,18 @@ Async pricing has the same semantics as `chat()`: when the provider reports
 `up_to_prompt_tokens` boundary, and that tier's input and output rates price
 the entire request. The final tier is unbounded.
 
-`context_window_tokens` is the combined input/output capacity,
-`max_output_tokens` is the generated-output capacity, and a tier boundary is
-only a price-selection threshold. They are not interchangeable. If the
-provider omits usage, the adapter does not estimate it locally and leaves
-`usage`, `currency`, and `cost_*` as `None`.
+`context_window_tokens` is the combined input/output capacity. A registered
+`max_output_tokens` usually describes an independent generated-output limit;
+when provider documentation establishes only a combined input/output budget
+and publishes no independent generation cap, it may instead be a shared-budget
+upper bound. That value is not a separately published or necessarily attainable
+generation maximum, and the provider-specific support documentation states when
+no independent cap is published. For that model, the prompt plus requested
+`max_tokens` must fit within the combined context budget. Exact limits remain in
+structured registry data. A tier boundary is only a price-selection threshold;
+it does not establish context or generation capacity. If the provider omits
+usage, the adapter does not estimate it locally and leaves `usage`, `currency`,
+and `cost_*` as `None`.
 
 These values are standard text-rate estimates, not provider invoices. They
 exclude cached input, cache write/storage, batch, flex, priority,
