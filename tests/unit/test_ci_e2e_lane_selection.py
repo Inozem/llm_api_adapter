@@ -142,6 +142,39 @@ def test_select_e2e_lanes_classifies_shared_and_organization_paths(
 
 
 @pytest.mark.unit
+def test_root_readme_change_does_not_select_a_release_candidate():
+    selection = _SELECTOR.select_e2e_lanes(["README.md"])
+
+    assert selection.core is False
+    assert selection.shared_core is False
+    assert selection.core_organizations == ()
+    assert not any(
+        (
+            selection.kimi,
+            selection.mistral,
+            selection.xai,
+            selection.qwen,
+            selection.deepseek,
+            selection.zai,
+            selection.kimi_e2e,
+            selection.mistral_e2e,
+            selection.xai_e2e,
+            selection.qwen_e2e,
+            selection.deepseek_e2e,
+            selection.zai_e2e,
+        )
+    )
+
+
+@pytest.mark.unit
+def test_core_manifest_change_still_selects_core_candidate():
+    selection = _SELECTOR.select_e2e_lanes(["pyproject.toml"])
+
+    assert selection.core is True
+    assert selection.shared_core is True
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "changed_path",
     ("tests/capability_scenarios.py", "tests/capability_selection.py"),
