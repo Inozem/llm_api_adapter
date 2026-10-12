@@ -82,6 +82,14 @@ select an API variant, restrict normalized tool choice, rename a supported reque
 a documented unsupported field. It may not execute arbitrary callbacks or infer behavior from a
 model prefix.
 
+Registered limits are verified constraints. If official documentation establishes only a combined
+input/output context budget and publishes no independent generation maximum, `max_output_tokens`
+may record a shared-budget upper bound. It does not represent a separately published or necessarily
+attainable generation length, and provider-specific support documentation must state that no
+independent generation cap is published. A request's prompt plus requested `max_tokens` must fit
+within that combined budget. Exact limits remain registry data, tier boundaries remain pricing
+thresholds, and registered limit values remain positive integers.
+
 Every first-party exact-model profile supplies `capability_exceptions`, including `[]` when no
 deviation applies. Exception IDs describe semantic, value-independent behavior, not model values
 or pytest IDs. An absent exception or `pass` retains positive baseline evidence. Legacy third-party
