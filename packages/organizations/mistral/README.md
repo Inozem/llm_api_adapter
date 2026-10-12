@@ -31,7 +31,7 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 adapter = UniversalLLMAPIAdapter(
     organization="mistral",
-    model="mistral-large-2512",
+    model="mistral-large-4",
     api_key=os.environ["MISTRAL_API_KEY"],
 )
 
@@ -45,8 +45,8 @@ print(response.content)
 - Synchronous and asynchronous chat and streaming.
 - PDF URLs and bytes through Mistral OCR.
 - Tool loops use explicit message history: append the assistant tool calls and
-  `ToolMessage` results before the next request. `previous_response` is
-  accepted for the shared API contract but is not sent to Mistral, whose Chat
+  `ToolMessage` results before the next request. The `previous_response` parameter
+  is accepted for the shared API contract but is not sent to Mistral, whose Chat
   Completions API is stateless.
 
 See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
@@ -60,25 +60,27 @@ for schema validation, parsed results, refusal, and incomplete responses.
 
 ## Supported models
 
+- `mistral-large-4`
 - `mistral-small-2603`
 - `mistral-medium-3-5`
 - `mistral-large-2512`
 
 `mistral-large-2512` has no reasoning control: a supplied `reasoning_level`
-emits a warning and is not sent to Mistral. Exact capabilities, request rules,
-and exceptions are recorded in the [Mistral registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/mistral/src/llm_api_adapter_mistral/registry/organizations/mistral.json).
+emits a warning and is not sent to Mistral.
+
+The [canonical Mistral registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/mistral/src/llm_api_adapter_mistral/registry/organizations/mistral.json)
+records capabilities, request rules, limits, and exceptions.
 
 ## PDF input
 
-`DocumentPart` supports PDF URLs and bytes. Before the chat request, the
-selected Mistral chat model cannot consume `DocumentPart` directly. The package
-therefore sends each PDF to Mistral OCR 4.1 (`mistral-ocr-4-1`) and supplies the
-resulting Markdown to the selected chat model. This creates a separate OCR API
-request. The adapter reads `usage_info.pages_processed` from each OCR response
-and records an `ocr` page line in `ChatResponse.cost_breakdown` at the
-registered standard rate.
+`DocumentPart` supports PDF URLs and bytes. The selected Mistral chat model
+does not receive PDF `DocumentPart` directly; the package OCRs each PDF first
+with Mistral OCR 4.1 (`mistral-ocr-4-1`) and supplies the resulting Markdown to
+the selected chat model. This creates a separate OCR API request. The adapter
+reads `usage_info.pages_processed` from each OCR response and records an `ocr`
+page line in `ChatResponse.cost_breakdown` at the registered standard rate.
 
-For all three models, PDF URLs and bytes are declared `pass` exceptions:
+For all four models, PDF URLs and bytes are declared `pass` exceptions:
 the OCR adaptation preserves the public PDF contract.
 
 ```python
@@ -126,11 +128,20 @@ consistently to sync, async, and streaming calls.
 ## Automatic cache usage and pricing
 
 `usage.prompt_tokens_details.cached_tokens` becomes `Usage.cached_tokens`,
-a subset of total `Usage.input_tokens`. All three models use ordinary and
+a subset of total `Usage.input_tokens`. All four models use ordinary and
 cache-read rates from their registry tiers. There is no separately priced
 automatic cache write, so `cache_write_tokens` remains `None`.
 
 An omitted cache-read count leaves `cost_input` and `cost_total` unknown;
 known output and OCR costs can still be exposed. The package accounts for
 provider-managed automatic reads without enabling opt-in cache modes, TTLs,
-or storage pricing. See the shared [usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
+or storage pricing. Cache hits are provider-reported and not guaranteed. See
+the shared [usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
+
+## Multi-turn requests
+
+Mistral's `previous_response` parameter is accepted for Core API compatibility
+but ignored. The package sends no provider continuation ID, so callers supply the
+message history they want the next request to use. Captured native thinking is
+not automatically replayed. Leaving out prior messages or thinking may reduce
+quality on later turns.
