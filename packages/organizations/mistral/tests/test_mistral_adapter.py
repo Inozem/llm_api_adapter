@@ -119,6 +119,68 @@ def _assert_large_4_reasoning_payload_parity(
     assert sync_payload["reasoning_effort"] == expected_provider_value
 
 
+@pytest.mark.unit
+def test_mistral_large_4_registered_metadata_and_standard_pricing(mistral_runtime):
+    model_spec = resolve_model_spec(
+        mistral_runtime,
+        "mistral",
+        "mistral-large-4",
+    )
+
+    assert model_spec is not None
+    assert model_spec.name == "mistral-large-4"
+    assert model_spec.limits.context_window_tokens == 1_048_576
+    # The output field is the shared input-plus-output budget upper bound from
+    # the provider constraint, not a separately published generation maximum.
+    assert model_spec.limits.max_output_tokens == 1_048_576
+    assert model_spec.pricing_tiers.currency == "USD"
+    assert len(model_spec.pricing_tiers.tiers) == 1
+    tier = model_spec.pricing_tiers.tiers[0]
+    assert tier.up_to_prompt_tokens is None
+    assert tier.in_per_token == pytest.approx(1.36 / 1_000_000)
+    assert tier.out_per_token == pytest.approx(4.18 / 1_000_000)
+    assert tier.cache_read_in_per_token == pytest.approx(0.14 / 1_000_000)
+    assert tier.cache_write_in_per_token is None
+    assert model_spec.request_rules.rules == ()
+
+
+@pytest.mark.integration
+def test_mistral_large_4_registered_pricing_example(mistral_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "cmpl-mistral-large-4-pricing",
+            "model": "mistral-large-4",
+            "choices": [{"message": {"role": "assistant", "content": "Done"}}],
+            "usage": {
+                "prompt_tokens": 100_000,
+                "completion_tokens": 10_000,
+                "total_tokens": 110_000,
+                "prompt_tokens_details": {"cached_tokens": 50_000},
+            },
+        }
+    )
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat(_mistral_large_4_messages())
+
+    assert response.response_id == "cmpl-mistral-large-4-pricing"
+    assert response.content == "Done"
+    assert response.usage is not None
+    assert response.usage.input_tokens == 100_000
+    assert response.usage.output_tokens == 10_000
+    assert response.usage.total_tokens == 110_000
+    assert response.usage.cached_tokens == 50_000
+    assert response.usage.cache_write_tokens is None
+    assert response.cost_input == pytest.approx(0.0750)
+    assert response.cost_output == pytest.approx(0.0418)
+    assert response.cost_total == pytest.approx(0.1168)
+
+
 @pytest.fixture
 def mistral_runtime(monkeypatch):
     model_registry = RegistrySpec()
