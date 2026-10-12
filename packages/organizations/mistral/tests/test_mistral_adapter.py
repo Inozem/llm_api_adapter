@@ -41,6 +41,7 @@ from llm_api_adapter.llms.requests_transport import RequestsSyncTransport
 from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
+from llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -75,6 +76,29 @@ class FakeSyncTransport:
     ):
         self.stream_requests.append(request)
         return iter(self.events)
+
+
+def _assert_no_continuation_fields(payload: dict, previous_response_id: str) -> None:
+    assert previous_response_id not in repr(payload)
+
+    def payload_keys(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                yield str(key)
+                yield from payload_keys(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                yield from payload_keys(child)
+
+    def is_continuation_key(key: str) -> bool:
+        normalized = "".join(
+            character.lower() for character in key if character.isalnum()
+        )
+        return "continu" in normalized or (
+            "previous" in normalized and "response" in normalized
+        )
+
+    assert not any(is_continuation_key(key) for key in payload_keys(payload))
 
 
 def _mistral_large_4_messages():
@@ -1412,6 +1436,320 @@ def test_plugin_registers_verified_models_and_universal_adapter(mistral_runtime)
         0.004,
         "USD",
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model", "reasoning_values", "rates_per_million"),
+    [
+        ("mistral-small-2603", ("none", "high"), (0.15, 0.015, 0.6)),
+        ("mistral-medium-3-5", ("none", "high"), (1.5, 0.15, 7.5)),
+        ("mistral-large-2512", None, (0.5, 0.05, 1.5)),
+    ],
+    ids=["small-2603", "medium-3-5", "large-2512"],
+)
+def test_existing_mistral_models_retain_baseline_profile(
+    mistral_runtime,
+    model,
+    reasoning_values,
+    rates_per_million,
+):
+    model_spec = resolve_model_spec(mistral_runtime, "mistral", model)
+
+    assert model_spec is not None
+    assert model_spec.name == model
+    assert model_spec.limits.context_window_tokens == 256_000
+    assert model_spec.limits.max_output_tokens == 256_000
+    assert model_spec.pricing_tiers.currency == "USD"
+    assert len(model_spec.pricing_tiers.tiers) == 1
+    tier = model_spec.pricing_tiers.tiers[0]
+    assert tier.in_per_token == pytest.approx(rates_per_million[0] / 1_000_000)
+    assert tier.cache_read_in_per_token == pytest.approx(
+        rates_per_million[1] / 1_000_000
+    )
+    assert tier.out_per_token == pytest.approx(rates_per_million[2] / 1_000_000)
+
+    if reasoning_values is None:
+        assert model_spec.reasoning_capability is None
+        assert resolve_reasoning_level(model_spec, "high").provider_value is None
+        assert any(
+            item.capability_id == "reasoning_control"
+            and item.behavior_id == "ignored"
+            for item in model_spec.require_capability_profile()
+        )
+    else:
+        assert model_spec.reasoning_capability is not None
+        assert model_spec.reasoning_capability.allowed_values == reasoning_values
+        assert resolve_reasoning_level(model_spec, "none").provider_value == "none"
+        assert resolve_reasoning_level(model_spec, "high").provider_value == "high"
+
+    exceptions = {
+        item.capability_id: item.behavior_id
+        for item in model_spec.require_capability_profile()
+    }
+    assert exceptions["pdf_url"] == "pass"
+    assert exceptions["pdf_bytes"] == "pass"
+    assert exceptions["provider_continuation"] == "ignored"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("model", "rates_per_million"),
+    [
+        ("mistral-small-2603", (0.15, 0.015, 0.6)),
+        ("mistral-medium-3-5", (1.5, 0.15, 7.5)),
+        ("mistral-large-2512", (0.5, 0.05, 1.5)),
+    ],
+    ids=["small-2603", "medium-3-5", "large-2512"],
+)
+def test_existing_mistral_models_preserve_history_pdf_and_continuation_behavior(
+    mistral_runtime,
+    caplog,
+    model,
+    rates_per_million,
+):
+    caplog.set_level(logging.WARNING)
+    history = [
+        {"role": "user", "content": "Weather in Paris?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_weather_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Paris"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_weather_1",
+            "content": '{"temperature_c":21}',
+        },
+    ]
+    transport = FakeSyncTransport(
+        {},
+        responses=[
+            {
+                "model": model,
+                "choices": [{"message": {"content": "It is sunny."}}],
+            },
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# Bytes PDF"}],
+                "usage_info": {"pages_processed": 1},
+            },
+            {
+                "model": "mistral-ocr-4-1",
+                "pages": [{"markdown": "# URL PDF"}],
+                "usage_info": {"pages_processed": 1},
+            },
+            {
+                "model": model,
+                "choices": [{"message": {"content": "PDF summary."}}],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "total_tokens": 12,
+                    "prompt_tokens_details": {"cached_tokens": 0},
+                },
+            },
+        ],
+    )
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        adapter = UniversalLLMAPIAdapter(
+            organization="mistral",
+            model=model,
+            api_key="mistral-test-key",
+        )
+        adapter.adapter._sync_transport = transport
+        history_response = adapter.chat(
+            history,
+            previous_response=ChatResponse(response_id="cmpl-previous"),
+            reasoning_level="high",
+        )
+    pdf_response = adapter.chat(
+        [
+            UserMessage(
+                "Summarize PDFs.",
+                files=[
+                    DocumentPart(data=b"%PDF", media_type="application/pdf"),
+                    DocumentPart(url="https://example.com/file.pdf"),
+                ],
+            )
+        ]
+    )
+
+    assert history_response.content == "It is sunny."
+    history_payload = transport.requests[0].payload
+    assert history_payload["model"] == model
+    assert history_payload["messages"] == history
+    _assert_no_continuation_fields(history_payload, "cmpl-previous")
+    if model == "mistral-large-2512":
+        assert "reasoning_effort" not in history_payload
+        assert any(
+            "does not support reasoning" in str(item.message)
+            for item in caught_warnings
+        )
+    else:
+        assert history_payload["reasoning_effort"] == "high"
+        assert not any(
+            "reasoning" in str(item.message).lower()
+            for item in caught_warnings
+        )
+    assert not any(
+        "not verified" in str(item.message) and model in str(item.message)
+        for item in caught_warnings
+    )
+    assert not any(
+        record.levelno >= logging.WARNING
+        and f"Unverified model used: {model}" in record.getMessage()
+        for record in caplog.records
+    )
+    assert pdf_response.content == "PDF summary."
+    assert [request.url for request in transport.requests[1:]] == [
+        "https://api.mistral.ai/v1/ocr",
+        "https://api.mistral.ai/v1/ocr",
+        "https://api.mistral.ai/v1/chat/completions",
+    ]
+    assert [
+        transport.requests[index].payload["document"]["document_url"]
+        for index in (1, 2)
+    ] == [
+        "data:application/pdf;base64,JVBERg==",
+        "https://example.com/file.pdf",
+    ]
+    final_pdf_payload = transport.requests[3].payload
+    assert final_pdf_payload["model"] == model
+    assert "# Bytes PDF" in final_pdf_payload["messages"][0]["content"]
+    assert "# URL PDF" in final_pdf_payload["messages"][0]["content"]
+    assert pdf_response.cost_input == pytest.approx(
+        10 * rates_per_million[0] / 1_000_000
+    )
+    assert pdf_response.cost_output == pytest.approx(
+        2 * rates_per_million[2] / 1_000_000
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("model", ["mistral-large-4-0", "mistral-large-latest"])
+def test_unregistered_mistral_large_4_like_ids_stay_unverified(
+    mistral_runtime,
+    caplog,
+    model,
+):
+    caplog.set_level(logging.WARNING)
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model=model,
+        api_key="mistral-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "model": model,
+            "choices": [{"message": {"content": "Unverified."}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        }
+    )
+    adapter.adapter._sync_transport = transport
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        response = adapter.chat(
+            [{"role": "user", "content": "Test this literal model ID."}],
+            reasoning_level="high",
+        )
+
+    assert adapter.adapter.model_spec is None
+    assert resolve_model_spec(mistral_runtime, "mistral", model) is None
+    assert any(
+        "not verified" in str(item.message) and model in str(item.message)
+        for item in caught_warnings
+    )
+    assert any(
+        record.levelno >= logging.WARNING
+        and f"Unverified model used: {model}" in record.getMessage()
+        for record in caplog.records
+    )
+    payload = transport.requests[0].payload
+    assert payload["model"] == model
+    assert "reasoning_effort" not in payload
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
+
+
+@pytest.mark.integration
+def test_mistral_large_4_keeps_caller_history_and_does_not_replay_previous_thinking(
+    mistral_runtime,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    history = [
+        {"role": "user", "content": "Weather in Paris?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_weather_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Paris"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_weather_1",
+            "content": '{"temperature_c":21}',
+        },
+    ]
+    previous = ChatResponse(
+        response_id="cmpl-previous-with-thinking",
+        reasoning_events=[
+            ReasoningEvent(
+                text="Do not replay this private thought.",
+                kind="summary",
+                index=0,
+                elapsed_s=0.0,
+                delta_s=0.0,
+            )
+        ],
+        provider_data={
+            "thinking": "provider-native thinking from the previous response"
+        },
+    )
+    transport = FakeSyncTransport(
+        {
+            "id": "cmpl-large-4-history",
+            "model": "mistral-large-4",
+            "choices": [{"message": {"content": "It is sunny."}}],
+        }
+    )
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat(history, previous_response=previous)
+
+    assert response.content == "It is sunny."
+    assert len(transport.requests) == 1
+    payload = transport.requests[0].payload
+    assert payload["model"] == "mistral-large-4"
+    assert payload["messages"] == history
+    _assert_no_continuation_fields(payload, "cmpl-previous-with-thinking")
+    serialized_payload = repr(payload)
+    assert "Do not replay this private thought." not in serialized_payload
+    assert "provider-native thinking from the previous response" not in serialized_payload
 
 
 @pytest.mark.integration
