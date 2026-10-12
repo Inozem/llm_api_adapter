@@ -86,8 +86,8 @@ jobs:
         run: |
           git diff --name-only "$BASE_SHA" "$HEAD_SHA" |
             python .github/scripts/select_e2e_lanes.py --github-output "$GITHUB_OUTPUT"
-  build-core-testpypi:
-    name: Build core for TestPyPI
+  publish-core-testpypi:
+    name: Publish core to TestPyPI
     needs: changes
     if: ${{ needs.changes.outputs.core == 'true' }}
     runs-on: ubuntu-latest
@@ -106,79 +106,12 @@ jobs:
           pip install build
           python -m build
 
-      - name: Save core distribution for publishing and recovery verification
-        uses: actions/upload-artifact@v4
-        with:
-          name: core-testpypi-dist
-          path: dist/
-          if-no-files-found: error
-          retention-days: 30
-
-  publish-core-testpypi:
-    name: Publish core to TestPyPI
-    needs: [changes, build-core-testpypi]
-    if: ${{ needs.changes.outputs.core == 'true' }}
-    runs-on: ubuntu-latest
-    outputs:
-      upload_outcome: ${{ steps.upload.outcome }}
-
-    steps:
-      - name: Download core distribution
-        uses: actions/download-artifact@v4
-        with:
-          name: core-testpypi-dist
-          path: dist/
-
       - name: Publish core to TestPyPI
-        id: upload
-        continue-on-error: true
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.TEST_PYPI_API_TOKEN }}
           repository-url: https://test.pypi.org/legacy/
           verbose: true
-
-      - name: Report failed Core upload
-        if: ${{ steps.upload.outcome == 'failure' }}
-        run: echo "::warning::Core upload failed. The recovery gate can continue only if TestPyPI contains these exact built files."
-
-  approve-core-publish-recovery:
-    name: Approve Core E2E after TestPyPI upload failure
-    needs: [changes, build-core-testpypi, publish-core-testpypi]
-    if: >-
-      ${{
-        always() &&
-        needs.changes.outputs.core == 'true' &&
-        needs.build-core-testpypi.result == 'success' &&
-        needs.publish-core-testpypi.result == 'success' &&
-        needs.publish-core-testpypi.outputs.upload_outcome == 'failure'
-      }}
-    runs-on: ubuntu-latest
-    # Configure required reviewers for this environment in repository settings.
-    environment:
-      name: core-publish-recovery
-    env:
-      CORE_CANDIDATE_VERSION: ${{ needs.changes.outputs.core_version }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Download core distribution from this run
-        uses: actions/download-artifact@v4
-        with:
-          name: core-testpypi-dist
-          path: dist/
-
-      - name: Verify TestPyPI has this exact Core build
-        run: >-
-          python .github/scripts/verify_testpypi_artifact.py
-          --package llm-api-adapter
-          --version "$CORE_CANDIDATE_VERSION"
-          --dist-dir dist/
 
   publish-kimi-testpypi:
     name: Publish Kimi package to TestPyPI
@@ -350,20 +283,12 @@ jobs:
 
   post-publish-openai-e2e:
     name: OpenAI E2E tests (post-publish)
-    needs:
-      - changes
-      - build-core-testpypi
-      - publish-core-testpypi
-      - approve-core-publish-recovery
+    needs: [changes, publish-core-testpypi]
     if: >-
       ${{
         always() &&
         needs.changes.outputs.core_openai_e2e == 'true' &&
-        (
-          (needs.publish-core-testpypi.result == 'success' && needs.publish-core-testpypi.outputs.upload_outcome == 'success') ||
-          needs.approve-core-publish-recovery.result == 'success' ||
-          (needs.publish-core-testpypi.result == 'skipped' && needs.build-core-testpypi.result == 'skipped')
-        )
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped')
       }}
     runs-on: ubuntu-latest
     env:
@@ -415,20 +340,12 @@ jobs:
 
   post-publish-anthropic-e2e:
     name: Anthropic E2E tests (post-publish)
-    needs:
-      - changes
-      - build-core-testpypi
-      - publish-core-testpypi
-      - approve-core-publish-recovery
+    needs: [changes, publish-core-testpypi]
     if: >-
       ${{
         always() &&
         needs.changes.outputs.core_anthropic_e2e == 'true' &&
-        (
-          (needs.publish-core-testpypi.result == 'success' && needs.publish-core-testpypi.outputs.upload_outcome == 'success') ||
-          needs.approve-core-publish-recovery.result == 'success' ||
-          (needs.publish-core-testpypi.result == 'skipped' && needs.build-core-testpypi.result == 'skipped')
-        )
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped')
       }}
     runs-on: ubuntu-latest
     env:
@@ -480,20 +397,12 @@ jobs:
 
   post-publish-google-e2e:
     name: Google E2E tests (post-publish)
-    needs:
-      - changes
-      - build-core-testpypi
-      - publish-core-testpypi
-      - approve-core-publish-recovery
+    needs: [changes, publish-core-testpypi]
     if: >-
       ${{
         always() &&
         needs.changes.outputs.core_google_e2e == 'true' &&
-        (
-          (needs.publish-core-testpypi.result == 'success' && needs.publish-core-testpypi.outputs.upload_outcome == 'success') ||
-          needs.approve-core-publish-recovery.result == 'success' ||
-          (needs.publish-core-testpypi.result == 'skipped' && needs.build-core-testpypi.result == 'skipped')
-        )
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped')
       }}
     runs-on: ubuntu-latest
     env:
@@ -545,21 +454,12 @@ jobs:
 
   post-publish-kimi-e2e:
     name: Kimi E2E tests (release candidate)
-    needs:
-      - changes
-      - build-core-testpypi
-      - publish-core-testpypi
-      - approve-core-publish-recovery
-      - publish-kimi-testpypi
+    needs: [changes, publish-core-testpypi, publish-kimi-testpypi]
     if: >-
       ${{
         always() &&
         (needs.changes.outputs.shared_core == 'true' || needs.changes.outputs.kimi == 'true' || needs.changes.outputs.kimi_e2e == 'true') &&
-        (
-          (needs.publish-core-testpypi.result == 'success' && needs.publish-core-testpypi.outputs.upload_outcome == 'success') ||
-          needs.approve-core-publish-recovery.result == 'success' ||
-          (needs.publish-core-testpypi.result == 'skipped' && needs.build-core-testpypi.result == 'skipped')
-        ) &&
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped') &&
         (needs.publish-kimi-testpypi.result == 'success' || needs.publish-kimi-testpypi.result == 'skipped')
       }}
     runs-on: ubuntu-latest
@@ -616,21 +516,12 @@ jobs:
 
   post-publish-mistral-e2e:
     name: Mistral E2E tests (release candidate)
-    needs:
-      - changes
-      - build-core-testpypi
-      - publish-core-testpypi
-      - approve-core-publish-recovery
-      - publish-mistral-testpypi
+    needs: [changes, publish-core-testpypi, publish-mistral-testpypi]
     if: >-
       ${{
         always() &&
         (needs.changes.outputs.shared_core == 'true' || needs.changes.outputs.mistral == 'true' || needs.changes.outputs.mistral_e2e == 'true') &&
-        (
-          (needs.publish-core-testpypi.result == 'success' && needs.publish-core-testpypi.outputs.upload_outcome == 'success') ||
-          needs.approve-core-publish-recovery.result == 'success' ||
-          (needs.publish-core-testpypi.result == 'skipped' && needs.build-core-testpypi.result == 'skipped')
-        ) &&
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped') &&
         (needs.publish-mistral-testpypi.result == 'success' || needs.publish-mistral-testpypi.result == 'skipped')
       }}
     runs-on: ubuntu-latest
@@ -687,21 +578,12 @@ jobs:
 
   post-publish-xai-e2e:
     name: xAI E2E tests (release candidate)
-    needs:
-      - changes
-      - build-core-testpypi
-      - publish-core-testpypi
-      - approve-core-publish-recovery
-      - publish-xai-testpypi
+    needs: [changes, publish-core-testpypi, publish-xai-testpypi]
     if: >-
       ${{
         always() &&
         (needs.changes.outputs.shared_core == 'true' || needs.changes.outputs.xai == 'true' || needs.changes.outputs.xai_e2e == 'true') &&
-        (
-          (needs.publish-core-testpypi.result == 'success' && needs.publish-core-testpypi.outputs.upload_outcome == 'success') ||
-          needs.approve-core-publish-recovery.result == 'success' ||
-          (needs.publish-core-testpypi.result == 'skipped' && needs.build-core-testpypi.result == 'skipped')
-        ) &&
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped') &&
         (needs.publish-xai-testpypi.result == 'success' || needs.publish-xai-testpypi.result == 'skipped')
       }}
     runs-on: ubuntu-latest
@@ -758,21 +640,12 @@ jobs:
 
   post-publish-qwen-e2e:
     name: Qwen E2E tests (release candidate)
-    needs:
-      - changes
-      - build-core-testpypi
-      - publish-core-testpypi
-      - approve-core-publish-recovery
-      - publish-qwen-testpypi
+    needs: [changes, publish-core-testpypi, publish-qwen-testpypi]
     if: >-
       ${{
         always() &&
         (needs.changes.outputs.shared_core == 'true' || needs.changes.outputs.qwen == 'true' || needs.changes.outputs.qwen_e2e == 'true') &&
-        (
-          (needs.publish-core-testpypi.result == 'success' && needs.publish-core-testpypi.outputs.upload_outcome == 'success') ||
-          needs.approve-core-publish-recovery.result == 'success' ||
-          (needs.publish-core-testpypi.result == 'skipped' && needs.build-core-testpypi.result == 'skipped')
-        ) &&
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped') &&
         (needs.publish-qwen-testpypi.result == 'success' || needs.publish-qwen-testpypi.result == 'skipped')
       }}
     runs-on: ubuntu-latest
@@ -834,21 +707,12 @@ jobs:
 
   post-publish-deepseek-e2e:
     name: DeepSeek E2E tests (release candidate)
-    needs:
-      - changes
-      - build-core-testpypi
-      - publish-core-testpypi
-      - approve-core-publish-recovery
-      - publish-deepseek-testpypi
+    needs: [changes, publish-core-testpypi, publish-deepseek-testpypi]
     if: >-
       ${{
         always() &&
         (needs.changes.outputs.shared_core == 'true' || needs.changes.outputs.deepseek == 'true' || needs.changes.outputs.deepseek_e2e == 'true') &&
-        (
-          (needs.publish-core-testpypi.result == 'success' && needs.publish-core-testpypi.outputs.upload_outcome == 'success') ||
-          needs.approve-core-publish-recovery.result == 'success' ||
-          (needs.publish-core-testpypi.result == 'skipped' && needs.build-core-testpypi.result == 'skipped')
-        ) &&
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped') &&
         (needs.publish-deepseek-testpypi.result == 'success' || needs.publish-deepseek-testpypi.result == 'skipped')
       }}
     runs-on: ubuntu-latest
@@ -905,21 +769,12 @@ jobs:
 
   post-publish-zai-e2e:
     name: Z.ai E2E tests (release candidate)
-    needs:
-      - changes
-      - build-core-testpypi
-      - publish-core-testpypi
-      - approve-core-publish-recovery
-      - publish-zai-testpypi
+    needs: [changes, publish-core-testpypi, publish-zai-testpypi]
     if: >-
       ${{
         always() &&
         (needs.changes.outputs.shared_core == 'true' || needs.changes.outputs.zai == 'true' || needs.changes.outputs.zai_e2e == 'true') &&
-        (
-          (needs.publish-core-testpypi.result == 'success' && needs.publish-core-testpypi.outputs.upload_outcome == 'success') ||
-          needs.approve-core-publish-recovery.result == 'success' ||
-          (needs.publish-core-testpypi.result == 'skipped' && needs.build-core-testpypi.result == 'skipped')
-        ) &&
+        (needs.publish-core-testpypi.result == 'success' || needs.publish-core-testpypi.result == 'skipped') &&
         (needs.publish-zai-testpypi.result == 'success' || needs.publish-zai-testpypi.result == 'skipped')
       }}
     runs-on: ubuntu-latest

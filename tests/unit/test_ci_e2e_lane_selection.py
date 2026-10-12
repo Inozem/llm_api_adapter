@@ -206,11 +206,9 @@ def test_each_external_organization_has_independent_publish_and_e2e_jobs(
     api_key = f"{organization.upper()}_API_KEY"
 
     assert f"needs.changes.outputs.{organization} == 'true'" in publish
-    assert "continue-on-error" not in publish
     assert f"packages-dir: packages/organizations/{organization}/dist/" in publish
     assert "secrets.TEST_PYPI_API_TOKEN" in publish
     assert f"publish-{organization}-testpypi" in live
-    assert "approve-core-publish-recovery" in live
     assert f"needs.changes.outputs.{organization}_e2e == 'true'" in live
     assert f"{api_key}: ${{{{ secrets.{api_key} }}}}" in live
     assert f"pytest -v --import-mode=importlib -m e2e_{organization}" in live
@@ -283,39 +281,13 @@ def test_core_e2e_jobs_run_after_a_skipped_core_publish_for_harness_changes():
     workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
 
     for organization in ("openai", "anthropic", "google"):
-        job = workflow.split(
-            f"  post-publish-{organization}-e2e:\n", maxsplit=1
-        )[1]
+        job = workflow.split(f"  post-publish-{organization}-e2e:\n", maxsplit=1)[1]
         job = job.split("\n  post-publish-", maxsplit=1)[0]
 
         assert f"needs.changes.outputs.core_{organization}_e2e == 'true'" in job
-        assert "needs.publish-core-testpypi.outputs.upload_outcome == 'success'" in job
-        assert "needs.approve-core-publish-recovery.result == 'success'" in job
-        assert "needs.build-core-testpypi.result == 'skipped'" in job
+        assert "needs.publish-core-testpypi.result == 'success'" in job
+        assert "needs.publish-core-testpypi.result == 'skipped'" in job
         assert "needs.changes.outputs.core == 'true'" not in job
-
-
-@pytest.mark.unit
-def test_core_publish_recovery_waits_for_approval_and_verifies_exact_artifact():
-    workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
-    build = _workflow_job(workflow, "build-core-testpypi")
-    publish = _workflow_job(workflow, "publish-core-testpypi")
-    recovery = _workflow_job(workflow, "approve-core-publish-recovery")
-
-    assert "actions/upload-artifact@v4" in build
-    assert "name: core-testpypi-dist" in build
-    assert "actions/download-artifact@v4" in publish
-    assert "continue-on-error: true" in publish
-    assert "upload_outcome: ${{ steps.upload.outcome }}" in publish
-    assert "name: core-publish-recovery" in recovery
-    assert "needs.publish-core-testpypi.outputs.upload_outcome == 'failure'" in recovery
-    assert "verify_testpypi_artifact.py" in recovery
-
-    for organization in _EXTERNAL_ORGANIZATIONS:
-        provider_publish = _workflow_job(
-            workflow, f"publish-{organization}-testpypi"
-        )
-        assert "core-publish-recovery" not in provider_publish
 
 
 @pytest.mark.unit
@@ -422,9 +394,8 @@ def test_qwen_candidate_e2e_job_uses_only_qwen_credentials_and_candidates():
     job = workflow.split("  post-publish-qwen-e2e:\n", maxsplit=1)[1]
 
     assert "needs.changes.outputs.qwen_e2e == 'true'" in job
-    assert "needs.publish-core-testpypi.outputs.upload_outcome == 'success'" in job
-    assert "needs.approve-core-publish-recovery.result == 'success'" in job
-    assert "needs.build-core-testpypi.result == 'skipped'" in job
+    assert "needs.publish-core-testpypi.result == 'success'" in job
+    assert "needs.publish-core-testpypi.result == 'skipped'" in job
     assert "needs.publish-qwen-testpypi.result == 'success'" in job
     assert "needs.publish-qwen-testpypi.result == 'skipped'" in job
     assert "QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}" in job
@@ -445,9 +416,8 @@ def test_kimi_candidate_e2e_job_uses_only_kimi_credentials_and_candidates():
     job = job.split("\n  post-publish-", maxsplit=1)[0]
 
     assert "needs.changes.outputs.kimi_e2e == 'true'" in job
-    assert "needs.publish-core-testpypi.outputs.upload_outcome == 'success'" in job
-    assert "needs.approve-core-publish-recovery.result == 'success'" in job
-    assert "needs.build-core-testpypi.result == 'skipped'" in job
+    assert "needs.publish-core-testpypi.result == 'success'" in job
+    assert "needs.publish-core-testpypi.result == 'skipped'" in job
     assert "needs.publish-kimi-testpypi.result == 'success'" in job
     assert "needs.publish-kimi-testpypi.result == 'skipped'" in job
     assert "KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}" in job
@@ -467,9 +437,8 @@ def test_deepseek_candidate_e2e_job_uses_only_deepseek_credentials_and_candidate
     job = workflow.split("  post-publish-deepseek-e2e:\n", maxsplit=1)[1]
 
     assert "needs.changes.outputs.deepseek_e2e == 'true'" in job
-    assert "needs.publish-core-testpypi.outputs.upload_outcome == 'success'" in job
-    assert "needs.approve-core-publish-recovery.result == 'success'" in job
-    assert "needs.build-core-testpypi.result == 'skipped'" in job
+    assert "needs.publish-core-testpypi.result == 'success'" in job
+    assert "needs.publish-core-testpypi.result == 'skipped'" in job
     assert "needs.publish-deepseek-testpypi.result == 'success'" in job
     assert "needs.publish-deepseek-testpypi.result == 'skipped'" in job
     assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in job
@@ -500,9 +469,8 @@ def test_zai_candidate_e2e_job_uses_only_zai_credentials_and_candidates():
     job = job.split("\n  post-publish-", maxsplit=1)[0]
 
     assert "needs.changes.outputs.zai_e2e == 'true'" in job
-    assert "needs.publish-core-testpypi.outputs.upload_outcome == 'success'" in job
-    assert "needs.approve-core-publish-recovery.result == 'success'" in job
-    assert "needs.build-core-testpypi.result == 'skipped'" in job
+    assert "needs.publish-core-testpypi.result == 'success'" in job
+    assert "needs.publish-core-testpypi.result == 'skipped'" in job
     assert "needs.publish-zai-testpypi.result == 'success'" in job
     assert "needs.publish-zai-testpypi.result == 'skipped'" in job
     assert "ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}" in job
