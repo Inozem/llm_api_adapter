@@ -2612,3 +2612,226 @@ def test_mistral_sync_async_and_stream_share_cache_read_accounting(
         assert result.cost_total == pytest.approx(
             expected_input_cost + expected_output_cost
         )
+
+
+@pytest.mark.integration
+def test_mistral_large_4_sync_async_and_stream_usage_cost_parity(
+    mistral_runtime,
+    monkeypatch,
+):
+    usage = {
+        "prompt_tokens": 100_000,
+        "completion_tokens": 10_000,
+        "total_tokens": 110_000,
+        "prompt_tokens_details": {"cached_tokens": 50_000},
+    }
+    response_payload = {
+        "id": "cmpl-mistral-large-4-usage-parity",
+        "model": "mistral-large-4",
+        "choices": [{"message": {"content": "cached"}}],
+        "usage": usage,
+    }
+    stream_event = SSEEvent(
+        event=None,
+        data={
+            "id": response_payload["id"],
+            "model": response_payload["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "cached"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": usage,
+        },
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        response_payload,
+        events=[stream_event],
+    )
+
+    sync_response = adapter.chat([{"role": "user", "content": "cached"}])
+    sync_completed = []
+    list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "cached"}],
+            on_done=sync_completed.append,
+        )
+    )
+
+    async def fake_async_request(url, **kwargs):
+        return response_payload
+
+    def fake_async_stream_request(url, **kwargs):
+        async def events():
+            yield stream_event
+
+        return events()
+
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_request",
+        fake_async_request,
+    )
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+
+    async def run_async_modes():
+        async_response = await adapter.achat(
+            [{"role": "user", "content": "cached"}]
+        )
+        async_completed = []
+        async for _ in adapter.astream_chat(
+            [{"role": "user", "content": "cached"}],
+            on_done=async_completed.append,
+        ):
+            pass
+        return async_response, async_completed
+
+    async_response, async_completed = asyncio.run(run_async_modes())
+
+    for result in (
+        sync_response,
+        async_response,
+        sync_completed[0],
+        async_completed[0],
+    ):
+        assert result.usage is not None
+        assert result.usage.input_tokens == 100_000
+        assert result.usage.output_tokens == 10_000
+        assert result.usage.total_tokens == 110_000
+        assert result.usage.cached_tokens == 50_000
+        assert result.usage.cache_write_tokens is None
+        assert result.cost_input == pytest.approx(0.0750)
+        assert result.cost_output == pytest.approx(0.0418)
+        assert result.cost_total == pytest.approx(0.1168)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("usage", "expected_input", "expected_output", "expected_total"),
+    [
+        (
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "prompt_tokens_details": {"cached_tokens": 0},
+            },
+            0.0,
+            0.0,
+            0.0,
+        ),
+        ({"completion_tokens": 10_000, "total_tokens": 10_000}, None, None, None),
+        (
+            {
+                "prompt_tokens": 100_000,
+                "total_tokens": 100_000,
+                "prompt_tokens_details": {"cached_tokens": 0},
+            },
+            0.1360,
+            None,
+            None,
+        ),
+        (
+            {
+                "prompt_tokens": 100_000,
+                "completion_tokens": 10_000,
+                "total_tokens": 110_000,
+            },
+            None,
+            0.0418,
+            None,
+        ),
+        (
+            {
+                "prompt_tokens": 10,
+                "completion_tokens": 10_000,
+                "total_tokens": 10_010,
+                "prompt_tokens_details": {"cached_tokens": 20},
+            },
+            None,
+            0.0418,
+            None,
+        ),
+    ],
+    ids=[
+        "reported-zero",
+        "input-missing",
+        "output-missing",
+        "cache-read-missing",
+        "cache-read-exceeds-prompt",
+    ],
+)
+def test_mistral_large_4_usage_cost_handles_zero_and_incomplete_counts(
+    mistral_runtime,
+    usage,
+    expected_input,
+    expected_output,
+    expected_total,
+):
+    response_payload = {
+        "id": "cmpl-mistral-large-4-incomplete-usage",
+        "model": "mistral-large-4",
+        "choices": [{"message": {"content": "Done"}}],
+        "usage": usage,
+    }
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(response_payload)
+
+    response = adapter.chat([{"role": "user", "content": "Count tokens"}])
+
+    assert response.usage is not None
+    assert response.usage.cache_write_tokens is None
+    if "prompt_tokens" in usage:
+        assert response.usage.input_tokens == usage["prompt_tokens"]
+    else:
+        assert response.usage.input_tokens is None
+    if "completion_tokens" in usage:
+        assert response.usage.output_tokens == usage["completion_tokens"]
+    else:
+        assert response.usage.output_tokens is None
+    if "prompt_tokens_details" in usage:
+        assert response.usage.cached_tokens == usage["prompt_tokens_details"][
+            "cached_tokens"
+        ]
+    else:
+        assert response.usage.cached_tokens is None
+    assert response.cost_input == expected_input
+    assert response.cost_output == expected_output
+    assert response.cost_total == expected_total
+
+
+@pytest.mark.integration
+def test_mistral_large_4_absent_usage_keeps_usage_and_costs_unknown(mistral_runtime):
+    response_payload = {
+        "id": "cmpl-mistral-large-4-no-usage",
+        "model": "mistral-large-4",
+        "choices": [{"message": {"content": "Done"}}],
+    }
+    adapter = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(response_payload)
+
+    response = adapter.chat([{"role": "user", "content": "No usage"}])
+
+    assert response.usage is None
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
