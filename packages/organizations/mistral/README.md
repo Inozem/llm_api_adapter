@@ -60,10 +60,13 @@ for schema validation, parsed results, refusal, and incomplete responses.
 
 ## Supported models
 
-- `mistral-large-4`
+- `mistral-large-4` (Public Preview)
 - `mistral-small-2603`
 - `mistral-medium-3-5`
 - `mistral-large-2512`
+
+For all registered Mistral models, the output limit is an upper bound under the shared context
+budget; Mistral publishes no independent generation maximum.
 
 `mistral-large-2512` has no reasoning control: a supplied `reasoning_level`
 emits a warning and is not sent to Mistral.
