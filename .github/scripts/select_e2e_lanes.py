@@ -11,7 +11,6 @@ from typing import Iterable
 
 _CORE_CANDIDATE_PATHS = (
     "pyproject.toml",
-    "README.md",
     "src/llm_api_adapter/",
 )
 _SHARED_CORE_PATHS = (
