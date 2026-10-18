@@ -1140,17 +1140,21 @@ costs; non-token components use `cost_breakdown`.
 
 ### Provider-reported usage
 
-The adapter exposes provider-reported counts without estimating missing tokens.
-If no usage is reported, `response.usage` is `None`. A partial usage object may
-contain `None` in any unreported count; an explicitly reported zero stays `0`.
+Counts come from provider usage, including any documented default that applies
+to the response context; the adapter does not estimate missing tokens. If no
+usage is reported, `response.usage` is `None`. Unknown or invalid individual
+counts are `None`, while a known zero stays `0`. A provider-reported total may
+remain available when component counts are unknown; the adapter does not infer
+missing components from that total. See the [usage and cost contract](.specify/memory/architecture.md#usage-and-cost-boundary)
+for provider-specific details.
 
 | `Usage` field | Meaning |
 | --- | --- |
 | `input_tokens` | Total reported input, including confirmed cache-read and cache-write subsets. |
 | `output_tokens` | Reported generated tokens, including reasoning tokens where the provider exposes the required counts. |
 | `total_tokens` | Reported total, or a sum of confirmed input and output counts when the provider format requires it. |
-| `cached_tokens` | Confirmed input tokens read from cache. `None` means no valid count was reported. |
-| `cache_write_tokens` | Confirmed input tokens charged as a separate cache write. `None` means no valid count was reported. |
+| `cached_tokens` | Confirmed input tokens read from cache. `None` means the count is unavailable. |
+| `cache_write_tokens` | Confirmed input tokens charged as a separate cache write. `None` means the count is unavailable. |
 
 These are counts, not the cached text or a list of token IDs. Output tokens are
 priced at the output rate; there is no separate output-cache component.
@@ -1192,7 +1196,7 @@ counts must be nonnegative integers with a sum no greater than total input.
 | Built-in organization | Automatic cache usage and registered pricing |
 | --- | --- |
 | OpenAI | Responses reads `input_tokens_details.cached_tokens` and `cache_write_tokens`; Chat Completions reads the same fields from `prompt_tokens_details`. All registered models have a cache-read rate. `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` also have a separately priced automatic cache-write component. |
-| Google | `usageMetadata.cachedContentTokenCount` becomes `cached_tokens`, a subset of `promptTokenCount`. Automatic reads have registered rates except for `gemini-3-flash-preview`, whose cache-read rate is unverified. There is no separately priced automatic cache-write component. |
+| Google | Confirmed automatic cache reads appear in `cached_tokens` as a subset of inclusive input and are priced once. Automatic reads have registered rates except for `gemini-3-flash-preview`, whose cache-read rate is unverified. There is no separately priced automatic cache-write component. |
 | Anthropic | The adapter does not enable opt-in prompt caching, and the registry has no automatic cache-read or cache-write rates. Ordinary input/output pricing applies to its supported requests. |
 
 The same accounting consumes automatic cache usage from installed organization
@@ -1207,13 +1211,14 @@ and negotiated-volume charges are also outside the bundled token estimate.
 
 ### Incomplete costs
 
-- If a registered cache rate requires a split that the provider omits, or the
-  split is invalid or exceeds input, `cost_input` and `cost_total` are `None`.
+- If a registered cache rate requires a split whose count is unknown after
+  applicable documented defaults, or the split is invalid or exceeds input,
+  `cost_input` and `cost_total` are `None`.
 - A positive reported cache component with no verified rate also leaves
   `cost_input` and `cost_total` unknown. For example, a cache hit on
   `gemini-3-flash-preview` cannot be priced from its bundled tier.
 - A confirmed zero cache count incurs no cache charge, even without a cache
-  rate. An unreported count remains `None`; it is not rewritten as zero.
+  rate. A count that remains unknown stays `None`; it is not assumed to be zero.
 - `cost_output` can remain known when only input accounting is incomplete.
   Missing output leaves `cost_output` and `cost_total` unknown.
 - `cost_total` is available only when input, output, and any incurred non-token

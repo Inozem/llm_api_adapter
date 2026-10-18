@@ -181,15 +181,18 @@ work before the corrected behavior may be used for a release decision.
   identifier or opaque replay material MAY be sent only when the exact model and adapter declare
   that behavior; otherwise the adapter MUST use caller-provided history and serialize no unsupported
   continuation field.
-- Usage and costs MUST use provider-reported data and verified rates. Missing or contradictory
-  usage MUST NOT be estimated or treated as zero. Reported cache reads and writes MUST be confirmed
-  input components, remain distinct, and never be double-counted. Parsed omitted input/output counts
-  MUST remain `None`; an explicitly reported zero remains `0`. Cache rates apply only to components
-  that may occur automatically during ordinary requests and whose quantities providers report.
-  A calculated total MUST remain unavailable whenever an incurred component cannot be priced
+- Usage and costs MUST use provider-reported data and verified rates. Unknown, invalid, or
+  contradictory usage MUST NOT be estimated or treated as zero. A missing counter MAY use a default
+  only when the applicable provider contract unambiguously establishes its value for that response
+  context; such defaults MUST NOT be inferred or generalized beyond the verified contract. Parsed
+  counts with neither a provider value nor an applicable documented default MUST remain `None`; an
+  explicitly reported zero remains `0`. Reported cache reads and writes MUST be confirmed input
+  components, remain distinct, and never be double-counted. Cache rates apply only to components that
+  may occur automatically during ordinary requests and whose quantities providers report. A
+  calculated total MUST remain unavailable whenever an incurred component cannot be priced
   completely. A complete provider-reported total MAY remain available without a component
-  breakdown; the SDK MUST NOT invent missing component costs. Non-token metered operations MUST
-  remain separate from token cost.
+  breakdown; the SDK MUST NOT invent missing component costs or infer missing components from the
+  total. Non-token metered operations MUST remain separate from token cost.
 - Known authorization, rate-limit, token-limit, client, server, timeout, usage-limit, tool-input,
   tool-argument, tool-choice, structured-output, and configuration failures MUST map to the public
   error hierarchy. Common validation failures and declared unsupported inputs MUST fail before an
@@ -271,4 +274,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.5.2 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-10-12
+**Version**: 0.6.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-10-18
