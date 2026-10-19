@@ -439,7 +439,12 @@ async def test_async_chat_matches_sync_response_contract(case):
         async_completion.await_args.kwargs,
     ) == case.expected_reasoning_payload
     assert _response_vector(async_response) == _response_vector(sync_response)
-    assert async_response.usage == Usage(input_tokens=2, output_tokens=1, total_tokens=3)
+    assert async_response.usage == Usage(
+        input_tokens=2,
+        output_tokens=1,
+        total_tokens=3,
+        cached_tokens=0 if case.organization == "google" else None,
+    )
     assert async_response.parsed_json == {"answer": "ok"}
     assert [event.text for event in async_response.reasoning_events] == ["Plan"]
     assert async_response.cost_total == pytest.approx(4e-6)
@@ -525,7 +530,12 @@ async def test_async_stream_has_common_chunks_usage_reasoning_and_callbacks(case
     assert [chunk.text for chunk in chunks] == yielded
     assert [chunk.index for chunk in chunks] == [0, 1]
     assert chunks[-1].usage == Usage(input_tokens=2, output_tokens=2, total_tokens=4)
-    assert done[0].usage == Usage(input_tokens=2, output_tokens=2, total_tokens=4)
+    assert done[0].usage == Usage(
+        input_tokens=2,
+        output_tokens=2,
+        total_tokens=4,
+        cached_tokens=0 if case.organization == "google" else None,
+    )
     assert done[0].cost_input == pytest.approx(2e-6)
     assert done[0].cost_output == pytest.approx(4e-6)
     assert done[0].cost_total == pytest.approx(6e-6)

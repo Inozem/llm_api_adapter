@@ -1,5 +1,6 @@
 import asyncio
 import builtins
+import json
 from unittest.mock import patch
 
 import httpx
@@ -16,6 +17,8 @@ from src.llm_api_adapter.llms.async_streaming import (
     async_request,
     async_stream_request,
 )
+from src.llm_api_adapter.adapters.google.adapter import GoogleAdapter
+from src.llm_api_adapter.models.messages.chat_message import UserMessage
 
 
 class FakeResponse:
@@ -263,5 +266,157 @@ async def test_async_stream_request_closes_resources_on_cancellation():
         with pytest.raises(asyncio.CancelledError):
             await task
 
+    assert response.closed is True
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_google_achat_uses_httpx_async_request_and_normalizes_final_usage():
+    response = FakeResponse(
+        json_data={
+            "modelVersion": "gemini-2.5-pro",
+            "candidates": [{
+                "content": {"parts": [{"text": "Hello"}]},
+                "finishReason": "STOP",
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 11,
+                "candidatesTokenCount": 3,
+                "thoughtsTokenCount": 2,
+                "totalTokenCount": 25,
+            },
+        }
+    )
+    client = FakeAsyncClient(response=response)
+
+    with patch.object(httpx, "AsyncClient", return_value=client):
+        result = await GoogleAdapter(
+            api_key="test_api_key",
+            model="gemini-2.5-pro",
+        ).achat([UserMessage("hi")])
+
+    assert result.content == "Hello"
+    assert result.usage.input_tokens == 11
+    assert result.usage.output_tokens == 5
+    assert result.usage.total_tokens == 25
+    assert result.cost_input == pytest.approx(13.75e-6)
+    assert result.cost_output == pytest.approx(50e-6)
+    assert result.cost_total == pytest.approx(63.75e-6)
+    assert len(client.post_calls) == 1
+    assert client.post_calls[0][0].endswith("/models/gemini-2.5-pro:generateContent")
+    assert response.closed is True
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_google_astream_chat_uses_httpx_and_retains_usage_until_completion():
+    first = {
+        "candidates": [{"content": {"parts": [{"text": "Hi"}]}}],
+        "usageMetadata": {
+            "promptTokenCount": 11,
+            "candidatesTokenCount": 3,
+            "thoughtsTokenCount": 2,
+            "totalTokenCount": 25,
+            "cachedContentTokenCount": 4,
+        },
+    }
+    final = {
+        "candidates": [{"content": {"parts": []}, "finishReason": "STOP"}],
+        "usageMetadata": {
+            "promptTokenCount": 12,
+            "candidatesTokenCount": 4,
+            "totalTokenCount": 30,
+            "cachedContentTokenCount": None,
+        },
+    }
+    response = FakeResponse(
+        [
+            f"data: {json.dumps(first)}".encode(),
+            b"",
+            f"data: {json.dumps(final)}".encode(),
+            b"",
+        ]
+    )
+    client = FakeAsyncClient(response=response)
+    done = []
+
+    with patch.object(httpx, "AsyncClient", return_value=client):
+        output = [
+            text
+            async for text in GoogleAdapter(
+                api_key="test_api_key",
+                model="gemini-2.5-pro",
+            ).astream_chat(
+                [UserMessage("hi")],
+                buffer_chars=2,
+                on_done=done.append,
+            )
+        ]
+
+    assert output == ["Hi"]
+    assert len(done) == 1
+    assert done[0].usage.input_tokens == 12
+    assert done[0].usage.output_tokens == 6
+    assert done[0].usage.total_tokens == 30
+    assert done[0].usage.cached_tokens is None
+    assert done[0].cost_input is None
+    assert done[0].cost_output == pytest.approx(60e-6)
+    assert done[0].cost_total is None
+    assert client.send_calls[0][1] is True
+    assert client.send_calls[0][0].url.path.endswith(
+        "/models/gemini-2.5-pro:streamGenerateContent"
+    )
+    assert response.closed is True
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_google_astream_chat_cancellation_skips_on_done_and_closes_resources():
+    response = BlockingResponse()
+    client = FakeAsyncClient(response=response)
+    adapter = GoogleAdapter(api_key="test_api_key", model="gemini-2.5-pro")
+    done = []
+
+    async def consume():
+        async for _ in adapter.astream_chat(
+            [UserMessage("hi")],
+            on_done=done.append,
+        ):
+            pass
+
+    with patch.object(httpx, "AsyncClient", return_value=client):
+        task = asyncio.create_task(consume())
+        await response.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert done == []
+    assert response.closed is True
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_google_astream_chat_http_failure_skips_on_done_and_closes_resources():
+    response = FakeResponse(status_code=500)
+    client = FakeAsyncClient(response=response)
+    adapter = GoogleAdapter(api_key="test_api_key", model="gemini-2.5-pro")
+    done = []
+
+    with patch.object(httpx, "AsyncClient", return_value=client):
+        with pytest.raises(LLMAPIServerError):
+            [
+                text
+                async for text in adapter.astream_chat(
+                    [UserMessage("hi")],
+                    on_done=done.append,
+                )
+            ]
+
+    assert done == []
     assert response.closed is True
     assert client.closed is True
