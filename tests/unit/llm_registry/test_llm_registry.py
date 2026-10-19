@@ -729,11 +729,49 @@ def test_sampling_rule_schema_is_shared_by_openai_and_anthropic():
     assert AnthropicRequestRuleRegistry.droppable_parameter_defaults == {
         "top_p": 1.0,
         "temperature": 1.0,
+        "top_k": None,
     }
     assert OpenAIRequestRuleRegistry.droppable_parameter_defaults["top_p"] == 1.0
     assert SamplingRequestRuleRegistry.DROP_PARAMETER == (
         RequestRuleRegistry.DROP_PARAMETER
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model_name", "expected_rates"),
+    (
+        ("claude-haiku-5-5", ((100000, 0.1, 0.5), (None, 0.5, 2.5))),
+    ),
+)
+def test_anthropic_new_model_registry_profiles(model_name, expected_rates):
+    model = LLM_REGISTRY.organizations["anthropic"].models[model_name]
+    assert resolve_model_spec(LLM_REGISTRY, "anthropic", model_name).name == model_name
+    assert model.limits.context_window_tokens == 1_000_000
+    assert model.limits.max_output_tokens == 128_000
+    assert model.is_adaptive_thinking is True
+    assert tuple(
+        (
+            tier.up_to_prompt_tokens,
+            tier.in_per_token * 1_000_000,
+            tier.out_per_token * 1_000_000,
+        )
+        for tier in model.pricing_tiers.tiers
+    ) == expected_rates
+    if model_name == "claude-haiku-5-5":
+        assert model.pricing_tiers.tier_for_prompt_tokens(100_000).in_per_token == pytest.approx(
+            0.1 / 1_000_000
+        )
+        assert model.pricing_tiers.tier_for_prompt_tokens(100_001).in_per_token == pytest.approx(
+            0.5 / 1_000_000
+        )
+    assert {
+        rule.arguments["path"]
+        for rule in model.request_rules.rules
+        if rule.handler == RequestRuleRegistry.DROP_PARAMETER
+    } == {
+        "temperature", "top_p", "top_k"
+    }
 
 
 @pytest.mark.unit

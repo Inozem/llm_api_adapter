@@ -229,6 +229,7 @@ class AnthropicRequestRuleRegistry(SamplingRequestRuleRegistry):
     droppable_parameter_defaults = {
         **SamplingRequestRuleRegistry.droppable_parameter_defaults,
         "temperature": 1.0,
+        "top_k": None,
     }
 
 

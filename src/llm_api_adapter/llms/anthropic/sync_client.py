@@ -65,30 +65,54 @@ class ClaudeSyncClient:
         payload["stream"] = True
         return self._stream_request(url, payload, timeout_s)
 
+    @staticmethod
+    def _apply_adaptive_thinking(payload: dict, effort: str | None) -> None:
+        """Configure adaptive thinking while preserving legacy top_p omission.
+
+        Older adaptive models omit top_p even without a registry request rule.
+        """
+        payload.pop("top_p", None)
+        if effort == "none":
+            payload["thinking"] = {"type": "disabled"}
+            output_config = payload.get("output_config")
+            if isinstance(output_config, dict) and "effort" in output_config:
+                output_config = dict(output_config)
+                output_config.pop("effort", None)
+                if output_config:
+                    payload["output_config"] = output_config
+                else:
+                    payload.pop("output_config", None)
+        elif effort:
+            payload["thinking"] = {"type": "adaptive"}
+            existing = payload.get("output_config", {})
+            payload["output_config"] = {**existing, "effort": effort}
+
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
         kwargs = dict(kwargs)
         budget_tokens = kwargs.pop("budget_tokens", None)
         effort = kwargs.pop("effort", None)
         is_adaptive_thinking = kwargs.pop("is_adaptive_thinking", False)
         capture_reasoning = kwargs.pop("capture_reasoning", False)
-        if is_adaptive_thinking:
-            kwargs.pop("top_p", None)
-            if effort:
-                kwargs["thinking"] = {"type": "adaptive"}
-                existing = kwargs.get("output_config", {})
-                kwargs["output_config"] = {**existing, "effort": effort}
-        else:
-            if budget_tokens:
-                kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
-        if capture_reasoning:
-            thinking = kwargs.get("thinking")
-            if isinstance(thinking, dict):
-                kwargs["thinking"] = {**thinking, "display": "summarized"}
         payload, _ = apply_model_request_rules(
             "anthropic",
             model,
             {"model": model, **kwargs},
         )
+        if is_adaptive_thinking:
+            self._apply_adaptive_thinking(payload, effort)
+        else:
+            if budget_tokens:
+                payload["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
+        if capture_reasoning:
+            thinking = payload.get("thinking")
+            if (
+                is_adaptive_thinking
+                and effort is None
+                and not isinstance(thinking, dict)
+            ):
+                thinking = {"type": "adaptive"}
+            if isinstance(thinking, dict) and thinking.get("type") != "disabled":
+                payload["thinking"] = {**thinking, "display": "summarized"}
         return payload
 
     def _send_request(self, url: str, payload: dict, timeout_s: float | None = None):

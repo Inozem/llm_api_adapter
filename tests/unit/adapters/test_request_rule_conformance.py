@@ -319,6 +319,10 @@ def _request_kwargs(case: _PayloadRuleCase, *, non_default: bool) -> dict[str, A
             continue
 
         path = rule.arguments["path"]
+        if path not in case.profile.public_kwargs_by_payload_path:
+            # Anthropic top_k is low-level-client-only; its omission is covered
+            # by client characterization rather than the public adapter API.
+            continue
         default = rule.arguments.get("default", 64)
         kwargs[_payload_path(case, path)] = (
             _non_default_value(default) if non_default else default
@@ -367,6 +371,7 @@ def _expected_warning_messages(case: _PayloadRuleCase) -> list[str]:
         for rule in case.rules
         if rule.handler == RequestRuleRegistry.DROP_PARAMETER
         and "default" in rule.arguments
+        and rule.arguments["path"] in case.profile.public_kwargs_by_payload_path
     ]
 
 
@@ -424,6 +429,32 @@ def test_adapter_accepts_each_registered_tool_choice_mode(case):
 
     assert response.content == "ok"
     assert chat_completion.call_count == len(case.allowed_modes)
+
+
+@pytest.mark.unit
+def test_haiku_adapter_accepts_forced_any_and_named_tool_choices():
+    model = "claude-haiku-5-5"
+    adapter = AnthropicAdapter(api_key="test_api_key", model=model)
+    with patch.object(
+        ClaudeSyncClient,
+        "chat_completion",
+        return_value=_anthropic_response(model, None),
+    ) as chat_completion:
+        for mode in ("any", "tool"):
+            tools, tool_choice = _tool_choice_arguments(mode)
+            response = adapter.chat(
+                [UserMessage("hi")],
+                max_tokens=64,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+            assert response.content == "ok"
+
+    calls = chat_completion.call_args_list
+    assert calls[0].kwargs["tool_choice"] == {"type": "any"}
+    assert calls[1].kwargs["tool_choice"] == {
+        "type": "tool", "name": "conformance_tool"
+    }
 
 
 @pytest.mark.unit
