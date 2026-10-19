@@ -17,11 +17,14 @@ import pytest
 import requests
 
 from src.llm_api_adapter.errors.llm_api_error import LLMAPIRateLimitError
+from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
 from src.llm_api_adapter.llms.anthropic.sync_client import ClaudeSyncClient
 from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.llms.transports import SSEEvent
+from src.llm_api_adapter.llm_registry.llm_registry import Pricing
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
+from src.llm_api_adapter.models.responses.chat_response import Usage
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
@@ -595,5 +598,136 @@ def test_sync_transport_preserves_public_stream_callback_order(
     assert requests_capture.error is None
     assert httpx_capture.error is None
     assert requests_capture.result == httpx_capture.result == expected_result
+    _assert_lifecycle(requests_capture)
+    _assert_lifecycle(httpx_capture)
+
+
+@pytest.mark.unit
+def test_google_public_chat_usage_and_cost_match_across_transports():
+    body = {
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {
+            "promptTokenCount": 20,
+            "candidatesTokenCount": 1,
+            "totalTokenCount": 25,
+        },
+    }
+    captures = {}
+    for transport in ("requests", "httpx"):
+        response = _response_for(transport, body=body)
+
+        def invoke() -> Any:
+            adapter = GoogleAdapter(
+                api_key="test-key",
+                model="gemini-2.5-flash",
+                transport=transport,
+            )
+            adapter.pricing = Pricing.from_dict(
+                [{"up_to_prompt_tokens": None, "input_per_1m": 1_000, "output_per_1m": 2_000}],
+                currency="USD",
+            )
+            return adapter.chat([UserMessage("Hi")])
+
+        captures[transport] = _run(transport, response, invoke)
+
+    requests_capture = captures["requests"]
+    httpx_capture = captures["httpx"]
+    assert requests_capture.error is None
+    assert httpx_capture.error is None
+    assert requests_capture.result == httpx_capture.result
+    completed = requests_capture.result
+    assert completed.usage == Usage(
+        input_tokens=20,
+        output_tokens=1,
+        total_tokens=25,
+        cached_tokens=0,
+    )
+    assert completed.cost_input == pytest.approx(0.02)
+    assert completed.cost_output == pytest.approx(0.002)
+    assert completed.cost_total == pytest.approx(0.022)
+    _assert_lifecycle(requests_capture)
+    _assert_lifecycle(httpx_capture)
+
+
+@pytest.mark.unit
+def test_google_public_stream_usage_and_cost_match_across_transports():
+    usage_lines = [
+        'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":1,"thoughtsTokenCount":2,"totalTokenCount":23,"cachedContentTokenCount":3}}',
+        "",
+        'data: {"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":21,"totalTokenCount":40,"cachedContentTokenCount":null}}',
+        "",
+    ]
+    captures = {}
+    for transport in ("requests", "httpx"):
+        response = _response_for(transport, lines=usage_lines)
+
+        def invoke() -> tuple[list[str], Any]:
+            adapter = GoogleAdapter(
+                api_key="test-key",
+                model="gemini-2.5-flash",
+                transport=transport,
+            )
+            adapter.pricing = Pricing.from_dict(
+                [{"up_to_prompt_tokens": None, "input_per_1m": 1_000, "output_per_1m": 2_000}],
+                currency="USD",
+            )
+            done = []
+            output = list(adapter.stream_chat([UserMessage("Hi")], on_done=done.append))
+            assert len(done) == 1
+            return output, done[0]
+
+        captures[transport] = _run(transport, response, invoke)
+
+    requests_capture = captures["requests"]
+    httpx_capture = captures["httpx"]
+    assert requests_capture.error is None
+    assert httpx_capture.error is None
+    assert requests_capture.result == httpx_capture.result
+    output, completed = requests_capture.result
+    assert output == ["ok"]
+    assert completed.usage == Usage(
+        input_tokens=21,
+        output_tokens=3,
+        total_tokens=40,
+        cached_tokens=None,
+    )
+    assert completed.cost_input == pytest.approx(0.021)
+    assert completed.cost_output == pytest.approx(0.006)
+    assert completed.cost_total == pytest.approx(0.027)
+    _assert_lifecycle(requests_capture)
+    _assert_lifecycle(httpx_capture)
+
+
+@pytest.mark.unit
+def test_google_interrupted_public_stream_closes_both_transport_responses():
+    stream_lines = [
+        'data: {"candidates":[{"content":{"parts":[{"text":"first"}]}}]}',
+        "",
+        'data: {"candidates":[{"content":{"parts":[{"text":"second"}]}}]}',
+        "",
+    ]
+    captures = {}
+    for transport in ("requests", "httpx"):
+        response = _response_for(transport, lines=stream_lines)
+
+        def invoke() -> tuple[list[str], list[Any]]:
+            adapter = GoogleAdapter(
+                api_key="test-key",
+                model="gemini-2.5-flash",
+                transport=transport,
+            )
+            done = []
+            stream = adapter.stream_chat([UserMessage("Hi")], on_done=done.append)
+            first = next(stream)
+            stream.close()
+            return [first], done
+
+        captures[transport] = _run(transport, response, invoke)
+
+    requests_capture = captures["requests"]
+    httpx_capture = captures["httpx"]
+    assert requests_capture.error is None
+    assert httpx_capture.error is None
+    assert requests_capture.result == httpx_capture.result == (["first"], [])
     _assert_lifecycle(requests_capture)
     _assert_lifecycle(httpx_capture)
