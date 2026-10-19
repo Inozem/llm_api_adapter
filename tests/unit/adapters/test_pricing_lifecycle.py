@@ -3,9 +3,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
+from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
 from src.llm_api_adapter.llm_registry.llm_registry import Pricing
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
+from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
 from src.llm_api_adapter.llms.streaming import SSEEvent
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.models.responses.chat_response import (
@@ -625,6 +627,58 @@ def test_cache_read_tier_selection_uses_inclusive_total_input():
 
     assert response.cost_input == pytest.approx((100 * 30 + 1 * 5) / 1_000_000)
     assert response.cost_output == pytest.approx(5 * 10 / 1_000_000)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("usage_metadata", "expected_output", "expected_cached", "expected_input_cost", "expected_output_cost"),
+    [
+        pytest.param(
+            {"promptTokenCount": 20, "candidatesTokenCount": 1, "totalTokenCount": 21},
+            1, 0, 0.000015, 0.00000375,
+            id="omitted-thoughts-and-cache-are-zero",
+        ),
+        pytest.param(
+            {
+                "promptTokenCount": 20,
+                "candidatesTokenCount": 1,
+                "thoughtsTokenCount": 2,
+                "cachedContentTokenCount": 4,
+                "totalTokenCount": 23,
+            },
+            3, 4, 0.0000123, 0.00001125,
+            id="positive-thoughts-and-cache",
+        ),
+    ],
+)
+def test_google_registered_pricing_applies_to_completed_chat_usage(
+    usage_metadata,
+    expected_output,
+    expected_cached,
+    expected_input_cost,
+    expected_output_cost,
+):
+    adapter = GoogleAdapter(api_key="test_api_key", model="gemini-3.8-flash")
+    provider_response = {
+        "modelVersion": "gemini-3.8-flash",
+        "candidates": [{
+            "content": {"parts": [{"text": "Done"}]},
+            "finishReason": "STOP",
+        }],
+        "usageMetadata": usage_metadata,
+    }
+
+    with patch.object(GeminiSyncClient, "chat_completion", return_value=provider_response):
+        response = adapter.chat([UserMessage("hi")])
+
+    assert response.cost_input == pytest.approx(expected_input_cost)
+    assert response.cost_output == pytest.approx(expected_output_cost)
+    assert response.cost_total == pytest.approx(expected_input_cost + expected_output_cost)
+    assert response.currency == "USD"
+    assert response.usage.input_tokens == 20
+    assert response.usage.output_tokens == expected_output
+    assert response.usage.cached_tokens == expected_cached
+    assert response.usage.total_tokens == usage_metadata["totalTokenCount"]
 
 
 @pytest.mark.unit
