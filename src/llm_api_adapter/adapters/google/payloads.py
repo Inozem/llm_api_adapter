@@ -22,11 +22,31 @@ def _apply_cache_usage(
 ) -> ChatResponse:
     if chat_response.usage is not None:
         usage_metadata = response.get("usageMetadata")
-        cached_tokens = (
-            _google_token_count(usage_metadata.get("cachedContentTokenCount"))
-            if isinstance(usage_metadata, Mapping)
-            else None
-        )
+        cached_tokens = None
+        if isinstance(usage_metadata, Mapping):
+            if "cachedContentTokenCount" in usage_metadata:
+                cached_tokens = _google_token_count(
+                    usage_metadata.get("cachedContentTokenCount")
+                )
+            else:
+                base_counts = (
+                    usage_metadata.get("promptTokenCount"),
+                    usage_metadata.get("candidatesTokenCount"),
+                    usage_metadata.get("totalTokenCount"),
+                )
+                if all(_google_token_count(value) is not None for value in base_counts):
+                    cached_tokens = 0
+
+            prompt_tokens = chat_response.usage.input_tokens
+            if (
+                cached_tokens is not None
+                and cached_tokens != 0
+                and (
+                    prompt_tokens is None
+                    or cached_tokens > prompt_tokens
+                )
+            ):
+                cached_tokens = None
         chat_response.usage.cached_tokens = cached_tokens
     return chat_response
 

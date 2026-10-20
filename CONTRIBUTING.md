@@ -300,7 +300,12 @@ Registry token estimates cover ordinary input/output and verified automatic
 cache reads or separately priced automatic cache writes. For each cache rate,
 verify the exact response count fields, whether input includes or excludes the
 cache component, and any tier or dispatch-time conditions. Unreported counts
-and unverified rates remain unknown; an explicitly reported zero remains zero.
+remain unknown unless an applicable documented provider contract establishes a
+default; invalid or contradictory counts and unverified rates remain unknown.
+An explicitly reported zero remains zero. Verify provider defaults against
+official API and schema sources, add deterministic coverage for changed
+semantics and preserved unknown cases, and follow the technical
+[Usage and Cost Boundary](.specify/memory/architecture.md#usage-and-cost-boundary).
 Do not activate or record opt-in cache controls, selectable TTLs, or storage
 rates. See [usage and pricing](README.md#token-usage-and-pricing) for incomplete
 cost behavior.
@@ -313,7 +318,7 @@ organizations.
 | --- | --- | --- |
 | OpenAI | `src/llm_api_adapter/llm_registry/organizations/openai.json` | [Model catalog](https://developers.openai.com/api/docs/models) and [API pricing](https://developers.openai.com/api/docs/pricing) |
 | Anthropic | `src/llm_api_adapter/llm_registry/organizations/anthropic.json` | [Models overview](https://platform.claude.com/docs/en/about-claude/models/overview), [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing), [effort](https://platform.claude.com/docs/en/build-with-claude/effort), and [model deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations) |
-| Google | `src/llm_api_adapter/llm_registry/organizations/google.json` | [Gemini models](https://ai.google.dev/gemini-api/docs/models), [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing), [Gemini thinking](https://ai.google.dev/gemini-api/docs/generate-content/thinking), and [deprecations](https://ai.google.dev/gemini-api/docs/deprecations) |
+| Google | `src/llm_api_adapter/llm_registry/organizations/google.json` | [GenerateContent and usage metadata](https://ai.google.dev/api/generate-content), [Gemini models](https://ai.google.dev/gemini-api/docs/models), [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing), [Gemini thinking](https://ai.google.dev/gemini-api/docs/generate-content/thinking), [deprecations](https://ai.google.dev/gemini-api/docs/deprecations), and [ProtoJSON field presence rules](https://protobuf.dev/programming-guides/json/#presence-and-default-values) |
 | Mistral | `packages/organizations/mistral/src/llm_api_adapter_mistral/registry/organizations/mistral.json` | [Model cards](https://docs.mistral.ai/models/), [pricing](https://docs.mistral.ai/inference/pricing), [reasoning](https://docs.mistral.ai/studio/conversations/reasoning), and [model lifecycle](https://docs.mistral.ai/inference/model-lifecycle) |
 | xAI | `packages/organizations/xai/src/llm_api_adapter_xai/registry/organizations/xai.json` | [Models](https://docs.x.ai/developers/models), [pricing](https://docs.x.ai/developers/pricing), and [reasoning](https://docs.x.ai/developers/model-capabilities/text/reasoning) |
 | Qwen | `packages/organizations/qwen/src/llm_api_adapter_qwen/registry/organizations/qwen.json` | [Models](https://help.aliyun.com/en/model-studio/models), [Anthropic-compatible Messages API](https://help.aliyun.com/en/model-studio/anthropic-api-messages), [pricing](https://help.aliyun.com/en/model-studio/model-pricing), and [context caching](https://help.aliyun.com/en/model-studio/context-cache) |

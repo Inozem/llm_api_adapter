@@ -611,20 +611,176 @@ def test_google_usage_composes_output_only_from_reported_candidate_and_thought_c
 
 
 @pytest.mark.unit
-def test_google_usage_keeps_composed_output_unknown_when_thought_count_is_omitted():
+def test_google_completed_candidate_zero_keeps_thought_only_output():
+    response = ChatResponse.from_google_response(
+        {
+            "usageMetadata": {
+                "promptTokenCount": 3,
+                "candidatesTokenCount": 0,
+                "thoughtsTokenCount": 4,
+                "totalTokenCount": 7,
+            },
+            "candidates": [{"content": {"parts": []}, "finishReason": "STOP"}],
+        }
+    )
+
+    assert response.usage.output_tokens == 4
+
+
+@pytest.mark.unit
+def test_google_usage_defaults_omitted_thought_count_to_zero_for_completed_usage():
     response = ChatResponse.from_google_response(
         {
             "usageMetadata": {
                 "promptTokenCount": 8,
                 "candidatesTokenCount": 2,
                 "totalTokenCount": 10,
+            },
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+        }
+    )
+
+    assert response.usage.input_tokens == 8
+    assert response.usage.output_tokens == 2
+    assert response.usage.total_tokens == 10
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "usage_metadata",
+    [
+        pytest.param(None, id="null-usage"),
+        pytest.param({}, id="empty-usage"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": 2}, id="missing-total"),
+        pytest.param({"promptTokenCount": 8, "totalTokenCount": 10}, id="missing-candidates"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": 2, "totalTokenCount": 10, "thoughtsTokenCount": None}, id="null-thoughts"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": 2, "totalTokenCount": 10, "thoughtsTokenCount": True}, id="bool-thoughts"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": 2, "totalTokenCount": 10, "thoughtsTokenCount": -1}, id="negative-thoughts"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": 2, "totalTokenCount": 10, "thoughtsTokenCount": 1.5}, id="fractional-thoughts"),
+        pytest.param({"promptTokenCount": None, "candidatesTokenCount": 2, "totalTokenCount": 10}, id="null-prompt-gates-default"),
+        pytest.param({"promptTokenCount": True, "candidatesTokenCount": 2, "totalTokenCount": 10}, id="bool-prompt-gates-default"),
+        pytest.param({"promptTokenCount": -1, "candidatesTokenCount": 2, "totalTokenCount": 10}, id="negative-prompt-gates-default"),
+        pytest.param({"promptTokenCount": 1.5, "candidatesTokenCount": 2, "totalTokenCount": 10}, id="fractional-prompt-gates-default"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": None, "totalTokenCount": 10}, id="null-candidates-gates-default"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": True, "totalTokenCount": 10}, id="bool-candidates-gates-default"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": -1, "totalTokenCount": 10}, id="negative-candidates-gates-default"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": 1.5, "totalTokenCount": 10}, id="fractional-candidates-gates-default"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": 2, "totalTokenCount": None}, id="null-total-gates-default"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": 2, "totalTokenCount": True}, id="bool-total-gates-default"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": 2, "totalTokenCount": -1}, id="negative-total-gates-default"),
+        pytest.param({"promptTokenCount": 8, "candidatesTokenCount": 2, "totalTokenCount": 1.5}, id="fractional-total-gates-default"),
+    ],
+)
+def test_google_usage_does_not_default_omitted_thoughts_outside_valid_context(usage_metadata):
+    response = ChatResponse.from_google_response(
+        {
+            "usageMetadata": usage_metadata,
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+        }
+    )
+
+    if usage_metadata is None:
+        assert response.usage is None
+    else:
+        assert response.usage.output_tokens is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "usage_metadata",
+    [pytest.param("malformed", id="string"), pytest.param([], id="list")],
+)
+def test_google_non_mapping_usage_metadata_leaves_usage_unset(usage_metadata):
+    response = ChatResponse.from_google_response({"usageMetadata": usage_metadata})
+
+    assert response.usage is None
+
+
+@pytest.mark.unit
+def test_google_response_without_usage_metadata_leaves_usage_unset():
+    response = ChatResponse.from_google_response({})
+
+    assert response.usage is None
+
+
+@pytest.mark.unit
+def test_google_total_is_provider_authoritative_with_extra_usage_category():
+    response = ChatResponse.from_google_response(
+        {
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 2,
+                "thoughtsTokenCount": 1,
+                "toolUsePromptTokenCount": 5,
+                "totalTokenCount": 20,
+            },
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+        }
+    )
+
+    assert response.usage.input_tokens == 8
+    assert response.usage.output_tokens == 3
+    assert response.usage.total_tokens == 20
+
+
+@pytest.mark.unit
+def test_google_total_remains_provider_reported_when_inconsistent_with_components():
+    response = ChatResponse.from_google_response(
+        {
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 2,
+                "thoughtsTokenCount": 1,
+                "totalTokenCount": 5,
             }
         }
     )
 
     assert response.usage.input_tokens == 8
-    assert response.usage.output_tokens is None
-    assert response.usage.total_tokens == 10
+    assert response.usage.output_tokens == 3
+    assert response.usage.total_tokens == 5
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("counter", "invalid_value", "expected_input", "expected_output", "expected_total"),
+    [
+        pytest.param("promptTokenCount", None, None, None, 10, id="null-prompt"),
+        pytest.param("promptTokenCount", True, None, None, 10, id="bool-prompt"),
+        pytest.param("promptTokenCount", -1, None, None, 10, id="negative-prompt"),
+        pytest.param("promptTokenCount", 1.5, None, None, 10, id="fractional-prompt"),
+        pytest.param("promptTokenCount", "8", None, None, 10, id="string-prompt"),
+        pytest.param("candidatesTokenCount", None, 8, None, 10, id="null-candidates"),
+        pytest.param("candidatesTokenCount", True, 8, None, 10, id="bool-candidates"),
+        pytest.param("candidatesTokenCount", -1, 8, None, 10, id="negative-candidates"),
+        pytest.param("candidatesTokenCount", 1.5, 8, None, 10, id="fractional-candidates"),
+        pytest.param("candidatesTokenCount", "2", 8, None, 10, id="string-candidates"),
+        pytest.param("totalTokenCount", None, 8, None, None, id="null-total"),
+        pytest.param("totalTokenCount", True, 8, None, None, id="bool-total"),
+        pytest.param("totalTokenCount", -1, 8, None, None, id="negative-total"),
+        pytest.param("totalTokenCount", 1.5, 8, None, None, id="fractional-total"),
+        pytest.param("totalTokenCount", "10", 8, None, None, id="string-total"),
+    ],
+)
+def test_google_invalid_base_usage_counter_is_normalized_to_unknown(
+    counter,
+    invalid_value,
+    expected_input,
+    expected_output,
+    expected_total,
+):
+    usage_metadata = {
+        "promptTokenCount": 8,
+        "candidatesTokenCount": 2,
+        "totalTokenCount": 10,
+    }
+    usage_metadata[counter] = invalid_value
+
+    response = ChatResponse.from_google_response({"usageMetadata": usage_metadata})
+
+    assert response.usage.input_tokens == expected_input
+    assert response.usage.output_tokens == expected_output
+    assert response.usage.total_tokens == expected_total
 
 
 @pytest.mark.unit

@@ -729,11 +729,84 @@ def test_sampling_rule_schema_is_shared_by_openai_and_anthropic():
     assert AnthropicRequestRuleRegistry.droppable_parameter_defaults == {
         "top_p": 1.0,
         "temperature": 1.0,
+        "top_k": None,
     }
     assert OpenAIRequestRuleRegistry.droppable_parameter_defaults["top_p"] == 1.0
     assert SamplingRequestRuleRegistry.DROP_PARAMETER == (
         RequestRuleRegistry.DROP_PARAMETER
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model_name", "expected_rates"),
+    (
+        ("claude-haiku-5-5", ((100000, 0.1, 0.5), (None, 0.5, 2.5))),
+    ),
+)
+def test_anthropic_new_model_registry_profiles(model_name, expected_rates):
+    model = LLM_REGISTRY.organizations["anthropic"].models[model_name]
+    assert resolve_model_spec(LLM_REGISTRY, "anthropic", model_name).name == model_name
+    assert model.limits.context_window_tokens == 1_000_000
+    assert model.limits.max_output_tokens == 128_000
+    assert model.is_adaptive_thinking is True
+    assert tuple(
+        (
+            tier.up_to_prompt_tokens,
+            tier.in_per_token * 1_000_000,
+            tier.out_per_token * 1_000_000,
+        )
+        for tier in model.pricing_tiers.tiers
+    ) == expected_rates
+    if model_name == "claude-haiku-5-5":
+        assert model.pricing_tiers.tier_for_prompt_tokens(100_000).in_per_token == pytest.approx(
+            0.1 / 1_000_000
+        )
+        assert model.pricing_tiers.tier_for_prompt_tokens(100_001).in_per_token == pytest.approx(
+            0.5 / 1_000_000
+        )
+    assert {
+        rule.arguments["path"]
+        for rule in model.request_rules.rules
+        if rule.handler == RequestRuleRegistry.DROP_PARAMETER
+    } == {
+        "temperature", "top_p", "top_k"
+    }
+
+
+@pytest.mark.unit
+def test_google_gemini_4_argon_registry_profile():
+    model = LLM_REGISTRY.organizations["google"].models["gemini-4-argon"]
+
+    assert (
+        resolve_model_spec(LLM_REGISTRY, "google", "gemini-4-argon").name
+        == "gemini-4-argon"
+    )
+    assert model.limits.context_window_tokens == 1_048_576
+    assert model.limits.max_output_tokens == 32_768
+    assert model.reasoning_capability.allowed_values == ("low", "medium", "high")
+    assert {
+        rule.arguments["path"]: rule.arguments["default"]
+        for rule in model.request_rules.rules
+        if rule.handler == RequestRuleRegistry.DROP_PARAMETER
+    } == {
+        "generationConfig.temperature": 1.0,
+        "generationConfig.topP": 1.0,
+    }
+    assert len(model.pricing_tiers.tiers) == 1
+    tier = model.pricing_tiers.tiers[0]
+    assert tier.up_to_prompt_tokens is None
+    assert tier.in_per_token * 1_000_000 == pytest.approx(2.0)
+    assert tier.out_per_token * 1_000_000 == pytest.approx(10.0)
+    assert tier.cache_read_in_per_token * 1_000_000 == pytest.approx(0.1)
+    assert tier.cache_write_in_per_token is None
+    assert {
+        (item.capability_id, item.behavior_id)
+        for item in model.capability_exceptions
+    } == {
+        ("reasoning_control", "none_falls_back_to_minimum"),
+        ("provider_continuation", "ignored"),
+    }
 
 
 @pytest.mark.unit

@@ -140,13 +140,25 @@ establish exact counts, without double counting; reads and separately counted wr
 subsets of inclusive input and their sum cannot exceed it. Organization-owned normalization supplies common
 `Usage`/`ChatResponse`; `ChatResponse` owns arithmetic, and `LLMAdapterBase` selects the verified
 pricing tier by full input and forwards its rates.
+Google has one narrow normalization default: after a successful, completed GenerateContent response,
+a non-null `usageMetadata` mapping with valid nonnegative integer `promptTokenCount`,
+`candidatesTokenCount`, and provider-reported `totalTokenCount` establishes the accounting context.
+Because the proto3 schema gives `thoughtsTokenCount` and `cachedContentTokenCount` implicit scalar
+presence, either omitted key means zero in that context. For streaming, only final merged metadata
+after normal completion qualifies. Missing or null `usageMetadata`, missing base counts, present
+null, malformed, negative, or non-integer values, partial or intermediate stream metadata, and early
+close, cancellation, or failure remain unknown. ProtoJSON accepts null as unset but says serializers
+should not emit it; this SDK treats an explicit provider null conservatively as unknown. Keep `totalTokenCount` independent
+and do not derive components from it. Google cache reads are confirmed subsets of inclusive prompt
+input and are priced once. This provider-owned rule does not affect other providers.
 Registry cache-read and cache-write rates are independent and present only for components that can
 occur automatically during ordinary adapter requests and whose quantities are provider-reported;
 rates are not inferred for opt-in controls, TTLs, resources, or storage. Missing required split
 data, an unverified rate for a positive component, or contradictory usage leaves calculated input
 and total unavailable; output can remain independently known when its usage and rate are known.
-Parsed omitted input/output counts remain `None`, explicit zero remains zero, and wholly absent
-usage remains absent, while direct `Usage` construction keeps its first
+Omitted input/output counts remain `None`; Google's default applies only to omitted
+`thoughtsTokenCount` and `cachedContentTokenCount` when its required base counters are valid. Explicit
+zero remains zero, and wholly absent usage remains absent, while direct `Usage` construction keeps its first
 three positional zero defaults. Existing direct `apply_pricing(input_rate, output_rate, currency)`
 and `apply_cost_breakdown(...)` calls remain compatible. Cache is token input, while other metered
 operations are cost line items. An SDK-calculated total requires every incurred component and a

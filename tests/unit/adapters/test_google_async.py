@@ -73,6 +73,38 @@ async def test_achat_extracts_provider_reported_automatic_cache_read_usage(adapt
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_achat_preserves_corrected_completed_usage_and_prices_it(adapter):
+    response = {
+        "modelVersion": "gemini-2.5-pro",
+        "candidates": [{
+            "content": {"parts": [{"text": "completed"}]},
+            "finishReason": "STOP",
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 11,
+            "candidatesTokenCount": 3,
+            "thoughtsTokenCount": 2,
+            "totalTokenCount": 25,
+        },
+    }
+
+    with patch.object(
+        GeminiAsyncClient,
+        "chat_completion",
+        AsyncMock(return_value=response),
+    ):
+        result = await adapter.achat([UserMessage("hi")])
+
+    assert result.usage.input_tokens == 11
+    assert result.usage.output_tokens == 5
+    assert result.usage.total_tokens == 25
+    assert result.cost_input == pytest.approx(13.75e-6)
+    assert result.cost_output == pytest.approx(50e-6)
+    assert result.cost_total == pytest.approx(63.75e-6)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_astream_chat_awaits_reasoning_and_completion_callbacks(adapter):
     async def events():
         yield SSEEvent(
@@ -166,3 +198,60 @@ async def test_astream_chat_extracts_automatic_cache_read_usage(adapter):
 
     assert output == ["cached"]
     assert done[0].usage.cached_tokens == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_astream_chat_retains_usage_updates_and_completes_without_visible_text(adapter):
+    async def events():
+        yield SSEEvent(
+            event=None,
+            data={
+                "usageMetadata": {
+                    "promptTokenCount": 11,
+                    "candidatesTokenCount": 3,
+                    "thoughtsTokenCount": 2,
+                    "totalTokenCount": 25,
+                    "cachedContentTokenCount": 4,
+                }
+            },
+        )
+        yield SSEEvent(
+            event=None,
+            data={
+                "usageMetadata": {
+                    "promptTokenCount": 12,
+                    "candidatesTokenCount": 4,
+                    "totalTokenCount": 30,
+                    "cachedContentTokenCount": None,
+                },
+                "candidates": [{
+                    "content": {"parts": []},
+                    "finishReason": "STOP",
+                }],
+            },
+        )
+
+    done = []
+    with patch.object(
+        GeminiAsyncClient,
+        "stream",
+        return_value=events(),
+    ):
+        output = [
+            text
+            async for text in adapter.astream_chat(
+                [UserMessage("hi")],
+                on_done=done.append,
+            )
+        ]
+
+    assert output == []
+    assert len(done) == 1
+    assert done[0].usage.input_tokens == 12
+    assert done[0].usage.output_tokens == 6
+    assert done[0].usage.total_tokens == 30
+    assert done[0].usage.cached_tokens is None
+    assert done[0].cost_input is None
+    assert done[0].cost_output == pytest.approx(60e-6)
+    assert done[0].cost_total is None

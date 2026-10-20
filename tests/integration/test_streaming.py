@@ -640,6 +640,7 @@ _BUFFERED_STREAM_SCENARIOS = [
         ],
         {},
         Usage(input_tokens=2, output_tokens=2, total_tokens=4),
+        Usage(input_tokens=2, output_tokens=2, total_tokens=4),
         id="openai-responses",
     ),
     pytest.param(
@@ -695,6 +696,7 @@ _BUFFERED_STREAM_SCENARIOS = [
         ],
         {"max_tokens": 64},
         Usage(input_tokens=2, output_tokens=2, total_tokens=4),
+        Usage(input_tokens=2, output_tokens=2, total_tokens=4),
         id="anthropic",
     ),
     pytest.param(
@@ -727,6 +729,7 @@ _BUFFERED_STREAM_SCENARIOS = [
         ],
         {},
         Usage(input_tokens=2, output_tokens=2, total_tokens=4),
+        Usage(input_tokens=2, output_tokens=2, total_tokens=4, cached_tokens=0),
         id="google",
     ),
 ]
@@ -734,7 +737,15 @@ _BUFFERED_STREAM_SCENARIOS = [
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    ("organization", "model", "url", "events", "stream_kwargs", "expected_usage"),
+    (
+        "organization",
+        "model",
+        "url",
+        "events",
+        "stream_kwargs",
+        "expected_chunk_usage",
+        "expected_completed_usage",
+    ),
     _BUFFERED_STREAM_SCENARIOS,
 )
 def test_streaming_contract_is_consistent_for_all_providers(
@@ -743,7 +754,8 @@ def test_streaming_contract_is_consistent_for_all_providers(
     url,
     events,
     stream_kwargs,
-    expected_usage,
+    expected_chunk_usage,
+    expected_completed_usage,
 ):
     body = _sse(*events)
     with requests_mock.Mocker() as mock:
@@ -786,9 +798,9 @@ def test_streaming_contract_is_consistent_for_all_providers(
         chunk.elapsed_s for chunk in chunks
     )
     assert all(chunk.delta_s >= 0 for chunk in chunks)
-    assert chunks[-1].usage == expected_usage
+    assert chunks[-1].usage == expected_chunk_usage
     assert any(chunk.output_tokens_delta is not None for chunk in chunks)
-    assert completed_responses[0].usage == expected_usage
+    assert completed_responses[0].usage == expected_completed_usage
     assert callback_order == [
         ("chunk", "Hell"),
         ("delta", "Hell"),
