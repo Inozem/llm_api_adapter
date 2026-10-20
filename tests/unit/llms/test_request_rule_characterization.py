@@ -316,6 +316,97 @@ def test_anthropic_warns_once_when_omitting_non_default_top_p_for_claude_4_5(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
+@pytest.mark.parametrize("model", ("claude-haiku-5-5",))
+def test_anthropic_new_models_drop_sampling_and_low_level_top_k(client_class, model):
+    client = client_class(api_key="test_api_key")
+    with _captured_warnings() as caught:
+        warnings.simplefilter("always")
+        payload = client._prepare_chat_payload_for_model(
+            model,
+            {"messages": [], "temperature": 1.0, "top_p": 1.0, "top_k": None},
+        )
+    assert not {"temperature", "top_p", "top_k"}.intersection(payload)
+    assert payload["model"] == model
+    assert caught == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
+@pytest.mark.parametrize("model", ("claude-haiku-5-5",))
+def test_anthropic_new_models_warn_when_dropping_non_default_sampling_and_top_k(
+    client_class, model
+):
+    client = client_class(api_key="test_api_key")
+    with _captured_warnings() as caught:
+        warnings.simplefilter("always")
+        payload = client._prepare_chat_payload_for_model(
+            model,
+            {"messages": [], "temperature": 0.2, "top_p": 0.2, "top_k": 32},
+        )
+    assert not {"temperature", "top_p", "top_k"}.intersection(payload)
+    assert [str(warning.message).split("'")[1] for warning in caught] == [
+        "temperature", "top_p", "top_k"
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
+def test_anthropic_adaptive_effort_disabled_reasoning_and_capture(client_class):
+    client = client_class(api_key="test_api_key")
+    model = "claude-haiku-5-5"
+
+    default_capture = client._prepare_chat_payload_for_model(
+        model,
+        {"messages": [], "is_adaptive_thinking": True, "capture_reasoning": True},
+    )
+    assert default_capture["thinking"] == {
+        "type": "adaptive", "display": "summarized"
+    }
+
+    explicit_effort = client._prepare_chat_payload_for_model(
+        model,
+        {
+            "messages": [], "is_adaptive_thinking": True, "effort": "high",
+            "capture_reasoning": True,
+            "output_config": {"format": {"type": "json_schema", "schema": {}}},
+        },
+    )
+    assert explicit_effort["thinking"] == {
+        "type": "adaptive", "display": "summarized"
+    }
+    assert explicit_effort["output_config"] == {
+        "format": {"type": "json_schema", "schema": {}}, "effort": "high"
+    }
+
+    disabled = client._prepare_chat_payload_for_model(
+        model,
+        {
+            "messages": [], "is_adaptive_thinking": True, "effort": "none",
+            "capture_reasoning": True,
+            "output_config": {"format": {"type": "json_schema", "schema": {}},
+                              "effort": "max"},
+        },
+    )
+    assert disabled["thinking"] == {"type": "disabled"}
+    assert disabled["output_config"] == {
+        "format": {"type": "json_schema", "schema": {}}
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
+def test_anthropic_adaptive_models_keep_default_thinking_omitted(client_class):
+    client = client_class(api_key="test_api_key")
+    payload = client._prepare_chat_payload_for_model(
+        "claude-opus-4-8",
+        {"messages": [], "is_adaptive_thinking": True},
+    )
+    assert payload["model"] == "claude-opus-4-8"
+    assert "thinking" not in payload
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("client_class", GOOGLE_CLIENTS, ids=("sync", "async"))
 def test_google_silently_omits_default_max_output_tokens_for_gemini_2_5(
     client_class,
@@ -352,3 +443,41 @@ def test_google_warns_once_when_omitting_non_default_max_output_tokens_for_gemin
     assert caught[0].category is UserWarning
     assert "maxOutputTokens" in str(caught[0].message)
     assert "gemini-2.5-flash" in str(caught[0].message)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", GOOGLE_CLIENTS, ids=("sync", "async"))
+@pytest.mark.parametrize(
+    ("sampling", "expected_warnings"),
+    [
+        ({"temperature": 1.0, "topP": 1.0}, 0),
+        ({"temperature": 0.5, "topP": 0.8}, 2),
+    ],
+    ids=("provider-defaults", "non-default-values"),
+)
+def test_google_argon_omits_unsupported_sampling_for_both_clients(
+    client_class,
+    sampling,
+    expected_warnings,
+):
+    client = client_class(api_key="test_api_key")
+
+    with _captured_warnings() as caught:
+        warnings.simplefilter("always")
+        payload = client._prepare_chat_payload_for_model(
+            "gemini-4-argon",
+            {
+                "messages": [],
+                "generationConfig": {
+                    "temperature": sampling["temperature"],
+                    "topP": sampling["topP"],
+                },
+            },
+        )
+
+    assert "temperature" not in payload["generationConfig"]
+    assert "topP" not in payload["generationConfig"]
+    assert len(caught) == expected_warnings
+    if expected_warnings:
+        assert all(warning.category is UserWarning for warning in caught)
+        assert all("gemini-4-argon" in str(warning.message) for warning in caught)

@@ -121,6 +121,35 @@ def test_chat_extracts_provider_reported_automatic_cache_read_usage(adapter):
 
 
 @pytest.mark.unit
+def test_chat_exposes_completed_google_usage_and_cost(adapter):
+    adapter.pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": None, "input_per_1m": 1_000, "output_per_1m": 2_000}],
+        currency="USD",
+    )
+    response = {
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {
+            "promptTokenCount": 20,
+            "candidatesTokenCount": 1,
+            "totalTokenCount": 25,
+        },
+    }
+
+    with patch.object(GeminiSyncClient, "chat_completion", return_value=response):
+        result = adapter.chat([UserMessage("hi")])
+
+    assert result.usage == Usage(
+        input_tokens=20,
+        output_tokens=1,
+        total_tokens=25,
+        cached_tokens=0,
+    )
+    assert result.cost_input == pytest.approx(0.02)
+    assert result.cost_output == pytest.approx(0.002)
+    assert result.cost_total == pytest.approx(0.022)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("reported_value", "expected_value"),
     ((0, 0), (-1, None), (True, None), (1.5, None), ("4", None)),
@@ -148,6 +177,116 @@ def test_google_payload_parser_accepts_only_confirmed_cache_token_counts(
 
     assert chat_response.usage.cached_tokens == expected_value
     assert chat_response.usage.cache_write_tokens is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("thoughts", "cached", "expected_output", "expected_cached"),
+    [
+        pytest.param("omitted", "omitted", 1, 0, id="omitted-counts-equal-zero"),
+        pytest.param(0, 0, 1, 0, id="explicit-zero-counts"),
+        pytest.param(2, 4, 3, 4, id="positive-thoughts-and-cache"),
+        pytest.param(None, None, None, None, id="explicit-null-counts-remain-unknown"),
+        pytest.param(True, True, None, None, id="invalid-bool-counts-remain-unknown"),
+        pytest.param(-1, -1, None, None, id="invalid-negative-counts-remain-unknown"),
+        pytest.param(1.5, 1.5, None, None, id="invalid-fractional-counts-remain-unknown"),
+    ],
+)
+def test_google_completed_usage_distinguishes_omitted_zero_and_invalid_counts(
+    adapter,
+    thoughts,
+    cached,
+    expected_output,
+    expected_cached,
+):
+    usage_metadata = {
+        "promptTokenCount": 20,
+        "candidatesTokenCount": 1,
+        "totalTokenCount": 21 if thoughts in ("omitted", 0, None, True, -1, 1.5) else 23,
+    }
+    if thoughts != "omitted":
+        usage_metadata["thoughtsTokenCount"] = thoughts
+    if cached != "omitted":
+        usage_metadata["cachedContentTokenCount"] = cached
+    response = {
+        "usageMetadata": usage_metadata,
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+    }
+
+    chat_response = adapter._parse_chat_response(response, capture_reasoning=False)
+
+    assert chat_response.usage.output_tokens == expected_output
+    assert chat_response.usage.cached_tokens == expected_cached
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "usage_metadata",
+    [
+        pytest.param({}, id="empty"),
+        pytest.param({"promptTokenCount": 20, "candidatesTokenCount": 1}, id="incomplete"),
+        pytest.param({"promptTokenCount": True, "candidatesTokenCount": 1, "totalTokenCount": 21}, id="invalid-prompt"),
+        pytest.param({"promptTokenCount": 20, "candidatesTokenCount": -1, "totalTokenCount": 21}, id="invalid-candidates"),
+        pytest.param({"promptTokenCount": 20, "candidatesTokenCount": 1, "totalTokenCount": 21.5}, id="invalid-total"),
+    ],
+)
+def test_google_omitted_counts_stay_unknown_without_valid_base_counters(adapter, usage_metadata):
+    response = {
+        "usageMetadata": usage_metadata,
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+    }
+
+    chat_response = adapter._parse_chat_response(response, capture_reasoning=False)
+
+    assert chat_response.usage.output_tokens is None
+    assert chat_response.usage.cached_tokens is None
+
+
+@pytest.mark.unit
+def test_google_omitted_cache_count_defaults_to_zero_in_valid_completed_context(adapter):
+    response = {
+        "usageMetadata": {
+            "promptTokenCount": 20,
+            "candidatesTokenCount": 1,
+            "thoughtsTokenCount": 0,
+            "totalTokenCount": 21,
+        },
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+    }
+
+    chat_response = adapter._parse_chat_response(response, capture_reasoning=False)
+
+    assert chat_response.usage.output_tokens == 1
+    assert chat_response.usage.cached_tokens == 0
+
+
+@pytest.mark.unit
+def test_google_cache_read_above_inclusive_prompt_input_is_unavailable(adapter):
+    response = {
+        "usageMetadata": {
+            "promptTokenCount": 20,
+            "candidatesTokenCount": 1,
+            "thoughtsTokenCount": 0,
+            "totalTokenCount": 21,
+            "cachedContentTokenCount": 21,
+        },
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+    }
+
+    chat_response = adapter._parse_chat_response(response, capture_reasoning=False)
+
+    assert chat_response.usage.input_tokens == 20
+    assert chat_response.usage.output_tokens == 1
+    assert chat_response.usage.cached_tokens is None
+    chat_response.apply_pricing(
+        price_input_per_token=0.75 / 1_000_000,
+        price_output_per_token=3.75 / 1_000_000,
+        currency="USD",
+        price_cache_read_per_token=0.075 / 1_000_000,
+    )
+    assert chat_response.cost_input is None
+    assert chat_response.cost_output == pytest.approx(3.75 / 1_000_000)
+    assert chat_response.cost_total is None
 
 
 @pytest.mark.unit
@@ -401,6 +540,112 @@ def test_stream_chat_attaches_usage_with_thought_tokens_to_buffered_chunk(adapte
     assert chunks[0].usage == expected_usage
     assert chunks[0].output_tokens_delta == 7
     assert done[0].usage == expected_usage
+
+
+@pytest.mark.unit
+def test_stream_chat_exposes_merged_completed_usage_and_cost(adapter):
+    adapter.pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": None, "input_per_1m": 1_000, "output_per_1m": 2_000}],
+        currency="USD",
+    )
+    events = iter([
+        SSEEvent(data={
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 20,
+                "candidatesTokenCount": 1,
+                "thoughtsTokenCount": 2,
+                "totalTokenCount": 23,
+                "cachedContentTokenCount": 3,
+            },
+        }, event=None),
+        SSEEvent(data={
+            "candidates": [{"content": {"parts": []}, "finishReason": "STOP"}],
+            "usageMetadata": {
+                "promptTokenCount": 21,
+                "totalTokenCount": 40,
+                "cachedContentTokenCount": None,
+            },
+        }, event=None),
+    ])
+    done = []
+
+    with patch.object(GeminiSyncClient, "stream", return_value=events):
+        output = list(adapter.stream_chat([UserMessage("hi")], on_done=done.append))
+
+    assert output == ["ok"]
+    assert len(done) == 1
+    assert done[0].usage == Usage(
+        input_tokens=21,
+        output_tokens=3,
+        total_tokens=40,
+        cached_tokens=None,
+    )
+    assert done[0].cost_input == pytest.approx(0.021)
+    assert done[0].cost_output == pytest.approx(0.006)
+    assert done[0].cost_total == pytest.approx(0.027)
+
+
+@pytest.mark.unit
+def test_stream_chat_usage_only_response_calls_done_without_text(adapter):
+    done = []
+    events = iter([
+        SSEEvent(data={
+            "candidates": [{"content": {"parts": []}, "finishReason": "STOP"}],
+            "usageMetadata": {
+                "promptTokenCount": 20,
+                "candidatesTokenCount": 1,
+                "totalTokenCount": 21,
+            },
+        }, event=None),
+    ])
+
+    with patch.object(GeminiSyncClient, "stream", return_value=events):
+        output = list(adapter.stream_chat([UserMessage("hi")], on_done=done.append))
+
+    assert output == []
+    assert len(done) == 1
+    assert done[0].content is None
+    assert done[0].usage == Usage(
+        input_tokens=20,
+        output_tokens=1,
+        total_tokens=21,
+        cached_tokens=0,
+    )
+
+
+@pytest.mark.unit
+def test_stream_chat_interruption_closes_provider_iterator_without_done(adapter):
+    class ClosingIterator:
+        def __init__(self):
+            self.events = iter([
+                SSEEvent(data={
+                    "candidates": [{"content": {"parts": [{"text": "first"}]}}],
+                }, event=None),
+                SSEEvent(data={
+                    "candidates": [{"content": {"parts": [{"text": "second"}]}}],
+                }, event=None),
+            ])
+            self.close_calls = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.events)
+
+        def close(self):
+            self.close_calls += 1
+
+    events = ClosingIterator()
+    done = []
+    with patch.object(GeminiSyncClient, "stream", return_value=events):
+        stream = adapter.stream_chat([UserMessage("hi")], on_done=done.append)
+        assert next(stream) == "first"
+        stream.close()
+
+    assert events.close_calls == 1
+    assert done == []
 
 
 @pytest.mark.unit

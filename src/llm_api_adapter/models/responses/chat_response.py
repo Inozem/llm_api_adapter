@@ -536,22 +536,37 @@ class ChatResponse:
         usage_data = api_response.get("usageMetadata")
         if not isinstance(usage_data, dict):
             return None
+
+        def valid_count(value: Any) -> bool:
+            return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+        prompt_tokens = usage_data.get("promptTokenCount")
         candidate_tokens = usage_data.get("candidatesTokenCount")
+        total_tokens = usage_data.get("totalTokenCount")
+        valid_base = all(
+            field in usage_data and valid_count(value)
+            for field, value in (
+                ("promptTokenCount", prompt_tokens),
+                ("candidatesTokenCount", candidate_tokens),
+                ("totalTokenCount", total_tokens),
+            )
+        )
+
+        thoughts_present = "thoughtsTokenCount" in usage_data
         thoughts_tokens = usage_data.get("thoughtsTokenCount")
+        if not thoughts_present and valid_base:
+            thoughts_tokens = 0
+
         output_tokens = None
         if (
-            isinstance(candidate_tokens, int)
-            and not isinstance(candidate_tokens, bool)
-            and candidate_tokens >= 0
-            and isinstance(thoughts_tokens, int)
-            and not isinstance(thoughts_tokens, bool)
-            and thoughts_tokens >= 0
+            valid_count(candidate_tokens)
+            and valid_count(thoughts_tokens)
         ):
             output_tokens = candidate_tokens + thoughts_tokens
         return Usage(
-            input_tokens=usage_data.get("promptTokenCount"),
+            input_tokens=prompt_tokens if valid_count(prompt_tokens) else None,
             output_tokens=output_tokens,
-            total_tokens=usage_data.get("totalTokenCount"),
+            total_tokens=total_tokens if valid_count(total_tokens) else None,
         )
 
     @classmethod

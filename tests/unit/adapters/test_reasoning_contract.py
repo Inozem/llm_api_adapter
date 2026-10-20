@@ -1,3 +1,4 @@
+import warnings
 from unittest.mock import patch
 
 import pytest
@@ -167,6 +168,54 @@ ORGANIZATION_CASES = [
         id="google-generate-content",
     ),
 ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("reasoning_level", "expected_level"),
+    [("low", "low"), ("medium", "medium"), ("high", "high")],
+)
+def test_google_argon_serializes_native_reasoning_levels(
+    reasoning_level,
+    expected_level,
+):
+    adapter = GoogleAdapter(api_key="test_api_key", model="gemini-4-argon")
+
+    config = adapter._build_generation_config(
+        max_tokens=None,
+        temperature=1.0,
+        top_p=1.0,
+        reasoning_level=reasoning_level,
+        effective_schema=None,
+        capture_reasoning=False,
+    )
+
+    assert config["thinkingConfig"] == {
+        "thinkingLevel": expected_level,
+        "includeThoughts": False,
+    }
+
+
+@pytest.mark.unit
+def test_google_argon_none_reasoning_warns_and_falls_back_to_registered_minimum():
+    adapter = GoogleAdapter(api_key="test_api_key", model="gemini-4-argon")
+    registered_minimum = adapter.model_spec.reasoning_capability.allowed_values[0]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        config = adapter._build_generation_config(
+            max_tokens=None,
+            temperature=1.0,
+            top_p=1.0,
+            reasoning_level="none",
+            effective_schema=None,
+            capture_reasoning=False,
+        )
+
+    assert config["thinkingConfig"]["thinkingLevel"] == registered_minimum
+    assert len(caught) == 1
+    assert caught[0].category is UserWarning
+    assert "gemini-4-argon" in str(caught[0].message)
 
 
 @pytest.mark.unit
