@@ -23,8 +23,9 @@ def test_e2e_assertions_accept_omitted_google_usage_fields(thoughts_tokens):
 
     assert_usage_and_pricing(response)
     assert response.usage.cached_tokens is None
-    assert response.usage.output_tokens == (None if thoughts_tokens is None else 2)
+    assert response.usage.output_tokens == 2
     assert response.cost_input is None
+    assert response.cost_output == pytest.approx(4e-6)
     assert response.cost_total is None
 
 
