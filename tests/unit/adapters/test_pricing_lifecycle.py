@@ -631,14 +631,23 @@ def test_cache_read_tier_selection_uses_inclusive_total_input():
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("usage_metadata", "expected_output", "expected_cached", "expected_input_cost", "expected_output_cost"),
+    (
+        "model_name",
+        "usage_metadata",
+        "expected_output",
+        "expected_cached",
+        "expected_input_cost",
+        "expected_output_cost",
+    ),
     [
         pytest.param(
+            "gemini-3.8-flash",
             {"promptTokenCount": 20, "candidatesTokenCount": 1, "totalTokenCount": 21},
             1, 0, 0.000015, 0.00000375,
-            id="omitted-thoughts-and-cache-are-zero",
+            id="gemini-3-8-flash-omitted-thoughts-and-cache-are-zero",
         ),
         pytest.param(
+            "gemini-3.8-flash",
             {
                 "promptTokenCount": 20,
                 "candidatesTokenCount": 1,
@@ -647,20 +656,39 @@ def test_cache_read_tier_selection_uses_inclusive_total_input():
                 "totalTokenCount": 23,
             },
             3, 4, 0.0000123, 0.00001125,
-            id="positive-thoughts-and-cache",
+            id="gemini-3-8-flash-positive-thoughts-and-cache",
+        ),
+        pytest.param(
+            "gemini-4-argon",
+            {"promptTokenCount": 20, "candidatesTokenCount": 1, "totalTokenCount": 21},
+            1, 0, 0.00004, 0.00001,
+            id="gemini-4-argon-omitted-thoughts-and-cache-are-zero",
+        ),
+        pytest.param(
+            "gemini-4-argon",
+            {
+                "promptTokenCount": 20,
+                "candidatesTokenCount": 1,
+                "thoughtsTokenCount": 2,
+                "cachedContentTokenCount": 4,
+                "totalTokenCount": 23,
+            },
+            3, 4, 0.0000324, 0.00003,
+            id="gemini-4-argon-positive-thoughts-and-cache",
         ),
     ],
 )
 def test_google_registered_pricing_applies_to_completed_chat_usage(
+    model_name,
     usage_metadata,
     expected_output,
     expected_cached,
     expected_input_cost,
     expected_output_cost,
 ):
-    adapter = GoogleAdapter(api_key="test_api_key", model="gemini-3.8-flash")
+    adapter = GoogleAdapter(api_key="test_api_key", model=model_name)
     provider_response = {
-        "modelVersion": "gemini-3.8-flash",
+        "modelVersion": model_name,
         "candidates": [{
             "content": {"parts": [{"text": "Done"}]},
             "finishReason": "STOP",

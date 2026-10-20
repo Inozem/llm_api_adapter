@@ -1,6 +1,39 @@
 {
   "currency": "USD",
   "models": {
+    "gemini-4-argon": {
+      "capability_exceptions": [
+        {
+          "capability_id": "reasoning_control",
+          "behavior_id": "none_falls_back_to_minimum",
+          "behavior": "Reasoning cannot be disabled; Core uses the minimum declared by reasoning_capability and emits a warning."
+        },
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
+      "reasoning_capability": {
+        "allowed_values": ["low", "medium", "high"]
+      },
+      "request_rules": [
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.temperature", "default": 1.0}},
+        {"handler": "drop_parameter", "arguments": {"path": "generationConfig.topP", "default": 1.0}}
+      ],
+      "limits": {
+        "context_window_tokens": 1048576,
+        "max_output_tokens": 32768
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 2.0,
+          "output_per_1m": 10.0,
+          "cache_read_input_per_1m": 0.1
+        }
+      ]
+    },
     "gemini-3.8-flash": {
       "capability_exceptions": [
         {

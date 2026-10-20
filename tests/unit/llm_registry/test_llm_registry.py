@@ -775,6 +775,41 @@ def test_anthropic_new_model_registry_profiles(model_name, expected_rates):
 
 
 @pytest.mark.unit
+def test_google_gemini_4_argon_registry_profile():
+    model = LLM_REGISTRY.organizations["google"].models["gemini-4-argon"]
+
+    assert (
+        resolve_model_spec(LLM_REGISTRY, "google", "gemini-4-argon").name
+        == "gemini-4-argon"
+    )
+    assert model.limits.context_window_tokens == 1_048_576
+    assert model.limits.max_output_tokens == 32_768
+    assert model.reasoning_capability.allowed_values == ("low", "medium", "high")
+    assert {
+        rule.arguments["path"]: rule.arguments["default"]
+        for rule in model.request_rules.rules
+        if rule.handler == RequestRuleRegistry.DROP_PARAMETER
+    } == {
+        "generationConfig.temperature": 1.0,
+        "generationConfig.topP": 1.0,
+    }
+    assert len(model.pricing_tiers.tiers) == 1
+    tier = model.pricing_tiers.tiers[0]
+    assert tier.up_to_prompt_tokens is None
+    assert tier.in_per_token * 1_000_000 == pytest.approx(2.0)
+    assert tier.out_per_token * 1_000_000 == pytest.approx(10.0)
+    assert tier.cache_read_in_per_token * 1_000_000 == pytest.approx(0.1)
+    assert tier.cache_write_in_per_token is None
+    assert {
+        (item.capability_id, item.behavior_id)
+        for item in model.capability_exceptions
+    } == {
+        ("reasoning_control", "none_falls_back_to_minimum"),
+        ("provider_continuation", "ignored"),
+    }
+
+
+@pytest.mark.unit
 def test_request_rules_need_a_provider_schema_when_present():
     model_data = _model_data()
     model_data["request_rules"] = [
