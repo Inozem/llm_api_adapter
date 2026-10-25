@@ -264,6 +264,174 @@ def test_model_and_organization_from_dict():
 
 
 @pytest.mark.unit
+def test_model_spec_provider_model_defaults_to_none_when_omitted():
+    model = ModelSpec.from_dict("public-model", _model_data())
+
+    assert model.provider_model is None
+
+
+@pytest.mark.unit
+def test_model_spec_provider_model_preserves_wire_id_and_public_profile():
+    model_data = _model_data()
+    model_data["provider_model"] = "provider-specific-wire-id"
+
+    model = ModelSpec.from_dict("public-model", model_data)
+    without_override = ModelSpec.from_dict("public-model", _model_data())
+
+    assert model.provider_model == "provider-specific-wire-id"
+    assert model.name == "public-model"
+    assert model.name == without_override.name
+    assert model.limits == without_override.limits
+    assert model.pricing_tiers == without_override.pricing_tiers
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "provider_model",
+    (None, "", 42, True, [], {}),
+)
+def test_model_spec_provider_model_rejects_invalid_values(provider_model):
+    model_data = _model_data()
+    model_data["provider_model"] = provider_model
+
+    with pytest.raises(ValueError):
+        ModelSpec.from_dict("public-model", model_data)
+
+
+@pytest.mark.unit
+def test_model_spec_provider_model_keeps_legacy_positional_and_keyword_fields():
+    model_data = _model_data()
+    limits = ModelLimits.from_dict(model_data["limits"])
+    pricing_tiers = Pricing.from_dict(model_data["pricing_tiers"], currency="USD")
+    request_rules = RequestRules()
+    capability_exceptions = ()
+    positional = ModelSpec(
+        "legacy-public-model",
+        limits,
+        pricing_tiers,
+        None,
+        False,
+        request_rules,
+        capability_exceptions,
+    )
+    keyword = ModelSpec(
+        name="legacy-public-model",
+        limits=limits,
+        pricing_tiers=pricing_tiers,
+        reasoning_capability=None,
+        is_adaptive_thinking=False,
+        request_rules=request_rules,
+        capability_exceptions=capability_exceptions,
+    )
+
+    for model in (positional, keyword):
+        assert model.name == "legacy-public-model"
+        assert model.limits is limits
+        assert model.pricing_tiers is pricing_tiers
+        assert model.reasoning_capability is None
+        assert model.is_adaptive_thinking is False
+        assert model.request_rules is request_rules
+        assert model.capability_exceptions == capability_exceptions
+        assert model.provider_model is None
+
+
+@pytest.mark.unit
+def test_legacy_plugin_metadata_without_capability_profile_remains_registerable():
+    registry = RegistrySpec()
+    metadata = OrganizationModelMetadata(
+        organization="legacy-profile-provider",
+        organization_data={"models": {"legacy-model": _model_data()}},
+    )
+
+    assert registry.register_organization_metadata(metadata) is True
+    model = resolve_model_spec(registry, "legacy-profile-provider", "legacy-model")
+    assert model is not None
+    assert model.capability_exceptions is None
+    with pytest.raises(ValueError, match="uncertified"):
+        model.require_capability_profile()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "registration_order",
+    (("mistral", "zai"), ("zai", "mistral")),
+)
+def test_mistral_and_zai_catalogues_keep_same_public_model_independent(
+    registration_order,
+):
+    public_model = "shared-public-model"
+    mistral_model_data = _model_data(
+        tiers=[
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": 3.0,
+                "output_per_1m": 7.0,
+            }
+        ]
+    )
+    mistral_model_data["limits"] = {
+        "context_window_tokens": 100_000,
+        "max_output_tokens": 10_000,
+    }
+    mistral_model_data["reasoning_capability"] = {
+        "allowed_values": ["low", "high"],
+    }
+    zai_model_data = _model_data(
+        tiers=[
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": 11.0,
+                "output_per_1m": 13.0,
+            }
+        ]
+    )
+    zai_model_data["limits"] = {
+        "context_window_tokens": 200_000,
+        "max_output_tokens": 20_000,
+    }
+    zai_model_data["reasoning_capability"] = {
+        "min_budget_tokens": 128,
+        "max_budget_tokens": 4_096,
+    }
+    metadata_by_provider = {
+        "mistral": OrganizationModelMetadata(
+            organization="mistral",
+            organization_data={"models": {public_model: mistral_model_data}},
+        ),
+        "zai": OrganizationModelMetadata(
+            organization="zai",
+            organization_data={"models": {public_model: zai_model_data}},
+        ),
+    }
+    global_organizations = LLM_REGISTRY.organizations
+    global_organizations_before = dict(global_organizations)
+    registry = RegistrySpec()
+
+    for provider in registration_order:
+        assert registry.register_organization_metadata(
+            metadata_by_provider[provider]
+        ) is True
+
+    mistral_model = resolve_model_spec(registry, "mistral", public_model)
+    zai_model = resolve_model_spec(registry, "zai", public_model)
+    assert mistral_model is not None
+    assert zai_model is not None
+    assert mistral_model.name == zai_model.name == public_model
+    assert mistral_model.limits.context_window_tokens == 100_000
+    assert zai_model.limits.context_window_tokens == 200_000
+    assert mistral_model.reasoning_capability.allowed_values == ("low", "high")
+    assert zai_model.reasoning_capability.min_budget_tokens == 128
+    assert mistral_model.pricing_tiers.tiers[0].in_per_token == pytest.approx(
+        3.0 / 1_000_000
+    )
+    assert zai_model.pricing_tiers.tiers[0].in_per_token == pytest.approx(
+        11.0 / 1_000_000
+    )
+    assert LLM_REGISTRY.organizations is global_organizations
+    assert LLM_REGISTRY.organizations == global_organizations_before
+
+
+@pytest.mark.unit
 def test_organization_loads_optional_metered_operations_separately_from_models():
     organization = OrganizationSpec.from_dict(
         "test-organization",
