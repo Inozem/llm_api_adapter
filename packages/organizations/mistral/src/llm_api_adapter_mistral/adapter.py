@@ -851,7 +851,15 @@ class MistralAdapter(LLMAdapterBase):
         reasoning_level: Optional[str | int],
     ) -> Optional[str]:
         if reasoning_level is None:
-            return "none" if self.is_reasoning else None
+            capability = (
+                self.model_spec.reasoning_capability
+                if self.model_spec is not None
+                else None
+            )
+            allowed_values = getattr(capability, "allowed_values", None)
+            if allowed_values:
+                return allowed_values[0]
+            return None
         provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
         if provider_value is None:
             return None
