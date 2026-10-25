@@ -796,7 +796,12 @@ class MistralAdapter(LLMAdapterBase):
         json_schema: Optional[dict],
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": (
+                self.model_spec.provider_model
+                if self.model_spec is not None
+                and self.model_spec.provider_model is not None
+                else self.model
+            ),
             "messages": self._to_mistral_messages(messages),
             "max_tokens": max_tokens,
             "temperature": temperature,
