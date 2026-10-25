@@ -20,6 +20,7 @@ from src.llm_api_adapter.llm_registry.llm_registry import (
     RegistrySpec,
     resolve_model_spec,
 )
+from src.llm_api_adapter.llm_registry.request_rules import RequestRuleRegistry
 from src.llm_api_adapter.organization_registry import (
     ORGANIZATION_PLUGIN_API_VERSION,
     ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP,
@@ -110,6 +111,64 @@ def _test_plugin(
         register=register,
         model_metadata=model_metadata,
     )
+
+
+@pytest.mark.unit
+def test_organization_model_metadata_preserves_legacy_positional_fields():
+    class PositionalRequestRuleRegistry(RequestRuleRegistry):
+        organization_name = "positional-test-organization"
+
+    request_rule_registry = PositionalRequestRuleRegistry()
+    organization_data = {
+        "currency": "USD",
+        "models": {
+            "test-model": {
+                "limits": {
+                    "context_window_tokens": 128_000,
+                    "max_output_tokens": 16_384,
+                },
+                "pricing_tiers": [
+                    {
+                        "up_to_prompt_tokens": None,
+                        "input_per_1m": 1.0,
+                        "output_per_1m": 2.0,
+                    }
+                ],
+            }
+        },
+    }
+    metadata = OrganizationModelMetadata(
+        "positional-test-organization",
+        organization_data,
+        request_rule_registry,
+    )
+
+    assert metadata.organization == "positional-test-organization"
+    assert metadata.organization_data is organization_data
+    assert metadata.request_rule_registry is request_rule_registry
+    assert metadata.model_routes == ()
+
+    registry = RegistrySpec()
+    assert registry.register_organization_metadata(metadata) is True
+    model = resolve_model_spec(registry, "positional-test-organization", "test-model")
+    assert model is not None
+    assert model.name == "test-model"
+
+
+@pytest.mark.unit
+def test_organization_plugin_api_v1_public_shape_remains_compatible():
+    assert ORGANIZATION_PLUGIN_API_VERSION == 1
+    register = lambda registry: None
+    plugin = OrganizationPlugin(api_version=1, register=register)
+
+    assert tuple(OrganizationPlugin.__dataclass_fields__) == (
+        "api_version",
+        "register",
+        "model_metadata",
+    )
+    assert plugin.api_version == 1
+    assert plugin.register is register
+    assert plugin.model_metadata is None
 
 
 @pytest.fixture
@@ -263,6 +322,8 @@ def test_legacy_third_party_plugin_without_profile_still_serves_requests(
         model="test-model",
         api_key="test-key",
     )
+    assert adapter.model_spec == model
+    assert adapter.pricing == model.pricing_tiers
     assert adapter.chat(messages=[]) == {"response": "ok"}
     assert entry_point.load_calls == 1
 
@@ -669,6 +730,48 @@ def test_plugin_failures_are_recorded_without_breaking_registered_organizations(
         "DuplicateServiceProviderError",
     ]
     assert broken_entry_point.load_calls == duplicate_entry_point.load_calls == 1
+
+
+@pytest.mark.unit
+def test_model_metadata_remains_registered_when_plugin_register_callback_fails(
+    monkeypatch,
+    isolated_plugin_runtime,
+):
+    registry, discovery, model_registry = isolated_plugin_runtime
+    organization = "metadata-before-register-failure"
+    metadata = _organization_model_metadata(organization)
+
+    def fail_after_metadata_registration(service_provider_registry):
+        assert resolve_model_spec(model_registry, organization, "test-model") is not None
+        raise RuntimeError("register callback failed")
+
+    entry_point = FakeEntryPoint(
+        name=organization,
+        value="failing_plugin.plugin:PLUGIN",
+        plugin=OrganizationPlugin(
+            api_version=ORGANIZATION_PLUGIN_API_VERSION,
+            register=fail_after_metadata_registration,
+            model_metadata=metadata,
+        ),
+    )
+    monkeypatch.setattr(
+        registry_module,
+        "entry_points",
+        lambda *, group: (entry_point,),
+    )
+
+    discovery.discover(registry, model_registry=model_registry)
+
+    model = resolve_model_spec(model_registry, organization, "test-model")
+    assert model is not None
+    assert registry.get(organization) is None
+    assert len(discovery.failures) == 1
+    failure = discovery.failures[0]
+    assert failure.entry_point_name == organization
+    assert failure.entry_point_value == "failing_plugin.plugin:PLUGIN"
+    assert failure.error_type == "RuntimeError"
+    assert failure.message == "register callback failed"
+    assert entry_point.load_calls == 1
 
 
 @pytest.mark.unit

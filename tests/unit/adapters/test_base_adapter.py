@@ -92,6 +92,9 @@ def test_snapshot_model_uses_its_registered_base_metadata_without_warning():
     assert adapter.model == "gpt-5-2025-08-07"
     assert adapter.model_spec is not None
     assert adapter.model_spec.name == "gpt-5"
+    assert adapter.model_spec is base_module.LLM_REGISTRY.organizations[
+        "openai"
+    ].models["gpt-5"]
     assert adapter.pricing is not None
     assert adapter.is_reasoning is True
 
@@ -191,6 +194,13 @@ def test_pricing_copied_from_registry(monkeypatch):
     adapter_instance = _TestAdapter(company="acme", api_key="k", model="m-pro")
     assert adapter_instance.pricing == base_pricing
     assert adapter_instance.pricing is not base_pricing
+
+    adapter_instance.pricing.set_in_per_1m(3.0)
+
+    assert adapter_instance.pricing.tiers[0].in_per_token == pytest.approx(
+        3.0 / 1_000_000
+    )
+    assert base_pricing.tiers[0].in_per_token == pytest.approx(1.0 / 1_000_000)
 
 
 @pytest.mark.unit
