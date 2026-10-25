@@ -41,13 +41,11 @@ specify init --here --force --integration codex --script ps
 ```
 
 Keep feature artifacts under `specs/` locally. Include relevant scope and
-validation results in pull requests. Commit the
-[constitution](.specify/memory/constitution.md), the
-[living architecture](.specify/memory/architecture.md), and the project-specific
-`.agents/skills/speckit-taskstoissues/SKILL.md`. Other generated `.specify/`
-files and bundled Spec Kit agent skills stay local. The
-`speckit-taskstoissues` skill requires a locally initialized `.specify/`
-directory and a feature `tasks.md` before it can create GitHub issues.
+validation results in pull requests. Generated Spec Kit scripts, templates and
+bundled agent skills stay local; the project-specific
+`.agents/skills/speckit-taskstoissues/SKILL.md` remains versioned. That skill
+requires a locally initialized `.specify/` directory and a feature `tasks.md`
+before it can create GitHub issues.
 
 ## Deterministic test suite
 
@@ -231,9 +229,18 @@ Only after the staging pull request is merged does the [dev release workflow](.g
 
 ## Registry verification
 
-The [project constitution](.specify/memory/constitution.md) defines the shared
-baseline and exception policy. For every registry-data update, verify the
-model identifier, context window, output-limit meaning, tier boundaries, reasoning
+### Model developer and API provider
+
+`organization` identifies the model developer. `service_provider` selects the API integration
+and model profile; it defaults to `organization` when omitted. Review and test that profiles,
+credentials and evidence follow the selected provider for native and hosted models alike.
+Preserve public model identity and omitted-provider compatibility, and never borrow another
+provider's profile when the selected provider's metadata is missing.
+
+### Verified model facts
+
+For every registry-data update, verify the model identifier, context window,
+output-limit meaning, tier boundaries, reasoning
 capabilities, request rules, exceptions, aliases, and deprecation status against
 the provider's official documentation. Record source links, verification date,
 and applicable API, region, currency, and pricing context in review evidence.
@@ -303,9 +310,9 @@ cache component, and any tier or dispatch-time conditions. Unreported counts
 remain unknown unless an applicable documented provider contract establishes a
 default; invalid or contradictory counts and unverified rates remain unknown.
 An explicitly reported zero remains zero. Verify provider defaults against
-official API and schema sources, add deterministic coverage for changed
-semantics and preserved unknown cases, and follow the technical
-[Usage and Cost Boundary](.specify/memory/architecture.md#usage-and-cost-boundary).
+official API and schema sources and add deterministic coverage for changed
+semantics and preserved unknown cases. Keep non-token charges separate and leave
+calculated totals unavailable when an incurred component cannot be fully priced.
 Do not activate or record opt-in cache controls, selectable TTLs, or storage
 rates. See [usage and pricing](README.md#token-usage-and-pricing) for incomplete
 cost behavior.
@@ -350,7 +357,7 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
 - Keep README focused on the public package contract, installation, and user-facing examples.
 - Keep version-specific changes and migration notes in GitHub release descriptions.
 - Keep contributor setup, test commands, provider-key rules, CI details, and release procedures in this guide.
-- Update the constitution when the provider-neutral baseline changes, and update the relevant compatibility and architecture documentation when public behavior, provider mappings, or test workflows change.
+- When public behavior, provider mappings or test workflows change, update the relevant README, package guides and contributor instructions alongside the tests.
 - When structured-output behavior changes, update the README's portable-profile contract, the organization-package READMEs, and deterministic conformance tests together. Do not claim arbitrary JSON Schema compatibility.
 - Examples must not require credentials merely to import. Live calls should be explicit and documented.
 - When code or project artifacts change, run `graphify update .` and review the resulting diff.
