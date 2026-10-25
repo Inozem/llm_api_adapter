@@ -428,6 +428,7 @@ class ModelSpec:
     is_adaptive_thinking: bool = False
     request_rules: RequestRules = RequestRules()
     capability_exceptions: Optional[tuple[CapabilityException, ...]] = None
+    provider_model: Optional[str] = None
 
     @property
     def is_reasoning(self) -> bool:
@@ -474,6 +475,13 @@ class ModelSpec:
             if "capability_exceptions" in data
             else None
         )
+        provider_model = None
+        if "provider_model" in data:
+            provider_model = data["provider_model"]
+            if not isinstance(provider_model, str) or not provider_model:
+                raise ValueError(
+                    f"Model '{name}' provider_model must be a non-empty string"
+                )
         is_adaptive_thinking = data.get("is_adaptive_thinking", False)
         if not isinstance(is_adaptive_thinking, bool):
             raise ValueError(
@@ -517,6 +525,7 @@ class ModelSpec:
             is_adaptive_thinking=is_adaptive_thinking,
             request_rules=request_rules,
             capability_exceptions=capability_exceptions,
+            provider_model=provider_model,
         )
 
 
