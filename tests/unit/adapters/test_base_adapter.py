@@ -21,7 +21,12 @@ from src.llm_api_adapter.models.messages.chat_message import (
 )
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
-from src.llm_api_adapter.llm_registry.llm_registry import Pricing
+from src.llm_api_adapter.llm_registry.llm_registry import (
+    OrganizationModelMetadata,
+    Pricing,
+    RegistrySpec,
+    resolve_model_spec,
+)
 from src.llm_api_adapter.llms.streaming import (
     StreamChunkBuffer,
     StreamReasoningCollector,
@@ -78,6 +83,37 @@ def make_tool(name="weather", schema=None, description="desc"):
     return ToolSpec(name=name, description=description, json_schema=schema)
 
 
+def _provider_model_metadata(
+    organization,
+    model,
+    *,
+    context_tokens,
+    input_per_1m,
+    output_per_1m,
+    reasoning_values,
+    adaptive_thinking=False,
+):
+    model_data = {
+        "limits": {
+            "context_window_tokens": context_tokens,
+            "max_output_tokens": context_tokens // 4,
+        },
+        "pricing_tiers": [
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": input_per_1m,
+                "output_per_1m": output_per_1m,
+            }
+        ],
+        "reasoning_capability": {"allowed_values": reasoning_values},
+        "is_adaptive_thinking": adaptive_thinking,
+    }
+    return OrganizationModelMetadata(
+        organization=organization,
+        organization_data={"models": {model: model_data}},
+    )
+
+
 @pytest.mark.unit
 def test_snapshot_model_uses_its_registered_base_metadata_without_warning():
     with warnings.catch_warnings(record=True) as caught:
@@ -89,11 +125,144 @@ def test_snapshot_model_uses_its_registered_base_metadata_without_warning():
         )
 
     assert caught == []
+    assert adapter.company == "openai"
     assert adapter.model == "gpt-5-2025-08-07"
+    assert adapter.service_provider == "openai"
     assert adapter.model_spec is not None
     assert adapter.model_spec.name == "gpt-5"
     assert adapter.pricing is not None
     assert adapter.is_reasoning is True
+
+
+@pytest.mark.unit
+def test_service_provider_defaults_to_company_for_model_selection(monkeypatch):
+    registry = RegistrySpec()
+    registry.register_organization_metadata(
+        _provider_model_metadata(
+            "synthetic-developer",
+            "shared-model",
+            context_tokens=100_000,
+            input_per_1m=3.0,
+            output_per_1m=5.0,
+            reasoning_values=["low"],
+            adaptive_thinking=True,
+        )
+    )
+    monkeypatch.setattr(base_module, "LLM_REGISTRY", registry)
+    expected_model = resolve_model_spec(registry, "synthetic-developer", "shared-model")
+
+    adapter = _TestAdapter(
+        company="synthetic-developer",
+        api_key="test-key",
+        model="shared-model",
+    )
+
+    assert adapter.company == "synthetic-developer"
+    assert adapter.service_provider == "synthetic-developer"
+    assert adapter.model == "shared-model"
+    assert adapter.model_spec is expected_model
+    assert adapter.model_spec.limits.context_window_tokens == 100_000
+    assert adapter.is_reasoning is True
+    assert adapter.is_adaptive_thinking is True
+
+
+@pytest.mark.unit
+def test_explicit_service_provider_selects_its_same_named_model_profile(monkeypatch):
+    registry = RegistrySpec()
+    registry.register_organization_metadata(
+        _provider_model_metadata(
+            "synthetic-developer",
+            "shared-model",
+            context_tokens=100_000,
+            input_per_1m=3.0,
+            output_per_1m=5.0,
+            reasoning_values=["low"],
+            adaptive_thinking=True,
+        )
+    )
+    registry.register_organization_metadata(
+        _provider_model_metadata(
+            "synthetic-provider",
+            "shared-model",
+            context_tokens=200_000,
+            input_per_1m=11.0,
+            output_per_1m=13.0,
+            reasoning_values=["high"],
+        )
+    )
+    monkeypatch.setattr(base_module, "LLM_REGISTRY", registry)
+    developer_model = resolve_model_spec(registry, "synthetic-developer", "shared-model")
+    provider_model = resolve_model_spec(registry, "synthetic-provider", "shared-model")
+
+    adapter = _TestAdapter(
+        company="synthetic-developer",
+        service_provider="synthetic-provider",
+        api_key="test-key",
+        model="shared-model",
+    )
+
+    assert adapter.company == "synthetic-developer"
+    assert adapter.service_provider == "synthetic-provider"
+    assert adapter.model == "shared-model"
+    assert adapter.model_spec is provider_model
+    assert adapter.model_spec is not developer_model
+    assert adapter.model_spec.limits.context_window_tokens == 200_000
+    assert adapter.model_spec.reasoning_capability.allowed_values == ("high",)
+    assert adapter.is_reasoning is True
+    assert adapter.is_adaptive_thinking is False
+    assert adapter.pricing is not provider_model.pricing_tiers
+    assert adapter.pricing.tiers[0].in_per_token == pytest.approx(11.0 / 1_000_000)
+
+    adapter.pricing.set_in_per_1m(17.0)
+    assert provider_model.pricing_tiers.tiers[0].in_per_token == pytest.approx(
+        11.0 / 1_000_000
+    )
+    assert developer_model.pricing_tiers.tiers[0].in_per_token == pytest.approx(
+        3.0 / 1_000_000
+    )
+
+
+@pytest.mark.unit
+def test_explicit_service_provider_does_not_fall_back_to_same_named_company_model(
+    monkeypatch,
+):
+    registry = RegistrySpec()
+    registry.register_organization_metadata(
+        _provider_model_metadata(
+            "synthetic-developer",
+            "shared-model",
+            context_tokens=100_000,
+            input_per_1m=3.0,
+            output_per_1m=5.0,
+            reasoning_values=["low"],
+            adaptive_thinking=True,
+        )
+    )
+    registry.register_organization_metadata(
+        _provider_model_metadata(
+            "synthetic-provider",
+            "provider-only-model",
+            context_tokens=200_000,
+            input_per_1m=11.0,
+            output_per_1m=13.0,
+            reasoning_values=["high"],
+        )
+    )
+    monkeypatch.setattr(base_module, "LLM_REGISTRY", registry)
+
+    with pytest.warns(UserWarning):
+        adapter = _TestAdapter(
+            company="synthetic-developer",
+            service_provider="synthetic-provider",
+            api_key="test-key",
+            model="shared-model",
+        )
+
+    assert adapter.company == "synthetic-developer"
+    assert adapter.service_provider == "synthetic-provider"
+    assert adapter.model == "shared-model"
+    assert adapter.model_spec is None
+    assert adapter.pricing is None
 
 
 @pytest.mark.parametrize(

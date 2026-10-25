@@ -112,6 +112,16 @@ def _test_plugin(
     )
 
 
+@pytest.mark.unit
+def test_organization_model_metadata_fields_and_plugin_api_v1_remain_compatible():
+    assert tuple(OrganizationModelMetadata.__dataclass_fields__) == (
+        "organization",
+        "organization_data",
+        "request_rule_registry",
+    )
+    assert ORGANIZATION_PLUGIN_API_VERSION == 1
+
+
 @pytest.fixture
 def isolated_plugin_runtime(monkeypatch):
     registry = ServiceProviderRegistry({"anthropic": AnthropicAdapter})
@@ -669,6 +679,48 @@ def test_plugin_failures_are_recorded_without_breaking_registered_organizations(
         "DuplicateServiceProviderError",
     ]
     assert broken_entry_point.load_calls == duplicate_entry_point.load_calls == 1
+
+
+@pytest.mark.unit
+def test_metadata_is_registered_before_failing_plugin_callback(
+    monkeypatch,
+    isolated_plugin_runtime,
+):
+    registry, discovery, model_registry = isolated_plugin_runtime
+    organization = "metadata-before-callback-failure"
+    metadata = _organization_model_metadata(organization)
+
+    def fail_after_metadata_registration(service_provider_registry):
+        assert resolve_model_spec(model_registry, organization, "test-model") is not None
+        raise RuntimeError("register callback failed")
+
+    entry_point = FakeEntryPoint(
+        name=organization,
+        value="failing_plugin.plugin:PLUGIN",
+        plugin=OrganizationPlugin(
+            api_version=ORGANIZATION_PLUGIN_API_VERSION,
+            register=fail_after_metadata_registration,
+            model_metadata=metadata,
+        ),
+    )
+    monkeypatch.setattr(
+        registry_module,
+        "entry_points",
+        lambda *, group: (entry_point,),
+    )
+
+    discovery.discover(registry, model_registry=model_registry)
+
+    model = resolve_model_spec(model_registry, organization, "test-model")
+    assert model is not None
+    assert registry.get(organization) is None
+    assert len(discovery.failures) == 1
+    failure = discovery.failures[0]
+    assert failure.entry_point_name == organization
+    assert failure.entry_point_value == "failing_plugin.plugin:PLUGIN"
+    assert failure.error_type == "RuntimeError"
+    assert failure.message == "register callback failed"
+    assert entry_point.load_calls == 1
 
 
 @pytest.mark.unit
