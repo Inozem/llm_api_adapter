@@ -224,7 +224,7 @@ def test_explicit_service_provider_selects_its_same_named_model_profile(monkeypa
 
 @pytest.mark.unit
 def test_explicit_service_provider_does_not_fall_back_to_same_named_company_model(
-    monkeypatch,
+    monkeypatch, caplog,
 ):
     registry = RegistrySpec()
     registry.register_organization_metadata(
@@ -250,7 +250,8 @@ def test_explicit_service_provider_does_not_fall_back_to_same_named_company_mode
     )
     monkeypatch.setattr(base_module, "LLM_REGISTRY", registry)
 
-    with pytest.warns(UserWarning):
+    caplog.set_level("INFO")
+    with pytest.warns(UserWarning) as init_warnings:
         adapter = _TestAdapter(
             company="synthetic-developer",
             service_provider="synthetic-provider",
@@ -263,6 +264,24 @@ def test_explicit_service_provider_does_not_fall_back_to_same_named_company_mode
     assert adapter.model == "shared-model"
     assert adapter.model_spec is None
     assert adapter.pricing is None
+    assert adapter.is_reasoning is False
+    assert adapter.is_adaptive_thinking is False
+    init_warning = str(init_warnings[0].message)
+    assert "synthetic-provider" in init_warning
+    assert "synthetic-developer" not in init_warning
+    assert "Unverified model used: shared-model" in caplog.text
+    assert "provider synthetic-provider" in caplog.text
+
+    with pytest.warns(UserWarning) as reasoning_warnings:
+        resolution = adapter._resolve_reasoning_level("high")
+
+    assert resolution.reason == "unverified_model"
+    reasoning_warning = str(reasoning_warnings[0].message)
+    assert "synthetic-provider" in reasoning_warning
+    assert "reasoning is disabled" in reasoning_warning
+    assert "synthetic-developer" not in reasoning_warning
+    assert "synthetic-provider" in caplog.text
+    assert "synthetic-developer" not in caplog.text
 
 
 @pytest.mark.parametrize(
