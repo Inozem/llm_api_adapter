@@ -145,6 +145,52 @@ def test_hosted_and_direct_glm_flash_use_provider_owned_pdf_evidence():
 
 
 @pytest.mark.unit
+def test_hosted_flash_uses_mistral_reasoning_route_and_keeps_shared_routes():
+    hosted_model = next(
+        model
+        for owner, model in first_party_model_profiles()
+        if owner == "mistral" and model.name == "glm-5.3-flash"
+    )
+    direct_model = next(
+        model
+        for owner, model in first_party_model_profiles()
+        if owner == "zai" and model.name == "glm-5.3-flash"
+    )
+    capabilities = (
+        ModelCapability("reasoning_control", "model-dependent"),
+        ModelCapability("sync_chat", "model-dependent"),
+        ModelCapability("facade_discovery", "always-on"),
+    )
+
+    hosted = select_model_scenarios(
+        organization="zai",
+        service_provider="mistral",
+        model=hosted_model,
+        capabilities=capabilities,
+    )
+    direct = select_model_scenarios(
+        organization="zai",
+        model=direct_model,
+        capabilities=capabilities,
+    )
+
+    assert hosted == (
+        EXCEPTION_SCENARIOS[
+            ("reasoning_control", "none_falls_back_to_minimum", "mistral")
+        ],
+        BASELINE_SCENARIOS["sync_chat"],
+        "tests/unit/test_organization_profile_compatibility.py::"
+        "test_profile_parsing_preserves_registry_resolution_plugin_discovery_and_facade",
+    )
+    assert direct == (
+        BASELINE_SCENARIOS["reasoning_control"],
+        BASELINE_SCENARIOS["sync_chat"],
+        "tests/unit/test_organization_profile_compatibility.py::"
+        "test_profile_parsing_preserves_registry_resolution_plugin_discovery_and_facade",
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("model", "baselines", "replacements", "message"),
     [
