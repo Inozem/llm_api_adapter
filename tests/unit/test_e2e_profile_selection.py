@@ -434,6 +434,46 @@ def test_direct_zai_enumeration_and_tool_choice_keep_zai_provider_by_default(
 
 
 @pytest.mark.unit
+def test_hosted_adapter_uses_developer_identity_and_provider_profile(monkeypatch):
+    harness = importlib.import_module("tests.e2e.harness")
+    constructor = Mock()
+    monkeypatch.setattr(harness, "UniversalLLMAPIAdapter", constructor)
+    profile = {
+        "name": "mistral",
+        "api_key": "mistral-test-key",
+        "operation_kwargs": {"max_retries": 3},
+    }
+
+    wrapped = harness.create_e2e_adapter(
+        profile,
+        "glm-5.3-flash",
+        organization_name="zai",
+        service_provider="mistral",
+    )
+
+    constructor.assert_called_once_with(
+        organization="zai",
+        service_provider="mistral",
+        model="glm-5.3-flash",
+        api_key="mistral-test-key",
+        transport="requests",
+    )
+    assert wrapped._operation_kwargs == {"max_retries": 3}
+
+    constructor.reset_mock()
+    harness.create_e2e_adapter(
+        organization=profile,
+        model="glm-5.3-flash",
+    )
+    constructor.assert_called_once_with(
+        organization="mistral",
+        model="glm-5.3-flash",
+        api_key="mistral-test-key",
+        transport="requests",
+    )
+
+
+@pytest.mark.unit
 def test_same_developer_model_selects_routes_separately_by_provider(
     e2e_collection,
     monkeypatch,

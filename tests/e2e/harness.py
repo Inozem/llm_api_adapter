@@ -104,14 +104,24 @@ class ProfiledE2EAdapter:
         return getattr(self._adapter, name)
 
 
-def create_e2e_adapter(organization, model: str, *, transport: str = "requests"):
+def create_e2e_adapter(
+    organization,
+    model: str,
+    *,
+    transport: str = "requests",
+    organization_name: str | None = None,
+    service_provider: str | None = None,
+):
     """Create a Universal facade with the profile's operation kwargs."""
-    adapter = UniversalLLMAPIAdapter(
-        organization=organization["name"],
-        model=model,
-        api_key=organization["api_key"],
-        transport=transport,
-    )
+    adapter_kwargs = {
+        "organization": organization_name or organization["name"],
+        "model": model,
+        "api_key": organization["api_key"],
+        "transport": transport,
+    }
+    if service_provider is not None:
+        adapter_kwargs["service_provider"] = service_provider
+    adapter = UniversalLLMAPIAdapter(**adapter_kwargs)
     return ProfiledE2EAdapter(
         adapter,
         operation_kwargs=organization["operation_kwargs"],
@@ -122,9 +132,12 @@ def select_tool_choice_for_model(
     organization_name: str,
     model_name: str,
     tool_name: str,
+    *,
+    service_provider: str | None = None,
 ) -> str:
     """Select the strongest portable tool-choice mode for one model."""
-    model_spec = LLM_REGISTRY.organizations[organization_name].models[model_name]
+    provider_name = service_provider or organization_name
+    model_spec = LLM_REGISTRY.organizations[provider_name].models[model_name]
     allowed_modes = model_spec.request_rules.allowed_tool_choice_modes
     if allowed_modes is None or "tool" in allowed_modes:
         return tool_name
@@ -133,7 +146,7 @@ def select_tool_choice_for_model(
     if "auto" in allowed_modes:
         return "auto"
     raise pytest.UsageError(
-        f"{organization_name}/{model_name} has no tool-call mode enabled "
+        f"{provider_name}/{model_name} has no tool-call mode enabled "
         "in its registered request rules"
     )
 
