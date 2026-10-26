@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import importlib
 from pathlib import Path
 import subprocess
@@ -238,6 +238,8 @@ def test_hosted_flash_uses_mistral_lane_and_developer_mapping(e2e_collection, mo
     module, package_lookup, _ = e2e_collection
     profile = module.get_e2e_organization_profile("mistral")
     flash = _model("glm-5.3-flash")
+    package_lookup.side_effect = None
+    package_lookup.return_value = "1.0"
     monkeypatch.setattr(module, "_E2E_PROFILES", (profile,))
     monkeypatch.setattr(module.ORGANIZATION_PLUGIN_DISCOVERY, "discover", Mock())
     module.e2e_model_case_parameters.cache_clear()
@@ -265,11 +267,13 @@ def test_hosted_flash_uses_mistral_lane_and_developer_mapping(e2e_collection, mo
         == module.KNOWN_ORGANIZATION_PACKAGES["mistral"].distribution
     )
     assert profile.api_key_is_required is True
-    assert profile.model_organizations["glm-5.3-flash"] == "zai"
+    assert ("glm-5.3-flash", "zai") in profile.model_organizations
     assert "mistral-glm-5.3-flash" in {parameter.id for parameter in parameters}
     assert not any(parameter.id.startswith("zai-") for parameter in parameters)
     package_lookup.assert_called_once_with(profile.distribution)
 
+    package_lookup.side_effect = None
+    package_lookup.return_value = "1.0"
     monkeypatch.setattr(
         module,
         "API_KEY_ENV",
@@ -286,6 +290,85 @@ def test_hosted_flash_uses_mistral_lane_and_developer_mapping(e2e_collection, mo
     assert [organization["name"] for organization in organizations] == ["mistral"]
     assert organizations[0]["api_key"] == "mistral-test-key"
     assert package_lookup.call_args_list[-1].args == (profile.distribution,)
+    monkeypatch.setattr(module, "resolve_e2e_organizations", lambda _: organizations)
+    assert module.e2e_model_organization.__wrapped__(hosted) is organizations[0]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("mappings", "expected_error"),
+    [
+        ((("not-registered", "zai"),), "unregistered provider model"),
+        ((("registered", ""),), "non-empty string"),
+        (
+            (("registered", "zai"), ("registered", "other")),
+            "Duplicate model organization mapping",
+        ),
+    ],
+    ids=("unregistered-model", "empty-developer", "duplicate-model"),
+)
+def test_provider_model_mappings_are_validated_offline(
+    e2e_collection,
+    monkeypatch,
+    mappings,
+    expected_error,
+):
+    module, package_lookup, _ = e2e_collection
+    package_lookup.side_effect = None
+    package_lookup.return_value = "1.0"
+    profile = replace(
+        module.get_e2e_organization_profile("mistral"),
+        model_organizations=mappings,
+    )
+    registered = _model("registered")
+    flash = _model("glm-5.3-flash")
+    monkeypatch.setattr(module.ORGANIZATION_PLUGIN_DISCOVERY, "discover", Mock())
+    monkeypatch.setattr(module, "_E2E_PROFILES", (profile,))
+    monkeypatch.setattr(
+        module,
+        "LLM_REGISTRY",
+        SimpleNamespace(
+            organizations={
+                "mistral": SimpleNamespace(
+                    models={
+                        flash.name: flash,
+                        registered.name: registered,
+                    }
+                )
+            }
+        ),
+    )
+    module.e2e_model_case_parameters.cache_clear()
+
+    with pytest.raises(pytest.UsageError, match=expected_error):
+        module.e2e_model_case_parameters(service_provider="mistral")
+
+
+@pytest.mark.unit
+def test_missing_provider_package_keeps_mapped_model_skip_placeholder(
+    e2e_collection,
+    monkeypatch,
+):
+    module, package_lookup, _ = e2e_collection
+    profile = module.get_e2e_organization_profile("mistral")
+    monkeypatch.setattr(module.ORGANIZATION_PLUGIN_DISCOVERY, "discover", Mock())
+    monkeypatch.setattr(module, "_E2E_PROFILES", (profile,))
+    monkeypatch.setattr(
+        module,
+        "LLM_REGISTRY",
+        SimpleNamespace(organizations={}),
+    )
+    package_lookup.side_effect = module.PackageNotFoundError(profile.distribution)
+    module.e2e_model_case_parameters.cache_clear()
+
+    parameters = module.e2e_model_case_parameters(service_provider="mistral")
+
+    assert len(parameters) == 1
+    assert parameters[0].id == "mistral-package-not-installed"
+    case = parameters[0].values[0]
+    assert case.model_spec is None
+    assert case.service_provider == "mistral"
+    assert any(mark.name == "skip" for mark in parameters[0].marks)
 
 
 @pytest.mark.unit
@@ -404,6 +487,38 @@ def test_same_developer_model_selects_routes_separately_by_provider(
         ("zai", "glm-5.3-flash", "mistral"),
         ("zai", "glm-5.3-flash", None),
     ]
+
+
+@pytest.mark.unit
+def test_native_model_case_calls_legacy_selector_without_provider_keyword(
+    e2e_collection,
+    monkeypatch,
+):
+    module, _, _ = e2e_collection
+    profile = module.get_e2e_organization_profile("zai")
+    model = _model("glm-5.3-flash")
+    case = module.E2EModelCase(
+        organization="zai",
+        model_spec=model,
+        profile=profile,
+    )
+    item = _Item(
+        f"{SYNC_CHAT}[zai-{model.name}]",
+        profile,
+        model,
+        markers=(pytest.mark.e2e_capability(E2E_SCENARIO_CAPABILITIES[0].id),),
+        model_case=case,
+    )
+    calls = []
+
+    def select(*, organization, model, capabilities):
+        calls.append((organization, model.name, capabilities))
+        return (SYNC_CHAT,)
+
+    monkeypatch.setattr(module, "select_model_scenarios", select)
+
+    assert _collect(module, [item]) == [item]
+    assert calls == [("zai", model.name, (E2E_SCENARIO_CAPABILITIES[0],))]
 
 
 @pytest.mark.unit
