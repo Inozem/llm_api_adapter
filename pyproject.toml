@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-api-adapter"
-version = "0.9.9"
+version = "0.9.10"
 description = "Lightweight multi-provider LLM API adapter for Python — OpenAI, Anthropic, Google, Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,7 +28,7 @@ dependencies = ["requests>=2.32"]
 async = ["httpx>=0.28"]
 httpx = ["httpx>=0.28"]
 kimi = ["llm-api-adapter-kimi>=0.1.0,<0.2.0"]
-mistral = ["llm-api-adapter-mistral>=0.1.1,<0.2.0"]
+mistral = ["llm-api-adapter-mistral>=0.1.5,<0.2.0"]
 qwen = ["llm-api-adapter-qwen>=0.1.0,<0.2.0"]
 xai = ["llm-api-adapter-xai>=0.1.1,<0.2.0"]
 deepseek = ["llm-api-adapter-deepseek>=0.1.0,<0.2.0"]
