@@ -138,6 +138,42 @@ placeholder. Collection must not require API keys or operation credentials such
 as `QWEN_WORKSPACE_ID`, construct a live client, or send requests. A successful
 collection checks selection and imports; it does not prove live provider behavior.
 
+For Mistral, collect both shared and package-local scenarios with the explicit
+root directory:
+
+```bash
+python -m pytest --collect-only -q --import-mode=importlib -m e2e_mistral --rootdir=. tests/e2e packages/organizations/mistral/tests/e2e
+```
+
+This credential-free command checks test selection and imports only; it does
+not exercise Mistral behavior.
+
+### Isolated provider-package wheel checks
+
+When a provider package has artifact-specific installation checks, build its
+wheel and the required Core or provider-package wheels. Install the exact wheel
+files into fresh environments outside the checkout, without editable installs.
+Test provider-only installation, and test joint installation when coexistence
+with another optional provider package is relevant. The checks should verify
+that imports resolve to the installed distributions and that required packages
+are present or absent as expected.
+
+Keep artifact-check modules outside pytest's default `test_*.py` and `*_test.py`
+discovery. Run each environment's dedicated checks from outside the checkout
+with the fresh environment's Python, isolated mode, importlib collection, and
+external pytest roots. For example, from the external check directory:
+
+```bash
+<fresh-env-python> -I -m pytest --import-mode=importlib \
+  --rootdir=<check-dir> --confcutdir=<check-dir> \
+  <check-dir>/<artifact-check-module.py>
+```
+
+Collection-only commands verify test selection and imports; they do not verify
+installed origins or package-presence boundaries. The current Mistral artifact
+check covers Mistral-only installation and coexistence with Z.ai, and its
+hosted route is verified with the Z.ai distribution absent.
+
 ### Authorized live runs
 
 The required environment variables are:
@@ -218,6 +254,14 @@ models that think by default still have room for visible text.
 For a release candidate, open a pull request to `main` first. After review and deterministic CI pass, the maintainer promotes that exact candidate commit through a staging pull request to `dev`. Record any explicitly authorized manual pre-merge E2E as a preflight with sanitized results; the final gate is the post-publish lane described below. The `dev` branch is protected by an active repository ruleset: direct updates are restricted, pull requests are required, and only repository administrators are on the bypass list. The [dev workflow](.github/workflows/ci-dev.yml) runs deterministic core tests with coverage. The Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai package workflows run their respective unit and mocked-integration suites on Python 3.10–3.14 when that package or code it uses changes.
 
 Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change selects the affected independent OpenAI, Anthropic, and Google E2E lanes. A shared Core dependency additionally runs the Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai lanes; a provider-specific built-in adapter, client, or registry change runs only that Core organization lane. Shared E2E infrastructure runs every applicable lane. Each core lane receives only its own API key; `e2e_builtin` is not used in CI. A Mistral, xAI, Qwen, Kimi, DeepSeek, or Z.ai package change publishes only that organization package and runs its corresponding lane. Each lane installs the exact TestPyPI versions through the matching optional extra, verifies plugin discovery when needed, then makes provider calls. Core and organization packages are independently versioned: use the versions declared in the root `pyproject.toml` and the changed package's `pyproject.toml`; release-specific target pairs belong in the relevant quickstart or release notes. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
+
+For the current Mistral lane, the post-publish exact-candidate gate runs only
+after the staging PR merges to protected `dev`. It uses the changed TestPyPI
+artifacts, provides only `MISTRAL_API_KEY`, asserts the Z.ai distribution is
+absent, and runs all applicable shared and package-local E2E scenarios for
+native Mistral models and hosted Flash. The existing workflow handles TestPyPI
+propagation and rejects older candidates. Do not add a Z.ai lane or run paid
+Mistral calls in PR matrices.
 
 ## Provider-key safety
 
