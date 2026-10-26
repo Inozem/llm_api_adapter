@@ -202,6 +202,34 @@ def test_profile_parsing_preserves_registry_resolution_plugin_discovery_and_faca
     assert transport.requests[0].payload["model"] == "mistral-small-2603"
 
 
+@pytest.mark.unit
+def test_facade_separates_model_developer_from_mistral_service_provider(
+    monkeypatch,
+    organization_package_registry,
+):
+    monkeypatch.setattr(
+        universal_adapter_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({"mistral": MistralAdapter}),
+    )
+
+    facade = UniversalLLMAPIAdapter(
+        organization="zai",
+        model="glm-5.3-flash",
+        api_key="mistral-test-key",
+        service_provider="mistral",
+    )
+
+    assert isinstance(facade.adapter, MistralAdapter)
+    assert facade.adapter.company == "zai"
+    assert facade.adapter.service_provider == "mistral"
+    assert facade.adapter.model_spec is resolve_model_spec(
+        organization_package_registry,
+        "mistral",
+        "glm-5.3-flash",
+    )
+
+
 def _mistral_response(content: str) -> dict[str, Any]:
     return {
         "model": "mistral-small-2603",
