@@ -194,6 +194,22 @@ def test_flash_confirmed_cache_reads_are_priced_once_and_reasoning_is_not_output
     assert result.cost_input == pytest.approx(800 * input_rate + 200 * cache_rate)
     assert result.cost_output == pytest.approx(500 * output_rate)
     assert result.cost_total == pytest.approx(0.000376)
+    assert result.currency == "USD"
+
+    # The routed profile belongs to Mistral even though the developer is Z.ai.
+    assert adapter.model_spec is mistral_runtime.organizations["mistral"].models[MODEL]
+    assert adapter.model_spec.pricing_tiers.currency == "USD"
+    assert adapter.adapter.pricing is not adapter.model_spec.pricing_tiers
+    second_adapter = new_adapter()
+    assert second_adapter.adapter.pricing is not adapter.adapter.pricing
+    adapter.adapter.pricing.set_in_per_1m(9.0)
+    assert rates(second_adapter) == pytest.approx((0.15e-6, 0.03e-6, 0.50e-6))
+    catalogue_tier = adapter.model_spec.pricing_tiers.tier_for_prompt_tokens(1000)
+    assert (
+        catalogue_tier.in_per_token,
+        catalogue_tier.cache_read_in_per_token,
+        catalogue_tier.out_per_token,
+    ) == pytest.approx((0.15e-6, 0.03e-6, 0.50e-6))
 
 
 @pytest.mark.integration
@@ -221,6 +237,7 @@ def test_flash_cache_usage_states_preserve_unknown_costs(
     assert result.usage.cached_tokens == expected_cache
     assert result.usage.total_tokens == 1500  # derived only from reported components
     assert result.cost_output == pytest.approx(500 * output_rate)
+    assert result.currency == "USD"
     if expected_cache is None:
         assert result.cost_input is None
         assert result.cost_total is None
@@ -388,6 +405,7 @@ def test_flash_stream_uses_final_event_usage_only_and_interruption_has_no_comple
     assert completed[0].usage.input_tokens == 1000
     assert completed[0].usage.output_tokens == 500
     assert completed[0].cost_total == pytest.approx(0.000376)
+    assert completed[0].currency == "USD"
 
     # A transport failure after partial output must not finalize a response or
     # pass incomplete usage as a completed result.
