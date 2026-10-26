@@ -494,7 +494,7 @@ class MistralAdapter(LLMAdapterBase):
     def _ocr_meter(self) -> Optional[MeteredOperationSpec]:
         meter = resolve_metered_operation_spec(
             base_adapter_module.LLM_REGISTRY,
-            self.company,
+            self.service_provider,
             "ocr",
         )
         if meter is None or meter.model != documents.MISTRAL_OCR_MODEL:

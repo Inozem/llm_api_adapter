@@ -228,7 +228,7 @@ def test_hosted_flash_unknown_page_counts_do_not_estimate_or_hide_known_costs(
     mistral_runtime, bad_usage_info, expected_known_quantities
 ):
     adapter = new_adapter()
-    payloads = [ocr_payload(2), ocr_payload()]
+    payloads = [ocr_payload(2), ocr_payload(...)]
     if bad_usage_info is not None:
         payloads[1]["usage_info"] = bad_usage_info
 
