@@ -64,15 +64,54 @@ for schema validation, parsed results, refusal, and incomplete responses.
 - `mistral-small-2603`
 - `mistral-medium-3-5`
 - `mistral-large-2512`
+- `glm-5.3-flash` through Mistral (`zai-glm-5-3-flash` on the wire)
 
-For all registered Mistral models, the output limit is an upper bound under the shared context
-budget; Mistral publishes no independent generation maximum.
+For Mistral's native models listed above, the output limit is an upper bound
+under the shared context budget; Mistral publishes no independent generation
+maximum.
 
 `mistral-large-2512` has no reasoning control: a supplied `reasoning_level`
 emits a warning and is not sent to Mistral.
 
 The [canonical Mistral registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/mistral/src/llm_api_adapter_mistral/registry/organizations/mistral.json)
 records capabilities, request rules, limits, and exceptions.
+
+## GLM 5.3 Flash through Mistral
+
+Install `llm-api-adapter[mistral]`; this route needs only `MISTRAL_API_KEY`:
+
+```python
+import os
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+adapter = UniversalLLMAPIAdapter(
+    organization="zai",
+    service_provider="mistral",
+    model="glm-5.3-flash",
+    api_key=os.environ["MISTRAL_API_KEY"],
+)
+```
+
+Canonical ID `glm-5.3-flash` maps to Mistral wire ID `zai-glm-5-3-flash`; no
+fallback occurs. Without the provider override, `organization="zai"` selects
+the independent direct Z.ai route, which still requires the Z.ai package and
+key.
+Supports `chat()`, `stream_chat()`, `achat()`, and `astream_chat()`. Sync uses
+`requests` by default; `[httpx]` with `transport="httpx"` selects the other
+sync transport. Install `[async]` for async; combine extras with
+`pip install "llm-api-adapter[mistral,async,httpx]"`.
+
+See [Capabilities](#capabilities), [Structured-output portability](#structured-output-portability),
+and [PDF input](#pdf-input) for tool calling, images, schemas, and OCR.
+
+`max_output_tokens=128000` conservatively interprets Mistral's published “128k”; it
+is not a measured server maximum. Reasoning accepts `low`, `high`, or `max`
+(default `low`); `reasoning_level="none"` warns and resolves to `low`.
+`capture_reasoning=True` opts in to capture, separate from visible text; missing
+provider reasoning is not synthesized.
+
+Hosted Flash uses the selected Mistral profile's standard-rate estimates, not
+direct Z.ai rates; see [Automatic cache usage and pricing](#automatic-cache-usage-and-pricing)
+and [PDF input](#pdf-input) for cost details and boundaries.
 
 ## PDF input
 
@@ -83,8 +122,8 @@ the selected chat model. This creates a separate OCR API request. The adapter
 reads `usage_info.pages_processed` from each OCR response and records an `ocr`
 page line in `ChatResponse.cost_breakdown` at the registered standard rate.
 
-For all four models, PDF URLs and bytes are declared `pass` exceptions:
-the OCR adaptation preserves the public PDF contract.
+For every currently registered Mistral model, PDF URLs and bytes are declared
+`pass` exceptions: the OCR adaptation preserves the public PDF contract.
 
 ```python
 from llm_api_adapter.models.messages.chat_message import UserMessage
@@ -131,9 +170,10 @@ consistently to sync, async, and streaming calls.
 ## Automatic cache usage and pricing
 
 `usage.prompt_tokens_details.cached_tokens` becomes `Usage.cached_tokens`,
-a subset of total `Usage.input_tokens`. All four models use ordinary and
-cache-read rates from their registry tiers. There is no separately priced
-automatic cache write, so `cache_write_tokens` remains `None`.
+a subset of total `Usage.input_tokens`. Every currently registered Mistral
+model uses ordinary and cache-read rates from its registry tiers. There is no
+separately priced automatic cache write, so `cache_write_tokens` remains
+`None`.
 
 An omitted cache-read count leaves `cost_input` and `cost_total` unknown;
 known output and OCR costs can still be exposed. The package accounts for
