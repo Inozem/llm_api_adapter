@@ -777,3 +777,65 @@ def test_invalid_plugin_model_metadata_is_reported_before_organization_registrat
     assert resolve_model_spec(model_registry, "mistral", "test-model") is None
     assert discovery.failures[0].error_type == "ValueError"
     assert "Invalid organization metadata for 'mistral'" in discovery.failures[0].message
+
+
+@pytest.mark.unit
+def test_invalid_and_conflicting_catalogue_registration_leave_prior_state_intact():
+    model_registry = RegistrySpec()
+    valid_metadata = _organization_model_metadata("isolated-catalogue")
+    assert model_registry.register_organization_metadata(valid_metadata) is True
+    prior_organizations = model_registry.organizations
+    prior_profile = resolve_model_spec(
+        model_registry,
+        "isolated-catalogue",
+        "test-model",
+    )
+
+    invalid_metadata = OrganizationModelMetadata(
+        organization="invalid-catalogue",
+        organization_data={"models": {"broken-model": {}}},
+    )
+    with pytest.raises(ValueError, match="Invalid organization metadata"):
+        model_registry.register_organization_metadata(invalid_metadata)
+    assert model_registry.organizations is prior_organizations
+    assert resolve_model_spec(
+        model_registry,
+        "isolated-catalogue",
+        "test-model",
+    ) is prior_profile
+    assert "invalid-catalogue" not in model_registry.organizations
+
+    conflicting_metadata = OrganizationModelMetadata(
+        organization="isolated-catalogue",
+        organization_data={
+            "currency": "USD",
+            "models": {
+                "different-model": {
+                    "limits": {
+                        "context_window_tokens": 128_000,
+                        "max_output_tokens": 16_384,
+                    },
+                    "pricing_tiers": [
+                        {
+                            "up_to_prompt_tokens": None,
+                            "input_per_1m": 9.0,
+                            "output_per_1m": 9.0,
+                        }
+                    ],
+                }
+            },
+        },
+    )
+    with pytest.raises(ValueError, match="Organization metadata already registered"):
+        model_registry.register_organization_metadata(conflicting_metadata)
+    assert model_registry.organizations is prior_organizations
+    assert resolve_model_spec(
+        model_registry,
+        "isolated-catalogue",
+        "test-model",
+    ) is prior_profile
+    assert resolve_model_spec(
+        model_registry,
+        "isolated-catalogue",
+        "different-model",
+    ) is None

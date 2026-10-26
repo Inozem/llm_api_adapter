@@ -15,6 +15,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 for source in (
     REPOSITORY_ROOT / "src",
     REPOSITORY_ROOT / "packages" / "organizations" / "mistral" / "src",
+    REPOSITORY_ROOT / "packages" / "organizations" / "zai" / "src",
     REPOSITORY_ROOT / "packages" / "organizations" / "xai" / "src",
 ):
     source_path = str(source)
@@ -37,6 +38,8 @@ from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from llm_api_adapter_mistral.adapter import MistralAdapter
 from llm_api_adapter_mistral.plugin import PLUGIN as MISTRAL_PLUGIN
+from llm_api_adapter_zai.adapter import ZaiAdapter
+from llm_api_adapter_zai.plugin import PLUGIN as ZAI_PLUGIN
 from llm_api_adapter_xai.adapter import XAIAdapter
 from llm_api_adapter_xai.plugin import PLUGIN as XAI_PLUGIN
 from llm_api_adapter_xai.streaming import XAIResponsesStreamParser
@@ -228,6 +231,199 @@ def test_facade_separates_model_developer_from_mistral_service_provider(
         "mistral",
         "glm-5.3-flash",
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("order", (("mistral", "zai"), ("zai", "mistral")))
+def test_mistral_and_zai_same_named_profiles_are_isolated_across_discovery_orders(
+    monkeypatch,
+    order,
+):
+    registry = RegistrySpec()
+    providers = ServiceProviderRegistry(
+        {"openai": universal_adapter_module.OpenAIAdapter}
+    )
+    discovery = OrganizationPluginDiscovery()
+    plugins = {"mistral": MISTRAL_PLUGIN, "zai": ZAI_PLUGIN}
+    entries = {
+        name: _PluginEntryPoint(
+            name=name,
+            value=f"llm_api_adapter_{name}.plugin:PLUGIN",
+            plugin=plugins[name],
+        )
+        for name in plugins
+    }
+    active_order = list(order)
+
+    def get_entry_points(*, group: str):
+        assert group == organization_registry_module.ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP
+        return tuple(entries[name] for name in active_order)
+
+    monkeypatch.setattr(organization_registry_module, "entry_points", get_entry_points)
+    monkeypatch.setattr(universal_adapter_module, "SERVICE_PROVIDER_REGISTRY", providers)
+    monkeypatch.setattr(universal_adapter_module, "ORGANIZATION_PLUGIN_DISCOVERY", discovery)
+    monkeypatch.setattr(universal_adapter_module, "LLM_REGISTRY", registry)
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", registry)
+
+    discovery.discover(providers, model_registry=registry)
+    discovery.discover(providers, model_registry=registry)
+    active_order.reverse()
+    discovery.discover(providers, model_registry=registry)
+
+    mistral_spec = resolve_model_spec(registry, "mistral", "glm-5.3-flash")
+    zai_spec = resolve_model_spec(registry, "zai", "glm-5.3-flash")
+    assert mistral_spec is registry.organizations["mistral"].models[
+        "glm-5.3-flash"
+    ]
+    assert zai_spec is registry.organizations["zai"].models["glm-5.3-flash"]
+    assert mistral_spec is not zai_spec
+    assert mistral_spec.limits != zai_spec.limits
+    assert mistral_spec.provider_model == "zai-glm-5-3-flash"
+    assert zai_spec.provider_model is None
+    for spec, plugin in (
+        (mistral_spec, MISTRAL_PLUGIN),
+        (zai_spec, ZAI_PLUGIN),
+    ):
+        assert plugin.model_metadata is not None
+        source_tier = plugin.model_metadata.organization_data["models"][
+            "glm-5.3-flash"
+        ]["pricing_tiers"][0]
+        resolved_tier = spec.pricing_tiers.tiers[0]
+        assert resolved_tier.in_per_token == source_tier["input_per_1m"] / 1_000_000
+        assert resolved_tier.out_per_token == source_tier["output_per_1m"] / 1_000_000
+
+    mistral_facade = UniversalLLMAPIAdapter(
+        organization="zai",
+        model="glm-5.3-flash",
+        api_key="mistral-test-key",
+        service_provider="mistral",
+    )
+    zai_facade = UniversalLLMAPIAdapter(
+        organization="zai",
+        model="glm-5.3-flash",
+        api_key="zai-test-key",
+    )
+    assert isinstance(mistral_facade.adapter, MistralAdapter)
+    assert mistral_facade.adapter.company == "zai"
+    assert mistral_facade.adapter.service_provider == "mistral"
+    assert isinstance(zai_facade.adapter, ZaiAdapter)
+    assert mistral_facade.adapter.model_spec is registry.organizations["mistral"].models[
+        "glm-5.3-flash"
+    ]
+    assert mistral_facade.adapter.model_spec is mistral_spec
+    assert mistral_facade.adapter.model_spec is not zai_spec
+    assert zai_facade.adapter.model_spec is zai_spec
+
+    transport = _RecordedTransport(_mistral_response("cross-route ok"))
+    mistral_facade.adapter._sync_transport = transport
+    response = mistral_facade.chat(messages=[UserMessage("test")])
+
+    assert response.content == "cross-route ok"
+    request = transport.requests[0]
+    assert request.headers["Authorization"] == "Bearer mistral-test-key"
+    assert request.payload["model"] == "zai-glm-5-3-flash"
+    assert all(entry.load_calls == 1 for entry in entries.values())
+
+
+@pytest.mark.unit
+def test_direct_zai_provider_defaults_and_explicit_selection_preserve_request_contract(
+    monkeypatch,
+):
+    registry = RegistrySpec()
+    providers = ServiceProviderRegistry(
+        {"openai": universal_adapter_module.OpenAIAdapter}
+    )
+    discovery = OrganizationPluginDiscovery()
+    entries = (
+        _PluginEntryPoint("mistral", "mistral:PLUGIN", MISTRAL_PLUGIN),
+        _PluginEntryPoint("zai", "zai:PLUGIN", ZAI_PLUGIN),
+    )
+    monkeypatch.setattr(
+        organization_registry_module,
+        "entry_points",
+        lambda *, group: entries,
+    )
+    monkeypatch.setattr(universal_adapter_module, "SERVICE_PROVIDER_REGISTRY", providers)
+    monkeypatch.setattr(universal_adapter_module, "ORGANIZATION_PLUGIN_DISCOVERY", discovery)
+    monkeypatch.setattr(universal_adapter_module, "LLM_REGISTRY", registry)
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", registry)
+
+    implicit = UniversalLLMAPIAdapter(
+        organization="zai",
+        model="glm-5.3-flash",
+        api_key="zai-secret-key",
+    )
+    explicit = UniversalLLMAPIAdapter(
+        organization="zai",
+        model="glm-5.3-flash",
+        api_key="zai-secret-key",
+        service_provider="zai",
+    )
+    assert isinstance(implicit.adapter, ZaiAdapter)
+    assert isinstance(explicit.adapter, ZaiAdapter)
+    assert implicit.adapter.model_spec is registry.organizations["zai"].models[
+        "glm-5.3-flash"
+    ]
+    assert explicit.adapter.model_spec is implicit.adapter.model_spec
+
+    response = {
+        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+    }
+    implicit_transport = _RecordedTransport(response)
+    explicit_transport = _RecordedTransport(response)
+    implicit.adapter._sync_transport = implicit_transport
+    explicit.adapter._sync_transport = explicit_transport
+    messages = [UserMessage("test")]
+    assert implicit.chat(messages=messages).content == "ok"
+    assert explicit.chat(messages=messages).content == "ok"
+    implicit_request = implicit_transport.requests[0]
+    explicit_request = explicit_transport.requests[0]
+    assert implicit_request == explicit_request
+    assert implicit_request.url == "https://api.z.ai/api/paas/v4/chat/completions"
+    assert implicit_request.headers["Authorization"] == "Bearer zai-secret-key"
+    assert implicit_request.payload["model"] == "glm-5.3-flash"
+    assert implicit_request.payload == explicit_request.payload
+    assert entries[0].load_calls == entries[1].load_calls == 1
+
+
+@pytest.mark.unit
+def test_mistral_only_discovery_keeps_native_catalogue_request_independent_of_zai(
+    monkeypatch,
+):
+    registry = RegistrySpec()
+    providers = ServiceProviderRegistry(
+        {"openai": universal_adapter_module.OpenAIAdapter}
+    )
+    discovery = OrganizationPluginDiscovery()
+    mistral_entry = _PluginEntryPoint(
+        "mistral", "mistral:PLUGIN", MISTRAL_PLUGIN
+    )
+    monkeypatch.setattr(
+        organization_registry_module,
+        "entry_points",
+        lambda *, group: (mistral_entry,),
+    )
+    monkeypatch.setattr(universal_adapter_module, "SERVICE_PROVIDER_REGISTRY", providers)
+    monkeypatch.setattr(universal_adapter_module, "ORGANIZATION_PLUGIN_DISCOVERY", discovery)
+    monkeypatch.setattr(universal_adapter_module, "LLM_REGISTRY", registry)
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", registry)
+
+    facade = UniversalLLMAPIAdapter(
+        organization="mistral",
+        model="mistral-large-4",
+        api_key="mistral-test-key",
+    )
+    assert isinstance(facade.adapter, MistralAdapter)
+    assert "zai" not in registry.organizations
+    assert providers.get("zai") is None
+    assert facade.adapter.model_spec is registry.organizations["mistral"].models[
+        "mistral-large-4"
+    ]
+    transport = _RecordedTransport(_mistral_response("native ok"))
+    facade.adapter._sync_transport = transport
+    assert facade.chat(messages=[UserMessage("test")]).content == "native ok"
+    assert transport.requests[0].payload["model"] == "mistral-large-4"
+    assert mistral_entry.load_calls == 1
 
 
 def _mistral_response(content: str) -> dict[str, Any]:
