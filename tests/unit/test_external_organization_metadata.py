@@ -80,16 +80,32 @@ def test_mistral_model_organization_is_test_context_only(
     metadata_repository: Path,
 ) -> None:
     from tests.external_organization_metadata import (
+        read_project_metadata,
         read_external_organization_metadata,
     )
 
     metadata = read_external_organization_metadata(metadata_repository)
     assert metadata.e2e_profiles["mistral"] == metadata.known_packages["mistral"]
+    assert metadata.known_packages["mistral"] == "llm-api-adapter-mistral"
+    assert metadata.extras["mistral"] == "llm-api-adapter-mistral"
     assert metadata.e2e_model_organizations["mistral"] == (
         ("glm-5.3-flash", "zai"),
     )
     assert "zai" in metadata.known_packages
     assert metadata.known_packages["zai"] == metadata.e2e_profiles["zai"]
+
+    core_project = read_project_metadata(metadata_repository / "pyproject.toml")
+    mistral_project = read_project_metadata(
+        metadata_repository / "packages/organizations/mistral/pyproject.toml"
+    )
+    assert core_project["optional-dependencies"]["mistral"] == [
+        "llm-api-adapter-mistral>=0.1.5,<0.2.0"
+    ]
+    assert mistral_project["dependencies"] == ["llm-api-adapter>=0.9.10,<1.0.0"]
+    assert mistral_project["optional-dependencies"] == {
+        "async": ["llm-api-adapter[async]>=0.9.10,<1.0.0"],
+        "httpx": ["llm-api-adapter[httpx]>=0.9.10,<1.0.0"],
+    }
 
 
 @pytest.mark.unit
