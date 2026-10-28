@@ -75,6 +75,37 @@
         }
       ]
     },
+    "gpt-6.1-terra": {
+      "capability_exceptions": [],
+      "reasoning_capability": {
+        "allowed_values": ["none", "low", "medium", "high", "xhigh", "max"]
+      },
+      "request_rules": [
+        {"handler": "select_api_variant", "arguments": {"variant": "responses"}},
+        {"handler": "drop_parameter_unless", "arguments": {"path": "top_p", "condition_path": "reasoning.effort", "allowed_values": ["none"], "default": 1.0}},
+        {"handler": "drop_parameter_unless", "arguments": {"path": "temperature", "condition_path": "reasoning.effort", "allowed_values": ["none"], "default": 1.0}}
+      ],
+      "limits": {
+        "context_window_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing_tiers": [
+        {
+          "up_to_prompt_tokens": 272000,
+          "input_per_1m": 1.0,
+          "output_per_1m": 5.0,
+          "cache_read_input_per_1m": 0.05,
+          "cache_write_input_per_1m": 1.25
+        },
+        {
+          "up_to_prompt_tokens": null,
+          "input_per_1m": 2.0,
+          "output_per_1m": 7.5,
+          "cache_read_input_per_1m": 0.1,
+          "cache_write_input_per_1m": 2.5
+        }
+      ]
+    },
     "gpt-6-sol": {
       "capability_exceptions": [],
       "reasoning_capability": {
