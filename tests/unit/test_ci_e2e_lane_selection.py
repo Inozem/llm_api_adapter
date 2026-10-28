@@ -568,7 +568,7 @@ def test_mistral_candidate_e2e_job_needs_no_zai_distribution_or_secret():
     assert "model=\"glm-5.3-flash\"" in job
     assert (
         "pytest -v --import-mode=importlib -m e2e_mistral --rootdir=. "
-        "tests/e2e packages/organizations/mistral/tests/e2e"
+        "tests/e2e"
     ) in job
 
 

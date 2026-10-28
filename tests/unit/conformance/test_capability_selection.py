@@ -145,7 +145,7 @@ def test_hosted_and_direct_glm_flash_use_provider_owned_pdf_evidence():
 
 
 @pytest.mark.unit
-def test_hosted_flash_uses_mistral_reasoning_route_and_keeps_shared_routes():
+def test_hosted_flash_uses_shared_reasoning_route_and_keeps_shared_routes():
     hosted_model = next(
         model
         for owner, model in first_party_model_profiles()
@@ -176,7 +176,7 @@ def test_hosted_flash_uses_mistral_reasoning_route_and_keeps_shared_routes():
 
     assert hosted == (
         EXCEPTION_SCENARIOS[
-            ("reasoning_control", "none_falls_back_to_minimum", "mistral")
+            ("reasoning_control", "none_falls_back_to_minimum", None)
         ],
         BASELINE_SCENARIOS["sync_chat"],
         "tests/unit/test_organization_profile_compatibility.py::"

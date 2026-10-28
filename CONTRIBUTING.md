@@ -138,15 +138,15 @@ placeholder. Collection must not require API keys or operation credentials such
 as `QWEN_WORKSPACE_ID`, construct a live client, or send requests. A successful
 collection checks selection and imports; it does not prove live provider behavior.
 
-For Mistral, collect both shared and package-local scenarios with the explicit
-root directory:
+For Mistral, collect the shared scenarios with the explicit root directory:
 
 ```bash
-python -m pytest --collect-only -q --import-mode=importlib -m e2e_mistral --rootdir=. tests/e2e packages/organizations/mistral/tests/e2e
+python -m pytest --collect-only -q --import-mode=importlib -m e2e_mistral --rootdir=. tests/e2e
 ```
 
 This credential-free command checks test selection and imports only; it does
-not exercise Mistral behavior.
+not exercise Mistral behavior. Other providers with package-local E2E tests
+should include their package path as described above.
 
 ### Isolated provider-package wheel checks
 

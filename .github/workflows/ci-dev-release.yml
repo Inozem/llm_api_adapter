@@ -600,7 +600,7 @@ jobs:
           PY
 
       - name: Run Mistral E2E tests
-        run: pytest -v --import-mode=importlib -m e2e_mistral --rootdir=. tests/e2e packages/organizations/mistral/tests/e2e
+        run: pytest -v --import-mode=importlib -m e2e_mistral --rootdir=. tests/e2e
 
   post-publish-xai-e2e:
     name: xAI E2E tests (release candidate)

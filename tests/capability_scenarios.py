@@ -92,11 +92,6 @@ EXCEPTION_SCENARIOS = _routes(
     ),
     (("reasoning_control", "none_falls_back_to_minimum", None), _REASONING_CHAT),
     (
-        ("reasoning_control", "none_falls_back_to_minimum", "mistral"),
-        "packages/organizations/mistral/tests/e2e/test_flash_route.py::"
-        "test_flash_reasoning_control",
-    ),
-    (
         ("reasoning_control", "minimum_fallback_with_effort_alias", None),
         _REASONING_CHAT,
     ),
