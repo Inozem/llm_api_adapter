@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import inspect
 
 import pytest
 
@@ -7,6 +8,7 @@ from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
 from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
 from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
 from src.llm_api_adapter.service_provider_registry import ServiceProviderRegistry
+from src.llm_api_adapter.errors.config_errors import OrganizationNotInstalledError
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
@@ -184,6 +186,215 @@ def test_service_provider_selects_the_adapter_and_organization_is_forwarded(
     assert isinstance(adapter.adapter, HostedMistralAdapter)
     assert adapter.adapter.company == "mistral"
     assert adapter.adapter.service_provider == "openrouter"
+
+
+@pytest.mark.unit
+def test_zai_organization_can_route_glm_through_discovered_mistral(monkeypatch):
+    @dataclass
+    class MistralAdapter:
+        company: str
+        model: str
+        api_key: str
+        transport: str
+        service_provider: str
+
+        def chat(self, *args, **kwargs):
+            return {"response": "ok"}
+
+        def stream_chat(self, *args, **kwargs):
+            yield "streamed"
+
+    discoveries = []
+
+    def discover(registry, model_registry=None):
+        discoveries.append(registry)
+        registry.register("mistral", MistralAdapter)
+
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry(),
+    )
+    monkeypatch.setattr(
+        universal_module,
+        "ORGANIZATION_PLUGIN_DISCOVERY",
+        type("FakeDiscovery", (), {"discover": staticmethod(discover)})(),
+    )
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        service_provider="mistral",
+        model="glm-5.3-flash",
+        api_key="mistral-test-key",
+    )
+
+    assert len(discoveries) == 1
+    assert isinstance(adapter.adapter, MistralAdapter)
+    assert adapter.adapter.company == "zai"
+    assert adapter.adapter.service_provider == "mistral"
+    assert adapter.adapter.model == "glm-5.3-flash"
+    assert adapter.adapter.api_key == "mistral-test-key"
+    assert adapter.chat() == {"response": "ok"}
+
+
+@pytest.mark.unit
+def test_missing_mistral_provider_is_distinct_from_missing_zai_package(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry(),
+    )
+    monkeypatch.setattr(
+        universal_module,
+        "ORGANIZATION_PLUGIN_DISCOVERY",
+        type("EmptyDiscovery", (), {"discover": lambda self, *args, **kwargs: None})(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Unsupported service provider: mistral",
+    ):
+        UniversalLLMAPIAdapter(
+            organization="zai",
+            service_provider="mistral",
+            model="glm-5.3-flash",
+            api_key="mistral-test-key",
+        )
+
+    with pytest.raises(OrganizationNotInstalledError) as error:
+        UniversalLLMAPIAdapter(
+            organization="zai",
+            model="glm-5.3-flash",
+            api_key="zai-test-key",
+        )
+
+    assert error.value.distribution == "llm-api-adapter-zai"
+
+
+@pytest.mark.unit
+def test_omitted_provider_keeps_zai_direct_default_when_mistral_is_discoverable(
+    monkeypatch,
+):
+    @dataclass
+    class MistralAdapter:
+        company: str
+        model: str
+        api_key: str
+        transport: str
+        service_provider: str
+
+        def chat(self, *args, **kwargs):
+            return {"response": "unexpected"}
+
+        def stream_chat(self, *args, **kwargs):
+            yield "unexpected"
+
+    created = []
+
+    def discover(registry, model_registry=None):
+        registry.register("mistral", MistralAdapter)
+
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry(),
+    )
+    monkeypatch.setattr(
+        universal_module,
+        "ORGANIZATION_PLUGIN_DISCOVERY",
+        type("FakeDiscovery", (), {"discover": staticmethod(discover)})(),
+    )
+    original_init = MistralAdapter.__init__
+
+    def track_init(self, *args, **kwargs):
+        created.append(self)
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(MistralAdapter, "__init__", track_init)
+
+    with pytest.raises(OrganizationNotInstalledError) as error:
+        UniversalLLMAPIAdapter(
+            organization="zai",
+            model="glm-5.3-flash",
+            api_key="zai-test-key",
+        )
+
+    assert error.value.distribution == "llm-api-adapter-zai"
+    assert created == []
+
+
+@pytest.mark.unit
+def test_mistral_request_failure_does_not_fall_back_to_zai(monkeypatch):
+    zai_requests = []
+
+    @dataclass
+    class MistralAdapter:
+        company: str
+        model: str
+        api_key: str
+        transport: str
+        service_provider: str
+
+        def chat(self, *args, **kwargs):
+            raise RuntimeError("Mistral request failed")
+
+        def stream_chat(self, *args, **kwargs):
+            yield "unused"
+
+    @dataclass
+    class ZaiAdapter:
+        company: str
+        model: str
+        api_key: str
+        transport: str
+        service_provider: str
+
+        def chat(self, *args, **kwargs):
+            zai_requests.append((args, kwargs))
+            return {"response": "unexpected fallback"}
+
+        def stream_chat(self, *args, **kwargs):
+            yield "unused"
+
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({"mistral": MistralAdapter, "zai": ZaiAdapter}),
+    )
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        service_provider="mistral",
+        model="glm-5.3-flash",
+        api_key="mistral-test-key",
+    )
+
+    with pytest.raises(RuntimeError, match="Mistral request failed"):
+        adapter.chat("hello")
+
+    assert zai_requests == []
+
+
+@pytest.mark.unit
+def test_public_constructor_signature_remains_compatible():
+    parameters = inspect.signature(UniversalLLMAPIAdapter).parameters
+
+    assert list(parameters) == [
+        "organization",
+        "model",
+        "api_key",
+        "transport",
+        "service_provider",
+    ]
+    assert [parameter.default for parameter in parameters.values()] == [
+        inspect.Parameter.empty,
+        inspect.Parameter.empty,
+        inspect.Parameter.empty,
+        "requests",
+        None,
+    ]
 
 
 @pytest.mark.unit

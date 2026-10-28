@@ -119,17 +119,23 @@ class LLMAdapterBase(ABC):
             logger.error(error_message)
             raise ValueError(error_message)
         self.transport = validate_sync_transport(self.transport)
-        model_spec = resolve_model_spec(LLM_REGISTRY, self.company, self.model)
+        model_spec = resolve_model_spec(
+            LLM_REGISTRY, self.service_provider, self.model
+        )
         self.model_spec = model_spec
         if not model_spec:
             warnings.warn(
                 (
-                    f"Model '{self.model}' is not verified for the {self.company} adapter. "
+                    f"Model '{self.model}' is not verified for the "
+                    f"{self.service_provider} provider. "
                     f"Continuing with the selected adapter."
                 ),
                 UserWarning,
             )
-            logger.warning(f"Unverified model used: {self.model}")
+            logger.warning(
+                f"Unverified model used: {self.model} "
+                f"for provider {self.service_provider}"
+            )
             self.pricing = None
         else:
             base_pricing = getattr(model_spec, "pricing_tiers", None)
@@ -254,8 +260,8 @@ class LLMAdapterBase(ABC):
                 provider_value=None,
                 reason="unverified_model",
                 warning=(
-                    f"Model '{self.model}' is not verified for the {self.company} "
-                    "adapter; reasoning is disabled."
+                    f"Model '{self.model}' is not verified for the "
+                    f"{self.service_provider} provider; reasoning is disabled."
                 ),
             )
         else:

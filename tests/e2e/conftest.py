@@ -31,6 +31,7 @@ class E2EOrganizationProfile:
     api_key_is_required: bool = False
     missing_api_key_is_usage_error: bool = False
     operation_kwargs_env: tuple[tuple[str, str], ...] = ()
+    model_organizations: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class E2EModelCase:
     organization: str
     model_spec: ModelSpec | None
     profile: E2EOrganizationProfile
+    service_provider: str | None = None
 
 
 class E2EOrganization(dict):
@@ -73,6 +75,7 @@ _MISTRAL_E2E_PROFILE = E2EOrganizationProfile(
     organization_names=("mistral",),
     distribution=KNOWN_ORGANIZATION_PACKAGES["mistral"].distribution,
     api_key_is_required=True,
+    model_organizations=(("glm-5.3-flash", "zai"),),
 )
 _XAI_E2E_PROFILE = E2EOrganizationProfile(
     name="xai",
@@ -187,16 +190,33 @@ def get_e2e_organization_profile(name: str) -> E2EOrganizationProfile:
 
 
 @lru_cache(maxsize=None)
-def e2e_model_case_parameters(organization_name: str | None = None):
-    """Build exact-model pytest parameters, optionally for one organization."""
+def e2e_model_case_parameters(
+    organization_name: str | None = None,
+    *,
+    service_provider: str | None = None,
+):
+    """Build exact-model pytest parameters for provider and developer filters."""
     ORGANIZATION_PLUGIN_DISCOVERY.discover(
         SERVICE_PROVIDER_REGISTRY,
         model_registry=LLM_REGISTRY,
     )
 
     parameters = []
-    for profile in _E2E_PROFILES:
-        if organization_name is not None and organization_name not in profile.organization_names:
+    profiles = _E2E_PROFILES
+    if service_provider is not None:
+        profiles = tuple(profile for profile in profiles if profile.name == service_provider)
+
+    for profile in profiles:
+        provider_catalogs = {
+            name: LLM_REGISTRY.organizations.get(name)
+            for name in profile.organization_names
+        }
+        # Organization-only helper calls retain their historic direct lane.
+        if (
+            service_provider is None
+            and organization_name is not None
+            and organization_name not in profile.organization_names
+        ):
             continue
         package_missing = False
         if profile.distribution is not None:
@@ -204,20 +224,35 @@ def e2e_model_case_parameters(organization_name: str | None = None):
                 version(profile.distribution)
             except PackageNotFoundError:
                 package_missing = True
+        _validate_profile_model_organizations(
+            profile,
+            provider_catalogs,
+            require_registered=(
+                not package_missing
+                and any(catalog is not None for catalog in provider_catalogs.values())
+            ),
+        )
 
-        for organization in profile.organization_names:
-            if organization_name is not None and organization != organization_name:
-                continue
+        for provider_organization in profile.organization_names:
             if package_missing:
+                if (
+                    organization_name is not None
+                    and organization_name != provider_organization
+                    and service_provider is None
+                ):
+                    continue
                 case = E2EModelCase(
-                    organization=organization,
+                    organization=provider_organization,
                     model_spec=None,
                     profile=profile,
+                    service_provider=(
+                        profile.name if service_provider is not None else None
+                    ),
                 )
                 parameters.append(
                     pytest.param(
                         case,
-                        id=f"{organization}-package-not-installed",
+                        id=f"{profile.name}-package-not-installed",
                         marks=(
                             *_E2E_PROFILE_MARKS[profile.name],
                             pytest.mark.skip(
@@ -228,30 +263,86 @@ def e2e_model_case_parameters(organization_name: str | None = None):
                 )
                 continue
 
-            organization_spec = LLM_REGISTRY.organizations.get(organization)
+            organization_spec = provider_catalogs[provider_organization]
             if organization_spec is None:
                 raise pytest.UsageError(
-                    f"No valid model catalogue was registered for {organization}"
+                    f"No valid model catalogue was registered for {provider_organization}"
                 )
-            for model_spec in organization_spec.models.values():
+            for model_key, model_spec in organization_spec.models.items():
+                developer = dict(profile.model_organizations).get(
+                    model_key, provider_organization
+                )
+                if organization_name is not None and developer != organization_name:
+                    continue
+                if (
+                    service_provider is None
+                    and organization_name is not None
+                    and developer != provider_organization
+                ):
+                    continue
+                case_service_provider = (
+                    profile.name if developer != provider_organization else None
+                )
                 case = E2EModelCase(
-                    organization=organization,
+                    organization=developer,
                     model_spec=model_spec,
                     profile=profile,
+                    service_provider=case_service_provider,
                 )
                 parameters.append(
                     pytest.param(
                         case,
-                        id=f"{organization}-{model_spec.name}",
+                        id=f"{case_service_provider or developer}-{model_spec.name}",
                         marks=_E2E_PROFILE_MARKS[profile.name],
                     )
                 )
 
     if not parameters:
         raise pytest.UsageError(
-            f"No E2E model cases were available for {organization_name or 'collection'}"
+            "No E2E model cases were available for "
+            f"{service_provider or organization_name or 'collection'}"
         )
     return tuple(parameters)
+
+
+def _validate_profile_model_organizations(
+    profile,
+    provider_catalogs,
+    *,
+    require_registered: bool = True,
+) -> None:
+    """Validate test-only developer mappings against the selected provider catalogue."""
+    seen = set()
+    registered_models = {
+        model_name
+        for catalog in provider_catalogs.values()
+        if catalog is not None
+        for model_name in catalog.models
+    }
+    for mapping in profile.model_organizations:
+        if not isinstance(mapping, tuple) or len(mapping) != 2:
+            raise pytest.UsageError(
+                f"Invalid model organization mapping for {profile.name}: {mapping!r}"
+            )
+        model_name, developer = mapping
+        if not isinstance(model_name, str) or not model_name:
+            raise pytest.UsageError(
+                f"Invalid provider model key for {profile.name}: expected a non-empty string"
+            )
+        if model_name in seen:
+            raise pytest.UsageError(
+                f"Duplicate model organization mapping for {profile.name}: {model_name}"
+            )
+        seen.add(model_name)
+        if not isinstance(developer, str) or not developer.strip():
+            raise pytest.UsageError(
+                f"Invalid developer for {profile.name}/{model_name}: expected a non-empty string"
+            )
+        if require_registered and model_name not in registered_models:
+            raise pytest.UsageError(
+                f"Model organization mapping for {profile.name} references an "
+                f"unregistered provider model: {model_name}"
+            )
 
 
 def pytest_collection_modifyitems(config, items) -> None:
@@ -276,7 +367,15 @@ def pytest_collection_modifyitems(config, items) -> None:
                 raise pytest.UsageError(
                     f"{item.nodeid} has an unknown E2E organization profile"
                 )
-            if model_case.organization not in model_case.profile.organization_names:
+            effective_provider = model_case.service_provider or model_case.organization
+            mapped_developers = dict(model_case.profile.model_organizations)
+            if effective_provider != model_case.profile.name:
+                raise pytest.UsageError(
+                    f"{item.nodeid} has a provider outside its E2E lane"
+                )
+            allowed_developers = set(model_case.profile.organization_names)
+            allowed_developers.update(mapped_developers.values())
+            if model_case.organization not in allowed_developers:
                 raise pytest.UsageError(
                     f"{item.nodeid} has an organization outside its E2E lane"
                 )
@@ -286,6 +385,14 @@ def pytest_collection_modifyitems(config, items) -> None:
             if not isinstance(model_case.model_spec, ModelSpec):
                 raise pytest.UsageError(
                     f"{item.nodeid} has a missing or invalid exact-model profile"
+                )
+            mapped_developer = mapped_developers.get(model_case.model_spec.name)
+            if (
+                model_case.organization not in model_case.profile.organization_names
+                and mapped_developer != model_case.organization
+            ):
+                raise pytest.UsageError(
+                    f"{item.nodeid} has a developer outside its provider model mapping"
                 )
 
             capability_markers = tuple(item.iter_markers("e2e_capability"))
@@ -311,17 +418,23 @@ def pytest_collection_modifyitems(config, items) -> None:
                 capability_routes = {}
                 for capability_id in capability_ids:
                     route_key = (
+                        model_case.service_provider or model_case.organization,
                         model_case.organization,
                         model_case.model_spec.name,
                         capability_id,
                     )
                     if route_key not in routes_by_model:
-                        routes_by_model[route_key] = frozenset(
-                            select_model_scenarios(
-                                organization=model_case.organization,
-                                model=model_case.model_spec,
-                                capabilities=(_CAPABILITY_BY_ID[capability_id],),
+                        selector_kwargs = {
+                            "organization": model_case.organization,
+                            "model": model_case.model_spec,
+                            "capabilities": (_CAPABILITY_BY_ID[capability_id],),
+                        }
+                        if model_case.service_provider is not None:
+                            selector_kwargs["service_provider"] = (
+                                model_case.service_provider
                             )
+                        routes_by_model[route_key] = frozenset(
+                            select_model_scenarios(**selector_kwargs)
                         )
                     capability_routes[capability_id] = routes_by_model[route_key]
             except (TypeError, ValueError) as exc:
@@ -414,11 +527,12 @@ def e2e_model_organization(e2e_model_case: E2EModelCase) -> E2EOrganization:
     ):
         raise pytest.UsageError("The E2E case has no valid exact-model profile")
     organizations = resolve_e2e_organizations(e2e_model_case.profile)
+    provider_name = e2e_model_case.service_provider or e2e_model_case.organization
     for organization in organizations:
-        if organization["name"] == e2e_model_case.organization:
+        if organization["name"] == provider_name:
             return organization
     raise pytest.UsageError(
-        f"No E2E organization data was prepared for {e2e_model_case.organization}"
+        f"No E2E organization data was prepared for {provider_name}"
     )
 
 

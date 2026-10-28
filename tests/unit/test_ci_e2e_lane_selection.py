@@ -208,6 +208,50 @@ def test_capability_routing_changes_select_every_e2e_lane(changed_path):
 
 
 @pytest.mark.unit
+def test_shared_core_change_selects_core_candidate_and_every_applicable_lane():
+    selection = _SELECTOR.select_e2e_lanes(
+        ["src/llm_api_adapter/adapters/structured_output.py"]
+    )
+    outputs = selection.github_outputs()
+
+    assert selection.core is True
+    assert selection.shared_core is True
+    assert selection.core_organizations == ("openai", "anthropic", "google")
+    assert all(
+        outputs[f"core_{organization}_e2e"] == "true"
+        for organization in ("openai", "anthropic", "google")
+    )
+    assert all(
+        getattr(selection, f"{organization}_e2e")
+        for organization in _EXTERNAL_ORGANIZATIONS
+    )
+    assert not any(
+        getattr(selection, organization) for organization in _EXTERNAL_ORGANIZATIONS
+    )
+
+
+@pytest.mark.unit
+def test_shared_e2e_harness_change_selects_all_lanes_without_candidates():
+    selection = _SELECTOR.select_e2e_lanes(["tests/e2e/test_tools_auto_loop.py"])
+    outputs = selection.github_outputs()
+
+    assert selection.core is False
+    assert selection.shared_core is False
+    assert selection.core_organizations == ("openai", "anthropic", "google")
+    assert all(
+        outputs[f"core_{organization}_e2e"] == "true"
+        for organization in ("openai", "anthropic", "google")
+    )
+    assert all(
+        getattr(selection, f"{organization}_e2e")
+        for organization in _EXTERNAL_ORGANIZATIONS
+    )
+    assert not any(
+        getattr(selection, organization) for organization in _EXTERNAL_ORGANIZATIONS
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("organization", _EXTERNAL_ORGANIZATIONS)
 def test_external_manifest_change_selects_only_its_candidate_and_live_lane(
     organization: str,
@@ -489,6 +533,43 @@ def test_deepseek_candidate_e2e_job_uses_only_deepseek_credentials_and_candidate
     )
     assert "KIMI_API_KEY" not in job
     assert "QWEN_API_KEY" not in job
+
+
+@pytest.mark.unit
+def test_mistral_candidate_e2e_job_needs_no_zai_distribution_or_secret():
+    workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
+    job = _workflow_job(workflow, "post-publish-mistral-e2e")
+
+    assert "needs.changes.outputs.mistral_e2e == 'true'" in job
+    assert "needs.changes.outputs.shared_core == 'true'" in job
+    assert "needs.changes.outputs.mistral == 'true'" in job
+    assert "needs.publish-core-testpypi.result == 'success'" in job
+    assert "needs.publish-core-testpypi.result == 'skipped'" in job
+    assert "needs.publish-mistral-testpypi.result == 'success'" in job
+    assert "needs.publish-mistral-testpypi.result == 'skipped'" in job
+    assert "MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}" in job
+    assert "ZAI_API_KEY" not in job
+    assert "secrets.ZAI_API_KEY" not in job
+    assert (
+        '"llm-api-adapter[mistral,async,httpx]==${CORE_CANDIDATE_VERSION}"'
+        in job
+    )
+    assert (
+        '"llm-api-adapter-mistral[async,httpx]==${MISTRAL_CANDIDATE_VERSION}"'
+        in job
+    )
+    assert '"llm-api-adapter-zai[async,httpx]' not in job
+    assert 'distribution("llm-api-adapter-zai")' in job
+    assert "PackageNotFoundError" in job
+    assert 'UniversalLLMAPIAdapter(organization="mistral", model=model' in job
+    assert '"mistral-large-4"' in job
+    assert "organization=\"zai\"" in job
+    assert "service_provider=\"mistral\"" in job
+    assert "model=\"glm-5.3-flash\"" in job
+    assert (
+        "pytest -v --import-mode=importlib -m e2e_mistral --rootdir=. "
+        "tests/e2e"
+    ) in job
 
 
 @pytest.mark.unit

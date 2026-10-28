@@ -30,6 +30,7 @@ from llm_api_adapter.errors.llm_api_error import (
     JSONSchemaError,
 )
 from llm_api_adapter.llm_registry.llm_registry import (
+    OrganizationModelMetadata,
     RegistrySpec,
     resolve_metered_operation_spec,
     resolve_model_spec,
@@ -143,6 +144,25 @@ def _assert_large_4_reasoning_payload_parity(
     assert sync_payload["reasoning_effort"] == expected_provider_value
 
 
+def _assert_hosted_glm_5_3_flash_uses_mistral_profile(adapter, model_registry):
+    model_spec = resolve_model_spec(
+        model_registry,
+        "mistral",
+        "glm-5.3-flash",
+    )
+
+    assert model_spec is not None
+    assert adapter.adapter.model_spec is model_spec
+    assert adapter.adapter.pricing is not None
+    assert adapter.adapter.pricing.currency == "USD"
+    assert adapter.adapter.pricing.tiers == model_spec.pricing_tiers.tiers
+    assert len(adapter.adapter.pricing.tiers) == 1
+    tier = adapter.adapter.pricing.tiers[0]
+    assert tier.in_per_token == pytest.approx(0.15 / 1_000_000)
+    assert tier.cache_read_in_per_token == pytest.approx(0.03 / 1_000_000)
+    assert tier.out_per_token == pytest.approx(0.50 / 1_000_000)
+
+
 @pytest.mark.unit
 def test_mistral_large_4_registered_metadata_and_standard_pricing(mistral_runtime):
     model_spec = resolve_model_spec(
@@ -166,6 +186,45 @@ def test_mistral_large_4_registered_metadata_and_standard_pricing(mistral_runtim
     assert tier.cache_read_in_per_token == pytest.approx(0.14 / 1_000_000)
     assert tier.cache_write_in_per_token is None
     assert model_spec.request_rules.rules == ()
+
+
+@pytest.mark.unit
+def test_mistral_catalogue_owns_hosted_glm_5_3_flash_profile(mistral_runtime):
+    model_spec = resolve_model_spec(
+        mistral_runtime,
+        "mistral",
+        "glm-5.3-flash",
+    )
+
+    assert model_spec is not None
+    assert model_spec.name == "glm-5.3-flash"
+    assert model_spec.limits.context_window_tokens == 1_048_576
+    assert model_spec.limits.max_output_tokens == 128_000
+    assert model_spec.pricing_tiers.currency == "USD"
+    assert len(model_spec.pricing_tiers.tiers) == 1
+    tier = model_spec.pricing_tiers.tiers[0]
+    assert tier.up_to_prompt_tokens is None
+    assert tier.in_per_token == pytest.approx(0.15 / 1_000_000)
+    assert tier.cache_read_in_per_token == pytest.approx(0.03 / 1_000_000)
+    assert tier.out_per_token == pytest.approx(0.50 / 1_000_000)
+    assert tier.cache_write_in_per_token is None
+    assert model_spec.reasoning_capability is not None
+    assert model_spec.reasoning_capability.allowed_values == ("low", "high", "max")
+    assert model_spec.provider_model == "zai-glm-5-3-flash"
+
+
+@pytest.mark.integration
+def test_hosted_glm_5_3_flash_adapter_uses_mistral_profile_and_pricing(
+    mistral_runtime,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        service_provider="mistral",
+        model="glm-5.3-flash",
+        api_key="mistral-test-key",
+    )
+
+    _assert_hosted_glm_5_3_flash_uses_mistral_profile(adapter, mistral_runtime)
 
 
 @pytest.mark.integration
@@ -221,6 +280,243 @@ def mistral_runtime(monkeypatch):
     )
     monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", model_registry)
     return model_registry
+
+
+@pytest.mark.integration
+def test_direct_zai_only_model_stays_unverified_through_mistral(
+    mistral_runtime,
+    caplog,
+):
+    model = "glm-5.5-direct-only"
+    zai_metadata = OrganizationModelMetadata(
+        organization="zai",
+        organization_data={
+            "models": {
+                model: {
+                    "limits": {
+                        "context_window_tokens": 200_000,
+                        "max_output_tokens": 20_000,
+                    },
+                    "pricing_tiers": [
+                        {"input_per_1m": 99.0, "output_per_1m": 199.0}
+                    ],
+                }
+            }
+        },
+    )
+    assert mistral_runtime.register_organization_metadata(zai_metadata) is True
+    assert resolve_model_spec(mistral_runtime, "zai", model) is not None
+    assert resolve_model_spec(mistral_runtime, "mistral", model) is None
+
+    caplog.set_level(logging.WARNING)
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        adapter = UniversalLLMAPIAdapter(
+            organization="zai",
+            service_provider="mistral",
+            model=model,
+            api_key="mistral-test-key",
+        )
+        transport = FakeSyncTransport(
+            {
+                "model": model,
+                "choices": [{"message": {"content": "Unverified."}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+            }
+        )
+        adapter.adapter._sync_transport = transport
+        response = adapter.chat([{"role": "user", "content": "Test routing."}])
+
+    assert adapter.organization == "zai"
+    assert adapter.service_provider == "mistral"
+    assert adapter.model == model
+    assert adapter.adapter.service_provider == "mistral"
+    assert adapter.adapter.model == model
+    assert adapter.adapter.model_spec is None
+    assert any(
+        "not verified" in str(item.message) and model in str(item.message)
+        for item in caught_warnings
+    )
+    assert any(
+        record.levelno >= logging.WARNING
+        and f"Unverified model used: {model}" in record.getMessage()
+        for record in caplog.records
+    )
+    assert transport.requests[0].url == "https://api.mistral.ai/v1/chat/completions"
+    assert transport.requests[0].headers_dict()["Authorization"] == (
+        "Bearer mistral-test-key"
+    )
+    assert transport.requests[0].payload["model"] == model
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("transport", "transport_class", "streaming"),
+    [
+        (transport, transport_class, streaming)
+        for transport, transport_class in (
+            ("requests", RequestsSyncTransport),
+            ("httpx", HttpxSyncTransport),
+        )
+        for streaming in (False, True)
+    ],
+    ids=["requests-chat", "requests-stream", "httpx-chat", "httpx-stream"],
+)
+def test_hosted_glm_5_3_flash_uses_mistral_sync_route_and_wire_id(
+    mistral_runtime,
+    transport,
+    transport_class,
+    streaming,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        service_provider="mistral",
+        model="glm-5.3-flash",
+        api_key="mistral-test-key",
+        transport=transport,
+    )
+    assert isinstance(adapter.adapter._sync_transport, transport_class)
+    fake_transport = FakeSyncTransport(
+        {
+            "id": "cmpl-hosted-glm-sync",
+            "model": "zai-glm-5-3-flash",
+            "choices": [{"message": {"content": "Hosted response."}}],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+        },
+        events=[
+            SSEEvent(
+                event=None,
+                data={
+                    "id": "cmpl-hosted-glm-stream",
+                    "model": "zai-glm-5-3-flash",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "Hosted stream."},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+        ],
+    )
+    adapter.adapter._sync_transport = fake_transport
+
+    if streaming:
+        completed = []
+        assert list(
+            adapter.stream_chat(
+                [{"role": "user", "content": "Say hello."}],
+                on_done=completed.append,
+            )
+        ) == ["Hosted stream."]
+        request = fake_transport.stream_requests[0]
+        assert completed[0].response_id == "cmpl-hosted-glm-stream"
+    else:
+        response = adapter.chat([{"role": "user", "content": "Say hello."}])
+        request = fake_transport.requests[0]
+        assert response.response_id == "cmpl-hosted-glm-sync"
+        assert response.content == "Hosted response."
+
+    assert adapter.organization == "zai"
+    assert adapter.service_provider == "mistral"
+    assert adapter.model == "glm-5.3-flash"
+    assert adapter.adapter.service_provider == "mistral"
+    assert adapter.adapter.model == "glm-5.3-flash"
+    assert request.url == "https://api.mistral.ai/v1/chat/completions"
+    assert request.headers_dict()["Authorization"] == "Bearer mistral-test-key"
+    assert request.payload["model"] == "zai-glm-5-3-flash"
+    _assert_hosted_glm_5_3_flash_uses_mistral_profile(adapter, mistral_runtime)
+
+
+@pytest.mark.integration
+def test_hosted_glm_5_3_flash_uses_mistral_async_routes_and_wire_id(
+    mistral_runtime,
+    monkeypatch,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai",
+        service_provider="mistral",
+        model="glm-5.3-flash",
+        api_key="mistral-test-key",
+    )
+    request_calls = []
+    stream_calls = []
+
+    async def fake_async_request(url, **kwargs):
+        request_calls.append((url, kwargs))
+        return {
+            "id": "cmpl-hosted-glm-async",
+            "model": "zai-glm-5-3-flash",
+            "choices": [{"message": {"content": "Hosted async response."}}],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+        }
+
+    def fake_async_stream_request(url, **kwargs):
+        stream_calls.append((url, kwargs))
+
+        async def events():
+            yield SSEEvent(
+                event=None,
+                data={
+                    "id": "cmpl-hosted-glm-async-stream",
+                    "model": "zai-glm-5-3-flash",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "Hosted async stream."},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+
+        return events()
+
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_request",
+        fake_async_request,
+    )
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+
+    async def run_calls():
+        response = await adapter.achat(
+            [{"role": "user", "content": "Say hello."}]
+        )
+        completed = []
+        streamed = [
+            text
+            async for text in adapter.astream_chat(
+                [{"role": "user", "content": "Say hello."}],
+                on_done=completed.append,
+            )
+        ]
+        return response, streamed, completed
+
+    response, streamed, completed = asyncio.run(run_calls())
+
+    assert response.response_id == "cmpl-hosted-glm-async"
+    assert response.content == "Hosted async response."
+    assert streamed == ["Hosted async stream."]
+    assert completed[0].response_id == "cmpl-hosted-glm-async-stream"
+    assert adapter.organization == "zai"
+    assert adapter.service_provider == "mistral"
+    assert adapter.model == "glm-5.3-flash"
+    assert adapter.adapter.service_provider == "mistral"
+    assert adapter.adapter.model == "glm-5.3-flash"
+    for url, kwargs in (request_calls[0], stream_calls[0]):
+        assert url == "https://api.mistral.ai/v1/chat/completions"
+        assert kwargs["headers"]["Authorization"] == "Bearer mistral-test-key"
+        assert kwargs["payload"]["model"] == "zai-glm-5-3-flash"
+    _assert_hosted_glm_5_3_flash_uses_mistral_profile(adapter, mistral_runtime)
 
 
 @pytest.mark.integration

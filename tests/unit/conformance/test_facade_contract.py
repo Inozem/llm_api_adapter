@@ -986,3 +986,64 @@ def test_facade_rejects_invalid_constructor_values_before_provider_selection():
         UniversalLLMAPIAdapter(organization="openai", model="", api_key="key")
     with pytest.raises(ValueError, match="Invalid API key"):
         UniversalLLMAPIAdapter(organization="openai", model="model", api_key="")
+
+
+@pytest.mark.unit
+def test_flash_facade_selection_uses_mistral_provider_without_zai_catalogue():
+    """Keep optional Flash coverage local so Core-only runs remain available."""
+    plugin_module = pytest.importorskip("llm_api_adapter_mistral.plugin")
+    import llm_api_adapter.adapters.base_adapter as base_adapter_module
+    import llm_api_adapter.universal_adapter as universal_adapter_module
+    from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
+    from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
+
+    plugin = plugin_module.PLUGIN
+    assert plugin.model_metadata is not None
+    registry = RegistrySpec()
+    assert registry.register_organization_metadata(plugin.model_metadata) is True
+    service_providers = ServiceProviderRegistry({})
+    plugin.register(service_providers)
+    with patch.object(base_adapter_module, "LLM_REGISTRY", registry), patch.object(
+        universal_adapter_module, "LLM_REGISTRY", registry
+    ), patch.object(
+        universal_adapter_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        service_providers,
+    ):
+        facade = universal_adapter_module.UniversalLLMAPIAdapter(
+            organization="zai",
+            service_provider="mistral",
+            model="glm-5.3-flash",
+            api_key="test-api-key",
+        )
+        wire_model = facade.adapter.model_spec.provider_model
+        response_payload = {
+            "model": wire_model,
+            "choices": [{"message": {"content": '{"answer": "ok"}'}}],
+        }
+        refusal_payload = {
+            "model": wire_model,
+            "choices": [{"message": {
+                "content": None,
+                "refusal": "I can't help with that.",
+            }}],
+        }
+        transport = Mock(side_effect=[response_payload, refusal_payload])
+        facade.adapter._post_payload = transport
+
+        response = facade.chat(
+            [{"role": "user", "content": "Return JSON."}],
+            json_schema=FLAT_OBJECT_SCHEMA,
+        )
+        refusal = facade.chat(
+            [{"role": "user", "content": "Return JSON."}],
+            response_model=_StructuredAnswer,
+        )
+
+    assert wire_model
+    assert transport.call_args.args[0]["model"] == wire_model
+    assert response.parsed_json == {"answer": "ok"}
+    assert refusal.refusal == "I can't help with that."
+    assert refusal.parsed_json is None
+    assert refusal.parsed_model is None
+    assert refusal.incomplete_reason is None

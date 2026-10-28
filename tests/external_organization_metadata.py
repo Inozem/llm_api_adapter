@@ -46,6 +46,9 @@ class ExternalOrganizationMetadata:
     packages: dict[str, str] = field(default_factory=dict)
     entry_points: dict[str, str] = field(default_factory=dict)
     e2e_profiles: dict[str, str | None] = field(default_factory=dict)
+    e2e_model_organizations: dict[str, tuple[tuple[str, str], ...]] = field(
+        default_factory=dict
+    )
     ci_fields: set[str] = field(default_factory=set)
     ci_outputs: set[str] = field(default_factory=set)
     ci_routes: set[str] = field(default_factory=set)
@@ -222,11 +225,39 @@ def _read_e2e_profiles(root: Path, metadata: ExternalOrganizationMetadata) -> No
                 f"{E2E_PROFILES}: invalid profile {item.id}: {error}"
             )
             continue
+        model_organizations_node = keywords.get("model_organizations")
+        model_organizations: tuple[tuple[str, str], ...] = ()
+        if model_organizations_node is not None:
+            try:
+                parsed_annotations = ast.literal_eval(model_organizations_node)
+                if not isinstance(parsed_annotations, tuple) or any(
+                    not isinstance(annotation, tuple)
+                    or len(annotation) != 2
+                    or any(
+                        not isinstance(value, str) or not value
+                        for value in annotation
+                    )
+                    for annotation in parsed_annotations
+                ):
+                    raise ValueError(
+                        "expected a tuple of (model, organization) pairs"
+                    )
+                model_organizations = parsed_annotations
+                models = [model for model, _ in model_organizations]
+                if len(models) != len(set(models)):
+                    raise ValueError("duplicate model_organizations model")
+            except (SyntaxError, TypeError, ValueError) as error:
+                metadata.issues.append(
+                    f"{E2E_PROFILES}: invalid model_organizations for "
+                    f"{item.id}: {error}"
+                )
+                model_organizations = ()
         if organization in metadata.e2e_profiles:
             metadata.issues.append(
                 f"{E2E_PROFILES}: duplicate active E2E profile {organization!r}"
             )
         metadata.e2e_profiles[organization] = distribution
+        metadata.e2e_model_organizations[organization] = model_organizations
 
 
 def _read_ci_lanes(root: Path, metadata: ExternalOrganizationMetadata) -> None:

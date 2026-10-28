@@ -112,6 +112,16 @@ def _test_plugin(
     )
 
 
+@pytest.mark.unit
+def test_organization_model_metadata_fields_and_plugin_api_v1_remain_compatible():
+    assert tuple(OrganizationModelMetadata.__dataclass_fields__) == (
+        "organization",
+        "organization_data",
+        "request_rule_registry",
+    )
+    assert ORGANIZATION_PLUGIN_API_VERSION == 1
+
+
 @pytest.fixture
 def isolated_plugin_runtime(monkeypatch):
     registry = ServiceProviderRegistry({"anthropic": AnthropicAdapter})
@@ -672,6 +682,48 @@ def test_plugin_failures_are_recorded_without_breaking_registered_organizations(
 
 
 @pytest.mark.unit
+def test_metadata_is_registered_before_failing_plugin_callback(
+    monkeypatch,
+    isolated_plugin_runtime,
+):
+    registry, discovery, model_registry = isolated_plugin_runtime
+    organization = "metadata-before-callback-failure"
+    metadata = _organization_model_metadata(organization)
+
+    def fail_after_metadata_registration(service_provider_registry):
+        assert resolve_model_spec(model_registry, organization, "test-model") is not None
+        raise RuntimeError("register callback failed")
+
+    entry_point = FakeEntryPoint(
+        name=organization,
+        value="failing_plugin.plugin:PLUGIN",
+        plugin=OrganizationPlugin(
+            api_version=ORGANIZATION_PLUGIN_API_VERSION,
+            register=fail_after_metadata_registration,
+            model_metadata=metadata,
+        ),
+    )
+    monkeypatch.setattr(
+        registry_module,
+        "entry_points",
+        lambda *, group: (entry_point,),
+    )
+
+    discovery.discover(registry, model_registry=model_registry)
+
+    model = resolve_model_spec(model_registry, organization, "test-model")
+    assert model is not None
+    assert registry.get(organization) is None
+    assert len(discovery.failures) == 1
+    failure = discovery.failures[0]
+    assert failure.entry_point_name == organization
+    assert failure.entry_point_value == "failing_plugin.plugin:PLUGIN"
+    assert failure.error_type == "RuntimeError"
+    assert failure.message == "register callback failed"
+    assert entry_point.load_calls == 1
+
+
+@pytest.mark.unit
 def test_incompatible_plugin_contract_is_reported_as_a_diagnostic(
     monkeypatch,
     isolated_plugin_runtime,
@@ -725,3 +777,65 @@ def test_invalid_plugin_model_metadata_is_reported_before_organization_registrat
     assert resolve_model_spec(model_registry, "mistral", "test-model") is None
     assert discovery.failures[0].error_type == "ValueError"
     assert "Invalid organization metadata for 'mistral'" in discovery.failures[0].message
+
+
+@pytest.mark.unit
+def test_invalid_and_conflicting_catalogue_registration_leave_prior_state_intact():
+    model_registry = RegistrySpec()
+    valid_metadata = _organization_model_metadata("isolated-catalogue")
+    assert model_registry.register_organization_metadata(valid_metadata) is True
+    prior_organizations = model_registry.organizations
+    prior_profile = resolve_model_spec(
+        model_registry,
+        "isolated-catalogue",
+        "test-model",
+    )
+
+    invalid_metadata = OrganizationModelMetadata(
+        organization="invalid-catalogue",
+        organization_data={"models": {"broken-model": {}}},
+    )
+    with pytest.raises(ValueError, match="Invalid organization metadata"):
+        model_registry.register_organization_metadata(invalid_metadata)
+    assert model_registry.organizations is prior_organizations
+    assert resolve_model_spec(
+        model_registry,
+        "isolated-catalogue",
+        "test-model",
+    ) is prior_profile
+    assert "invalid-catalogue" not in model_registry.organizations
+
+    conflicting_metadata = OrganizationModelMetadata(
+        organization="isolated-catalogue",
+        organization_data={
+            "currency": "USD",
+            "models": {
+                "different-model": {
+                    "limits": {
+                        "context_window_tokens": 128_000,
+                        "max_output_tokens": 16_384,
+                    },
+                    "pricing_tiers": [
+                        {
+                            "up_to_prompt_tokens": None,
+                            "input_per_1m": 9.0,
+                            "output_per_1m": 9.0,
+                        }
+                    ],
+                }
+            },
+        },
+    )
+    with pytest.raises(ValueError, match="Organization metadata already registered"):
+        model_registry.register_organization_metadata(conflicting_metadata)
+    assert model_registry.organizations is prior_organizations
+    assert resolve_model_spec(
+        model_registry,
+        "isolated-catalogue",
+        "test-model",
+    ) is prior_profile
+    assert resolve_model_spec(
+        model_registry,
+        "isolated-catalogue",
+        "different-model",
+    ) is None

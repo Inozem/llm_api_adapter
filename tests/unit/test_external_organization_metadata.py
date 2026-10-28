@@ -76,6 +76,101 @@ def test_checked_out_repository_has_all_external_organization_metadata() -> None
 
 
 @pytest.mark.unit
+def test_mistral_model_organization_is_test_context_only(
+    metadata_repository: Path,
+) -> None:
+    from tests.external_organization_metadata import (
+        read_project_metadata,
+        read_external_organization_metadata,
+    )
+
+    metadata = read_external_organization_metadata(metadata_repository)
+    assert metadata.e2e_profiles["mistral"] == metadata.known_packages["mistral"]
+    assert metadata.known_packages["mistral"] == "llm-api-adapter-mistral"
+    assert metadata.extras["mistral"] == "llm-api-adapter-mistral"
+    assert metadata.e2e_model_organizations["mistral"] == (
+        ("glm-5.3-flash", "zai"),
+    )
+    assert "zai" in metadata.known_packages
+    assert metadata.known_packages["zai"] == metadata.e2e_profiles["zai"]
+
+    core_project = read_project_metadata(metadata_repository / "pyproject.toml")
+    mistral_project = read_project_metadata(
+        metadata_repository / "packages/organizations/mistral/pyproject.toml"
+    )
+    assert core_project["optional-dependencies"]["mistral"] == [
+        "llm-api-adapter-mistral>=0.1.5,<0.2.0"
+    ]
+    assert mistral_project["dependencies"] == ["llm-api-adapter>=0.9.10,<1.0.0"]
+    assert mistral_project["optional-dependencies"] == {
+        "async": ["llm-api-adapter[async]>=0.9.10,<1.0.0"],
+        "httpx": ["llm-api-adapter[httpx]>=0.9.10,<1.0.0"],
+    }
+
+
+@pytest.mark.unit
+def test_unregistered_model_organization_does_not_require_package_metadata(
+    metadata_repository: Path,
+) -> None:
+    from tests.external_organization_metadata import (
+        read_external_organization_metadata,
+    )
+
+    annotation_developer = "test-only-developer"
+    _replace_once(
+        metadata_repository,
+        E2E_PROFILES,
+        'model_organizations=(("glm-5.3-flash", "zai"),)',
+        f'model_organizations=(("glm-5.3-flash", "{annotation_developer}"),)',
+    )
+
+    metadata = read_external_organization_metadata(metadata_repository)
+    assert metadata.e2e_model_organizations["mistral"] == (
+        ("glm-5.3-flash", annotation_developer),
+    )
+    for source in (
+        metadata.known_packages,
+        metadata.extras,
+        metadata.packages,
+        metadata.entry_points,
+        metadata.e2e_profiles,
+    ):
+        assert annotation_developer not in source
+    assert annotation_developer not in metadata.package_directories
+    assert not any(
+        annotation_developer in issue for issue in _validate(metadata_repository)
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("annotation", "expected_issue"),
+    (
+        (
+            '(("glm-5.3-flash", "zai"), ("glm-5.3-flash", "zai"))',
+            "duplicate model_organizations model",
+        ),
+        ('(("glm-5.3-flash", 7),)', "expected a tuple of (model, organization) pairs"),
+    ),
+    ids=("duplicate-model", "malformed-pair"),
+)
+def test_invalid_model_organization_annotations_are_reported(
+    metadata_repository: Path,
+    annotation: str,
+    expected_issue: str,
+) -> None:
+    _replace_once(
+        metadata_repository,
+        E2E_PROFILES,
+        'model_organizations=(("glm-5.3-flash", "zai"),)',
+        f"model_organizations={annotation}",
+    )
+
+    issues = _validate(metadata_repository)
+    assert any(expected_issue in issue for issue in issues), issues
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("organization", ORGANIZATIONS)
 @pytest.mark.parametrize(
     "missing_source",

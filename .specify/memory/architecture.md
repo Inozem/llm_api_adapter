@@ -60,23 +60,24 @@ organization code performs the serialization and parsing around them.
 
 ## Organization and Service-Provider Ownership
 
-An **organization** owns its model identity, verified limits, pricing, reasoning capability, and
-organization-specific compatibility metadata. A **service provider** owns connection selection,
-authentication, endpoint and protocol handling, raw error handling, and usage extraction. A direct
-first-party API normally uses the same identifier for both; the distinction remains required for
-other service providers and runtimes.
+An **organization** identifies the model developer. A **service provider** owns the API integration:
+adapter, credentials, protocol, and verified capabilities, limits, request rules and prices for
+the model as offered through that API.
 
-Built-in adapters cover OpenAI, Anthropic, and Google. Mistral, xAI, Qwen, Kimi, DeepSeek, and
-Z.ai are separate organization distributions. An installed optional package registers its model
-metadata and first-party service-provider adapter through the established organization-plugin
-entry point. The facade does not change when a package is added.
+When omitted, `service_provider` defaults to `organization`. All integrations select both the
+adapter and the exact-model profile by the resulting provider. A developer's profile must not
+substitute for missing metadata from the selected provider.
+
+Public model identity stays separate from API-specific naming; provider adapters own wire
+translation. Native and hosted models reuse the same catalogue and integration mechanisms.
+Different model developers and API owners alone do not justify a parallel routing subsystem.
 
 ## Registry Boundary
 
-The model registry is the authoritative project record for verified model limits, standard token
-rates, reasoning capability, exact-model request rules, and capability exceptions. Structured
-fields own exact values and allowed sets. Capability exceptions describe only semantic deviations
-from the constitutional baseline and must not duplicate those structured values. Registry-owned
+The model registry is the authoritative project record for each service provider's verified model
+limits, standard token rates, reasoning capability, exact-model request rules, and capability
+exceptions. Structured fields own exact values and allowed sets. Capability exceptions describe
+only semantic deviations from the constitutional baseline and must not duplicate those values. Registry-owned
 exceptions are data, not adapter-local model-name logic. The closed request-rule mechanism may
 select an API variant, restrict normalized tool choice, rename a supported request field, or drop
 a documented unsupported field. It may not execute arbitrary callbacks or infer behavior from a
@@ -102,9 +103,10 @@ forms inherit registered base metadata.
 
 ## Request and Response Flow
 
-1. The facade selects an adapter by organization and service provider.
-2. The adapter normalizes messages and validates common request options.
-3. The adapter resolves verified model metadata and applies only its declared compatibility rules.
+1. The facade selects the service provider and its adapter.
+2. The adapter resolves the selected provider's model profile.
+3. The adapter normalizes and validates the request, applying the profile's compatibility rules
+   before provider I/O.
 4. The organization adapter serializes a permitted common request to its native request.
 5. The client or transport exchanges the native request and maps raw failures to public errors.
 6. The adapter normalizes the response, usage, tool calls, optional reasoning, structured result,

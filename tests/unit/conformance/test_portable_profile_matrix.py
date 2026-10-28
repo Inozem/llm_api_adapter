@@ -36,7 +36,7 @@ from llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
 from llm_api_adapter.adapters.google_adapter import GoogleAdapter
 from llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
 from llm_api_adapter.errors.llm_api_error import JSONSchemaError
-from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
+from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
 from llm_api_adapter.llms.anthropic.async_client import ClaudeAsyncClient
 from llm_api_adapter.llms.anthropic.sync_client import ClaudeSyncClient
 from llm_api_adapter.llms.google.async_client import GeminiAsyncClient
@@ -75,6 +75,11 @@ class PortableProfileCase:
     max_tokens: int | None
     sync_client_class: type[Any] | None
     async_client_class: type[Any] | None
+    service_provider: str | None = None
+
+    @property
+    def provider(self) -> str:
+        return self.service_provider or self.organization
 
 
 def _openai_response(content: str) -> dict[str, Any]:
@@ -115,9 +120,13 @@ def _google_response(content: str) -> dict[str, Any]:
     }
 
 
-def _mistral_response(content: str) -> dict[str, Any]:
+def _mistral_response(
+    content: str,
+    *,
+    model: str,
+) -> dict[str, Any]:
     return {
-        "model": "mistral-small-2603",
+        "model": model,
         "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
     }
 
@@ -165,6 +174,12 @@ CASES: Final = (
         id="mistral",
     ),
     pytest.param(
+        PortableProfileCase(
+            "zai", "glm-5.3-flash", 64, None, None, service_provider="mistral",
+        ),
+        id="zai-glm-5.3-flash-via-mistral",
+    ),
+    pytest.param(
         PortableProfileCase("xai", "grok-4.6", 64, None, None),
         id="xai",
     ),
@@ -200,6 +215,7 @@ def _facade(case: PortableProfileCase) -> UniversalLLMAPIAdapter:
         organization=case.organization,
         model=case.model,
         api_key="test-api-key",
+        service_provider=case.service_provider,
     )
 
 
@@ -218,7 +234,18 @@ def _response(case: PortableProfileCase, content: str) -> dict[str, Any]:
         "mistral": _mistral_response,
         "xai": _xai_response,
     }
-    return responses[case.organization](content)
+    if case.provider == "mistral":
+        model_spec = resolve_model_spec(
+            base_adapter_module.LLM_REGISTRY,
+            case.provider,
+            case.model,
+        )
+        assert model_spec is not None
+        return _mistral_response(
+            content,
+            model=model_spec.provider_model or model_spec.name,
+        )
+    return responses[case.provider](content)
 
 
 def _sync_payload_mock(
@@ -234,7 +261,7 @@ def _sync_payload_mock(
             "_send_request",
             new=transport,
         )
-    if case.organization == "mistral":
+    if case.provider == "mistral":
         transport = Mock(return_value=response)
         return transport, patch.object(
             MistralAdapter,
@@ -249,7 +276,7 @@ def _sync_payload_mock(
 def _sync_payload(case: PortableProfileCase, transport: Mock) -> dict[str, Any]:
     if case.sync_client_class is not None:
         return transport.call_args.args[1]
-    if case.organization == "mistral":
+    if case.provider == "mistral":
         return transport.call_args.args[0]
     return {
         "model": transport.call_args.kwargs["model"],
@@ -270,7 +297,7 @@ def _async_payload_mock(
             new=transport,
         )
     transport = AsyncMock(return_value=response)
-    if case.organization == "mistral":
+    if case.provider == "mistral":
         facade.adapter._apost_payload = transport
     else:
         facade.adapter._async_client.create = transport
@@ -280,7 +307,7 @@ def _async_payload_mock(
 def _async_payload(case: PortableProfileCase, transport: AsyncMock) -> dict[str, Any]:
     if case.async_client_class is not None:
         return transport.call_args.args[1]
-    if case.organization == "mistral":
+    if case.provider == "mistral":
         return transport.call_args.args[0]
     return {
         "model": transport.call_args.kwargs["model"],
@@ -363,14 +390,14 @@ def test_portable_profile_raw_schema_matrix_uses_exact_native_payloads(
 
     expected_schema = (
         _google_wire_schema(source_schema)
-        if case.organization == "google"
+        if case.provider == "google"
         else source_schema
     )
     assert response.parsed_json == {"answer": "ok"}
     assert response.refusal is None
     assert response.incomplete_reason is None
     _assert_native_format(
-        case.organization,
+        case.provider,
         _sync_payload(case, transport),
         expected_schema,
     )
@@ -423,15 +450,23 @@ async def test_portable_profile_response_model_has_sync_async_payload_parity(
     expected_model = NestedPydanticResponse(contact={"name": "Ada"})
     assert sync_response.parsed_model == expected_model
     assert async_response.parsed_model == expected_model
+    if case.organization == "zai":
+        model_spec = installed_organization_plugins.organizations[
+            case.provider
+        ].models[case.model]
+        wire_model = model_spec.provider_model
+        assert wire_model is not None
+        assert _sync_payload(case, sync_transport)["model"] == wire_model
+        assert _async_payload(case, async_transport)["model"] == wire_model
     for response in (sync_response, async_response):
         assert response.refusal is None
         assert response.incomplete_reason is None
     expected_schema = _schema_from_payload(
-        case.organization,
+        case.provider,
         _sync_payload(case, sync_transport),
     )
     assert _schema_from_payload(
-        case.organization,
+        case.provider,
         _async_payload(case, async_transport),
     ) == expected_schema
     assert "$defs" not in expected_schema
@@ -439,7 +474,7 @@ async def test_portable_profile_response_model_has_sync_async_payload_parity(
 
 
 def _stream_events(case: PortableProfileCase, content: str) -> list[SSEEvent]:
-    if case.organization == "openai":
+    if case.provider == "openai":
         return [
             SSEEvent(event="response.output_text.delta", data={"delta": content}),
             SSEEvent(
@@ -447,7 +482,7 @@ def _stream_events(case: PortableProfileCase, content: str) -> list[SSEEvent]:
                 data={"response": _openai_response(content)},
             ),
         ]
-    if case.organization == "anthropic":
+    if case.provider == "anthropic":
         return [
             SSEEvent(
                 event="message_start",
@@ -472,12 +507,12 @@ def _stream_events(case: PortableProfileCase, content: str) -> list[SSEEvent]:
             ),
             SSEEvent(event="message_stop", data={}),
         ]
-    if case.organization == "google":
+    if case.provider == "google":
         return [SSEEvent(
             event=None,
             data=_google_response(content),
         )]
-    if case.organization == "mistral":
+    if case.provider == "mistral":
         return [SSEEvent(
             event=None,
             data={"choices": [{
@@ -503,7 +538,7 @@ def _install_sync_stream(
     stream = Mock(return_value=iter(events))
     if case.sync_client_class is not None:
         return patch.object(case.sync_client_class, "stream", new=stream)
-    if case.organization == "mistral":
+    if case.provider == "mistral":
         facade.adapter._stream_payload = stream
     else:
         facade.adapter._client.stream = stream
@@ -609,7 +644,7 @@ def _install_async_stream(
     stream = Mock(return_value=_as_async_iter(events))
     if case.async_client_class is not None:
         return patch.object(case.async_client_class, "stream", new=stream)
-    if case.organization == "mistral":
+    if case.provider == "mistral":
         facade.adapter._astream_payload = stream
     else:
         facade.adapter._async_client.stream = stream
@@ -822,7 +857,7 @@ def _terminal_response(
         return _response(case, '{"contact": {}}')
 
     if outcome == "refusal":
-        if case.organization == "openai":
+        if case.provider == "openai":
             return {
                 "id": "resp_refusal",
                 "model": case.model,
@@ -831,7 +866,7 @@ def _terminal_response(
                     "type": "refusal", "refusal": "I can't help with that.",
                 }]}],
             }
-        if case.organization == "anthropic":
+        if case.provider == "anthropic":
             return {
                 "id": "msg_refusal",
                 "model": case.model,
@@ -840,7 +875,7 @@ def _terminal_response(
                 "content": [],
                 "usage": {"input_tokens": 2, "output_tokens": 0},
             }
-        if case.organization == "google":
+        if case.provider == "google":
             return {
                 "modelVersion": case.model,
                 "candidates": [{
@@ -849,8 +884,17 @@ def _terminal_response(
                     "finishMessage": "Blocked by safety policy.",
                 }],
             }
-        if case.organization == "mistral":
-            raise AssertionError("No distinct Mistral refusal response fixture")
+        if case.provider == "mistral":
+            return {
+                **_response(case, ""),
+                "choices": [{
+                    "message": {
+                        "content": None,
+                        "refusal": "I can't help with that.",
+                    },
+                    "finish_reason": "stop",
+                }],
+            }
         return {
             **_xai_response("unused"),
             "output": [{"type": "message", "content": [{
@@ -858,7 +902,7 @@ def _terminal_response(
             }]}],
         }
 
-    if case.organization == "openai":
+    if case.provider == "openai":
         return {
             "id": "resp_incomplete",
             "model": case.model,
@@ -866,7 +910,7 @@ def _terminal_response(
             "incomplete_details": {"reason": "max_output_tokens"},
             "output": [],
         }
-    if case.organization == "anthropic":
+    if case.provider == "anthropic":
         return {
             "id": "msg_incomplete",
             "model": case.model,
@@ -874,7 +918,7 @@ def _terminal_response(
             "content": [{"type": "text", "text": '{"answer": '}],
             "usage": {"input_tokens": 2, "output_tokens": 3},
         }
-    if case.organization == "google":
+    if case.provider == "google":
         return {
             "modelVersion": case.model,
             "candidates": [{
@@ -882,9 +926,9 @@ def _terminal_response(
                 "finishReason": "MAX_TOKENS",
             }],
         }
-    if case.organization == "mistral":
+    if case.provider == "mistral":
         return {
-            **_mistral_response('{"answer": '),
+            **_response(case, '{"answer": '),
             "choices": [{
                 "message": {"content": '{"answer": '},
                 "finish_reason": "length",
@@ -934,7 +978,6 @@ _TERMINAL_CASES = tuple(
         "invalid_json",
         "pydantic_validation_error",
     )
-    # The Mistral fixture has no explicit refusal signal to normalize.
     if outcome != "refusal" or case.values[0].organization != "mistral"
 )
 
@@ -950,7 +993,7 @@ async def test_portable_profile_terminal_outcomes_keep_sync_async_contracts(
     if outcome in {"refusal", "incomplete"}:
         capability_id = f"{outcome}_outcome"
         model_spec = installed_organization_plugins.organizations[
-            case.organization
+            case.provider
         ].models[case.model]
         exception_behavior = next(
             (

@@ -38,6 +38,7 @@ def _requested_capabilities(
 def select_model_scenarios(
     *,
     organization: str,
+    service_provider: str | None = None,
     model: ModelSpec,
     capabilities: Iterable[ModelCapability] = E2E_SCENARIO_CAPABILITIES,
     baseline_scenarios: Mapping[str, str] = BASELINE_SCENARIOS,
@@ -54,6 +55,7 @@ def select_model_scenarios(
         exception.capability_id: exception
         for exception in model.require_capability_profile()
     }
+    evidence_owner = service_provider or organization
     selected = []
     for capability in _requested_capabilities(capabilities):
         capability_id = capability.id
@@ -67,7 +69,7 @@ def select_model_scenarios(
                 node_id = baseline_scenarios.get(capability_id)
             else:
                 node_id = exception_scenarios.get(
-                    (capability_id, behavior_id, organization)
+                    (capability_id, behavior_id, evidence_owner)
                 ) or exception_scenarios.get((capability_id, behavior_id, None))
 
         if node_id is None:
