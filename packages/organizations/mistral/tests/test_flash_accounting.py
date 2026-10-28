@@ -425,4 +425,3 @@ def test_flash_stream_uses_final_event_usage_only_and_interruption_has_no_comple
                     pass
         asyncio.run(collect_interrupted())
     assert completed == []
-
