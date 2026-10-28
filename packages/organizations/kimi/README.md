@@ -54,27 +54,29 @@ print(response.content)
 ## Supported models
 
 - `kimi-k3`
+- `kimi-k3.1-pro`
+- `kimi-k3.1-pro-highspeed`
 - `kimi-k2.6`
 
 ## Capabilities
 
 | Capability | Supported models |
 | --- | --- |
-| Text chat; sync/async streaming; application tools; portable JSON Schema/Pydantic output; image bytes and data URIs | Both models |
+| Text chat; sync/async streaming; application tools; portable JSON Schema/Pydantic output; image bytes and data URIs | All models |
 | Public `ImagePart` URLs and every `DocumentPart` PDF URL or byte | Unsupported; rejected before HTTP |
 
-`reasoning_level` is resolved automatically from registry metadata. K3 cannot
-disable reasoning, so `reasoning_level="none"` uses the registered minimum and
-warns. K2.6 maps `"none"` to disabled thinking and every other valid level to
-enabled thinking. When omitted, no thinking control is sent and Kimi's native
-default is preserved.
+`reasoning_level` is resolved automatically from registry metadata. K3 and K3.1
+Pro cannot disable reasoning, so `reasoning_level="none"` uses the registered
+minimum and warns. K2.6 maps `"none"` to disabled thinking and every other valid
+level to enabled thinking. When omitted, no thinking control is sent and Kimi's
+native default is preserved.
 Reasoning is never mixed into visible text; use
 `capture_reasoning=True` for opt-in observability.
 
-Both models reject named tool choice before transport. `kimi-k3` accepts
-`tool_choice="any"`; `kimi-k2.6` rejects it and accepts only automatic or
-disabled tool choice. Exact supported values, request rules, and exceptions
-are recorded in the [Kimi registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/kimi/src/llm_api_adapter_kimi/registry/organizations/kimi.json).
+All models reject named tool choice before transport. `kimi-k3` and the K3.1 Pro
+models accept `tool_choice="any"`; `kimi-k2.6` rejects it and accepts only
+automatic or disabled tool choice. Exact supported values, request rules, and
+exceptions are recorded in the [Kimi registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/kimi/src/llm_api_adapter_kimi/registry/organizations/kimi.json).
 
 ## History and files
 
@@ -94,9 +96,10 @@ Kimi maps authentication/authorization (401/403), rate-limit (429), timeout
 ## Automatic cache usage and pricing
 
 `usage.prompt_tokens_details.cached_tokens` becomes `Usage.cached_tokens`;
-the legacy `usage.cached_tokens` field is also accepted. K3 additionally
-reports `prompt_tokens_details.cache_write_tokens` as `Usage.cache_write_tokens`
-for its automatic cache-write component. Both are disjoint subsets of total
+the legacy `usage.cached_tokens` field is also accepted. K3 and K3.1 Pro
+additionally report `prompt_tokens_details.cache_write_tokens` as
+`Usage.cache_write_tokens`
+for their automatic cache-write component. Both are disjoint subsets of total
 `Usage.input_tokens`. K2.6 has registered automatic cache-read pricing only.
 
 Input cost uses ordinary, read, and applicable write rates from the USD

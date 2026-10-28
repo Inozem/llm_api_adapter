@@ -56,7 +56,15 @@ from tests.fixtures.structured_output import (
 )
 
 
-KIMI_MODELS = ("kimi-k3", "kimi-k2.6")
+KIMI_MODELS = (
+    "kimi-k3",
+    "kimi-k3.1-pro",
+    "kimi-k3.1-pro-highspeed",
+    "kimi-k2.6",
+)
+KIMI_K3_MODELS = frozenset(
+    {"kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"}
+)
 WEATHER_TOOL = ToolSpec(
     name="get_weather",
     description="Return the current weather for a city.",
@@ -219,7 +227,7 @@ def kimi_chat_sse_events(model: str = "kimi-k3") -> list[SSEEvent]:
         "model": model,
     }
     prompt_details = {"cached_tokens": 12}
-    if model == "kimi-k3":
+    if model in KIMI_K3_MODELS:
         prompt_details["cache_write_tokens"] = 5
     return [
         SSEEvent(
@@ -407,6 +415,22 @@ def test_kimi_metadata_uses_standard_pricing_tiers():
             "pdf_url",
             "pdf_bytes",
         },
+        "kimi-k3.1-pro": {
+            "reasoning_control",
+            "provider_continuation",
+            "tool_choice_named",
+            "image_url",
+            "pdf_url",
+            "pdf_bytes",
+        },
+        "kimi-k3.1-pro-highspeed": {
+            "reasoning_control",
+            "provider_continuation",
+            "tool_choice_named",
+            "image_url",
+            "pdf_url",
+            "pdf_bytes",
+        },
         "kimi-k2.6": {
             "provider_continuation",
             "tool_choice_any",
@@ -444,6 +468,28 @@ def test_kimi_metadata_uses_standard_pricing_tiers():
             "input_per_1m": 0.95,
             "output_per_1m": 4.0,
             "cache_read_input_per_1m": 0.16,
+        },
+    ]
+    assert ORGANIZATION_DATA["models"]["kimi-k3.1-pro"]["limits"] == {
+        "context_window_tokens": 1_048_576,
+        "max_output_tokens": 1_048_576,
+    }
+    assert ORGANIZATION_DATA["models"]["kimi-k3.1-pro"]["pricing_tiers"] == [
+        {
+            "up_to_prompt_tokens": None,
+            "input_per_1m": 2.0,
+            "output_per_1m": 10.0,
+            "cache_read_input_per_1m": 0.2,
+            "cache_write_input_per_1m": 2.0,
+        },
+    ]
+    assert ORGANIZATION_DATA["models"]["kimi-k3.1-pro-highspeed"]["pricing_tiers"] == [
+        {
+            "up_to_prompt_tokens": None,
+            "input_per_1m": 4.0,
+            "output_per_1m": 20.0,
+            "cache_read_input_per_1m": 0.2,
+            "cache_write_input_per_1m": 4.0,
         },
     ]
 
@@ -517,7 +563,9 @@ def test_universal_chat_uses_chat_completions_for_every_declared_model(
             {"role": "user", "content": "Hello"},
         ],
     }
-    expected_payload["max_completion_tokens" if model == "kimi-k3" else "max_tokens"] = 64
+    expected_payload[
+        "max_completion_tokens" if model in KIMI_K3_MODELS else "max_tokens"
+    ] = 64
     assert request.payload == expected_payload
 
 
@@ -1251,6 +1299,13 @@ def test_kimi_rejects_malformed_chat_completions_responses(kimi_runtime, payload
             {"reasoning_effort": "low"},
             "cannot disable reasoning",
         ),
+        ("kimi-k3.1-pro", "high", {"reasoning_effort": "high"}, None),
+        (
+            "kimi-k3.1-pro-highspeed",
+            "none",
+            {"reasoning_effort": "low"},
+            "cannot disable reasoning",
+        ),
         ("kimi-k2.6", "high", {}, None),
         ("kimi-k2.6", "none", {"thinking": {"type": "disabled"}}, None),
     ],
@@ -1376,6 +1431,14 @@ def test_kimi_stream_reconstructs_chat_completion_and_callback_order(
         assert completed[0].usage.cache_write_tokens == 5
         expected_input_cost = (12 * 0.30 + 5 * 3.00 + 2 * 3.00) / 1_000_000
         output_rate = 15.00
+    elif model == "kimi-k3.1-pro":
+        assert completed[0].usage.cache_write_tokens == 5
+        expected_input_cost = (12 * 0.20 + 5 * 2.00 + 2 * 2.00) / 1_000_000
+        output_rate = 10.00
+    elif model == "kimi-k3.1-pro-highspeed":
+        assert completed[0].usage.cache_write_tokens == 5
+        expected_input_cost = (12 * 0.20 + 5 * 4.00 + 2 * 4.00) / 1_000_000
+        output_rate = 20.00
     else:
         assert completed[0].usage.cache_write_tokens is None
         expected_input_cost = (12 * 0.16 + 7 * 0.95) / 1_000_000
@@ -1404,7 +1467,9 @@ def test_kimi_stream_reconstructs_chat_completion_and_callback_order(
         "stream": True,
         "stream_options": {"include_usage": True},
     }
-    expected_payload["max_completion_tokens" if model == "kimi-k3" else "max_tokens"] = 64
+    expected_payload[
+        "max_completion_tokens" if model in KIMI_K3_MODELS else "max_tokens"
+    ] = 64
     assert request.payload == expected_payload
 
 
@@ -1635,7 +1700,9 @@ async def test_kimi_achat_uses_httpx_async_client(kimi_runtime, monkeypatch, mod
         ],
         "tool_choice": "auto",
     }
-    expected_payload["max_completion_tokens" if model == "kimi-k3" else "max_tokens"] = 64
+    expected_payload[
+        "max_completion_tokens" if model in KIMI_K3_MODELS else "max_tokens"
+    ] = 64
     assert requests[0][1]["payload"] == expected_payload
     assert requests[0][1]["timeout"] == 12.5
 
