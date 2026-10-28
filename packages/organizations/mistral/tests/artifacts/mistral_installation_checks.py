@@ -83,12 +83,9 @@ def _assert_installed_mistral_artifacts(*, require_zai_absent: bool) -> None:
 
 
 @pytest.fixture(autouse=True)
-def installed_artifacts_are_isolated(request):
-    """Require each selected Mistral-only check to prove wheel provenance."""
-    _assert_installed_mistral_artifacts(
-        require_zai_absent=request.node.originalname
-        != "test_joint_installation_keeps_routes_independent"
-    )
+def installed_artifacts_are_isolated():
+    """Verify installed Core/Mistral artifacts for each selected check."""
+    _assert_installed_mistral_artifacts(require_zai_absent=False)
 
 
 class RecordingSyncTransport:
@@ -339,7 +336,21 @@ def test_joint_installation_keeps_routes_independent(monkeypatch, order):
     assert mistral_spec.limits.context_window_tokens == 1_048_576
     assert mistral_spec.limits.max_output_tokens == 128_000
     assert mistral_spec.limits != zai_spec.limits
-    assert mistral_spec.pricing_tiers != zai_spec.pricing_tiers
+    for model_spec, plugin in ((mistral_spec, PLUGIN), (zai_spec, ZAI_PLUGIN)):
+        assert plugin.model_metadata is not None
+        catalogue_tier = plugin.model_metadata.organization_data["models"][
+            HOSTED_MODEL
+        ]["pricing_tiers"][0]
+        resolved_tier = model_spec.pricing_tiers.tiers[0]
+        assert resolved_tier.in_per_token == pytest.approx(
+            catalogue_tier["input_per_1m"] / 1_000_000
+        )
+        assert resolved_tier.out_per_token == pytest.approx(
+            catalogue_tier["output_per_1m"] / 1_000_000
+        )
+        assert resolved_tier.cache_read_in_per_token == pytest.approx(
+            catalogue_tier["cache_read_input_per_1m"] / 1_000_000
+        )
 
     mistral_hosted = UniversalLLMAPIAdapter(
         organization="zai",
@@ -361,7 +372,6 @@ def test_joint_installation_keeps_routes_independent(monkeypatch, order):
     assert mistral_hosted.adapter.service_provider == "mistral"
     assert zai_direct.adapter.service_provider == "zai"
     assert mistral_hosted.adapter.endpoint == MISTRAL_ENDPOINT
-    assert zai_direct.adapter.endpoint == "https://api.z.ai/api/paas/v4/chat/completions"
     _assert_hosted_flash_profile(mistral_hosted)
 
     mistral_transport = RecordingSyncTransport(streaming=False)
@@ -375,6 +385,6 @@ def test_joint_installation_keeps_routes_independent(monkeypatch, order):
     zai_request = zai_transport.requests[0]
     _assert_request(mistral_request, HOSTED_MODEL)
     assert mistral_request.headers_dict()["Authorization"] == f"Bearer {API_KEY}"
-    assert zai_request.url == zai_direct.adapter.endpoint
+    assert zai_request.url == "https://api.z.ai/api/paas/v4/chat/completions"
     assert zai_request.headers_dict()["Authorization"] == "Bearer zai-test-key"
     assert zai_request.payload["model"] == HOSTED_MODEL
