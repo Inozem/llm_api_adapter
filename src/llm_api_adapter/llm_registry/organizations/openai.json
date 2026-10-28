@@ -545,35 +545,6 @@
         }
       ]
     },
-    "gpt-4.1-nano": {
-      "capability_exceptions": [
-        {
-          "capability_id": "reasoning_control",
-          "behavior_id": "ignored",
-          "behavior": "reasoning_level is accepted for Core API compatibility but ignored because reasoning_capability is absent; Core emits a warning and sends no reasoning control."
-        },
-        {
-          "capability_id": "provider_continuation",
-          "behavior_id": "ignored",
-          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
-        }
-      ],
-      "request_rules": [
-        {"handler": "rename_parameter", "arguments": {"from": "max_tokens", "to": "max_completion_tokens"}}
-      ],
-      "limits": {
-        "context_window_tokens": 1047576,
-        "max_output_tokens": 32768
-      },
-      "pricing_tiers": [
-        {
-          "up_to_prompt_tokens": null,
-          "input_per_1m": 0.1,
-          "output_per_1m": 0.4,
-          "cache_read_input_per_1m": 0.025
-        }
-      ]
-    },
     "gpt-4o": {
       "capability_exceptions": [
         {
