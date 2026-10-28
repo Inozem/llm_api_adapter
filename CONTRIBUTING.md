@@ -41,13 +41,11 @@ specify init --here --force --integration codex --script ps
 ```
 
 Keep feature artifacts under `specs/` locally. Include relevant scope and
-validation results in pull requests. Commit the
-[constitution](.specify/memory/constitution.md), the
-[living architecture](.specify/memory/architecture.md), and the project-specific
-`.agents/skills/speckit-taskstoissues/SKILL.md`. Other generated `.specify/`
-files and bundled Spec Kit agent skills stay local. The
-`speckit-taskstoissues` skill requires a locally initialized `.specify/`
-directory and a feature `tasks.md` before it can create GitHub issues.
+validation results in pull requests. Generated Spec Kit scripts, templates and
+bundled agent skills stay local; the project-specific
+`.agents/skills/speckit-taskstoissues/SKILL.md` remains versioned. That skill
+requires a locally initialized `.specify/` directory and a feature `tasks.md`
+before it can create GitHub issues.
 
 ## Deterministic test suite
 
@@ -140,6 +138,42 @@ placeholder. Collection must not require API keys or operation credentials such
 as `QWEN_WORKSPACE_ID`, construct a live client, or send requests. A successful
 collection checks selection and imports; it does not prove live provider behavior.
 
+For Mistral, collect the shared scenarios with the explicit root directory:
+
+```bash
+python -m pytest --collect-only -q --import-mode=importlib -m e2e_mistral --rootdir=. tests/e2e
+```
+
+This credential-free command checks test selection and imports only; it does
+not exercise Mistral behavior. Other providers with package-local E2E tests
+should include their package path as described above.
+
+### Isolated provider-package wheel checks
+
+When a provider package has artifact-specific installation checks, build its
+wheel and the required Core or provider-package wheels. Install the exact wheel
+files into fresh environments outside the checkout, without editable installs.
+Test provider-only installation, and test joint installation when coexistence
+with another optional provider package is relevant. The checks should verify
+that imports resolve to the installed distributions and that required packages
+are present or absent as expected.
+
+Keep artifact-check modules outside pytest's default `test_*.py` and `*_test.py`
+discovery. Run each environment's dedicated checks from outside the checkout
+with the fresh environment's Python, isolated mode, importlib collection, and
+external pytest roots. For example, from the external check directory:
+
+```bash
+<fresh-env-python> -I -m pytest --import-mode=importlib \
+  --rootdir=<check-dir> --confcutdir=<check-dir> \
+  <check-dir>/<artifact-check-module.py>
+```
+
+Collection-only commands verify test selection and imports; they do not verify
+installed origins or package-presence boundaries. The current Mistral artifact
+check covers Mistral-only installation and coexistence with Z.ai, and its
+hosted route is verified with the Z.ai distribution absent.
+
 ### Authorized live runs
 
 The required environment variables are:
@@ -221,6 +255,14 @@ For a release candidate, open a pull request to `main` first. After review and d
 
 Only after the staging pull request is merged does the [dev release workflow](.github/workflows/ci-dev-release.yml) publish changed distributions to TestPyPI and run paid E2E tests. A core change selects the affected independent OpenAI, Anthropic, and Google E2E lanes. A shared Core dependency additionally runs the Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai lanes; a provider-specific built-in adapter, client, or registry change runs only that Core organization lane. Shared E2E infrastructure runs every applicable lane. Each core lane receives only its own API key; `e2e_builtin` is not used in CI. A Mistral, xAI, Qwen, Kimi, DeepSeek, or Z.ai package change publishes only that organization package and runs its corresponding lane. Each lane installs the exact TestPyPI versions through the matching optional extra, verifies plugin discovery when needed, then makes provider calls. Core and organization packages are independently versioned: use the versions declared in the root `pyproject.toml` and the changed package's `pyproject.toml`; release-specific target pairs belong in the relevant quickstart or release notes. Every changed distribution needs a new version because TestPyPI artifacts are immutable; do not raise the version of an unchanged package. The installer retries twice with two-minute waits for TestPyPI propagation and never falls back to an older candidate. After the workflow passes, the maintainer manually installs the TestPyPI packages and verifies the changed behavior and critical flows before merging the pull request to `main`. Do not push directly to `dev`, and do not run these paid provider calls as part of a deterministic PR matrix or multiply them across Python versions.
 
+For the current Mistral lane, the post-publish exact-candidate gate runs only
+after the staging PR merges to protected `dev`. It uses the changed TestPyPI
+artifacts, provides only `MISTRAL_API_KEY`, asserts the Z.ai distribution is
+absent, and runs all applicable shared and package-local E2E scenarios for
+native Mistral models and hosted Flash. The existing workflow handles TestPyPI
+propagation and rejects older candidates. Do not add a Z.ai lane or run paid
+Mistral calls in PR matrices.
+
 ## Provider-key safety
 
 - Keep keys in local environment variables, an ignored local `.env`, or GitHub Actions Secrets.
@@ -231,9 +273,18 @@ Only after the staging pull request is merged does the [dev release workflow](.g
 
 ## Registry verification
 
-The [project constitution](.specify/memory/constitution.md) defines the shared
-baseline and exception policy. For every registry-data update, verify the
-model identifier, context window, output-limit meaning, tier boundaries, reasoning
+### Model developer and API provider
+
+`organization` identifies the model developer. `service_provider` selects the API integration
+and model profile; it defaults to `organization` when omitted. Review and test that profiles,
+credentials and evidence follow the selected provider for native and hosted models alike.
+Preserve public model identity and omitted-provider compatibility, and never borrow another
+provider's profile when the selected provider's metadata is missing.
+
+### Verified model facts
+
+For every registry-data update, verify the model identifier, context window,
+output-limit meaning, tier boundaries, reasoning
 capabilities, request rules, exceptions, aliases, and deprecation status against
 the provider's official documentation. Record source links, verification date,
 and applicable API, region, currency, and pricing context in review evidence.
@@ -303,9 +354,9 @@ cache component, and any tier or dispatch-time conditions. Unreported counts
 remain unknown unless an applicable documented provider contract establishes a
 default; invalid or contradictory counts and unverified rates remain unknown.
 An explicitly reported zero remains zero. Verify provider defaults against
-official API and schema sources, add deterministic coverage for changed
-semantics and preserved unknown cases, and follow the technical
-[Usage and Cost Boundary](.specify/memory/architecture.md#usage-and-cost-boundary).
+official API and schema sources and add deterministic coverage for changed
+semantics and preserved unknown cases. Keep non-token charges separate and leave
+calculated totals unavailable when an incurred component cannot be fully priced.
 Do not activate or record opt-in cache controls, selectable TTLs, or storage
 rates. See [usage and pricing](README.md#token-usage-and-pricing) for incomplete
 cost behavior.
@@ -350,7 +401,7 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
 - Keep README focused on the public package contract, installation, and user-facing examples.
 - Keep version-specific changes and migration notes in GitHub release descriptions.
 - Keep contributor setup, test commands, provider-key rules, CI details, and release procedures in this guide.
-- Update the constitution when the provider-neutral baseline changes, and update the relevant compatibility and architecture documentation when public behavior, provider mappings, or test workflows change.
+- When public behavior, provider mappings or test workflows change, update the relevant README, package guides and contributor instructions alongside the tests.
 - When structured-output behavior changes, update the README's portable-profile contract, the organization-package READMEs, and deterministic conformance tests together. Do not claim arbitrary JSON Schema compatibility.
 - Examples must not require credentials merely to import. Live calls should be explicit and documented.
 - When code or project artifacts change, run `graphify update .` and review the resulting diff.

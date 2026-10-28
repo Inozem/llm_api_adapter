@@ -181,6 +181,51 @@ def test_openai_sol_has_verified_registry_metadata(registry):
 
 
 @pytest.mark.unit
+def test_openai_terra_has_verified_registry_metadata(registry):
+    model = _model(registry, "openai", "gpt-6.1-terra")
+
+    assert model.limits.context_window_tokens == 1_050_000
+    assert model.limits.max_output_tokens == 128_000
+    assert model.reasoning_capability.allowed_values == (
+        "none", "low", "medium", "high", "xhigh", "max",
+    )
+    assert model.request_rules.api_variant == "responses"
+    assert [rule.handler for rule in model.request_rules.rules[1:]] == [
+        "drop_parameter_unless",
+        "drop_parameter_unless",
+    ]
+    assert [rule.arguments["path"] for rule in model.request_rules.rules[1:]] == [
+        "top_p",
+        "temperature",
+    ]
+    assert [
+        (
+            tier.up_to_prompt_tokens,
+            tier.in_per_token,
+            tier.out_per_token,
+            tier.cache_read_in_per_token,
+            tier.cache_write_in_per_token,
+        )
+        for tier in model.pricing_tiers.tiers
+    ] == [
+        (
+            272_000,
+            1 / 1_000_000,
+            5 / 1_000_000,
+            0.05 / 1_000_000,
+            1.25 / 1_000_000,
+        ),
+        (
+            None,
+            2 / 1_000_000,
+            7.5 / 1_000_000,
+            0.1 / 1_000_000,
+            2.5 / 1_000_000,
+        ),
+    ]
+
+
+@pytest.mark.unit
 def test_openai_luna_has_verified_registry_metadata(registry):
     model = _model(registry, "openai", "gpt-6-luna")
 

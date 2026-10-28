@@ -555,8 +555,8 @@ jobs:
           for attempt in 1 2 3; do
             if pip install --index-url https://test.pypi.org/simple/ \
               --extra-index-url https://pypi.org/simple \
-              "llm-api-adapter[mistral]==${CORE_CANDIDATE_VERSION}" \
-              "llm-api-adapter-mistral==${MISTRAL_CANDIDATE_VERSION}"; then
+              "llm-api-adapter[mistral,async,httpx]==${CORE_CANDIDATE_VERSION}" \
+              "llm-api-adapter-mistral[async,httpx]==${MISTRAL_CANDIDATE_VERSION}"; then
               exit 0
             fi
 
@@ -571,10 +571,36 @@ jobs:
 
       - name: Verify Mistral plugin discovery
         run: |
-          python -c "from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter; UniversalLLMAPIAdapter(organization='mistral', model='mistral-large-2512', api_key='test-key')"
+          python - <<'PY'
+          from importlib.metadata import PackageNotFoundError, distribution
+
+          from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+          try:
+              distribution("llm-api-adapter-zai")
+          except PackageNotFoundError:
+              pass
+          else:
+              raise AssertionError("llm-api-adapter-zai must not be installed in the Mistral lane")
+
+          for model in (
+              "mistral-large-4",
+              "mistral-small-2603",
+              "mistral-medium-3-5",
+              "mistral-large-2512",
+          ):
+              UniversalLLMAPIAdapter(organization="mistral", model=model, api_key="test-key")
+
+          UniversalLLMAPIAdapter(
+              organization="zai",
+              service_provider="mistral",
+              model="glm-5.3-flash",
+              api_key="test-key",
+          )
+          PY
 
       - name: Run Mistral E2E tests
-        run: pytest -v --import-mode=importlib -m e2e_mistral
+        run: pytest -v --import-mode=importlib -m e2e_mistral --rootdir=. tests/e2e
 
   post-publish-xai-e2e:
     name: xAI E2E tests (release candidate)

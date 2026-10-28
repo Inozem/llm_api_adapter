@@ -65,7 +65,12 @@ async def test_async_chat_returns_structured_response_and_pricing(
         pytest.skip("No organization API key is configured")
 
     response = await async_chat_with_retry(
-        e2e_adapter(e2e_model_organization, model.name),
+        e2e_adapter(
+            e2e_model_organization,
+            model.name,
+            organization_name=e2e_model_case.organization,
+            service_provider=e2e_model_case.service_provider,
+        ),
         messages=[UserMessage('Return JSON with name="Alice" and age=30.')],
         max_tokens=1024,
         json_schema=SIMPLE_SCHEMA,
@@ -113,7 +118,12 @@ async def test_async_streaming_preserves_callbacks_and_final_response(
         completed.clear()
 
     text_chunks = await async_stream_with_retry(
-        e2e_adapter(e2e_model_organization, model.name),
+        e2e_adapter(
+            e2e_model_organization,
+            model.name,
+            organization_name=e2e_model_case.organization,
+            service_provider=e2e_model_case.service_provider,
+        ),
         messages=[UserMessage("Reply with exactly: OK")],
         max_tokens=1024,
         timeout_s=60,
@@ -153,11 +163,17 @@ async def test_async_tools_round_trip_with_previous_response(
         pytest.skip("No organization API key is configured")
 
     tool_choice = tool_choice_for_model(
-        organization["name"],
+        e2e_model_case.organization,
         model.name,
         KUDIBLOID_TOOL.name,
+        service_provider=e2e_model_case.service_provider,
     )
-    adapter = e2e_adapter(organization, model.name)
+    adapter = e2e_adapter(
+        organization,
+        model.name,
+        organization_name=e2e_model_case.organization,
+        service_provider=e2e_model_case.service_provider,
+    )
     messages = [
         UserMessage(
             "Retrieve the kudibloid count for 7 brankiches. The count is "
@@ -222,7 +238,12 @@ async def test_async_image_input_returns_text(
         pytest.skip("No organization API key is configured")
 
     image_response = await async_chat_with_retry(
-        e2e_adapter(e2e_model_organization, model.name),
+        e2e_adapter(
+            e2e_model_organization,
+            model.name,
+            organization_name=e2e_model_case.organization,
+            service_provider=e2e_model_case.service_provider,
+        ),
         messages=[
             UserMessage(
                 "Describe this image in one short sentence.",
@@ -252,7 +273,12 @@ async def test_async_document_input_returns_text(
         pytest.skip("No organization API key is configured")
 
     document_response = await async_chat_with_retry(
-        e2e_adapter(e2e_model_organization, model.name),
+        e2e_adapter(
+            e2e_model_organization,
+            model.name,
+            organization_name=e2e_model_case.organization,
+            service_provider=e2e_model_case.service_provider,
+        ),
         messages=[
             harness.make_document_message(
                 "Summarize this document in one sentence.",
@@ -280,7 +306,10 @@ async def test_async_errors_are_normalized(
 
     with pytest.raises(LLMAPIAuthorizationError):
         await e2e_adapter(
-            {**organization, "api_key": "NON_VALID_KEY"}, model.name
+            {**organization, "api_key": "NON_VALID_KEY"},
+            model.name,
+            organization_name=e2e_model_case.organization,
+            service_provider=e2e_model_case.service_provider,
         ).achat(
             messages=[UserMessage("Say OK")],
             max_tokens=32,

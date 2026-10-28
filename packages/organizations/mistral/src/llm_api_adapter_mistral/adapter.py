@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 from typing import Any, AsyncIterator, Iterator, List, Mapping, Optional
 import warnings
@@ -118,19 +118,32 @@ class MistralAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Generate one response through ``POST /v1/chat/completions``."""
+        request_context, temperature, top_p, reasoning_effort = (
+            self._prepare_request_context(
+                messages,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                tools=tools,
+                tool_choice=tool_choice,
+                previous_response=previous_response,
+                json_schema=json_schema,
+                response_model=response_model,
+            )
+        )
         prepared_documents = self._prepare_document_messages(messages, timeout_s)
-        request_context, payload = self._prepare_request_payload(
-            prepared_documents.messages,
+        request_context = replace(
+            request_context,
+            normalized_messages=prepared_documents.messages,
+        )
+        payload = self._build_request_payload(
+            request_context,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            reasoning_level=reasoning_level,
+            reasoning_effort=reasoning_effort,
             tools=tools,
-            tool_choice=tool_choice,
             parallel_tool_calls=parallel_tool_calls,
-            previous_response=previous_response,
-            json_schema=json_schema,
-            response_model=response_model,
         )
 
         try:
@@ -169,22 +182,35 @@ class MistralAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Generate one response without blocking the event loop."""
+        request_context, temperature, top_p, reasoning_effort = (
+            self._prepare_request_context(
+                messages,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                tools=tools,
+                tool_choice=tool_choice,
+                previous_response=previous_response,
+                json_schema=json_schema,
+                response_model=response_model,
+            )
+        )
         prepared_documents = await self._prepare_document_messages_async(
             messages,
             timeout_s,
         )
-        request_context, payload = self._prepare_request_payload(
-            prepared_documents.messages,
+        request_context = replace(
+            request_context,
+            normalized_messages=prepared_documents.messages,
+        )
+        payload = self._build_request_payload(
+            request_context,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            reasoning_level=reasoning_level,
+            reasoning_effort=reasoning_effort,
             tools=tools,
-            tool_choice=tool_choice,
             parallel_tool_calls=parallel_tool_calls,
-            previous_response=previous_response,
-            json_schema=json_schema,
-            response_model=response_model,
         )
 
         try:
@@ -229,23 +255,36 @@ class MistralAdapter(LLMAdapterBase):
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
         """Stream normalized visible deltas from Mistral's SSE endpoint."""
-        prepared_documents = self._prepare_document_messages(messages, timeout_s)
-        request_context, payload = self._prepare_request_payload(
-            prepared_documents.messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_level=reasoning_level,
-            tools=tools,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            previous_response=previous_response,
-            json_schema=json_schema,
-            response_model=response_model,
+        request_context, temperature, top_p, reasoning_effort = (
+            self._prepare_request_context(
+                messages,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                tools=tools,
+                tool_choice=tool_choice,
+                previous_response=previous_response,
+                json_schema=json_schema,
+                response_model=response_model,
+            )
         )
         state = self._new_stream_state(
             buffer_chars=buffer_chars,
             capture_reasoning=capture_reasoning,
+        )
+        prepared_documents = self._prepare_document_messages(messages, timeout_s)
+        request_context = replace(
+            request_context,
+            normalized_messages=prepared_documents.messages,
+        )
+        payload = self._build_request_payload(
+            request_context,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            reasoning_effort=reasoning_effort,
+            tools=tools,
+            parallel_tool_calls=parallel_tool_calls,
         )
         state.ocr_operations = prepared_documents.ocr_operations
         events = self._stream_payload(payload, timeout_s)
@@ -333,26 +372,39 @@ class MistralAdapter(LLMAdapterBase):
         capture_reasoning: bool,
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
-        prepared_documents = await self._prepare_document_messages_async(
-            messages,
-            timeout_s,
-        )
-        request_context, payload = self._prepare_request_payload(
-            prepared_documents.messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_level=reasoning_level,
-            tools=tools,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            previous_response=previous_response,
-            json_schema=json_schema,
-            response_model=response_model,
+        request_context, temperature, top_p, reasoning_effort = (
+            self._prepare_request_context(
+                messages,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                tools=tools,
+                tool_choice=tool_choice,
+                previous_response=previous_response,
+                json_schema=json_schema,
+                response_model=response_model,
+            )
         )
         state = self._new_stream_state(
             buffer_chars=buffer_chars,
             capture_reasoning=capture_reasoning,
+        )
+        prepared_documents = await self._prepare_document_messages_async(
+            messages,
+            timeout_s,
+        )
+        request_context = replace(
+            request_context,
+            normalized_messages=prepared_documents.messages,
+        )
+        payload = self._build_request_payload(
+            request_context,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            reasoning_effort=reasoning_effort,
+            tools=tools,
+            parallel_tool_calls=parallel_tool_calls,
         )
         state.ocr_operations = prepared_documents.ocr_operations
         events = self._astream_payload(payload, timeout_s)
@@ -372,21 +424,19 @@ class MistralAdapter(LLMAdapterBase):
         ):
             yield text
 
-    def _prepare_request_payload(
+    def _prepare_request_context(
         self,
         messages: List[Message] | Messages,
         *,
-        max_tokens: Optional[int],
         temperature: float,
         top_p: float,
         reasoning_level: Optional[str | int],
         tools: Optional[List[ToolSpec]],
         tool_choice: Any,
-        parallel_tool_calls: Optional[bool],
         previous_response: Optional[ChatResponse],
         json_schema: Optional[dict],
         response_model: Optional[Any],
-    ) -> tuple[Any, dict[str, Any]]:
+    ) -> tuple[Any, float, float, Optional[str]]:
         # Mistral Chat Completions is stateless.  Conversation history is
         # represented by ``messages``; match the Anthropic and Google adapters
         # by accepting the common argument without serializing it.
@@ -400,12 +450,34 @@ class MistralAdapter(LLMAdapterBase):
             json_schema,
             response_model,
         )
-        return request_context, self._build_payload(
+        if request_context.effective_schema is not None:
+            request_context = replace(
+                request_context,
+                effective_schema=validate_core_portable_schema(
+                    request_context.effective_schema,
+                    provider="mistral",
+                ),
+            )
+        reasoning_effort = self._resolve_reasoning_effort(reasoning_level)
+        return request_context, temperature, top_p, reasoning_effort
+
+    def _build_request_payload(
+        self,
+        request_context: Any,
+        *,
+        max_tokens: Optional[int],
+        temperature: float,
+        top_p: float,
+        reasoning_effort: Optional[str],
+        tools: Optional[List[ToolSpec]],
+        parallel_tool_calls: Optional[bool],
+    ) -> dict[str, Any]:
+        return self._build_payload(
             messages=request_context.normalized_messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            reasoning_level=reasoning_level,
+            reasoning_effort=reasoning_effort,
             tools=tools,
             tool_choice=request_context.normalized_tool_choice,
             parallel_tool_calls=parallel_tool_calls,
@@ -422,7 +494,7 @@ class MistralAdapter(LLMAdapterBase):
     def _ocr_meter(self) -> Optional[MeteredOperationSpec]:
         meter = resolve_metered_operation_spec(
             base_adapter_module.LLM_REGISTRY,
-            self.company,
+            self.service_provider,
             "ocr",
         )
         if meter is None or meter.model != documents.MISTRAL_OCR_MODEL:
@@ -789,19 +861,24 @@ class MistralAdapter(LLMAdapterBase):
         max_tokens: Optional[int],
         temperature: float,
         top_p: float,
-        reasoning_level: Optional[str | int],
+        reasoning_effort: Optional[str],
         tools: Optional[List[ToolSpec]],
         tool_choice: Optional[str],
         parallel_tool_calls: Optional[bool],
         json_schema: Optional[dict],
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": (
+                self.model_spec.provider_model
+                if self.model_spec is not None
+                and self.model_spec.provider_model is not None
+                else self.model
+            ),
             "messages": self._to_mistral_messages(messages),
             "max_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
-            "reasoning_effort": self._resolve_reasoning_effort(reasoning_level),
+            "reasoning_effort": reasoning_effort,
             "tools": self._map_tools(tools),
             "tool_choice": self._map_tool_choice(tool_choice),
             "parallel_tool_calls": parallel_tool_calls,
@@ -812,10 +889,7 @@ class MistralAdapter(LLMAdapterBase):
                 "json_schema": {
                     "name": "response",
                     "strict": True,
-                    "schema": validate_core_portable_schema(
-                        json_schema,
-                        provider="mistral",
-                    ),
+                    "schema": json_schema,
                 },
             }
         return {key: value for key, value in payload.items() if value is not None}
@@ -846,7 +920,15 @@ class MistralAdapter(LLMAdapterBase):
         reasoning_level: Optional[str | int],
     ) -> Optional[str]:
         if reasoning_level is None:
-            return "none" if self.is_reasoning else None
+            capability = (
+                self.model_spec.reasoning_capability
+                if self.model_spec is not None
+                else None
+            )
+            allowed_values = getattr(capability, "allowed_values", None)
+            if allowed_values:
+                return allowed_values[0]
+            return None
         provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
         if provider_value is None:
             return None
@@ -956,6 +1038,7 @@ class MistralAdapter(LLMAdapterBase):
             incomplete_reason=(
                 finish_reason if finish_reason == "length" else None
             ),
+            refusal=_as_optional_str(message.get("refusal")),
             reasoning_events=reasoning_events,
         )
 

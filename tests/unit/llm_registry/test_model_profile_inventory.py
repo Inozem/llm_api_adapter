@@ -108,6 +108,41 @@ def _catalogue_specs():
 
 
 @pytest.mark.unit
+def test_mistral_glm_5_3_flash_has_inventory_profile():
+    mistral_catalogue = next(
+        (
+            (organization_data, organization_spec)
+            for organization_name, organization_data, organization_spec
+            in _catalogue_specs()
+            if organization_name == "mistral"
+        ),
+        None,
+    )
+    assert mistral_catalogue is not None, "Mistral catalogue is missing"
+    organization_data, organization_spec = mistral_catalogue
+
+    model_name = "glm-5.3-flash"
+    assert model_name in organization_spec.models, (
+        f"mistral/{model_name} is missing from the parsed catalogue"
+    )
+    raw_model_data = organization_data["models"][model_name]
+    model_spec = organization_spec.models[model_name]
+
+    assert model_spec.provider_model == raw_model_data.get("provider_model")
+    assert model_spec.provider_model == "zai-glm-5-3-flash"
+    assert model_spec.reasoning_capability.allowed_values == ("low", "high", "max")
+    assert {
+        (exception.capability_id, exception.behavior_id)
+        for exception in model_spec.capability_exceptions
+    } == {
+        ("pdf_url", "pass"),
+        ("pdf_bytes", "pass"),
+        ("provider_continuation", "ignored"),
+        ("reasoning_control", "none_falls_back_to_minimum"),
+    }
+
+
+@pytest.mark.unit
 def test_every_first_party_model_has_a_valid_explicit_exception_profile():
     # Catalogue sizes evolve; validate every current entry instead of pinning the
     # current total of 57 models as a release limit.
@@ -117,6 +152,9 @@ def test_every_first_party_model_has_a_valid_explicit_exception_profile():
         organizations.add(organization_name)
         model_count += len(organization_spec.models)
         for model_name, model_spec in organization_spec.models.items():
+            assert model_spec.provider_model == organization_data["models"][
+                model_name
+            ].get("provider_model")
             assert model_spec.capability_exceptions is not None, (
                 f"{organization_name}/{model_name} has no certified profile"
             )

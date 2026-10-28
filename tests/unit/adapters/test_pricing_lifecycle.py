@@ -4,7 +4,13 @@ import pytest
 
 from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
 from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
+from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
 from src.llm_api_adapter.llm_registry.llm_registry import Pricing
+from src.llm_api_adapter.llm_registry.llm_registry import (
+    OrganizationModelMetadata,
+    RegistrySpec,
+)
+from src.llm_api_adapter.adapters import base_adapter as base_adapter_module
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
@@ -15,6 +21,16 @@ from src.llm_api_adapter.models.responses.chat_response import (
     CostLineItem,
     Usage,
 )
+
+
+class _PricingOnlyAdapter(LLMAdapterBase):
+    """Minimal adapter shell for exercising base pricing initialization."""
+
+    def chat(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def stream_chat(self, *args, **kwargs):
+        raise NotImplementedError
 
 
 def _tiered_pricing() -> Pricing:
@@ -757,3 +773,74 @@ def test_single_tier_pricing_has_no_boundary():
         input_per_1m=7.0,
         output_per_1m=11.0,
     )
+
+
+@pytest.mark.unit
+def test_explicit_provider_pricing_is_selected_and_deep_copied(monkeypatch):
+    model = "shared-pricing-model"
+
+    def metadata(organization, currency, input_rate, output_rate):
+        return OrganizationModelMetadata(
+            organization=organization,
+            organization_data={
+                "currency": currency,
+                "models": {
+                    model: {
+                        "limits": {
+                            "context_window_tokens": 100_000,
+                            "max_output_tokens": 10_000,
+                        },
+                        "pricing_tiers": [{
+                            "up_to_prompt_tokens": None,
+                            "input_per_1m": input_rate,
+                            "output_per_1m": output_rate,
+                        }],
+                    }
+                },
+            },
+        )
+
+    registry = RegistrySpec()
+    registry.register_organization_metadata(
+        metadata("pricing-developer", "EUR", 17.0, 19.0)
+    )
+    registry.register_organization_metadata(
+        metadata("pricing-provider", "CAD", 2.0, 3.0)
+    )
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", registry)
+
+    developer_spec = registry.organizations["pricing-developer"].models[model]
+    provider_spec = registry.organizations["pricing-provider"].models[model]
+    selected = _PricingOnlyAdapter(
+        company="pricing-developer",
+        service_provider="pricing-provider",
+        model=model,
+        api_key="test-key",
+    )
+    separate = _PricingOnlyAdapter(
+        company="pricing-developer",
+        service_provider="pricing-provider",
+        model=model,
+        api_key="test-key",
+    )
+
+    assert selected.model_spec is provider_spec
+    assert selected.model_spec is not developer_spec
+    assert selected.pricing.currency == "CAD"
+    assert selected.pricing.tiers[0].in_per_token == pytest.approx(2 / 1_000_000)
+    assert selected.pricing.tiers[0].out_per_token == pytest.approx(3 / 1_000_000)
+    assert selected.pricing is not provider_spec.pricing_tiers
+    assert selected.pricing is not separate.pricing
+    assert selected.pricing.tiers is not provider_spec.pricing_tiers.tiers
+
+    selected.pricing.set_in_per_1m(23.0)
+    selected.pricing.set_currency("JPY")
+
+    assert selected.pricing.tiers[0].in_per_token == pytest.approx(23 / 1_000_000)
+    assert selected.pricing.currency == "JPY"
+    assert separate.pricing.tiers[0].in_per_token == pytest.approx(2 / 1_000_000)
+    assert separate.pricing.currency == "CAD"
+    assert provider_spec.pricing_tiers.tiers[0].in_per_token == pytest.approx(
+        2 / 1_000_000
+    )
+    assert provider_spec.pricing_tiers.currency == "CAD"

@@ -69,11 +69,17 @@ def test_basic_tool_loop_with_previous_response(
     assert model is not None
     organization = e2e_model_organization
     tool_choice = tool_choice_for_model(
-        organization["name"],
+        e2e_model_case.organization,
         model.name,
         _LOOKUP_TOOL_NAME,
+        service_provider=e2e_model_case.service_provider,
     )
-    adapter = e2e_adapter(organization, model.name)
+    adapter = e2e_adapter(
+        organization,
+        model.name,
+        organization_name=e2e_model_case.organization,
+        service_provider=e2e_model_case.service_provider,
+    )
     messages = [UserMessage(_TOOL_PROMPT)]
 
     first = chat_with_retry(

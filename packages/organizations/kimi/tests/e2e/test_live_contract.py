@@ -10,6 +10,8 @@ from tests.e2e import harness as e2e_harness
 _MAX_TOKENS = 128
 _REASONING_LEVEL_BY_MODEL = {
     "kimi-k3": "high",
+    "kimi-k3.1-pro": "high",
+    "kimi-k3.1-pro-highspeed": "high",
     "kimi-k2.6": "none",
 }
 
