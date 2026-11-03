@@ -1,15 +1,65 @@
 from dataclasses import dataclass
 import inspect
+import socket
 
+import httpx
 import pytest
+import requests
 
 import src.llm_api_adapter.universal_adapter as universal_module
 from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
 from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
 from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
 from src.llm_api_adapter.service_provider_registry import ServiceProviderRegistry
-from src.llm_api_adapter.errors.config_errors import OrganizationNotInstalledError
+from src.llm_api_adapter.errors.config_errors import (
+    LLMConfigError,
+    OrganizationNotInstalledError,
+)
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+
+SYNTHETIC_API_KEY_MARKER = "synthetic-api-key-marker"
+
+
+@pytest.fixture
+def openai_compatible_no_io(monkeypatch):
+    """Guard configuration-only tests against discovery, DNS, and HTTP I/O."""
+    calls = {"discovery": [], "dns": [], "http": []}
+
+    def unexpected(boundary):
+        def fail(*args, **kwargs):
+            calls[boundary].append((args, kwargs))
+            if boundary == "discovery":
+                # Record and stop discovery so environment plugins cannot affect a test.
+                return None
+            raise AssertionError(f"Unexpected {boundary} during configuration")
+
+        return fail
+
+    monkeypatch.setattr(
+        universal_module.ORGANIZATION_PLUGIN_DISCOVERY,
+        "discover",
+        unexpected("discovery"),
+    )
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected("dns"))
+    monkeypatch.setattr(requests.sessions.Session, "send", unexpected("http"))
+    monkeypatch.setattr(httpx.Client, "send", unexpected("http"))
+    monkeypatch.setattr(httpx.AsyncClient, "send", unexpected("http"))
+    yield calls
+    assert calls == {"discovery": [], "dns": [], "http": []}
+
+
+@pytest.fixture
+def openai_compatible_no_adapter_selection(monkeypatch):
+    """Ensure selector conflicts fail before choosing any adapter factory."""
+    calls = []
+
+    def unexpected(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("Adapter selection must not run for a configuration conflict")
+
+    monkeypatch.setattr(UniversalLLMAPIAdapter, "_select_adapter", unexpected)
+    return calls
 
 
 @pytest.mark.unit
@@ -387,6 +437,7 @@ def test_public_constructor_signature_remains_compatible():
         "api_key",
         "transport",
         "service_provider",
+        "base_url",
     ]
     assert [parameter.default for parameter in parameters.values()] == [
         inspect.Parameter.empty,
@@ -394,7 +445,236 @@ def test_public_constructor_signature_remains_compatible():
         inspect.Parameter.empty,
         "requests",
         None,
+        None,
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("base_url_option", [{}, {"base_url": None}])
+def test_openai_compatible_legacy_positional_and_factory_contract(
+    monkeypatch,
+    base_url_option,
+    openai_compatible_no_io,
+):
+    class LegacyFactory:
+        def __init__(
+            self,
+            *,
+            company,
+            model,
+            api_key,
+            transport,
+            service_provider,
+        ):
+            self.company = company
+            self.model = model
+            self.api_key = api_key
+            self.transport = transport
+            self.service_provider = service_provider
+
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry(
+            {"openai": OpenAIAdapter, "legacy-provider": LegacyFactory}
+        ),
+    )
+
+    # The original five positional parameters retain their established meanings.
+    native = UniversalLLMAPIAdapter("openai", "gpt-4o", "test-key", "requests", None)
+    assert native.organization == "openai"
+    assert native.model == "gpt-4o"
+    assert native.api_key == "test-key"
+    assert native.transport == "requests"
+    assert native.service_provider == "openai"
+
+    # None is still a legacy option and must not reach a factory without base_url.
+    legacy = UniversalLLMAPIAdapter(
+        "external-org",
+        "vendor-model",
+        "test-key",
+        "requests",
+        "legacy-provider",
+        **base_url_option,
+    )
+    assert isinstance(legacy.adapter, LegacyFactory)
+    assert legacy.adapter.company == "external-org"
+    assert legacy.adapter.model == "vendor-model"
+    assert legacy.adapter.api_key == "test-key"
+    assert legacy.adapter.transport == "requests"
+    assert legacy.adapter.service_provider == "legacy-provider"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("base_url_option", [{}, {"base_url": None}])
+def test_openai_compatible_requires_an_api_root(
+    base_url_option,
+    openai_compatible_no_io,
+):
+    with pytest.raises(LLMConfigError) as error:
+        UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="unregistered-model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            **base_url_option,
+        )
+
+    diagnostic = str(error.value)
+    assert SYNTHETIC_API_KEY_MARKER not in diagnostic
+    assert any(
+        term in diagnostic.lower()
+        for term in ("base_url", "api root", "endpoint", "url", "address")
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "",
+        "   ",
+        False,
+        0,
+        123,
+        "localhost:8000/v1",
+        "//example.invalid/v1",
+        "/v1",
+        "ftp://example.invalid/v1",
+        "http:///v1",
+        "https://",
+        "https:// example.invalid/v1",
+        " https://example.invalid/v1",
+        "https://example.invalid/v1 ",
+        "https://example.invalid:bad/v1",
+        "https://:8080/v1",
+        "https://example.invalid:-1/v1",
+        "https://example.invalid:65536/v1",
+        "https://[2001:db8::1/v1",
+        "https://[2001:db8::zz]:8080/v1",
+        "https://user:synthetic-userinfo-marker@example.invalid/v1",
+        "https://example.invalid/v1?token=synthetic-query-marker",
+        "https://example.invalid/v1?",
+        "https://example.invalid/v1#fragment",
+        "https://example.invalid/v1#",
+        "https://example.invalid/v1/chat/completions",
+        "https://example.invalid/v1/chat/completions/",
+        "https://example.invalid/gateway/chat/completions",
+    ],
+)
+def test_openai_compatible_rejects_invalid_api_roots(
+    base_url,
+    openai_compatible_no_io,
+):
+    with pytest.raises(LLMConfigError) as error:
+        UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="unregistered-model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            base_url=base_url,
+        )
+
+    diagnostic = str(error.value)
+    assert SYNTHETIC_API_KEY_MARKER not in diagnostic
+    assert "synthetic-userinfo-marker" not in diagnostic
+    assert "synthetic-query-marker" not in diagnostic
+    assert any(
+        term in diagnostic.lower()
+        for term in ("base_url", "api root", "endpoint", "url", "address")
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:11434/v1",
+        "http://localhost:11434/v1/",
+        "https://example.invalid/gateway/tenant/v1/",
+        "https://example.invalid/api",
+        "https://[2001:db8::1]:9443/proxy/v1/",
+    ],
+)
+@pytest.mark.parametrize(
+    "service_provider_option",
+    [{}, {"service_provider": "openai_compatible"}],
+)
+def test_openai_compatible_accepts_api_roots_and_unregistered_models(
+    base_url,
+    service_provider_option,
+    openai_compatible_no_io,
+):
+    model = "vendor/unregistered-model"
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model=model,
+        api_key=SYNTHETIC_API_KEY_MARKER,
+        base_url=base_url,
+        **service_provider_option,
+    )
+
+    assert adapter.organization == "openai_compatible"
+    assert adapter.service_provider == "openai_compatible"
+    assert adapter.model == model
+    assert adapter.adapter.model == model
+    assert adapter.adapter.company == "openai_compatible"
+    assert adapter.adapter.service_provider == "openai_compatible"
+    assert adapter.adapter.api_key == SYNTHETIC_API_KEY_MARKER
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("base_url", ["", False, 0, "https://custom.invalid/v1"])
+@pytest.mark.parametrize(
+    "organization",
+    ["openai", "anthropic", "google", "mistral", "UnknownCorp"],
+)
+def test_openai_compatible_rejects_base_url_for_other_organizations_before_selection(
+    organization,
+    base_url,
+    openai_compatible_no_io,
+    openai_compatible_no_adapter_selection,
+):
+    with pytest.raises(LLMConfigError) as error:
+        UniversalLLMAPIAdapter(
+            organization=organization,
+            model="valid-model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            base_url=base_url,
+        )
+
+    diagnostic = str(error.value)
+    assert SYNTHETIC_API_KEY_MARKER not in diagnostic
+    assert any(
+        term in diagnostic.lower()
+        for term in ("base_url", "api root", "endpoint", "url", "address")
+    )
+
+    assert openai_compatible_no_adapter_selection == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("service_provider", ["openai", "openrouter"])
+def test_openai_compatible_rejects_conflicting_service_provider_before_selection(
+    service_provider,
+    openai_compatible_no_io,
+    openai_compatible_no_adapter_selection,
+):
+    with pytest.raises(LLMConfigError) as error:
+        UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="unregistered-model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            service_provider=service_provider,
+            base_url="https://example.invalid/v1",
+        )
+
+    diagnostic = str(error.value)
+    assert SYNTHETIC_API_KEY_MARKER not in diagnostic
+    assert any(
+        term in diagnostic.lower()
+        for term in ("service_provider", "provider", "openai_compatible")
+    )
+
+    assert openai_compatible_no_adapter_selection == []
 
 
 @pytest.mark.unit
