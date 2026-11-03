@@ -41,6 +41,12 @@ class OpenAISyncClient:
         repr=False,
         compare=False,
     )
+    _official_behavior_enabled: bool = field(
+        default=True,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         self._sync_transport = create_sync_transport(self.transport)
@@ -97,15 +103,22 @@ class OpenAISyncClient:
         return self._stream_request(url, payload, timeout)
 
     def _should_use_responses_api(self, model: str) -> bool:
+        if not self._official_behavior_enabled:
+            return False
         return model_api_variant("openai", model) == "responses"
 
     def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
+        if not self._official_behavior_enabled:
+            return {"model": model, **dict(kwargs)}
         payload, _ = apply_model_request_rules(
             "openai",
             model,
             {"model": model, **kwargs},
         )
         return payload
+
+    def _set_official_behavior_enabled(self, enabled: bool) -> None:
+        self._official_behavior_enabled = enabled
 
     def _prepare_responses_payload_for_model(self, model: str, kwargs: dict) -> dict:
         payload = {"model": model, **dict(kwargs)}

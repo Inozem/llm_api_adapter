@@ -34,6 +34,23 @@ def test_openai_selects_the_api_variant_for_each_model_family(client_class):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
+def test_openai_custom_endpoint_keeps_official_model_selection_and_request_rules(
+    client_class,
+):
+    client = client_class(api_key="test_api_key", endpoint="http://localhost:8000/v1")
+
+    assert client._should_use_responses_api("gpt-5") is True
+    assert client._prepare_chat_payload_for_model(
+        "gpt-4.1-mini", {"messages": [], "max_tokens": 256}
+    ) == {
+        "model": "gpt-4.1-mini",
+        "messages": [],
+        "max_completion_tokens": 256,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
 def test_openai_snapshot_uses_its_registered_base_api_variant(client_class):
     client = client_class(api_key="test_api_key")
 
