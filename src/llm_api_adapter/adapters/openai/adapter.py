@@ -17,7 +17,7 @@ from ...llms.openai.sync_client import OpenAISyncClient
 from ...models.messages.chat_message import Message, Messages
 from ...models.responses.chat_response import ChatResponse
 from ...models.tools import ToolSpec
-from .payloads import _OpenAIPayloadMixin
+from .payloads import _OpenAIPayloadMixin, _apply_cache_usage
 from .streaming import _OpenAIStreamingMixin
 
 
@@ -26,6 +26,18 @@ class OpenAIAdapter(_OpenAIPayloadMixin, _OpenAIStreamingMixin, LLMAdapterBase):
     """OpenAI adapter facade for both sync and async APIs."""
 
     company: str = "openai"
+
+    def _normalize_chat_completions_response(
+        self,
+        response: dict,
+    ) -> ChatResponse:
+        """Normalize a complete Chat Completions response before finalization."""
+        chat_response = ChatResponse.from_openai_response(response)
+        return _apply_cache_usage(
+            chat_response,
+            response,
+            details_field="prompt_tokens_details",
+        )
 
     def _create_sync_client(self) -> OpenAISyncClient:
         """Construct the default synchronous OpenAI client."""

@@ -26,7 +26,7 @@ from ...llms.streaming import (
 from ...models.messages.chat_message import Message, Messages
 from ...models.responses.chat_response import ChatResponse, Usage
 from ...models.tools import ToolSpec
-from .payloads import _apply_cache_usage, _cache_token_counts
+from .payloads import _cache_token_counts
 
 
 @dataclass
@@ -709,8 +709,8 @@ class _OpenAIStreamingMixin:
             elif isinstance(arguments, dict):
                 target["arguments"] = arguments
 
-    @staticmethod
     def _build_legacy_stream_response(
+        self,
         legacy_response: Dict[str, Any],
         text_parts: List[str],
         refusal_parts: List[str],
@@ -723,9 +723,4 @@ class _OpenAIStreamingMixin:
         if tool_calls:
             message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
         legacy_response["choices"] = [{"message": message, "finish_reason": finish_reason}]
-        chat_response = ChatResponse.from_openai_response(legacy_response)
-        return _apply_cache_usage(
-            chat_response,
-            legacy_response,
-            details_field="prompt_tokens_details",
-        )
+        return self._normalize_chat_completions_response(legacy_response)

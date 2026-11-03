@@ -166,8 +166,8 @@ class _OpenAIPayloadMixin:
             }
         return params
 
-    @staticmethod
     def _parse_chat_response(
+        self,
         response: dict,
         *,
         use_responses_api: bool,
@@ -184,12 +184,7 @@ class _OpenAIPayloadMixin:
                 response,
                 details_field="input_tokens_details",
             )
-        chat_response = ChatResponse.from_openai_response(response)
-        return _apply_cache_usage(
-            chat_response,
-            response,
-            details_field="prompt_tokens_details",
-        )
+        return self._normalize_chat_completions_response(response)
 
     def _build_stream_params(
         self,
