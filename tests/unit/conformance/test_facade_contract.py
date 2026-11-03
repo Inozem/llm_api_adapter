@@ -53,11 +53,20 @@ class OrganizationConformanceCase:
     organization: str
     model: str
     max_tokens: int | None
+    connection_kwargs: tuple[tuple[str, Any], ...]
+    wire_format: str
     sync_client_class: type[Any]
     async_client_class: type[Any]
     message_key: str
+    structured_schema_path: tuple[str, ...]
     response_factory: Callable[..., dict[str, Any]]
     stream_events_factory: Callable[[], list[SSEEvent]]
+    expected_usage: Usage
+    expected_currency: str | None
+    expected_cost_total_available: bool
+    expected_reasoning_texts: tuple[str, ...]
+    expected_refusal: str
+    expected_incomplete_reason: str
 
 
 def _openai_response(
@@ -254,11 +263,26 @@ CASES = (
             organization="openai",
             model="gpt-5-nano",
             max_tokens=64,
+            connection_kwargs=(),
+            wire_format="openai_responses",
             sync_client_class=OpenAISyncClient,
             async_client_class=OpenAIAsyncClient,
             message_key="input",
+            structured_schema_path=("text", "format", "schema"),
             response_factory=_openai_response,
             stream_events_factory=_openai_stream_events,
+            expected_usage=Usage(
+                input_tokens=2,
+                output_tokens=3,
+                total_tokens=5,
+                cached_tokens=0,
+                cache_write_tokens=None,
+            ),
+            expected_currency="USD",
+            expected_cost_total_available=True,
+            expected_reasoning_texts=("Plan",),
+            expected_refusal="I can't help with that.",
+            expected_incomplete_reason="max_output_tokens",
         ),
         id="openai",
     ),
@@ -267,11 +291,26 @@ CASES = (
             organization="anthropic",
             model="claude-sonnet-4-5",
             max_tokens=64,
+            connection_kwargs=(),
+            wire_format="anthropic_messages",
             sync_client_class=ClaudeSyncClient,
             async_client_class=ClaudeAsyncClient,
             message_key="messages",
+            structured_schema_path=("output_config", "format", "schema"),
             response_factory=_anthropic_response,
             stream_events_factory=_anthropic_stream_events,
+            expected_usage=Usage(
+                input_tokens=2,
+                output_tokens=3,
+                total_tokens=5,
+                cached_tokens=None,
+                cache_write_tokens=None,
+            ),
+            expected_currency="USD",
+            expected_cost_total_available=True,
+            expected_reasoning_texts=("Plan",),
+            expected_refusal="safety",
+            expected_incomplete_reason="max_tokens",
         ),
         id="anthropic",
     ),
@@ -280,11 +319,26 @@ CASES = (
             organization="google",
             model="gemini-2.5-flash",
             max_tokens=None,
+            connection_kwargs=(),
+            wire_format="google_generate_content",
             sync_client_class=GeminiSyncClient,
             async_client_class=GeminiAsyncClient,
             message_key="contents",
+            structured_schema_path=("generationConfig", "responseJsonSchema"),
             response_factory=_google_response,
             stream_events_factory=_google_stream_events,
+            expected_usage=Usage(
+                input_tokens=2,
+                output_tokens=3,
+                total_tokens=5,
+                cached_tokens=0,
+                cache_write_tokens=None,
+            ),
+            expected_currency="USD",
+            expected_cost_total_available=True,
+            expected_reasoning_texts=("Plan",),
+            expected_refusal="Blocked by safety policy.",
+            expected_incomplete_reason="MAX_TOKENS",
         ),
         id="google",
     ),
@@ -302,6 +356,7 @@ def _facade(case: OrganizationConformanceCase) -> UniversalLLMAPIAdapter:
         organization=case.organization,
         model=case.model,
         api_key="test-api-key",
+        **dict(case.connection_kwargs),
     )
 
 
@@ -316,14 +371,18 @@ def _structured_schema_from_payload(
     case: OrganizationConformanceCase,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Return the effective schema from each built-in organization's payload."""
-    if case.organization == "openai":
-        return payload["text"]["format"]["schema"]
-    if case.organization == "anthropic":
-        return payload["output_config"]["format"]["schema"]
-    if case.organization == "google":
-        return payload["generationConfig"]["responseJsonSchema"]
-    raise AssertionError(f"No structured-output payload path for {case.organization!r}")
+    """Return the schema at the exact path declared by this wire fixture."""
+    node: Any = payload
+    for component in case.structured_schema_path:
+        assert isinstance(node, dict) and component in node, (
+            f"Missing structured-schema path component {component!r} for "
+            f"{case.wire_format!r}"
+        )
+        node = node[component]
+    assert isinstance(node, dict), (
+        f"Structured-schema path for {case.wire_format!r} did not resolve to an object"
+    )
+    return node
 
 
 def _contains_reference(node: Any) -> bool:
@@ -337,6 +396,23 @@ def _contains_reference(node: Any) -> bool:
 def _google_wire_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Google responseJsonSchema uses the portable JSON Schema vocabulary."""
     return deepcopy(schema)
+
+
+def _assert_usage_and_pricing(
+    response: Any,
+    case: OrganizationConformanceCase,
+) -> None:
+    assert response.usage == case.expected_usage
+    if case.expected_cost_total_available:
+        assert response.currency == case.expected_currency
+        assert response.cost_total is not None
+    else:
+        assert case.expected_currency is None
+        assert response.currency is None
+        assert response.cost_input is None
+        assert response.cost_output is None
+        assert response.cost_total is None
+        assert response.cost_breakdown is None
 
 
 async def _as_async_iter(events: list[SSEEvent]) -> AsyncIterator[SSEEvent]:
@@ -357,7 +433,7 @@ def _terminal_outcome_response(
     content: str | None,
 ) -> dict[str, Any]:
     """Return the native terminal shape for one structured-output outcome."""
-    if case.organization == "openai":
+    if case.wire_format == "openai_responses":
         if outcome_name == "refusal":
             return {
                 "id": "resp_refusal",
@@ -381,7 +457,7 @@ def _terminal_outcome_response(
             }
         return _openai_response(content or "")
 
-    if case.organization == "anthropic":
+    if case.wire_format == "anthropic_messages":
         if outcome_name == "refusal":
             return {
                 "id": "msg_refusal",
@@ -401,7 +477,7 @@ def _terminal_outcome_response(
             }
         return _anthropic_response(content or "")
 
-    if case.organization == "google":
+    if case.wire_format == "google_generate_content":
         if outcome_name == "refusal":
             return {
                 "modelVersion": case.model,
@@ -421,7 +497,7 @@ def _terminal_outcome_response(
             }
         return _google_response(content or "")
 
-    raise AssertionError(f"No terminal-outcome fixture for {case.organization!r}")
+    raise AssertionError(f"No terminal-outcome fixture for {case.wire_format!r}")
 
 
 def _terminal_outcome_stream_events(
@@ -430,7 +506,7 @@ def _terminal_outcome_stream_events(
     content: str | None,
 ) -> list[SSEEvent]:
     response = _terminal_outcome_response(case, outcome_name, content)
-    if case.organization == "openai":
+    if case.wire_format == "openai_responses":
         return [
             SSEEvent(
                 event=(
@@ -442,7 +518,7 @@ def _terminal_outcome_stream_events(
             ),
         ]
 
-    if case.organization == "anthropic":
+    if case.wire_format == "anthropic_messages":
         events = [
             SSEEvent(
                 event="message_start",
@@ -489,10 +565,10 @@ def _terminal_outcome_stream_events(
         ])
         return events
 
-    if case.organization == "google":
+    if case.wire_format == "google_generate_content":
         return [SSEEvent(event=None, data=response)]
 
-    raise AssertionError(f"No terminal stream fixture for {case.organization!r}")
+    raise AssertionError(f"No terminal stream fixture for {case.wire_format!r}")
 
 
 def _structured_outcome_kwargs(
@@ -518,20 +594,10 @@ def _assert_structured_terminal_outcome(
         assert response.parsed_json == {"answer": "ok"}
         return
     if outcome_name == "refusal":
-        expected_refusals = {
-            "openai": "I can't help with that.",
-            "anthropic": "safety",
-            "google": "Blocked by safety policy.",
-        }
-        assert response.refusal == expected_refusals[case.organization]
+        assert response.refusal == case.expected_refusal
         assert response.incomplete_reason is None
     elif outcome_name == "incomplete_result":
-        expected_reasons = {
-            "openai": "max_output_tokens",
-            "anthropic": "max_tokens",
-            "google": "MAX_TOKENS",
-        }
-        assert response.incomplete_reason == expected_reasons[case.organization]
+        assert response.incomplete_reason == case.expected_incomplete_reason
         assert response.refusal is None
     else:
         raise AssertionError(f"Unexpected terminal outcome {outcome_name!r}")
@@ -651,14 +717,7 @@ def test_facade_chat_normalizes_messages_response_usage_and_pricing(case):
     assert payload["model"] == case.model
     assert payload[case.message_key]
     assert response.content == "ok"
-    assert response.usage == Usage(
-        input_tokens=2,
-        output_tokens=3,
-        total_tokens=5,
-        cached_tokens=0 if case.organization in {"openai", "google"} else None,
-    )
-    assert response.currency == "USD"
-    assert response.cost_total is not None
+    _assert_usage_and_pricing(response, case)
 
 
 @pytest.mark.asyncio
@@ -674,13 +733,7 @@ async def test_facade_achat_matches_sync_response_contract(case):
     assert payload["model"] == case.model
     assert payload[case.message_key]
     assert response.content == "ok"
-    assert response.usage == Usage(
-        input_tokens=2,
-        output_tokens=3,
-        total_tokens=5,
-        cached_tokens=0 if case.organization in {"openai", "google"} else None,
-    )
-    assert response.cost_total is not None
+    _assert_usage_and_pricing(response, case)
 
 
 @pytest.mark.unit
@@ -725,7 +778,9 @@ def test_facade_preserves_tool_structured_output_file_and_reasoning_contracts(ca
             capture_reasoning=True,
         )
 
-    assert [event.text for event in reasoning_response.reasoning_events] == ["Plan"]
+    assert [event.text for event in reasoning_response.reasoning_events] == (
+        list(case.expected_reasoning_texts)
+    )
 
 
 @pytest.mark.unit
@@ -784,7 +839,7 @@ def test_core_portable_profile_has_exact_provider_payloads(case, fixture_name):
     schema = _structured_schema_from_payload(case, transport.call_args.args[1])
     expected = (
         _google_wire_schema(source_schema)
-        if case.organization == "google"
+        if case.wire_format == "google_generate_content"
         else source_schema
     )
     assert schema == expected
