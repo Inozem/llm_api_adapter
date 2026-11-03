@@ -18,7 +18,6 @@ from ..base_adapter import (
     OnToolCall,
     _StreamState,
 )
-from ...llms.openai.sync_client import OpenAISyncClient
 from ...llms.streaming import (
     StreamChunkBuffer,
     StreamReasoningCollector,
@@ -77,10 +76,7 @@ class _OpenAIStreamingMixin:
         )
         effective_schema = request_context.effective_schema
         normalized_tool_choice = request_context.normalized_tool_choice
-        client = OpenAISyncClient(
-            api_key=self.api_key,
-            transport=self.transport,
-        )
+        client = self._create_sync_client()
         normalized_messages = request_context.normalized_messages
         use_responses_api = client._should_use_responses_api(self.model)
         params = self._build_stream_params(

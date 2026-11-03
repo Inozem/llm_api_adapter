@@ -27,6 +27,17 @@ class OpenAIAdapter(_OpenAIPayloadMixin, _OpenAIStreamingMixin, LLMAdapterBase):
 
     company: str = "openai"
 
+    def _create_sync_client(self) -> OpenAISyncClient:
+        """Construct the default synchronous OpenAI client."""
+        return OpenAISyncClient(
+            api_key=self.api_key,
+            transport=self.transport,
+        )
+
+    def _create_async_client(self) -> OpenAIAsyncClient:
+        """Construct the default asynchronous OpenAI client."""
+        return OpenAIAsyncClient(api_key=self.api_key)
+
     def chat(
         self,
         messages: List[Message] | Messages,
@@ -59,10 +70,7 @@ class OpenAIAdapter(_OpenAIPayloadMixin, _OpenAIStreamingMixin, LLMAdapterBase):
         normalized_tool_choice = request_context.normalized_tool_choice
 
         try:
-            client = OpenAISyncClient(
-                api_key=self.api_key,
-                transport=self.transport,
-            )
+            client = self._create_sync_client()
             normalized_messages = request_context.normalized_messages
             use_responses_api = client._should_use_responses_api(self.model)
             params = self._build_chat_params(
@@ -129,7 +137,7 @@ class OpenAIAdapter(_OpenAIPayloadMixin, _OpenAIStreamingMixin, LLMAdapterBase):
         normalized_tool_choice = request_context.normalized_tool_choice
 
         try:
-            client = OpenAIAsyncClient(api_key=self.api_key)
+            client = self._create_async_client()
             normalized_messages = request_context.normalized_messages
             use_responses_api = client._should_use_responses_api(self.model)
             params = self._build_chat_params(
@@ -245,7 +253,7 @@ class OpenAIAdapter(_OpenAIPayloadMixin, _OpenAIStreamingMixin, LLMAdapterBase):
         )
         effective_schema = request_context.effective_schema
         normalized_tool_choice = request_context.normalized_tool_choice
-        client = OpenAIAsyncClient(api_key=self.api_key)
+        client = self._create_async_client()
         normalized_messages = request_context.normalized_messages
         use_responses_api = client._should_use_responses_api(self.model)
         params = self._build_stream_params(
