@@ -89,7 +89,7 @@ class OpenAISyncClient:
     ) -> Iterator[SSEEvent]:
         """Stream raw Chat Completions SSE events without interpreting them."""
         url = f"{self.endpoint}/chat/completions"
-        payload = self._prepare_chat_payload_for_model(model, kwargs)
+        payload = self._prepare_chat_payload_for_model(model, kwargs, streaming=True)
         payload["stream"] = True
         return self._stream_request(url, payload, timeout)
 
@@ -107,9 +107,13 @@ class OpenAISyncClient:
             return False
         return model_api_variant("openai", model) == "responses"
 
-    def _prepare_chat_payload_for_model(self, model: str, kwargs: dict) -> dict:
+    def _prepare_chat_payload_for_model(
+        self, model: str, kwargs: dict, *, streaming: bool = False
+    ) -> dict:
         if not self._official_behavior_enabled:
-            return {"model": model, **dict(kwargs)}
+            return _prepare_compatible_chat_payload(
+                model, kwargs, streaming=streaming
+            )
         payload, _ = apply_model_request_rules(
             "openai",
             model,
@@ -260,3 +264,33 @@ class OpenAISyncClient:
         if status_code is not None and 500 <= status_code < 600:
             raise LLMAPIServerError(detail=detail)
         raise LLMAPIClientError(detail=detail)
+
+
+def _prepare_compatible_chat_payload(
+    model: str, kwargs: dict, *, streaming: bool
+) -> dict:
+    """Prepare the fixed compatible Chat Completions wire policy."""
+    payload = {"model": model, **dict(kwargs)}
+
+    max_tokens = payload.pop("max_tokens", None)
+    if max_tokens is not None:
+        payload["max_completion_tokens"] = max_tokens
+
+    for key in ("temperature", "top_p"):
+        value = payload.get(key)
+        is_numeric_default = (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value == 1
+        )
+        if is_numeric_default:
+            payload.pop(key)
+
+    if streaming:
+        stream_options = payload.get("stream_options")
+        payload["stream_options"] = {
+            **(dict(stream_options) if isinstance(stream_options, Mapping) else {}),
+            "include_usage": True,
+        }
+
+    return payload

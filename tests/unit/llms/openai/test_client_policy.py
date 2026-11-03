@@ -55,7 +55,12 @@ def test_disabled_policy_skips_all_official_registry_behavior(client_class):
         assert client._should_use_responses_api("arbitrary-model") is False
         payload = client._prepare_chat_payload_for_model("gpt-5", kwargs)
 
-    assert payload == {"model": "gpt-5", **kwargs}
+    assert payload == {
+        "model": "gpt-5",
+        "messages": [],
+        "max_completion_tokens": 7,
+        "temperature": 0.2,
+    }
     assert payload is not kwargs
     assert kwargs == {"messages": [], "max_tokens": 7, "temperature": 0.2}
     assert client._prepare_chat_payload_for_model(
@@ -92,13 +97,15 @@ def test_disabled_sync_complete_and_stream_dispatch_to_chat(model):
     expected = {
         "model": model,
         "messages": [],
-        "max_tokens": 8,
+        "max_completion_tokens": 8,
     }
     complete_dispatch.assert_called_once_with(
         "https://local.test/v1/chat/completions", expected, None
     )
     stream_dispatch.assert_called_once_with(
-        "https://local.test/v1/chat/completions", {**expected, "stream": True}, None
+        "https://local.test/v1/chat/completions",
+        {**expected, "stream_options": {"include_usage": True}, "stream": True},
+        None,
     )
 
 
@@ -126,14 +133,14 @@ async def test_disabled_async_complete_and_stream_dispatch_to_chat(model):
     assert await client.complete(model, messages=[], max_tokens=8) == {"ok": True}
     assert [event async for event in client.stream(model, messages=[], max_tokens=8)] == []
 
-    expected = {"model": model, "messages": [], "max_tokens": 8}
+    expected = {"model": model, "messages": [], "max_completion_tokens": 8}
     complete_dispatch.assert_called_once_with(
         "https://local.test/v1/chat/completions", expected, None
     )
     assert stream_payloads == [
         (
             "https://local.test/v1/chat/completions",
-            {**expected, "stream": True},
+            {**expected, "stream_options": {"include_usage": True}, "stream": True},
             None,
         )
     ]

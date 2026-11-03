@@ -50,7 +50,7 @@ class OpenAIAsyncClient(OpenAISyncClient):
     ) -> AsyncIterator[SSEEvent]:
         """Return raw Chat Completions SSE events without interpreting them."""
         url = f"{self.endpoint}/chat/completions"
-        payload = self._prepare_chat_payload_for_model(model, kwargs)
+        payload = self._prepare_chat_payload_for_model(model, kwargs, streaming=True)
         payload["stream"] = True
         return self._stream_request(url, payload, timeout)
 
