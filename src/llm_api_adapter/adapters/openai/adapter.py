@@ -39,6 +39,9 @@ class OpenAIAdapter(_OpenAIPayloadMixin, _OpenAIStreamingMixin, LLMAdapterBase):
             details_field="prompt_tokens_details",
         )
 
+    def _validate_chat_completions_stream_event(self, event: Any) -> None:
+        """Hook for organization-specific validation of Chat Completions events."""
+
     def _create_sync_client(self) -> OpenAISyncClient:
         """Construct the default synchronous OpenAI client."""
         return OpenAISyncClient(
@@ -283,8 +286,23 @@ class OpenAIAdapter(_OpenAIPayloadMixin, _OpenAIStreamingMixin, LLMAdapterBase):
             capture_reasoning=capture_reasoning,
         )
         events = client.stream(timeout=timeout_s, **params)
-        if use_responses_api:
-            async for text in self._consume_responses_stream_async(
+        try:
+            if use_responses_api:
+                async for text in self._consume_responses_stream_async(
+                    events,
+                    effective_schema,
+                    response_model,
+                    on_delta,
+                    on_tool_call,
+                    on_done,
+                    buffer_chars,
+                    on_chunk,
+                    capture_reasoning,
+                    on_reasoning,
+                ):
+                    yield text
+                return
+            async for text in self._consume_chat_completions_stream_async(
                 events,
                 effective_schema,
                 response_model,
@@ -293,21 +311,11 @@ class OpenAIAdapter(_OpenAIPayloadMixin, _OpenAIStreamingMixin, LLMAdapterBase):
                 on_done,
                 buffer_chars,
                 on_chunk,
-                capture_reasoning,
-                on_reasoning,
             ):
                 yield text
-            return
-        async for text in self._consume_chat_completions_stream_async(
-            events,
-            effective_schema,
-            response_model,
-            on_delta,
-            on_tool_call,
-            on_done,
-            buffer_chars,
-            on_chunk,
-        ):
-            yield text
+        finally:
+            close_events = getattr(events, "aclose", None)
+            if close_events is not None:
+                await close_events()
 
 

@@ -467,6 +467,7 @@ class _OpenAIStreamingMixin:
         chunk_buffer = StreamChunkBuffer(buffer_chars)
         usage_tracker = StreamUsageTracker()
         async for event in self._aiter_provider_stream_events(events):
+            self._validate_chat_completions_stream_event(event)
             payload = event.data if isinstance(event.data, Mapping) else {}
             self._update_legacy_stream_metadata(payload, legacy_response)
             usage_tracker.record(
@@ -537,6 +538,7 @@ class _OpenAIStreamingMixin:
         chunk_buffer = StreamChunkBuffer(buffer_chars)
         usage_tracker = StreamUsageTracker()
         for event in self._iter_provider_stream_events(events):
+            self._validate_chat_completions_stream_event(event)
             payload = event.data if isinstance(event.data, Mapping) else {}
             self._update_legacy_stream_metadata(payload, legacy_response)
             usage_tracker.record(

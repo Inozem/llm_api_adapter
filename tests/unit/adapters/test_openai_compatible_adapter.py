@@ -2227,3 +2227,355 @@ async def test_compatible_and_official_async_instances_keep_roots_keys_and_profi
         )
     _assert_native_gpt5_request(attempts[1])
     assert forbidden == []
+
+
+_MALFORMED_COMPATIBLE_COMPLETIONS = [
+    None,
+    {},
+    {"choices": []},
+    {"choices": "bad"},
+    {"choices": [None]},
+    {"choices": [{"message": None, "finish_reason": "stop"}]},
+    {"choices": [{"message": {}, "finish_reason": None}]},
+    {"choices": [{"message": {}, "finish_reason": "  "}]},
+    {"choices": [{"message": {}, "finish_reason": 1}]},
+    {"choices": [{"message": {"content": 1}, "finish_reason": "stop"}]},
+    {"choices": [{"message": {"refusal": 1}, "finish_reason": "stop"}]},
+    {"choices": [{"message": {"tool_calls": {}}, "finish_reason": "stop"}]},
+    {"choices": [{"message": {"function_call": []}, "finish_reason": "stop"}]},
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("body", _MALFORMED_COMPATIBLE_COMPLETIONS)
+def test_compatible_chat_rejects_malformed_completion_envelopes(body):
+    """Malformed response envelopes fail through the public sanitized error."""
+    model = "vendor/unregistered-model"
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(
+            _COLLISION_URL,
+            text="null" if body is None else json.dumps(body),
+            headers={"Content-Type": "application/json"},
+        )
+        adapter = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model=model,
+            api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT,
+        )
+        with pytest.raises(LLMAPIClientError):
+            adapter.chat([UserMessage(content="Hello")])
+        assert http.call_count == 1
+        assert http.request_history[0].url == _COLLISION_URL
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", _MALFORMED_COMPATIBLE_COMPLETIONS)
+async def test_compatible_async_chat_rejects_malformed_completion_envelopes(
+    body, monkeypatch
+):
+    real_client = httpx.AsyncClient
+    requests_seen = []
+
+    def handler(request):
+        requests_seen.append(request)
+        return httpx.Response(
+            200,
+            content=b"null" if body is None else json.dumps(body).encode(),
+        )
+
+    client = real_client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="vendor/unregistered-model",
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+    )
+    with pytest.raises(LLMAPIClientError):
+        await adapter.achat([UserMessage(content="Hello")])
+    assert len(requests_seen) == 1
+    assert str(requests_seen[0].url) == _COLLISION_URL
+    await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "transport",
+    ["requests", "httpx"],
+)
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "not-an-object",
+        {"choices": "bad"},
+        {"choices": [{"index": 0, "delta": "bad", "finish_reason": None}]},
+    ],
+)
+def test_compatible_sync_stream_rejects_malformed_envelopes_before_completion(
+    transport, malformed, monkeypatch
+):
+    model = "vendor/unregistered-model"
+    lines = event_lines(
+        {"choices": [{"index": 0, "delta": {"content": "pending"}, "finish_reason": None}]}
+    ) + event_lines(malformed) + event_lines(
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    )
+    completed = []
+    visible = []
+    adapter, requests_seen, resource, client_closes, client = _counted_sync_stream_route(
+        transport, lines, monkeypatch, model
+    )
+    try:
+        with pytest.raises(LLMAPIClientError):
+            visible.extend(
+                adapter.stream_chat(
+                    [UserMessage(content="Hello")],
+                    on_done=completed.append,
+                    buffer_chars=64,
+                )
+            )
+        assert len(requests_seen) == 1
+        assert resource.close_count == 1
+        assert visible == []
+        assert completed == []
+        if transport == "httpx":
+            assert client_closes == [True]
+    finally:
+        if resource.close_count == 0:
+            resource.close()
+        if transport == "httpx" and not client_closes:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "not-an-object",
+        {"choices": "bad"},
+        {"choices": [{"index": 0, "delta": "bad", "finish_reason": None}]},
+    ],
+)
+async def test_compatible_async_stream_rejects_malformed_before_completion(
+    malformed, monkeypatch
+):
+    model = "vendor/unregistered-model"
+    lines = event_lines(
+        {"choices": [{"index": 0, "delta": {"content": "pending"}, "finish_reason": None}]}
+    ) + event_lines(malformed) + event_lines(
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    )
+    completed = []
+    visible = []
+    adapter, requests_seen, resource, client_closes, client = (
+        _counted_async_stream_route(lines, monkeypatch, model)
+    )
+    try:
+        with pytest.raises(LLMAPIClientError):
+            async for text in adapter.astream_chat(
+                [UserMessage(content="Hello")],
+                on_done=completed.append,
+                buffer_chars=64,
+            ):
+                visible.append(text)
+        assert len(requests_seen) == 1
+        assert str(requests_seen[0].url) == _COLLISION_URL
+        assert resource.close_count == 1
+        assert client_closes == [True]
+        assert visible == []
+        assert completed == []
+    finally:
+        if resource.close_count == 0:
+            await resource.aclose()
+        if not client_closes:
+            await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ["requests", "httpx"])
+def test_compatible_empty_completion_without_optional_metadata_normalizes(
+    transport, monkeypatch
+):
+    body = {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}
+    model = "vendor/unregistered-model"
+    if transport == "requests":
+        with requests_mock.Mocker(real_http=False) as http:
+            http.post(
+                _COLLISION_URL,
+                json=body,
+                headers={"Content-Type": "application/json"},
+            )
+            adapter = UniversalLLMAPIAdapter(
+                organization="openai_compatible",
+                model=model,
+                api_key=_COLLISION_KEY,
+                base_url=_COLLISION_ROOT,
+            )
+            with pytest.warns(UserWarning, match="empty content"):
+                response = adapter.chat([UserMessage(content="Hello")])
+            assert http.call_count == 1
+            assert http.request_history[0].url == _COLLISION_URL
+    else:
+        requests_seen = []
+        real_client = httpx.Client
+
+        def handler(request):
+            requests_seen.append(request)
+            return httpx.Response(200, json=body)
+
+        client = real_client(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr(httpx, "Client", lambda: client)
+        adapter = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model=model,
+            api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT,
+            transport="httpx",
+        )
+        try:
+            with pytest.warns(UserWarning, match="empty content"):
+                response = adapter.chat([UserMessage(content="Hello")])
+            assert len(requests_seen) == 1
+            assert str(requests_seen[0].url) == _COLLISION_URL
+        finally:
+            client.close()
+    assert response.content == ""
+    assert response.finish_reason == "stop"
+    assert response.response_id is None
+    assert response.usage is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ["requests", "httpx"])
+def test_compatible_terminal_only_stream_without_done_succeeds(transport, monkeypatch):
+    lines = event_lines(
+        {"choices": [{"index": 0, "finish_reason": "stop"}]}
+    )
+    completed = []
+    adapter, requests_seen, resource, client_closes, client = (
+        _counted_sync_stream_route(
+            transport, lines, monkeypatch, "vendor/unregistered-model"
+        )
+    )
+    try:
+        with pytest.warns(UserWarning, match="empty content"):
+            visible = list(
+                adapter.stream_chat(
+                    [UserMessage(content="Hello")], on_done=completed.append
+                )
+            )
+        assert visible == []
+        assert len(requests_seen) == 1
+        assert resource.close_count == 1
+        assert completed[0].finish_reason == "stop"
+        if transport == "httpx":
+            assert client_closes == [True]
+    finally:
+        if resource.close_count == 0:
+            resource.close()
+        if transport == "httpx" and not client_closes:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compatible_async_terminal_only_stream_without_done_succeeds(monkeypatch):
+    lines = event_lines(
+        {"choices": [{"index": 0, "finish_reason": "stop"}]}
+    )
+    completed = []
+    adapter, requests_seen, resource, client_closes, client = (
+        _counted_async_stream_route(
+            lines, monkeypatch, "vendor/unregistered-model"
+        )
+    )
+    try:
+        with pytest.warns(UserWarning, match="empty content"):
+            visible = [
+                text async for text in adapter.astream_chat(
+                    [UserMessage(content="Hello")], on_done=completed.append
+                )
+            ]
+        assert visible == []
+        assert len(requests_seen) == 1
+        assert resource.close_count == 1
+        assert client_closes == [True]
+        assert completed[0].finish_reason == "stop"
+    finally:
+        if resource.close_count == 0:
+            await resource.aclose()
+        if not client_closes:
+            await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ["requests", "httpx"])
+def test_compatible_done_sentinel_without_finish_reason_is_failure(transport, monkeypatch):
+    lines = event_lines(
+        {"choices": [{"index": 0, "delta": {"content": "pending"}}]}
+    ) + ["data: [DONE]", ""]
+    completed = []
+    visible = []
+    adapter, requests_seen, resource, client_closes, client = (
+        _counted_sync_stream_route(
+            transport, lines, monkeypatch, "vendor/unregistered-model"
+        )
+    )
+    try:
+        with pytest.raises(LLMAPIClientError):
+            visible.extend(
+                adapter.stream_chat(
+                    [UserMessage(content="Hello")],
+                    buffer_chars=64,
+                    on_done=completed.append,
+                )
+            )
+        assert visible == []
+        assert completed == []
+        assert len(requests_seen) == 1
+        assert resource.close_count == 1
+        if transport == "httpx":
+            assert client_closes == [True]
+    finally:
+        if resource.close_count == 0:
+            resource.close()
+        if transport == "httpx" and not client_closes:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compatible_async_done_sentinel_without_finish_reason_is_failure(
+    monkeypatch,
+):
+    lines = event_lines(
+        {"choices": [{"index": 0, "delta": {"content": "pending"}}]}
+    ) + ["data: [DONE]", ""]
+    completed = []
+    visible = []
+    adapter, requests_seen, resource, client_closes, client = (
+        _counted_async_stream_route(
+            lines, monkeypatch, "vendor/unregistered-model"
+        )
+    )
+    try:
+        with pytest.raises(LLMAPIClientError):
+            async for text in adapter.astream_chat(
+                [UserMessage(content="Hello")],
+                buffer_chars=64,
+                on_done=completed.append,
+            ):
+                visible.append(text)
+        assert visible == []
+        assert completed == []
+        assert len(requests_seen) == 1
+        assert resource.close_count == 1
+        assert client_closes == [True]
+    finally:
+        if resource.close_count == 0:
+            await resource.aclose()
+        if not client_closes:
+            await client.aclose()

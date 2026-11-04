@@ -264,19 +264,24 @@ class GoogleAdapter(
         _ = parallel_tool_calls
         client = GeminiAsyncClient(self.api_key)
         events = client.stream(model=self.model, timeout_s=timeout_s, **payload)
-        async for text in self._consume_stream_async(
-            events,
-            effective_schema,
-            response_model,
-            on_delta,
-            on_tool_call,
-            on_done,
-            buffer_chars,
-            on_chunk,
-            capture_reasoning,
-            on_reasoning,
-        ):
-            yield text
+        try:
+            async for text in self._consume_stream_async(
+                events,
+                effective_schema,
+                response_model,
+                on_delta,
+                on_tool_call,
+                on_done,
+                buffer_chars,
+                on_chunk,
+                capture_reasoning,
+                on_reasoning,
+            ):
+                yield text
+        finally:
+            close_events = getattr(events, "aclose", None)
+            if close_events is not None:
+                await close_events()
 
     def stream_chat(
         self,

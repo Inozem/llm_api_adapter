@@ -6,9 +6,11 @@ from dataclasses import dataclass
 import ipaddress
 import logging
 import re
+from collections.abc import Mapping
 from urllib.parse import quote, urlsplit
 
 from ..errors.config_errors import LLMConfigError
+from ..errors.llm_api_error import LLMAPIClientError
 from ..llms.openai.async_client import OpenAIAsyncClient
 from ..llms.openai.sync_client import OpenAISyncClient
 from ..llms.transports import validate_sync_transport
@@ -152,6 +154,79 @@ class OpenAICompatibleAdapter(OpenAIAdapter):
 
     def _format_compatible_diagnostic(self, text: object) -> str:
         return _redact_compatible_diagnostic(text, self.api_key)
+
+    @staticmethod
+    def _malformed_response() -> LLMAPIClientError:
+        return LLMAPIClientError(
+            message="The compatible server returned a malformed Chat Completions response."
+        )
+
+    @staticmethod
+    def _validate_message_fields(message: Mapping[str, object]) -> None:
+        for field in ("content", "refusal"):
+            if (
+                field in message
+                and message[field] is not None
+                and not isinstance(message[field], str)
+            ):
+                raise OpenAICompatibleAdapter._malformed_response()
+        if (
+            "tool_calls" in message
+            and message["tool_calls"] is not None
+            and not isinstance(message["tool_calls"], list)
+        ):
+            raise OpenAICompatibleAdapter._malformed_response()
+        if (
+            "function_call" in message
+            and message["function_call"] is not None
+            and not isinstance(message["function_call"], Mapping)
+        ):
+            raise OpenAICompatibleAdapter._malformed_response()
+
+    def _normalize_chat_completions_response(self, response: dict):
+        """Validate the compatible envelope, then use OpenAI's shared normalizer."""
+        if not isinstance(response, Mapping):
+            raise self._malformed_response()
+        choices = response.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise self._malformed_response()
+        choice = choices[0]
+        if not isinstance(choice, Mapping):
+            raise self._malformed_response()
+        message = choice.get("message")
+        finish_reason = choice.get("finish_reason")
+        if (
+            not isinstance(message, Mapping)
+            or not isinstance(finish_reason, str)
+            or not finish_reason.strip()
+        ):
+            raise self._malformed_response()
+        self._validate_message_fields(message)
+        return super()._normalize_chat_completions_response(response)
+
+    def _validate_chat_completions_stream_event(self, event: object) -> None:
+        """Validate compatible Chat Completions events before shared coercion."""
+        if getattr(event, "done", False):
+            return
+        payload = getattr(event, "data", None)
+        if not isinstance(payload, Mapping):
+            raise self._malformed_response()
+        choices = payload.get("choices")
+        if not isinstance(choices, list):
+            raise self._malformed_response()
+        for choice in choices:
+            if not isinstance(choice, Mapping):
+                raise self._malformed_response()
+            delta = choice.get("delta")
+            if delta is not None and not isinstance(delta, Mapping):
+                raise self._malformed_response()
+            if isinstance(delta, Mapping):
+                self._validate_message_fields(delta)
+            finish_reason = choice.get("finish_reason")
+            if finish_reason is not None and (
+                not isinstance(finish_reason, str) or not finish_reason.strip()
+            ):
+                raise self._malformed_response()
 
     def __repr__(self) -> str:
         inherited = super().__repr__()
