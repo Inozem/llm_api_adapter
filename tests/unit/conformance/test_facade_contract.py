@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator, Callable
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from src.llm_api_adapter.errors.llm_api_error import (
     JSONSchemaError,
@@ -43,8 +43,10 @@ from tests.fixtures.structured_output import (
 )
 from tests.fixtures.openai_compatible import (
     FIXTURE_MODEL,
+    chat_completion_response,
     incomplete_response,
     incomplete_sse_lines,
+    premature_eof_sse_lines,
     refusal_response,
     refusal_sse_lines,
     structured_result_sse_lines,
@@ -1785,3 +1787,507 @@ async def test_facade_astream_chat_preserves_caller_tool_result_history(case):
     transport.assert_called_once()
     _assert_shared_tool_history_payload(case, transport.call_args.kwargs)
     assert len(completed) == 1
+
+
+# Compatible structured-output coverage keeps request ownership, response parsing,
+# and terminal handling on the same four public facade methods.
+_COMPATIBLE_CASE_MATCHES = tuple(
+    case.values[0]
+    for case in CASES
+    if case.values[0].organization == "openai_compatible"
+)
+assert len(_COMPATIBLE_CASE_MATCHES) == 1
+_COMPATIBLE_CASE = _COMPATIBLE_CASE_MATCHES[0]
+_COMPATIBLE_SCHEMA_RESULTS = (
+    ("flat_object", {"answer": "ready"}),
+    ("nullable_required_field", {"nickname": None}),
+    ("enum", {"priority": "high"}),
+    ("array", {"tags": ["sdk", "portable"]}),
+    ("inline_nested_object", {"contact": {"name": "Ada"}}),
+)
+
+
+class _AdaOnlyNestedResponse(NestedPydanticResponse):
+    @field_validator("contact")
+    @classmethod
+    def contact_must_be_ada(cls, contact):
+        if contact.name != "Ada":
+            raise ValueError("contact name must be Ada")
+        return contact
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("fixture_name", "expected"), _COMPATIBLE_SCHEMA_RESULTS)
+def test_compatible_chat_parses_each_portable_schema_result(fixture_name, expected):
+    case = _COMPATIBLE_CASE
+    source_schema = PORTABLE_PROFILE_SCHEMAS[fixture_name]
+    original_schema = deepcopy(source_schema)
+    content = json.dumps(expected)
+    transport = Mock(return_value=_JSONResponse(_compatible_response(content)))
+
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        response = _facade(case).chat(
+            **_chat_kwargs(case), json_schema=source_schema
+        )
+
+    schema = _structured_schema_from_payload(case, transport.call_args.args[1])
+    assert response.parsed_json == expected
+    assert response.parsed_model is None
+    assert schema == original_schema
+    assert source_schema == original_schema
+    transport.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("fixture_name", "expected"), _COMPATIBLE_SCHEMA_RESULTS)
+def test_compatible_stream_chat_parses_each_portable_schema_result(fixture_name, expected):
+    case = _COMPATIBLE_CASE
+    source_schema = PORTABLE_PROFILE_SCHEMAS[fixture_name]
+    original_schema = deepcopy(source_schema)
+    content = json.dumps(expected)
+    events = _decode_compatible_sse(
+        structured_result_sse_lines(content, usage=_compatible_usage())
+    )
+    completed = []
+
+    with patch.object(case.sync_client_class, "stream", return_value=iter(events)) as transport:
+        chunks = list(_facade(case).stream_chat(
+            **_chat_kwargs(case), json_schema=source_schema, on_done=completed.append
+        ))
+
+    schema = _structured_schema_from_payload(case, transport.call_args.kwargs)
+    assert "".join(chunks) == content
+    assert len(completed) == 1
+    assert completed[0].parsed_json == expected
+    assert completed[0].parsed_model is None
+    assert schema == original_schema
+    assert source_schema == original_schema
+    transport.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(("fixture_name", "expected"), _COMPATIBLE_SCHEMA_RESULTS)
+async def test_compatible_achat_parses_each_portable_schema_result(fixture_name, expected):
+    case = _COMPATIBLE_CASE
+    source_schema = PORTABLE_PROFILE_SCHEMAS[fixture_name]
+    original_schema = deepcopy(source_schema)
+    content = json.dumps(expected)
+    transport = AsyncMock(return_value=_compatible_response(content))
+
+    with patch.object(case.async_client_class, "_send_request", new=transport):
+        response = await _facade(case).achat(
+            **_chat_kwargs(case), json_schema=source_schema
+        )
+
+    schema = _structured_schema_from_payload(case, transport.await_args.args[1])
+    assert response.parsed_json == expected
+    assert response.parsed_model is None
+    assert schema == original_schema
+    assert source_schema == original_schema
+    transport.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(("fixture_name", "expected"), _COMPATIBLE_SCHEMA_RESULTS)
+async def test_compatible_astream_parses_each_portable_schema_result(fixture_name, expected):
+    case = _COMPATIBLE_CASE
+    source_schema = PORTABLE_PROFILE_SCHEMAS[fixture_name]
+    original_schema = deepcopy(source_schema)
+    content = json.dumps(expected)
+    events = _decode_compatible_sse(
+        structured_result_sse_lines(content, usage=_compatible_usage())
+    )
+    completed = []
+
+    with patch.object(
+        case.async_client_class, "stream", return_value=_as_async_iter(events)
+    ) as transport:
+        chunks = [
+            text async for text in _facade(case).astream_chat(
+                **_chat_kwargs(case), json_schema=source_schema, on_done=completed.append
+            )
+        ]
+
+    schema = _structured_schema_from_payload(case, transport.call_args.kwargs)
+    assert "".join(chunks) == content
+    assert len(completed) == 1
+    assert completed[0].parsed_json == expected
+    assert completed[0].parsed_model is None
+    assert schema == original_schema
+    assert source_schema == original_schema
+    transport.assert_called_once()
+    transport.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("invalid", (False, True), ids=("valid", "custom-validator-failure"))
+def test_compatible_chat_validates_the_original_response_model(invalid):
+    case = _COMPATIBLE_CASE
+    content = '{"contact":{"name":"Grace"}}' if invalid else NESTED_PYDANTIC_RESPONSE_JSON
+    transport = Mock(return_value=_JSONResponse(_compatible_response(content)))
+
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        if invalid:
+            with pytest.raises(JSONSchemaError):
+                _facade(case).chat(
+                    **_chat_kwargs(case), response_model=_AdaOnlyNestedResponse
+                )
+        else:
+            response = _facade(case).chat(
+                **_chat_kwargs(case), response_model=_AdaOnlyNestedResponse
+            )
+
+    schema = _structured_schema_from_payload(case, transport.call_args.args[1])
+    assert "$defs" not in schema
+    assert not _contains_reference(schema)
+    transport.assert_called_once()
+    if invalid:
+        return
+    assert response.parsed_json == json.loads(NESTED_PYDANTIC_RESPONSE_JSON)
+    assert type(response.parsed_model) is _AdaOnlyNestedResponse
+    assert response.parsed_model.contact.name == "Ada"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("invalid", (False, True), ids=("valid", "custom-validator-failure"))
+def test_compatible_stream_chat_validates_the_original_response_model(invalid):
+    case = _COMPATIBLE_CASE
+    content = '{"contact":{"name":"Grace"}}' if invalid else NESTED_PYDANTIC_RESPONSE_JSON
+    events = _decode_compatible_sse(
+        structured_result_sse_lines(content, usage=_compatible_usage())
+    )
+    completed = []
+    visible = []
+
+    with patch.object(case.sync_client_class, "stream", return_value=iter(events)) as transport:
+        stream = _facade(case).stream_chat(
+            **_chat_kwargs(case), response_model=_AdaOnlyNestedResponse,
+            buffer_chars=64, on_done=completed.append,
+        )
+        if invalid:
+            with pytest.raises(JSONSchemaError):
+                visible.extend(stream)
+        else:
+            visible.extend(stream)
+
+    schema = _structured_schema_from_payload(case, transport.call_args.kwargs)
+    assert "$defs" not in schema
+    assert not _contains_reference(schema)
+    if invalid:
+        assert visible == []
+        assert completed == []
+    else:
+        assert len(completed) == 1
+        assert completed[0].parsed_json == json.loads(NESTED_PYDANTIC_RESPONSE_JSON)
+        assert type(completed[0].parsed_model) is _AdaOnlyNestedResponse
+        assert completed[0].parsed_model.contact.name == "Ada"
+    transport.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("invalid", (False, True), ids=("valid", "custom-validator-failure"))
+async def test_compatible_achat_validates_the_original_response_model(invalid):
+    case = _COMPATIBLE_CASE
+    content = '{"contact":{"name":"Grace"}}' if invalid else NESTED_PYDANTIC_RESPONSE_JSON
+    transport = AsyncMock(return_value=_compatible_response(content))
+
+    with patch.object(case.async_client_class, "_send_request", new=transport):
+        if invalid:
+            with pytest.raises(JSONSchemaError):
+                await _facade(case).achat(
+                    **_chat_kwargs(case), response_model=_AdaOnlyNestedResponse
+                )
+        else:
+            response = await _facade(case).achat(
+                **_chat_kwargs(case), response_model=_AdaOnlyNestedResponse
+            )
+
+    schema = _structured_schema_from_payload(case, transport.await_args.args[1])
+    assert "$defs" not in schema
+    assert not _contains_reference(schema)
+    transport.assert_awaited_once()
+    if invalid:
+        return
+    assert response.parsed_json == json.loads(NESTED_PYDANTIC_RESPONSE_JSON)
+    assert type(response.parsed_model) is _AdaOnlyNestedResponse
+    assert response.parsed_model.contact.name == "Ada"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("invalid", (False, True), ids=("valid", "custom-validator-failure"))
+async def test_compatible_astream_validates_the_original_response_model(invalid):
+    case = _COMPATIBLE_CASE
+    content = '{"contact":{"name":"Grace"}}' if invalid else NESTED_PYDANTIC_RESPONSE_JSON
+    events = _decode_compatible_sse(
+        structured_result_sse_lines(content, usage=_compatible_usage())
+    )
+    completed = []
+    visible = []
+
+    with patch.object(
+        case.async_client_class, "stream", return_value=_as_async_iter(events)
+    ) as transport:
+        stream = _facade(case).astream_chat(
+            **_chat_kwargs(case), response_model=_AdaOnlyNestedResponse,
+            buffer_chars=64, on_done=completed.append,
+        )
+        if invalid:
+            with pytest.raises(JSONSchemaError):
+                async for text in stream:
+                    visible.append(text)
+        else:
+            async for text in stream:
+                visible.append(text)
+
+    schema = _structured_schema_from_payload(case, transport.call_args.kwargs)
+    assert "$defs" not in schema
+    assert not _contains_reference(schema)
+    if invalid:
+        assert visible == []
+        assert completed == []
+    else:
+        assert len(completed) == 1
+        assert completed[0].parsed_json == json.loads(NESTED_PYDANTIC_RESPONSE_JSON)
+        assert type(completed[0].parsed_model) is _AdaOnlyNestedResponse
+        assert completed[0].parsed_model.contact.name == "Ada"
+    transport.assert_called_once()
+
+
+_COMPATIBLE_INVALID_REQUESTS = (
+    "invalid_schema", "external_reference", "schema_model_conflict",
+)
+
+
+def _compatible_invalid_request(name):
+    if name == "invalid_schema":
+        schema = deepcopy(FLAT_OBJECT_SCHEMA)
+        schema["required"] = []
+        return {"json_schema": schema}
+    if name == "external_reference":
+        schema = deepcopy(PORTABLE_PROFILE_SCHEMAS["inline_nested_object"])
+        schema["properties"]["contact"] = {"$ref": "https://example.com/contact.json"}
+        return {"json_schema": schema}
+    if name == "schema_model_conflict":
+        return {
+            "json_schema": deepcopy(FLAT_OBJECT_SCHEMA),
+            "response_model": NestedPydanticResponse,
+        }
+    raise AssertionError(f"Unknown invalid structured request: {name!r}")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("invalid_request", _COMPATIBLE_INVALID_REQUESTS)
+@pytest.mark.parametrize("streaming", (False, True), ids=("chat", "stream"))
+def test_compatible_sync_rejects_invalid_structured_requests_before_sending(
+    invalid_request, streaming
+):
+    case = _COMPATIBLE_CASE
+    send = Mock()
+    with (
+        patch.object(case.sync_client_class, "stream" if streaming else "_send_request", new=send),
+        pytest.raises(JSONSchemaError),
+    ):
+        if streaming:
+            list(_facade(case).stream_chat(
+                **_chat_kwargs(case), **_compatible_invalid_request(invalid_request)
+            ))
+        else:
+            _facade(case).chat(
+                **_chat_kwargs(case), **_compatible_invalid_request(invalid_request)
+            )
+    send.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("invalid_request", _COMPATIBLE_INVALID_REQUESTS)
+@pytest.mark.parametrize("streaming", (False, True), ids=("achat", "astream"))
+async def test_compatible_async_rejects_invalid_structured_requests_before_sending(
+    invalid_request, streaming
+):
+    case = _COMPATIBLE_CASE
+    send = Mock()
+    with (
+        patch.object(case.async_client_class, "stream" if streaming else "_send_request", new=send),
+        pytest.raises(JSONSchemaError),
+    ):
+        if streaming:
+            async for _text in _facade(case).astream_chat(
+                **_chat_kwargs(case), **_compatible_invalid_request(invalid_request)
+            ):
+                pass
+        else:
+            await _facade(case).achat(
+                **_chat_kwargs(case), **_compatible_invalid_request(invalid_request)
+            )
+    send.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("outcome", ("invalid_json", "pydantic_validation_error"))
+def test_compatible_sync_invalid_stream_results_do_not_flush_or_complete(outcome):
+    case = _COMPATIBLE_CASE
+    fixture = next(item for item in STRUCTURED_OUTPUT_OUTCOMES if item.name == outcome)
+    kwargs = _structured_outcome_kwargs(case, outcome)
+    completed = []
+    kwargs.update(buffer_chars=64, on_done=completed.append)
+    events = _terminal_outcome_stream_events(case, outcome, fixture.content)
+    visible = []
+
+    with patch.object(case.sync_client_class, "stream", return_value=iter(events)) as transport:
+        with pytest.raises(JSONSchemaError):
+            visible.extend(_facade(case).stream_chat(**kwargs))
+
+    assert visible == []
+    assert completed == []
+    transport.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("outcome", ("invalid_json", "pydantic_validation_error"))
+async def test_compatible_async_stream_invalid_results_do_not_flush_or_complete(outcome):
+    case = _COMPATIBLE_CASE
+    fixture = next(item for item in STRUCTURED_OUTPUT_OUTCOMES if item.name == outcome)
+    kwargs = _structured_outcome_kwargs(case, outcome)
+    completed = []
+    kwargs.update(buffer_chars=64, on_done=completed.append)
+    events = _terminal_outcome_stream_events(case, outcome, fixture.content)
+    visible = []
+
+    with patch.object(
+        case.async_client_class, "stream", return_value=_as_async_iter(events)
+    ) as transport:
+        with pytest.raises(JSONSchemaError):
+            async for text in _facade(case).astream_chat(**kwargs):
+                visible.append(text)
+
+    assert visible == []
+    assert completed == []
+    transport.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("outcome", ("refusal", "incomplete_result"))
+@pytest.mark.parametrize("request_kind", ("raw_schema", "original_model"))
+def test_compatible_chat_terminal_outcome_skips_structured_parsing(outcome, request_kind):
+    case = _COMPATIBLE_CASE
+    content = '{"contact":{"name":"Grace"}}' if request_kind == "original_model" else '{"answer":"ok"}'
+    message = {"role": "assistant", "content": content}
+    if outcome == "refusal":
+        message["refusal"] = case.expected_refusal
+        payload = chat_completion_response(message=message, usage=_compatible_usage(), model=case.model)
+    else:
+        payload = incomplete_response(content, usage=_compatible_usage(), model=case.model)
+    transport = Mock(return_value=_JSONResponse(payload))
+    request = (
+        {"json_schema": FLAT_OBJECT_SCHEMA}
+        if request_kind == "raw_schema"
+        else {"response_model": _AdaOnlyNestedResponse}
+    )
+
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        response = _facade(case).chat(**_chat_kwargs(case), **request)
+
+    _assert_structured_terminal_outcome(response, case, outcome)
+    transport.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("outcome", ("refusal", "incomplete_result"))
+@pytest.mark.parametrize("request_kind", ("raw_schema", "original_model"))
+def test_compatible_stream_terminal_outcome_skips_structured_parsing(outcome, request_kind):
+    case = _COMPATIBLE_CASE
+    content = '{"contact":{"name":"Grace"}}' if request_kind == "original_model" else '{"answer":"ok"}'
+    if outcome == "refusal":
+        lines = premature_eof_sse_lines(content)
+        lines.extend(refusal_sse_lines(case.expected_refusal))
+    else:
+        lines = incomplete_sse_lines(content)
+    events = _decode_compatible_sse(lines)
+    request = (
+        {"json_schema": FLAT_OBJECT_SCHEMA}
+        if request_kind == "raw_schema"
+        else {"response_model": _AdaOnlyNestedResponse}
+    )
+    completed = []
+
+    with patch.object(case.sync_client_class, "stream", return_value=iter(events)) as transport:
+        visible = list(_facade(case).stream_chat(
+            **_chat_kwargs(case), **request, on_done=completed.append
+        ))
+
+    assert json.loads("".join(visible)) == json.loads(content)
+    assert len(completed) == 1
+    _assert_structured_terminal_outcome(completed[0], case, outcome)
+    transport.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("outcome", ("refusal", "incomplete_result"))
+@pytest.mark.parametrize("request_kind", ("raw_schema", "original_model"))
+async def test_compatible_achat_terminal_outcome_skips_structured_parsing(
+    outcome, request_kind
+):
+    case = _COMPATIBLE_CASE
+    content = '{"contact":{"name":"Grace"}}' if request_kind == "original_model" else '{"answer":"ok"}'
+    message = {"role": "assistant", "content": content}
+    if outcome == "refusal":
+        message["refusal"] = case.expected_refusal
+        payload = chat_completion_response(message=message, usage=_compatible_usage(), model=case.model)
+    else:
+        payload = incomplete_response(content, usage=_compatible_usage(), model=case.model)
+    transport = AsyncMock(return_value=payload)
+    request = (
+        {"json_schema": FLAT_OBJECT_SCHEMA}
+        if request_kind == "raw_schema"
+        else {"response_model": _AdaOnlyNestedResponse}
+    )
+
+    with patch.object(case.async_client_class, "_send_request", new=transport):
+        response = await _facade(case).achat(**_chat_kwargs(case), **request)
+
+    _assert_structured_terminal_outcome(response, case, outcome)
+    transport.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("outcome", ("refusal", "incomplete_result"))
+@pytest.mark.parametrize("request_kind", ("raw_schema", "original_model"))
+async def test_compatible_astream_terminal_outcome_skips_structured_parsing(
+    outcome, request_kind
+):
+    case = _COMPATIBLE_CASE
+    content = '{"contact":{"name":"Grace"}}' if request_kind == "original_model" else '{"answer":"ok"}'
+    if outcome == "refusal":
+        lines = premature_eof_sse_lines(content)
+        lines.extend(refusal_sse_lines(case.expected_refusal))
+    else:
+        lines = incomplete_sse_lines(content)
+    events = _decode_compatible_sse(lines)
+    request = (
+        {"json_schema": FLAT_OBJECT_SCHEMA}
+        if request_kind == "raw_schema"
+        else {"response_model": _AdaOnlyNestedResponse}
+    )
+    completed = []
+
+    with patch.object(
+        case.async_client_class, "stream", return_value=_as_async_iter(events)
+    ) as transport:
+        visible = [
+            text async for text in _facade(case).astream_chat(
+                **_chat_kwargs(case), **request, on_done=completed.append
+            )
+        ]
+
+    assert json.loads("".join(visible)) == json.loads(content)
+    assert len(completed) == 1
+    _assert_structured_terminal_outcome(completed[0], case, outcome)
+    transport.assert_called_once()
