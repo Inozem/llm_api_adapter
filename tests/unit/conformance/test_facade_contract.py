@@ -26,6 +26,7 @@ from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.llms.streaming import SSEEvent
+from src.llm_api_adapter.llms.transports import SSEFrameDecoder
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.models.messages.file_parts import ImagePart
 from src.llm_api_adapter.models.responses.chat_response import Usage
@@ -37,6 +38,18 @@ from tests.fixtures.structured_output import (
     NestedPydanticResponse,
     PORTABLE_PROFILE_SCHEMAS,
     STRUCTURED_OUTPUT_OUTCOMES,
+)
+from tests.fixtures.openai_compatible import (
+    FIXTURE_MODEL,
+    incomplete_response,
+    incomplete_sse_lines,
+    refusal_response,
+    refusal_sse_lines,
+    structured_result_sse_lines,
+    text_response,
+    text_sse_lines,
+    tool_call_response,
+    usage_payload,
 )
 
 
@@ -67,6 +80,53 @@ class OrganizationConformanceCase:
     expected_reasoning_texts: tuple[str, ...]
     expected_refusal: str
     expected_incomplete_reason: str
+    expected_native_profile: bool = True
+
+
+def _compatible_usage() -> dict[str, Any]:
+    return usage_payload(
+        2,
+        3,
+        5,
+        prompt_tokens_details={"cached_tokens": 0},
+    )
+
+
+def _compatible_response(
+    content: str = "ok",
+    *,
+    include_tool: bool = False,
+    include_reasoning: bool = False,
+) -> dict[str, Any]:
+    # Chat Completions fixtures intentionally contain no vendor reasoning field.
+    del include_reasoning
+    if include_tool:
+        return tool_call_response(
+            name="get_weather",
+            arguments_json='{"city": "Tel Aviv"}',
+            call_id="call_123",
+            usage=_compatible_usage(),
+        )
+    return text_response(content, usage=_compatible_usage())
+
+
+def _decode_compatible_sse(lines: list[str]) -> list[SSEEvent]:
+    decoder = SSEFrameDecoder()
+    events = [event for line in lines if (event := decoder.feed(line)) is not None]
+    final_event = decoder.finish()
+    if final_event is not None:
+        events.append(final_event)
+    return events
+
+
+def _compatible_stream_events() -> list[SSEEvent]:
+    return _decode_compatible_sse(
+        text_sse_lines(
+            "Hello!",
+            fragments=("He", "llo!"),
+            usage=_compatible_usage(),
+        ),
+    )
 
 
 def _openai_response(
@@ -342,6 +402,35 @@ CASES = (
         ),
         id="google",
     ),
+    pytest.param(
+        OrganizationConformanceCase(
+            organization="openai_compatible",
+            model=FIXTURE_MODEL,
+            max_tokens=64,
+            connection_kwargs=(("base_url", "https://example.invalid/proxy/v1/"),),
+            wire_format="openai_chat_completions",
+            sync_client_class=OpenAISyncClient,
+            async_client_class=OpenAIAsyncClient,
+            message_key="messages",
+            structured_schema_path=("response_format", "json_schema", "schema"),
+            response_factory=_compatible_response,
+            stream_events_factory=_compatible_stream_events,
+            expected_usage=Usage(
+                input_tokens=2,
+                output_tokens=3,
+                total_tokens=5,
+                cached_tokens=0,
+                cache_write_tokens=None,
+            ),
+            expected_currency=None,
+            expected_cost_total_available=False,
+            expected_reasoning_texts=(),
+            expected_refusal="I can't help with that.",
+            expected_incomplete_reason="length",
+            expected_native_profile=False,
+        ),
+        id="openai_compatible",
+    ),
 )
 
 
@@ -413,6 +502,13 @@ def _assert_usage_and_pricing(
         assert response.cost_output is None
         assert response.cost_total is None
         assert response.cost_breakdown is None
+
+
+def _assert_case_profile(
+    facade: UniversalLLMAPIAdapter,
+    case: OrganizationConformanceCase,
+) -> None:
+    assert (facade.adapter.model_spec is not None) is case.expected_native_profile
 
 
 async def _as_async_iter(events: list[SSEEvent]) -> AsyncIterator[SSEEvent]:
@@ -497,6 +593,21 @@ def _terminal_outcome_response(
             }
         return _google_response(content or "")
 
+    if case.wire_format == "openai_chat_completions":
+        if outcome_name == "refusal":
+            return refusal_response(
+                case.expected_refusal,
+                usage=_compatible_usage(),
+                model=case.model,
+            )
+        if outcome_name == "incomplete_result":
+            return incomplete_response(
+                '{"answer": ',
+                usage=_compatible_usage(),
+                model=case.model,
+            )
+        return _compatible_response(content or "")
+
     raise AssertionError(f"No terminal-outcome fixture for {case.wire_format!r}")
 
 
@@ -567,6 +678,18 @@ def _terminal_outcome_stream_events(
 
     if case.wire_format == "google_generate_content":
         return [SSEEvent(event=None, data=response)]
+
+    if case.wire_format == "openai_chat_completions":
+        if outcome_name == "refusal":
+            return _decode_compatible_sse(refusal_sse_lines(case.expected_refusal))
+        if outcome_name == "incomplete_result":
+            return _decode_compatible_sse(incomplete_sse_lines('{"answer": '))
+        return _decode_compatible_sse(
+            structured_result_sse_lines(
+                content or "",
+                usage=_compatible_usage(),
+            ),
+        )
 
     raise AssertionError(f"No terminal stream fixture for {case.wire_format!r}")
 
@@ -709,13 +832,20 @@ async def test_facade_structured_terminal_outcomes_are_consistent_in_async_strea
 @pytest.mark.parametrize("case", CASES)
 def test_facade_chat_normalizes_messages_response_usage_and_pricing(case):
     transport = Mock(return_value=_JSONResponse(case.response_factory()))
+    facade = _facade(case)
 
     with patch.object(case.sync_client_class, "_send_request", new=transport):
-        response = _facade(case).chat(**_chat_kwargs(case))
+        response = facade.chat(**_chat_kwargs(case))
 
     payload = transport.call_args.args[1]
     assert payload["model"] == case.model
     assert payload[case.message_key]
+    assert facade.adapter.model == case.model
+    assert facade.adapter.api_key == "test-api-key"
+    _assert_case_profile(facade, case)
+    if case.organization == "openai_compatible":
+        assert facade.base_url == "https://example.invalid/proxy/v1"
+        assert facade.adapter.base_url == facade.base_url
     assert response.content == "ok"
     _assert_usage_and_pricing(response, case)
 
