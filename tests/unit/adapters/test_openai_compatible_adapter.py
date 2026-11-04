@@ -1,5 +1,6 @@
 """Basic synchronous request contract for compatible OpenAI endpoints."""
 
+from copy import deepcopy
 import json
 import socket
 import traceback
@@ -44,6 +45,7 @@ from tests.fixtures.openai_compatible import (
     tool_call_response,
     tool_call_sse_lines,
     usage_payload,
+    zero_usage_payload,
 )
 
 
@@ -1715,6 +1717,273 @@ async def test_compatible_async_fragmented_text_tool_and_usage_complete(monkeypa
             await stream_resource.aclose()
         if not client_closes:
             await client.aclose()
+
+
+_METADATA_ABSENT = object()
+_METADATA_ALL_UNKNOWN = (None, None, None, None, None)
+
+
+def _one_invalid_base_counter(field, value):
+    counters = {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11}
+    counters[field] = value
+    return usage_payload(**counters)
+
+
+_METADATA_CASES = [
+    pytest.param(_METADATA_ABSENT, None, id="usage-absent"),
+    pytest.param(None, None, id="usage-null"),
+    pytest.param("malformed", None, id="usage-string"),
+    pytest.param([1, 2], None, id="usage-list"),
+    pytest.param(False, None, id="usage-bool"),
+    pytest.param({}, _METADATA_ALL_UNKNOWN, id="empty-mapping"),
+    pytest.param(usage_payload(None, None, None), _METADATA_ALL_UNKNOWN, id="all-null-counters"),
+    pytest.param(zero_usage_payload(), (0, 0, 0, None, None), id="reported-zero"),
+    pytest.param(
+        usage_payload(prompt_tokens=False, completion_tokens=0, total_tokens=5),
+        (None, 0, 5, None, None),
+        id="bool-false-is-not-zero",
+    ),
+    pytest.param(usage_payload(prompt_tokens=7), (7, None, None, None, None), id="input-only"),
+    pytest.param(usage_payload(completion_tokens=4), (None, 4, None, None, None), id="output-only"),
+    pytest.param(usage_payload(total_tokens=11), (None, None, 11, None, None), id="total-only"),
+    pytest.param(
+        usage_payload(prompt_tokens=7, completion_tokens=4),
+        (7, 4, None, None, None),
+        id="input-and-output-no-total",
+    ),
+    *[
+        pytest.param(
+            _one_invalid_base_counter(field, invalid),
+            tuple(None if index == field_index else (5, 6, 11)[index] for index in range(3))
+            + (None, None),
+            id=f"{field}-{label}",
+        )
+        for field_index, field in enumerate(("prompt_tokens", "completion_tokens", "total_tokens"))
+        for label, invalid in (
+            ("negative", -1), ("bool", True), ("string", "5"),
+            ("float", 5.0), ("null", None),
+        )
+    ],
+    pytest.param(
+        usage_payload(10, 3, 13), (10, 3, 13, None, None),
+        id="cache-details-absent",
+    ),
+    pytest.param(
+        usage_payload(10, 3, 13, prompt_tokens_details=None),
+        (10, 3, 13, None, None), id="cache-details-null",
+    ),
+    pytest.param(
+        usage_payload(10, 3, 13, prompt_tokens_details="malformed"),
+        (10, 3, 13, None, None), id="cache-details-nonmapping",
+    ),
+    pytest.param(
+        usage_payload(10, 3, 13, prompt_tokens_details={}),
+        (10, 3, 13, None, None), id="cache-details-empty",
+    ),
+    pytest.param(
+        usage_payload(10, 3, 13, prompt_tokens_details={"cached_tokens": 0}),
+        (10, 3, 13, 0, None), id="cache-read-zero-only",
+    ),
+    pytest.param(
+        usage_payload(10, 3, 13, prompt_tokens_details={"cache_write_tokens": 2}),
+        (10, 3, 13, None, 2), id="cache-write-only",
+    ),
+    pytest.param(
+        usage_payload(
+            10, 3, 13,
+            prompt_tokens_details={"cached_tokens": 4, "cache_write_tokens": 2},
+        ),
+        (10, 3, 13, 4, 2), id="cache-split-valid",
+    ),
+    pytest.param(
+        usage_payload(
+            10, 3, 13,
+            prompt_tokens_details={"cached_tokens": True, "cache_write_tokens": 2},
+        ),
+        (10, 3, 13, None, 2), id="cache-read-bool-keeps-write",
+    ),
+    pytest.param(
+        usage_payload(
+            10, 3, 13,
+            prompt_tokens_details={"cached_tokens": 4, "cache_write_tokens": -1},
+        ),
+        (10, 3, 13, 4, None), id="cache-write-negative-keeps-read",
+    ),
+    pytest.param(
+        usage_payload(
+            10, 3, 13,
+            prompt_tokens_details={"cached_tokens": 8, "cache_write_tokens": 5},
+        ),
+        (10, 3, 13, None, None), id="cache-sum-contradicts-input",
+    ),
+    pytest.param(
+        usage_payload(
+            10, 3, 13,
+            prompt_tokens_details={"cached_tokens": 2, "cache_write_tokens": 11},
+        ),
+        (10, 3, 13, None, None), id="cache-component-exceeds-input",
+    ),
+    pytest.param(
+        usage_payload(completion_tokens=3, prompt_tokens_details={"cached_tokens": 2}),
+        (None, 3, None, 2, None), id="cache-retained-without-base-input",
+    ),
+]
+
+
+def _metadata_response_body(usage):
+    if usage is _METADATA_ABSENT:
+        return text_response(model="gpt-5")
+    return text_response(model="gpt-5", usage=usage)
+
+
+def _metadata_stream_lines(usage):
+    if usage is _METADATA_ABSENT:
+        lines = text_sse_lines("Fixture reply")
+    else:
+        lines = text_sse_lines("Fixture reply", usage=usage)
+    return [line.replace(f'"model":"{FIXTURE_MODEL}"', '"model":"gpt-5"') for line in lines]
+
+
+def _assert_compatible_metadata_result(response, expected_usage):
+    assert isinstance(response, ChatResponse)
+    assert response.content == "Fixture reply"
+    assert response.model == "gpt-5"
+    assert response.response_id == FIXTURE_ID
+    assert response.finish_reason == "stop"
+    if expected_usage is None:
+        assert response.usage is None
+    else:
+        assert response.usage is not None
+        assert (
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            response.usage.total_tokens,
+            response.usage.cached_tokens,
+            response.usage.cache_write_tokens,
+        ) == expected_usage
+        for actual, expected in zip(
+            (
+                response.usage.input_tokens,
+                response.usage.output_tokens,
+                response.usage.total_tokens,
+                response.usage.cached_tokens,
+                response.usage.cache_write_tokens,
+            ),
+            expected_usage,
+        ):
+            if expected == 0:
+                assert type(actual) is int
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
+    assert response.currency is None
+    assert response.cost_breakdown is None
+
+
+def _assert_official_collision_has_no_profile(adapter):
+    assert adapter.adapter.model_spec is None
+    assert adapter.adapter.pricing is None
+
+
+def _metadata_input_snapshot(usage):
+    return usage if usage is _METADATA_ABSENT else deepcopy(usage)
+
+
+def _assert_metadata_input_unchanged(usage, snapshot):
+    if snapshot is _METADATA_ABSENT:
+        assert usage is _METADATA_ABSENT
+    else:
+        assert usage == snapshot
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+@pytest.mark.parametrize("usage, expected_usage", _METADATA_CASES)
+def test_compatible_sync_metadata_contract_matrix(mode, usage, expected_usage, monkeypatch):
+    streaming = mode == "stream_chat"
+    usage_snapshot = _metadata_input_snapshot(usage)
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible", model="gpt-5",
+        api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT,
+    )
+    completed = []
+    with requests_mock.Mocker(real_http=False) as http:
+        if streaming:
+            http.post(
+                _COLLISION_URL,
+                text="\n".join(_metadata_stream_lines(usage)),
+                headers={"Content-Type": "text/event-stream"},
+            )
+            visible = list(adapter.stream_chat(
+                [UserMessage(content="Say hello.")], on_done=completed.append
+            ))
+            assert visible == ["Fixture reply"]
+            assert len(completed) == 1
+            _assert_compatible_metadata_result(completed[0], expected_usage)
+        else:
+            http.post(_COLLISION_URL, json=_metadata_response_body(usage))
+            response = adapter.chat([UserMessage(content="Say hello.")])
+            _assert_compatible_metadata_result(response, expected_usage)
+        assert http.call_count == 1
+        request = http.request_history[0]
+        assert request.method == "POST"
+        assert request.url == _COLLISION_URL
+        assert request.json()["model"] == "gpt-5"
+    _assert_official_collision_has_no_profile(adapter)
+    _assert_metadata_input_unchanged(usage, usage_snapshot)
+    assert forbidden == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+@pytest.mark.parametrize("usage, expected_usage", _METADATA_CASES)
+async def test_compatible_async_metadata_contract_matrix(mode, usage, expected_usage, monkeypatch):
+    streaming = mode == "astream_chat"
+    usage_snapshot = _metadata_input_snapshot(usage)
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    outgoing = []
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        outgoing.append(request)
+        if streaming:
+            return httpx.Response(
+                200, headers={"Content-Type": "text/event-stream"},
+                content="\n".join(_metadata_stream_lines(usage)),
+            )
+        return httpx.Response(200, json=_metadata_response_body(usage))
+
+    client = real_client(transport=httpx.MockTransport(handler))
+    constructions = _install_counted_httpx_client(monkeypatch, client, asynchronous=True)
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible", model="gpt-5",
+        api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT,
+    )
+    completed = []
+    try:
+        if streaming:
+            visible = [text async for text in adapter.astream_chat(
+                [UserMessage(content="Say hello.")], on_done=completed.append
+            )]
+            assert visible == ["Fixture reply"]
+            assert len(completed) == 1
+            _assert_compatible_metadata_result(completed[0], expected_usage)
+        else:
+            response = await adapter.achat([UserMessage(content="Say hello.")])
+            _assert_compatible_metadata_result(response, expected_usage)
+        assert len(outgoing) == 1
+        assert len(constructions) == 1
+        request = outgoing[0]
+        assert request.method == "POST"
+        assert str(request.url) == _COLLISION_URL
+        assert json.loads(request.content)["model"] == "gpt-5"
+        _assert_official_collision_has_no_profile(adapter)
+        _assert_metadata_input_unchanged(usage, usage_snapshot)
+        assert forbidden == []
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.unit
