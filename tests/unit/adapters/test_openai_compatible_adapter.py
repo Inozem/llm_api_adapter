@@ -21,6 +21,9 @@ from src.llm_api_adapter.errors.llm_api_error import (
     LLMAPIRateLimitError,
     LLMAPIServerError,
     LLMAPITimeoutError,
+    InvalidToolArgumentsError,
+    InvalidToolSchemaError,
+    ToolChoiceError,
 )
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
@@ -36,6 +39,7 @@ from tests.fixtures.openai_compatible import (
     premature_eof_sse_lines,
     text_response,
     text_sse_lines,
+    tool_call_response,
     tool_call_sse_lines,
     usage_payload,
 )
@@ -81,6 +85,54 @@ def _new_adapter(*, api_key: str, model: str, base_url: str):
         model=model,
         base_url=base_url,
     )
+
+
+_INVALID_TOOL_REQUEST_CASES = [
+    pytest.param({"tools": [object()]}, InvalidToolSchemaError, id="not-tool-spec"),
+    pytest.param(
+        {"tools": [ToolSpec(name="", json_schema={"type": "object"})]},
+        InvalidToolSchemaError,
+        id="empty-name",
+    ),
+    pytest.param(
+        {"tools": [ToolSpec(name="lookup", json_schema=[])]},
+        InvalidToolSchemaError,
+        id="nondict-schema",
+    ),
+    pytest.param(
+        {"tools": [
+            ToolSpec(name="lookup", json_schema={"type": "object"}),
+            ToolSpec(name="lookup", json_schema={"type": "object"}),
+        ]},
+        InvalidToolSchemaError,
+        id="duplicate-name",
+    ),
+    pytest.param(
+        {"tools": [ToolSpec(name="lookup", json_schema={"type": "object"})], "tool_choice": 7},
+        ToolChoiceError,
+        id="choice-type",
+    ),
+    pytest.param({"tool_choice": "any"}, ToolChoiceError, id="any-without-tools"),
+    pytest.param(
+        {"tools": [ToolSpec(name="lookup", json_schema={"type": "object"})], "tool_choice": "missing"},
+        ToolChoiceError,
+        id="unknown-choice",
+    ),
+]
+
+
+def _invoke_compatible_sync(adapter, mode, kwargs):
+    arguments = {"messages": [UserMessage(content="Use the declared tool")], **kwargs}
+    if mode == "chat":
+        return adapter.chat(**arguments)
+    return list(adapter.stream_chat(**arguments))
+
+
+async def _invoke_compatible_async(adapter, mode, kwargs):
+    arguments = {"messages": [UserMessage(content="Use the declared tool")], **kwargs}
+    if mode == "achat":
+        return await adapter.achat(**arguments)
+    return [text async for text in adapter.astream_chat(**arguments)]
 
 
 @pytest.mark.unit
@@ -1659,6 +1711,482 @@ async def test_compatible_async_fragmented_text_tool_and_usage_complete(monkeypa
     finally:
         if stream_resource.close_count == 0:
             await stream_resource.aclose()
+        if not client_closes:
+            await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+@pytest.mark.parametrize("kwargs,error_type", _INVALID_TOOL_REQUEST_CASES)
+def test_compatible_sync_invalid_tool_input_fails_before_transport(
+    transport, mode, kwargs, error_type, monkeypatch
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="vendor/tool-validation",
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+        **({"transport": "httpx"} if transport == "httpx" else {}),
+    )
+    if transport == "requests":
+        with requests_mock.Mocker(real_http=False) as http:
+            with pytest.raises(error_type):
+                _invoke_compatible_sync(adapter, mode, kwargs)
+            assert http.call_count == 0
+    else:
+        outgoing = []
+        client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: _capture_httpx_request(request, outgoing)
+        ))
+        constructions = _install_counted_httpx_client(monkeypatch, client)
+        with pytest.raises(error_type):
+            _invoke_compatible_sync(adapter, mode, kwargs)
+        assert outgoing == []
+        assert constructions == []
+        client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+@pytest.mark.parametrize("kwargs,error_type", _INVALID_TOOL_REQUEST_CASES)
+async def test_compatible_async_invalid_tool_input_fails_before_httpx_send(
+    mode, kwargs, error_type, monkeypatch
+):
+    outgoing = []
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: _capture_httpx_request(request, outgoing)
+    ))
+    constructions = _install_counted_httpx_client(
+        monkeypatch, client, asynchronous=True
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="vendor/tool-validation",
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+    )
+    with pytest.raises(error_type):
+        await _invoke_compatible_async(adapter, mode, kwargs)
+    assert outgoing == []
+    assert constructions == []
+    await client.aclose()
+
+
+def _capture_httpx_request(request, outgoing, body=None, status=200):
+    outgoing.append(request)
+    return httpx.Response(status, json=text_response() if body is None else body)
+
+
+def _install_counted_httpx_client(monkeypatch, client, *, asynchronous=False):
+    constructions = []
+    client_name = "AsyncClient" if asynchronous else "Client"
+
+    def client_factory():
+        constructions.append(True)
+        return client
+
+    monkeypatch.setattr(
+        httpx, client_name, client_factory,
+    )
+    return constructions
+
+
+def _assert_compatible_tool_request(body, model, choice="any"):
+    expected_tool = {
+        "type": "function",
+        "function": {"name": "lookup", "parameters": _tool_spec().json_schema},
+    }
+    assert body["model"] == model
+    assert body["tools"] == [expected_tool]
+    expected_choice = {
+        "auto": "auto",
+        "none": "none",
+        "any": "required",
+        "lookup": {"type": "function", "function": {"name": "lookup"}},
+    }[choice]
+    assert body["tool_choice"] == expected_choice
+
+
+def _malformed_tool_sse_lines():
+    return premature_eof_sse_lines("pending") + tool_call_sse_lines(
+        name="lookup",
+        arguments_json='{"city":',
+        call_id="call_bad_arguments",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+def test_compatible_malformed_returned_tool_arguments_raise_after_receipt(
+    transport, monkeypatch
+):
+    body = tool_call_response(
+        name="lookup", arguments_json='{"city":', call_id="call_bad_arguments"
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="vendor/tool-validation",
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+        **({"transport": "httpx"} if transport == "httpx" else {}),
+    )
+    if transport == "requests":
+        with requests_mock.Mocker(real_http=False) as http:
+            http.post(_COLLISION_URL, json=body)
+            with pytest.raises(InvalidToolArgumentsError):
+                adapter.chat(
+                    [UserMessage(content="Find a city")],
+                    tools=[_tool_spec()], tool_choice="any",
+                )
+            assert http.call_count == 1
+            assert http.request_history[0].url == _COLLISION_URL
+            _assert_compatible_tool_request(
+                http.request_history[0].json(), "vendor/tool-validation"
+            )
+    else:
+        outgoing = []
+        client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: _capture_httpx_request(request, outgoing, body)
+        ))
+        constructions = _install_counted_httpx_client(monkeypatch, client)
+        with pytest.raises(InvalidToolArgumentsError):
+            adapter.chat(
+                [UserMessage(content="Find a city")],
+                tools=[_tool_spec()], tool_choice="any",
+            )
+        assert len(outgoing) == 1
+        assert constructions == [True]
+        assert str(outgoing[0].url) == _COLLISION_URL
+        _assert_compatible_tool_request(
+            json.loads(outgoing[0].content), "vendor/tool-validation"
+        )
+        client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compatible_async_malformed_returned_tool_arguments_raise_after_receipt(
+    monkeypatch,
+):
+    outgoing = []
+    body = tool_call_response(
+        name="lookup", arguments_json='{"city":', call_id="call_bad_arguments"
+    )
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: _capture_httpx_request(request, outgoing, body)
+    ))
+    constructions = _install_counted_httpx_client(
+        monkeypatch, client, asynchronous=True
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="vendor/tool-validation",
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+    )
+    with pytest.raises(InvalidToolArgumentsError):
+        await adapter.achat(
+            [UserMessage(content="Find a city")],
+            tools=[_tool_spec()], tool_choice="any",
+        )
+    assert len(outgoing) == 1
+    assert constructions == [True]
+    assert str(outgoing[0].url) == _COLLISION_URL
+    _assert_compatible_tool_request(
+        json.loads(outgoing[0].content), "vendor/tool-validation"
+    )
+    await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+def test_compatible_sync_stream_malformed_tool_arguments_fail_without_success(
+    transport, monkeypatch
+):
+    adapter, outgoing, resource, client_closes, client = _counted_sync_stream_route(
+        transport, _malformed_tool_sse_lines(), monkeypatch, "vendor/tool-validation"
+    )
+    constructions = (
+        _install_counted_httpx_client(monkeypatch, client)
+        if transport == "httpx" else []
+    )
+    visible, tools, completed = [], [], []
+    try:
+        with pytest.raises(InvalidToolArgumentsError):
+            visible.extend(adapter.stream_chat(
+                [UserMessage(content="Find a city")],
+                tools=[_tool_spec()], tool_choice="any", buffer_chars=64,
+                on_tool_call=tools.append, on_done=completed.append,
+            ))
+        assert visible == []
+        assert tools == []
+        assert completed == []
+        assert len(outgoing) == 1
+        if transport == "requests":
+            assert outgoing[0][0] == _COLLISION_URL
+        else:
+            assert str(outgoing[0].url) == _COLLISION_URL
+        request_body = (
+            outgoing[0][1]["json"]
+            if transport == "requests"
+            else json.loads(outgoing[0].content)
+        )
+        _assert_compatible_tool_request(request_body, "vendor/tool-validation")
+        assert resource.close_count == 1
+        if transport == "httpx":
+            assert constructions == [True]
+            assert client_closes == [True]
+    finally:
+        if resource.close_count == 0:
+            resource.close()
+        if transport == "httpx" and not client_closes:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compatible_async_stream_malformed_tool_arguments_fail_without_success(
+    monkeypatch,
+):
+    adapter, outgoing, resource, client_closes, client = _counted_async_stream_route(
+        _malformed_tool_sse_lines(), monkeypatch, "vendor/tool-validation"
+    )
+    constructions = _install_counted_httpx_client(
+        monkeypatch, client, asynchronous=True
+    )
+    visible, tools, completed = [], [], []
+    try:
+        with pytest.raises(InvalidToolArgumentsError):
+            async for text in adapter.astream_chat(
+                [UserMessage(content="Find a city")],
+                tools=[_tool_spec()], tool_choice="any", buffer_chars=64,
+                on_tool_call=tools.append, on_done=completed.append,
+            ):
+                visible.append(text)
+        assert visible == []
+        assert tools == []
+        assert completed == []
+        assert len(outgoing) == 1
+        assert str(outgoing[0].url) == _COLLISION_URL
+        _assert_compatible_tool_request(
+            json.loads(outgoing[0].content), "vendor/tool-validation"
+        )
+        assert resource.close_count == 1
+        assert constructions == [True]
+        assert client_closes == [True]
+    finally:
+        if resource.close_count == 0:
+            await resource.aclose()
+        if not client_closes:
+            await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+def test_compatible_tool_server_rejection_is_single_request_without_fallback(
+    transport, mode, monkeypatch
+):
+    outgoing = []
+    model = "vendor/tool-validation"
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model=model,
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+        **({"transport": "httpx"} if transport == "httpx" else {}),
+    )
+    if transport == "requests":
+        with requests_mock.Mocker(real_http=False) as http:
+            http.post(
+                _COLLISION_URL, status_code=400,
+                json=_failure_payload("unsupported-feature"),
+            )
+            completed = []
+            with pytest.raises(LLMAPIClientError):
+                if mode == "chat":
+                    adapter.chat(
+                        [UserMessage(content="Find a city")],
+                        tools=[_tool_spec()], tool_choice="any",
+                    )
+                else:
+                    list(adapter.stream_chat(
+                        [UserMessage(content="Find a city")],
+                        tools=[_tool_spec()], tool_choice="any",
+                        on_done=completed.append,
+                    ))
+            assert http.call_count == 1
+            body = http.request_history[0].json()
+            assert http.request_history[0].url == _COLLISION_URL
+    else:
+        client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: _capture_httpx_request(
+                request, outgoing, _failure_payload("unsupported-feature"), 400
+            )
+        ))
+        constructions = _install_counted_httpx_client(monkeypatch, client)
+        completed = []
+        with pytest.raises(LLMAPIClientError):
+            if mode == "chat":
+                adapter.chat(
+                    [UserMessage(content="Find a city")],
+                    tools=[_tool_spec()], tool_choice="any",
+                )
+            else:
+                list(adapter.stream_chat(
+                    [UserMessage(content="Find a city")],
+                    tools=[_tool_spec()], tool_choice="any",
+                    on_done=completed.append,
+                ))
+        assert len(outgoing) == 1
+        assert constructions == [True]
+        assert str(outgoing[0].url) == _COLLISION_URL
+        body = json.loads(outgoing[0].content)
+        client.close()
+    _assert_compatible_tool_request(body, model)
+    assert completed == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+async def test_compatible_async_tool_server_rejection_is_single_request_without_fallback(
+    mode, monkeypatch,
+):
+    outgoing = []
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: _capture_httpx_request(
+            request, outgoing, _failure_payload("unsupported-feature"), 400
+        )
+    ))
+    constructions = _install_counted_httpx_client(
+        monkeypatch, client, asynchronous=True
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="vendor/tool-validation",
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+    )
+    completed = []
+    with pytest.raises(LLMAPIClientError):
+        if mode == "achat":
+            await adapter.achat(
+                [UserMessage(content="Find a city")],
+                tools=[_tool_spec()], tool_choice="any",
+            )
+        else:
+            async for _text in adapter.astream_chat(
+                [UserMessage(content="Find a city")],
+                tools=[_tool_spec()], tool_choice="any",
+                on_done=completed.append,
+            ):
+                pass
+    assert len(outgoing) == 1
+    assert constructions == [True]
+    assert str(outgoing[0].url) == _COLLISION_URL
+    body = json.loads(outgoing[0].content)
+    _assert_compatible_tool_request(body, "vendor/tool-validation")
+    assert completed == []
+    await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+@pytest.mark.parametrize("choice", ("auto", "none", "any", "lookup"))
+def test_compatible_sync_stream_tool_choice_payload_and_completion(
+    transport, choice, monkeypatch
+):
+    model = "vendor/tool-choice-stream"
+    lines = (
+        text_sse_lines("No tool", fragments=("No ", "tool"), usage=usage_payload(2, 2, 4))
+        if choice == "none"
+        else _fragmented_text_and_tool_sse_lines()
+    )
+    adapter, outgoing, resource, client_closes, client = _counted_sync_stream_route(
+        transport, lines, monkeypatch, model
+    )
+    completed = []
+    try:
+        visible = list(adapter.stream_chat(
+            [UserMessage(content="Find a city")],
+            tools=[_tool_spec()],
+            tool_choice=choice,
+            on_done=completed.append,
+        ))
+        assert len(outgoing) == 1
+        if transport == "requests":
+            assert outgoing[0][0] == _COLLISION_URL
+        else:
+            assert str(outgoing[0].url) == _COLLISION_URL
+        body = (
+            outgoing[0][1]["json"]
+            if transport == "requests"
+            else json.loads(outgoing[0].content)
+        )
+        _assert_compatible_tool_request(body, model, choice)
+        assert resource.close_count == 1
+        if transport == "httpx":
+            assert client_closes == [True]
+        assert len(completed) == 1
+        if choice == "none":
+            assert visible == ["No ", "tool"]
+            assert not completed[0].tool_calls
+        else:
+            assert len(completed[0].tool_calls) == 1
+            assert completed[0].tool_calls[0].name == "lookup"
+            assert completed[0].tool_calls[0].arguments == {"city": "Haifa"}
+            assert completed[0].tool_calls[0].call_id == "call_fragmented_1"
+    finally:
+        if resource.close_count == 0:
+            resource.close()
+        if transport == "httpx" and not client_closes:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("choice", ("auto", "none", "any", "lookup"))
+async def test_compatible_async_stream_tool_choice_payload_and_completion(
+    choice, monkeypatch
+):
+    model = "vendor/tool-choice-stream"
+    lines = (
+        text_sse_lines("No tool", fragments=("No ", "tool"), usage=usage_payload(2, 2, 4))
+        if choice == "none"
+        else _fragmented_text_and_tool_sse_lines()
+    )
+    adapter, outgoing, resource, client_closes, client = (
+        _counted_async_stream_route(lines, monkeypatch, model)
+    )
+    completed = []
+    try:
+        visible = [text async for text in adapter.astream_chat(
+            [UserMessage(content="Find a city")],
+            tools=[_tool_spec()],
+            tool_choice=choice,
+            on_done=completed.append,
+        )]
+        assert len(outgoing) == 1
+        assert str(outgoing[0].url) == _COLLISION_URL
+        body = json.loads(outgoing[0].content)
+        _assert_compatible_tool_request(body, model, choice)
+        assert resource.close_count == 1
+        assert client_closes == [True]
+        assert len(completed) == 1
+        if choice == "none":
+            assert visible == ["No ", "tool"]
+            assert not completed[0].tool_calls
+        else:
+            assert len(completed[0].tool_calls) == 1
+            assert completed[0].tool_calls[0].name == "lookup"
+            assert completed[0].tool_calls[0].arguments == {"city": "Haifa"}
+            assert completed[0].tool_calls[0].call_id == "call_fragmented_1"
+    finally:
+        if resource.close_count == 0:
+            await resource.aclose()
         if not client_closes:
             await client.aclose()
 

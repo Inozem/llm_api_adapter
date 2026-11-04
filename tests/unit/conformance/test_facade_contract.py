@@ -8,6 +8,7 @@ contract without credentials or live API calls.
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
@@ -28,10 +29,10 @@ from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.llms.streaming import SSEEvent
 from src.llm_api_adapter.llms.transports import SSEFrameDecoder
-from src.llm_api_adapter.models.messages.chat_message import UserMessage
+from src.llm_api_adapter.models.messages.chat_message import AIMessage, ToolMessage, UserMessage
 from src.llm_api_adapter.models.messages.file_parts import ImagePart
 from src.llm_api_adapter.models.responses.chat_response import Usage
-from src.llm_api_adapter.models.tools import ToolSpec
+from src.llm_api_adapter.models.tools import ToolCall, ToolSpec
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from tests.fixtures.structured_output import (
     FLAT_OBJECT_SCHEMA,
@@ -1462,3 +1463,325 @@ def test_flash_facade_selection_uses_mistral_provider_without_zai_catalogue():
     assert refusal.parsed_json is None
     assert refusal.parsed_model is None
     assert refusal.incomplete_reason is None
+
+
+def _expected_shared_tool_choice(case, choice):
+    if case.wire_format == "openai_responses":
+        return {
+            "auto": "auto",
+            "none": "none",
+            "any": "required",
+            "get_weather": {"type": "function", "name": "get_weather"},
+        }[choice]
+    if case.wire_format == "openai_chat_completions":
+        return {
+            "auto": "auto",
+            "none": "none",
+            "any": "required",
+            "get_weather": {
+                "type": "function",
+                "function": {"name": "get_weather"},
+            },
+        }[choice]
+    if case.wire_format == "anthropic_messages":
+        return {
+            "auto": {"type": "auto"},
+            "none": {"type": "none"},
+            "any": {"type": "any"},
+            "get_weather": {"type": "tool", "name": "get_weather"},
+        }[choice]
+    if case.wire_format == "google_generate_content":
+        mode = {"auto": "AUTO", "none": "NONE", "any": "ANY", "get_weather": "ANY"}[choice]
+        config = {"mode": mode}
+        if choice == "get_weather":
+            config["allowedFunctionNames"] = ["get_weather"]
+        return {"functionCallingConfig": config}
+    raise AssertionError(f"Unknown wire format: {case.wire_format!r}")
+
+
+def _shared_test_tool():
+    return ToolSpec(
+        name="get_weather",
+        json_schema={
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+            "additionalProperties": False,
+        },
+    )
+
+
+def _assert_shared_tool_declaration(payload, case, tool):
+    tools = payload["tools"]
+    assert len(tools) == 1
+    if case.wire_format == "openai_responses":
+        declaration = tools[0]
+        assert declaration["name"] == tool.name
+        assert declaration["parameters"] == tool.json_schema
+    elif case.wire_format == "openai_chat_completions":
+        declaration = tools[0]["function"]
+        assert declaration["name"] == tool.name
+        assert declaration["parameters"] == tool.json_schema
+    elif case.wire_format == "anthropic_messages":
+        declaration = tools[0]
+        assert declaration["name"] == tool.name
+        assert declaration["input_schema"] == tool.json_schema
+    elif case.wire_format == "google_generate_content":
+        declarations = tools[0]["functionDeclarations"]
+        assert len(declarations) == 1
+        declaration = declarations[0]
+        assert declaration["name"] == tool.name
+        assert declaration["parametersJsonSchema"] == tool.json_schema
+    else:
+        raise AssertionError(f"Unknown wire format: {case.wire_format!r}")
+
+
+def _assert_shared_tool_call_ids(response, case):
+    assert len(response.tool_calls) == 1
+    call = response.tool_calls[0]
+    assert call.name == "get_weather"
+    assert call.arguments == {"city": "Tel Aviv"}
+    expected_id = {
+        "openai_responses": "call_123",
+        "openai_chat_completions": "call_123",
+        "anthropic_messages": "toolu_123",
+        "google_generate_content": "get_weather",
+    }.get(case.wire_format)
+    assert expected_id is not None, f"Unknown wire format: {case.wire_format!r}"
+    assert call.call_id == expected_id
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("choice", ("auto", "none", "any", "get_weather"))
+def test_facade_normalizes_tool_choices_and_completed_calls(case, choice):
+    tool = _shared_test_tool()
+    response = (
+        case.response_factory(include_tool=True)
+        if choice != "none"
+        else case.response_factory()
+    )
+    transport = Mock(return_value=_JSONResponse(response))
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        result = _facade(case).chat(
+            **_chat_kwargs(case), tools=[tool], tool_choice=choice
+        )
+
+    payload = transport.call_args.args[1]
+    choice_key = "toolConfig" if case.wire_format == "google_generate_content" else "tool_choice"
+    assert payload[choice_key] == _expected_shared_tool_choice(case, choice)
+    _assert_shared_tool_declaration(payload, case, tool)
+    transport.assert_called_once()
+    if choice == "none":
+        assert not result.tool_calls
+    else:
+        _assert_shared_tool_call_ids(result, case)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("choice", ("auto", "none", "any", "get_weather"))
+async def test_facade_achat_normalizes_tool_choices_and_completed_calls(case, choice):
+    tool = _shared_test_tool()
+    response = (
+        case.response_factory(include_tool=True)
+        if choice != "none"
+        else case.response_factory()
+    )
+    transport = AsyncMock(return_value=response)
+    with patch.object(case.async_client_class, "_send_request", new=transport):
+        result = await _facade(case).achat(
+            **_chat_kwargs(case), tools=[tool], tool_choice=choice
+        )
+
+    payload = transport.await_args.args[1]
+    choice_key = "toolConfig" if case.wire_format == "google_generate_content" else "tool_choice"
+    assert payload[choice_key] == _expected_shared_tool_choice(case, choice)
+    _assert_shared_tool_declaration(payload, case, tool)
+    transport.assert_awaited_once()
+    if choice == "none":
+        assert not result.tool_calls
+    else:
+        _assert_shared_tool_call_ids(result, case)
+
+
+def _shared_tool_history(case):
+    return [
+        UserMessage("What is the weather?"),
+        AIMessage(
+            content="",
+            tool_calls=[ToolCall(
+                name="get_weather", arguments={"city": "Haifa"},
+                call_id=(
+                    "toolu_history"
+                    if case.wire_format == "anthropic_messages"
+                    else "call_history"
+                ),
+            )],
+        ),
+        ToolMessage(
+            content='{"temperature": 18}',
+            tool_call_id=(
+                "get_weather"
+                if case.wire_format == "google_generate_content"
+                else (
+                    "toolu_history"
+                    if case.wire_format == "anthropic_messages"
+                    else "call_history"
+                )
+            ),
+        ),
+    ]
+
+
+def _assert_shared_tool_history_payload(case, payload):
+    payload_key = case.message_key
+    serialized = payload[payload_key]
+    call_id = "toolu_history" if case.wire_format == "anthropic_messages" else "call_history"
+    expected_arguments = {"city": "Haifa"}
+    if case.wire_format == "openai_responses":
+        assert serialized[-1] == {
+            "type": "function_call_output",
+            "call_id": "call_history",
+            "output": '{"temperature": 18}',
+        }
+        assistant_calls = [
+            item for item in serialized[:-1]
+            if isinstance(item, dict) and item.get("type") == "function_call"
+        ]
+        assert len(assistant_calls) == 1
+        assistant_call = assistant_calls[0]
+        assert assistant_call["call_id"] == "call_history"
+        assert assistant_call["name"] == "get_weather"
+        assert json.loads(assistant_call["arguments"]) == expected_arguments
+    elif case.wire_format == "openai_chat_completions":
+        assistant = serialized[-2]
+        assert assistant["role"] == "assistant"
+        assert assistant["content"] == ""
+        assert len(assistant["tool_calls"]) == 1
+        call = assistant["tool_calls"][0]
+        assert call["id"] == "call_history"
+        assert call["type"] == "function"
+        assert call["function"]["name"] == "get_weather"
+        assert json.loads(call["function"]["arguments"]) == expected_arguments
+        assert serialized[-1] == {
+            "role": "tool", "tool_call_id": "call_history",
+            "content": '{"temperature": 18}',
+        }
+    elif case.wire_format == "anthropic_messages":
+        assert serialized[-2] == {
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use", "id": call_id, "name": "get_weather",
+                "input": expected_arguments,
+            }],
+        }
+        assert serialized[-1] == {
+            "role": "user",
+            "content": [{
+                "type": "tool_result", "tool_use_id": call_id,
+                "content": '{"temperature": 18}',
+            }],
+        }
+    elif case.wire_format == "google_generate_content":
+        assert serialized[-2] == {
+            "role": "model",
+            "parts": [{"functionCall": {
+                "name": "get_weather", "args": expected_arguments,
+            }}],
+        }
+        assert serialized[-1] == {
+            "role": "user",
+            "parts": [{"functionResponse": {
+                "name": "get_weather", "response": {"temperature": 18},
+            }}],
+        }
+    else:
+        raise AssertionError(f"Unknown wire format: {case.wire_format!r}")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_preserves_caller_tool_result_history_without_execution(case):
+    tool = _shared_test_tool()
+    history = _shared_tool_history(case)
+    original_history = deepcopy(history)
+    transport = Mock(return_value=_JSONResponse(case.response_factory()))
+    with patch.object(case.sync_client_class, "_send_request", new=transport):
+        result = _facade(case).chat(
+            messages=history, tools=[tool], max_tokens=case.max_tokens
+        )
+
+    payload = transport.call_args.args[1]
+    assert history == original_history
+    transport.assert_called_once()
+    _assert_shared_tool_history_payload(case, payload)
+    assert result.content == "ok"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_achat_preserves_caller_tool_result_history(case):
+    tool = _shared_test_tool()
+    history = _shared_tool_history(case)
+    original_history = deepcopy(history)
+    transport = AsyncMock(return_value=case.response_factory())
+    with patch.object(case.async_client_class, "_send_request", new=transport):
+        result = await _facade(case).achat(
+            messages=history, tools=[tool], max_tokens=case.max_tokens
+        )
+
+    payload = transport.await_args.args[1]
+    assert history == original_history
+    transport.assert_awaited_once()
+    _assert_shared_tool_history_payload(case, payload)
+    assert result.content == "ok"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_stream_chat_preserves_caller_tool_result_history(case):
+    tool = _shared_test_tool()
+    history = _shared_tool_history(case)
+    original_history = deepcopy(history)
+    transport = Mock(return_value=iter(case.stream_events_factory()))
+    completed = []
+    with patch.object(case.sync_client_class, "stream", new=transport):
+        list(_facade(case).stream_chat(
+            messages=history, tools=[tool], max_tokens=case.max_tokens,
+            on_done=completed.append,
+        ))
+
+    assert history == original_history
+    transport.assert_called_once()
+    _assert_shared_tool_history_payload(case, transport.call_args.kwargs)
+    assert len(completed) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_astream_chat_preserves_caller_tool_result_history(case):
+    tool = _shared_test_tool()
+    history = _shared_tool_history(case)
+    original_history = deepcopy(history)
+
+    async def events():
+        for event in case.stream_events_factory():
+            yield event
+
+    transport = Mock(return_value=events())
+    completed = []
+    with patch.object(case.async_client_class, "stream", new=transport):
+        async for _text in _facade(case).astream_chat(
+            messages=history, tools=[tool], max_tokens=case.max_tokens,
+            on_done=completed.append,
+        ):
+            pass
+
+    assert history == original_history
+    transport.assert_called_once()
+    _assert_shared_tool_history_payload(case, transport.call_args.kwargs)
+    assert len(completed) == 1
