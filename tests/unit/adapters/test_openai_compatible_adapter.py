@@ -3721,3 +3721,174 @@ async def test_compatible_async_done_sentinel_without_finish_reason_is_failure(
             await resource.aclose()
         if not client_closes:
             await client.aclose()
+
+
+_BUFFERED_METADATA_SNAPSHOT_CASES = [
+    pytest.param(
+        usage_payload(
+            10,
+            3,
+            13,
+            prompt_tokens_details={"cached_tokens": 8, "cache_write_tokens": 5},
+        ),
+        (10, 3, 13, None, None),
+        id="contradictory-cache-split",
+    ),
+    pytest.param(
+        usage_payload(
+            0,
+            0,
+            0,
+            prompt_tokens_details={"cached_tokens": 0, "cache_write_tokens": 0},
+        ),
+        (0, 0, 0, 0, 0),
+        id="reported-zero-split",
+    ),
+    pytest.param({}, _METADATA_ALL_UNKNOWN, id="present-empty-usage"),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("usage, expected_usage", _BUFFERED_METADATA_SNAPSHOT_CASES)
+def test_compatible_sync_buffered_metadata_snapshot(usage, expected_usage, monkeypatch):
+    snapshot = deepcopy(usage)
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    chunks = []
+    completed = []
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="gpt-5",
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+    )
+    lines = _metadata_stream_lines(usage)
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(
+            _COLLISION_URL,
+            text="\n".join(lines),
+            headers={"Content-Type": "text/event-stream"},
+        )
+        visible = list(
+            adapter.stream_chat(
+                [UserMessage(content="Say hello.")],
+                buffer_chars=len("Fixture reply") + 20,
+                on_chunk=chunks.append,
+                on_done=completed.append,
+            )
+        )
+
+        assert visible == ["Fixture reply"]
+        assert len(completed) == 1
+        _assert_compatible_metadata_result(completed[0], expected_usage)
+        assert len(chunks) == 1
+        assert chunks[0].text == "Fixture reply"
+        if expected_usage == _METADATA_ALL_UNKNOWN:
+            assert chunks[0].usage is None
+        else:
+            assert chunks[0].usage is not None
+            assert (
+                chunks[0].usage.input_tokens,
+                chunks[0].usage.output_tokens,
+                chunks[0].usage.total_tokens,
+                chunks[0].usage.cached_tokens,
+                chunks[0].usage.cache_write_tokens,
+            ) == expected_usage
+            for actual, expected in zip(
+                (
+                    chunks[0].usage.input_tokens,
+                    chunks[0].usage.output_tokens,
+                    chunks[0].usage.total_tokens,
+                    chunks[0].usage.cached_tokens,
+                    chunks[0].usage.cache_write_tokens,
+                ),
+                expected_usage,
+            ):
+                if expected == 0:
+                    assert type(actual) is int
+        assert completed[0].response_id == FIXTURE_ID
+        assert http.call_count == 1
+        assert http.request_history[0].url == _COLLISION_URL
+        assert http.request_history[0].json()["model"] == "gpt-5"
+
+    _assert_official_collision_has_no_profile(adapter)
+    _assert_metadata_input_unchanged(usage, snapshot)
+    assert forbidden == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("usage, expected_usage", _BUFFERED_METADATA_SNAPSHOT_CASES)
+async def test_compatible_async_buffered_metadata_snapshot(usage, expected_usage, monkeypatch):
+    snapshot = deepcopy(usage)
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    chunks = []
+    completed = []
+    outgoing = []
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        outgoing.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content="\n".join(_metadata_stream_lines(usage)),
+        )
+
+    client = real_client(transport=httpx.MockTransport(handler))
+    constructions = _install_counted_httpx_client(
+        monkeypatch, client, asynchronous=True
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="gpt-5",
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+    )
+    try:
+        visible = [
+            text
+            async for text in adapter.astream_chat(
+                [UserMessage(content="Say hello.")],
+                buffer_chars=len("Fixture reply") + 20,
+                on_chunk=chunks.append,
+                on_done=completed.append,
+            )
+        ]
+        assert visible == ["Fixture reply"]
+        assert len(completed) == 1
+        _assert_compatible_metadata_result(completed[0], expected_usage)
+        assert len(chunks) == 1
+        assert chunks[0].text == "Fixture reply"
+        if expected_usage == _METADATA_ALL_UNKNOWN:
+            assert chunks[0].usage is None
+        else:
+            assert chunks[0].usage is not None
+            assert (
+                chunks[0].usage.input_tokens,
+                chunks[0].usage.output_tokens,
+                chunks[0].usage.total_tokens,
+                chunks[0].usage.cached_tokens,
+                chunks[0].usage.cache_write_tokens,
+            ) == expected_usage
+            for actual, expected in zip(
+                (
+                    chunks[0].usage.input_tokens,
+                    chunks[0].usage.output_tokens,
+                    chunks[0].usage.total_tokens,
+                    chunks[0].usage.cached_tokens,
+                    chunks[0].usage.cache_write_tokens,
+                ),
+                expected_usage,
+            ):
+                if expected == 0:
+                    assert type(actual) is int
+        assert completed[0].response_id == FIXTURE_ID
+        assert len(outgoing) == len(constructions) == 1
+        assert outgoing[0].method == "POST"
+        assert str(outgoing[0].url) == _COLLISION_URL
+        assert json.loads(outgoing[0].content)["model"] == "gpt-5"
+        _assert_official_collision_has_no_profile(adapter)
+        _assert_metadata_input_unchanged(usage, snapshot)
+        assert forbidden == []
+    finally:
+        await client.aclose()

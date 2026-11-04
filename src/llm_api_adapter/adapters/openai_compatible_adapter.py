@@ -15,12 +15,53 @@ from ..llms.openai.async_client import OpenAIAsyncClient
 from ..llms.openai.sync_client import OpenAISyncClient
 from ..llms.transports import validate_sync_transport
 from .openai.adapter import OpenAIAdapter
+from .openai.payloads import _cache_token_counts, _token_count
 from .structured_output import validate_core_portable_schema
+from ..models.responses.chat_response import Usage
 
 logger = logging.getLogger(__name__)
 
 
 _URI_RE = re.compile(r"(?i)\bhttps?://[^\s<>]+")
+
+
+def _normalize_compatible_usage(
+    raw_usage: object,
+    *,
+    input_field: str = "prompt_tokens",
+    output_field: str = "completion_tokens",
+) -> Usage | None:
+    """Retain only independently reported, valid compatible usage components."""
+    if not isinstance(raw_usage, Mapping):
+        return None
+
+    input_tokens = _token_count(raw_usage.get(input_field))
+    output_tokens = _token_count(raw_usage.get(output_field))
+    total_tokens = _token_count(raw_usage.get("total_tokens"))
+    cached_tokens, cache_write_tokens = _cache_token_counts(
+        raw_usage,
+        details_field=(
+            "input_tokens_details"
+            if input_field == "input_tokens"
+            else "prompt_tokens_details"
+        ),
+    )
+    valid_cache_total = sum(
+        count
+        for count in (cached_tokens, cache_write_tokens)
+        if count is not None
+    )
+    if input_tokens is not None and input_tokens < valid_cache_total:
+        cached_tokens = None
+        cache_write_tokens = None
+
+    return Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
+        cache_write_tokens=cache_write_tokens,
+    )
 
 
 def _redact_compatible_diagnostic(text: object, api_key: str) -> str:
@@ -204,7 +245,9 @@ class OpenAICompatibleAdapter(OpenAIAdapter):
             raise self._malformed_response()
         self._validate_message_fields(message)
         try:
-            return super()._normalize_chat_completions_response(response)
+            chat_response = super()._normalize_chat_completions_response(response)
+            chat_response.usage = _normalize_compatible_usage(response.get("usage"))
+            return chat_response
         except InvalidToolArgumentsError as error:
             error.detail = (
                 "openai_compatible returned malformed tool arguments; "
@@ -212,6 +255,32 @@ class OpenAICompatibleAdapter(OpenAIAdapter):
             )
             error.args = (f"{error.message} Detail: {error.detail}",)
             raise error from None
+
+    @staticmethod
+    def _normalize_stream_usage(
+        raw_usage: object,
+        *,
+        input_field: str,
+        output_field: str,
+    ) -> Usage | None:
+        """Use the compatible usage rule for buffered and completed stream data."""
+        usage = _normalize_compatible_usage(
+            raw_usage,
+            input_field=input_field,
+            output_field=output_field,
+        )
+        if usage is not None and all(
+            value is None
+            for value in (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.total_tokens,
+                usage.cached_tokens,
+                usage.cache_write_tokens,
+            )
+        ):
+            return None
+        return usage
 
     @staticmethod
     def _to_openai_structured_output_schema(schema: dict) -> dict:
