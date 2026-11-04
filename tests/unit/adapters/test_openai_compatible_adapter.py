@@ -5,6 +5,10 @@ import json
 import socket
 import traceback
 import asyncio
+from pathlib import Path
+import subprocess
+import sys
+import warnings
 
 import httpx
 import pytest
@@ -2871,6 +2875,266 @@ def test_compatible_default_requests_modes_work_without_httpx(mode, monkeypatch)
         assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
         assert request.headers["Content-Type"] == "application/json"
         assert request.json() == _collision_body(model, streaming=mode == "stream_chat")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+@pytest.mark.parametrize("capture_reasoning", (False, True))
+@pytest.mark.parametrize(
+    "model,reasoning_level,warning_expected",
+    (
+        ("vendor/unregistered-model", None, False),
+        ("vendor/unregistered-model", "high", True),
+        ("gpt-5", 1024, True),
+    ),
+)
+def test_compatible_unknown_reasoning_controls_are_omitted_and_never_invented(
+    mode, capture_reasoning, model, reasoning_level, warning_expected, monkeypatch
+):
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    url = f"{_COLLISION_ROOT}/chat/completions"
+    streaming = mode == "stream_chat"
+    done = []
+    reasoning = []
+
+    response_list = []
+    if streaming:
+        response_list.append({
+            "text": "\n".join(_collision_sse_lines(model)),
+            "headers": {"Content-Type": "text/event-stream"},
+        })
+    else:
+        response_list.append({
+            "json": text_response(model=model, usage=_COLLISION_USAGE),
+        })
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, response_list=response_list)
+        adapter = UniversalLLMAPIAdapter(
+            organization="openai_compatible", model=model,
+            api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT,
+        )
+        kwargs = dict(
+            messages=[UserMessage(content="Say hello.")],
+            capture_reasoning=capture_reasoning,
+        )
+        if streaming:
+            kwargs["on_reasoning"] = reasoning.append
+        if reasoning_level is not None:
+            kwargs["reasoning_level"] = reasoning_level
+        if streaming:
+            kwargs["on_done"] = done.append
+        with warnings.catch_warnings(record=True) as emitted_warnings:
+            warnings.simplefilter("always")
+            result = list(adapter.stream_chat(**kwargs)) if streaming else adapter.chat(**kwargs)
+        if warning_expected:
+            assert len(emitted_warnings) == 1
+            assert emitted_warnings[0].category is UserWarning
+            assert "not verified" in str(emitted_warnings[0].message)
+            assert "reasoning is disabled" in str(emitted_warnings[0].message)
+        else:
+            assert emitted_warnings == []
+        assert http.call_count == 1
+        request = http.request_history[0]
+        body = request.json()
+
+    assert request.url == url
+    assert body["model"] == model
+    assert not {"reasoning_effort", "reasoning", "thinking", "capture_reasoning"} & body.keys()
+    assert forbidden == []
+    if streaming:
+        assert result == ["Fixture reply"]
+        assert len(done) == 1
+        response = done[0]
+    else:
+        response = result
+    assert response.content == "Fixture reply"
+    assert response.reasoning_events == []
+    assert reasoning == []
+    assert adapter.adapter.model_spec is None
+    assert adapter.adapter.pricing is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+@pytest.mark.parametrize("capture_reasoning", (False, True))
+@pytest.mark.parametrize(
+    "model,reasoning_level,warning_expected",
+    (
+        ("vendor/unregistered-model", None, False),
+        ("vendor/unregistered-model", "high", True),
+        ("gpt-5", 1024, True),
+    ),
+)
+async def test_compatible_async_unknown_reasoning_controls_are_omitted_and_never_invented(
+    mode, capture_reasoning, model, reasoning_level, warning_expected, monkeypatch
+):
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    url = f"{_COLLISION_ROOT}/chat/completions"
+    streaming = mode == "astream_chat"
+    outgoing = []
+    done = []
+    reasoning = []
+
+    def handler(request):
+        outgoing.append(request)
+        if streaming:
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content="\n".join(_collision_sse_lines(model)),
+            )
+        return httpx.Response(
+            200, json=text_response(model=model, usage=_COLLISION_USAGE)
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    _install_counted_httpx_client(monkeypatch, client, asynchronous=True)
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible", model=model,
+        api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT,
+    )
+    kwargs = dict(
+        messages=[UserMessage(content="Say hello.")],
+        capture_reasoning=capture_reasoning,
+    )
+    if streaming:
+        kwargs["on_reasoning"] = reasoning.append
+    if reasoning_level is not None:
+        kwargs["reasoning_level"] = reasoning_level
+    if streaming:
+        kwargs["on_done"] = done.append
+    try:
+        with warnings.catch_warnings(record=True) as emitted_warnings:
+            warnings.simplefilter("always")
+            result = (
+                [text async for text in adapter.astream_chat(**kwargs)]
+                if streaming else await adapter.achat(**kwargs)
+            )
+    finally:
+        await client.aclose()
+    if warning_expected:
+        assert len(emitted_warnings) == 1
+        assert emitted_warnings[0].category is UserWarning
+        assert "not verified" in str(emitted_warnings[0].message)
+        assert "reasoning is disabled" in str(emitted_warnings[0].message)
+    else:
+        assert emitted_warnings == []
+    assert len(outgoing) == 1
+    request = outgoing[0]
+    body = json.loads(request.content)
+    assert str(request.url) == url
+    assert body["model"] == model
+    assert not {"reasoning_effort", "reasoning", "thinking", "capture_reasoning"} & body.keys()
+    assert forbidden == []
+    if streaming:
+        assert result == ["Fixture reply"]
+        assert len(done) == 1
+        response = done[0]
+    else:
+        response = result
+    assert response.content == "Fixture reply"
+    assert response.reasoning_events == []
+    assert reasoning == []
+    assert adapter.adapter.model_spec is None
+    assert adapter.adapter.pricing is None
+
+
+@pytest.mark.unit
+def test_compatible_base_install_sync_requests_chat_and_stream_subprocess_smoke():
+    repo_root = Path(__file__).resolve().parents[3]
+    src_path = repo_root / "src"
+    assert src_path.is_dir()
+    child = r'''import importlib.abc, json, socket, sys
+from pathlib import Path
+src = Path(sys.argv[1])
+assert src.is_dir()
+sys.path.insert(0, str(src))
+blocked = (
+    "httpx", "llm_api_adapter_mistral", "llm_api_adapter_xai",
+    "llm_api_adapter_qwen", "llm_api_adapter_kimi",
+    "llm_api_adapter_deepseek", "llm_api_adapter_zai",
+    "openai", "anthropic", "google", "mistralai", "xai", "qwen", "pydantic",
+    "kimi", "deepseek", "zai",
+)
+attempts = []
+class BlockOptionalModules(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if any(fullname == root or fullname.startswith(root + ".") for root in blocked):
+            attempts.append(fullname)
+            raise ModuleNotFoundError("optional dependency blocked: " + fullname)
+sys.meta_path.insert(0, BlockOptionalModules())
+def blocked_network(*args, **kwargs):
+    raise AssertionError("real network access attempted")
+socket.getaddrinfo = blocked_network
+socket.socket.connect = blocked_network
+socket.create_connection = blocked_network
+import requests
+from unittest.mock import patch
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+import llm_api_adapter.universal_adapter as universal_module
+from llm_api_adapter.organization_registry import OrganizationPluginDiscovery
+import llm_api_adapter.adapters.base_adapter as base_adapter
+import llm_api_adapter.llms.openai.sync_client as openai_sync
+input_data = json.load(sys.stdin)
+assert Path(universal_module.__file__).resolve().is_relative_to(src.resolve())
+calls = []
+boundary_attempts = []
+def forbidden_boundary(name):
+    def fail(*args, **kwargs):
+        boundary_attempts.append(name)
+        raise AssertionError("compatible mode crossed boundary: " + name)
+    return fail
+OrganizationPluginDiscovery.discover = forbidden_boundary("plugin discovery")
+base_adapter.resolve_model_spec = forbidden_boundary("profile lookup")
+for symbol in ("model_api_variant", "model_spec_for", "apply_model_request_rules"):
+    setattr(openai_sync, symbol, forbidden_boundary(symbol))
+class Response:
+    status_code = 200
+    headers = {"Content-Type": "application/json"}
+    def __init__(self, content, stream=False):
+        self.content = content.encode()
+        self.text = content
+        self.stream = stream
+    def raise_for_status(self): pass
+    def json(self): return json.loads(self.text)
+    def iter_lines(self, **kwargs): return iter(self.content.splitlines())
+    def close(self): pass
+def fake_post(url, **kwargs):
+    calls.append((url, kwargs))
+    if kwargs.get("stream"):
+        return Response(input_data["sse"], True)
+    return Response(json.dumps(input_data["json"]))
+with patch.object(requests, "post", fake_post):
+    adapter = UniversalLLMAPIAdapter(organization="openai_compatible", model="vendor/subprocess-smoke", api_key="synthetic", base_url="https://example.invalid/v1")
+    response = adapter.chat([{"role": "user", "content": "hello"}])
+    done = []
+    visible = list(adapter.stream_chat([{"role": "user", "content": "hello"}], on_done=done.append))
+assert response.content == "Subprocess reply"
+assert visible == ["Subprocess reply"] and len(done) == 1 and done[0].content == response.content
+assert len(calls) == 2 and all(call[0] == "https://example.invalid/v1/chat/completions" for call in calls)
+assert all(call[1]["json"]["model"] == "vendor/subprocess-smoke" for call in calls)
+assert adapter.adapter.model_spec is None and adapter.adapter.pricing is None
+assert not any(
+    name == root or name.startswith(root + ".")
+    for name in sys.modules
+    for root in blocked
+)
+assert attempts == []
+assert boundary_attempts == []
+print("compatible requests isolation smoke passed")
+    '''
+    payload = {
+        "json": text_response("Subprocess reply", model="vendor/subprocess-smoke"),
+        "sse": "\n".join(text_sse_lines("Subprocess reply")),
+    }
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", child, str(src_path)],
+        input=json.dumps(payload), text=True, capture_output=True, timeout=15,
+        cwd=repo_root,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "compatible requests isolation smoke passed"
 
 
 @pytest.mark.unit

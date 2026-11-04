@@ -1880,6 +1880,116 @@ async def test_openai_responses_async_continuation_uses_server_tool_call_context
     _assert_openai_responses_continuation_payload(payload)
 
 
+def _assert_compatible_history_without_continuation(payload, case):
+    _assert_shared_tool_history_payload(case, payload)
+    serialized = payload[case.message_key]
+    assert len(serialized) == 3
+    assert serialized[0] == {"role": "user", "content": "What is the weather?"}
+    assert "previous_response_id" not in payload
+    assert "previous_response" not in payload
+    serialized_payload = repr(payload)
+    for marker in (
+        "opaque-replay-sentinel",
+        "resp_unrelated_previous",
+        "unrelated prior content",
+        "call_unrelated_previous",
+    ):
+        assert marker not in serialized_payload
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("chat", "stream_chat"))
+def test_compatible_continuation_keeps_caller_history_without_replay(method):
+    case = _COMPATIBLE_CASE
+    history = _shared_tool_history(case)
+    original_history = deepcopy(history)
+    previous = ChatResponse(
+        response_id="resp_unrelated_previous",
+        content="unrelated prior content",
+        tool_calls=[ToolCall(
+            name="unrelated_tool", arguments={"note": "opaque-replay-sentinel"},
+            call_id="call_unrelated_previous",
+        )],
+        provider_data={"replay": "opaque-replay-sentinel"},
+    )
+    original_previous = deepcopy(previous)
+    tool = _shared_test_tool()
+    facade = _facade(case)
+    if method == "chat":
+        transport = Mock(return_value=_JSONResponse(case.response_factory()))
+        with patch.object(case.sync_client_class, "_send_request", new=transport):
+            facade.chat(
+                messages=history, tools=[tool], max_tokens=case.max_tokens,
+                previous_response=previous,
+            )
+        payload = transport.call_args.args[1]
+    else:
+        transport = Mock(return_value=iter(case.stream_events_factory()))
+        with patch.object(case.sync_client_class, "stream", new=transport):
+            list(facade.stream_chat(
+                messages=history, tools=[tool], max_tokens=case.max_tokens,
+                previous_response=previous,
+            ))
+        payload = transport.call_args.kwargs
+
+    assert history == original_history
+    assert previous == original_previous
+    transport.assert_called_once()
+    _assert_compatible_history_without_continuation(payload, case)
+    assert facade.adapter.model_spec is None
+    assert facade.adapter.pricing is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("achat", "astream_chat"))
+async def test_compatible_async_continuation_keeps_caller_history_without_replay(method):
+    case = _COMPATIBLE_CASE
+    history = _shared_tool_history(case)
+    original_history = deepcopy(history)
+    previous = ChatResponse(
+        response_id="resp_unrelated_previous",
+        content="unrelated prior content",
+        tool_calls=[ToolCall(
+            name="unrelated_tool", arguments={"note": "opaque-replay-sentinel"},
+            call_id="call_unrelated_previous",
+        )],
+        provider_data={"replay": "opaque-replay-sentinel"},
+    )
+    original_previous = deepcopy(previous)
+    tool = _shared_test_tool()
+    facade = _facade(case)
+    if method == "achat":
+        transport = AsyncMock(return_value=case.response_factory())
+        with patch.object(case.async_client_class, "_send_request", new=transport):
+            await facade.achat(
+                messages=history, tools=[tool], max_tokens=case.max_tokens,
+                previous_response=previous,
+            )
+        payload = transport.await_args.args[1]
+        transport.assert_awaited_once()
+    else:
+        async def events():
+            for event in case.stream_events_factory():
+                yield event
+
+        transport = Mock(return_value=events())
+        with patch.object(case.async_client_class, "stream", new=transport):
+            async for _text in facade.astream_chat(
+                messages=history, tools=[tool], max_tokens=case.max_tokens,
+                previous_response=previous,
+            ):
+                pass
+        payload = transport.call_args.kwargs
+        transport.assert_called_once()
+
+    assert history == original_history
+    assert previous == original_previous
+    _assert_compatible_history_without_continuation(payload, case)
+    assert facade.adapter.model_spec is None
+    assert facade.adapter.pricing is None
+
+
 # Compatible structured-output coverage keeps request ownership, response parsing,
 # and terminal handling on the same four public facade methods.
 _COMPATIBLE_CASE_MATCHES = tuple(
