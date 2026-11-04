@@ -5,6 +5,7 @@ import socket
 
 import httpx
 import pytest
+import requests
 import requests_mock
 
 from src.llm_api_adapter.adapters.openai_compatible_adapter import (
@@ -12,6 +13,13 @@ from src.llm_api_adapter.adapters.openai_compatible_adapter import (
     _validate_api_root,
 )
 from src.llm_api_adapter.errors.config_errors import LLMConfigError
+from src.llm_api_adapter.errors.llm_api_error import (
+    LLMAPIClientError,
+    LLMAPIAuthorizationError,
+    LLMAPIRateLimitError,
+    LLMAPIServerError,
+    LLMAPITimeoutError,
+)
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
@@ -486,4 +494,396 @@ async def test_compatible_async_collision_models_use_only_chat_completions(
     assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
     assert request.headers["Content-Type"] == "application/json"
     assert json.loads(request.content) == _collision_body(model, streaming=stream)
+    assert forbidden == []
+
+
+_FAILURE_CASES = (
+    ("authorization", 401, LLMAPIAuthorizationError, None),
+    ("unsupported-feature", 400, LLMAPIClientError, None),
+    ("rate-limit", 429, LLMAPIRateLimitError, None),
+    ("server-error", 503, LLMAPIServerError, None),
+    ("timeout", None, LLMAPITimeoutError, "timeout"),
+    ("connection", None, LLMAPIClientError, "connection"),
+)
+_FAILURE_MODEL = "gpt-5"
+
+
+def _failure_payload(case_name):
+    return {
+        "error": {
+            "message": f"synthetic {case_name} failure",
+            "type": "invalid_request_error" if case_name == "unsupported-feature" else "server_error",
+            "code": "unsupported_parameter" if case_name == "unsupported-feature" else case_name,
+        }
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+@pytest.mark.parametrize(
+    "case_name,status,error_type,transport_failure", _FAILURE_CASES
+)
+def test_sync_failures_never_fall_back_or_retry(
+    mode, case_name, status, error_type, transport_failure, monkeypatch
+):
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    streaming = mode == "stream_chat"
+
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(requests_mock.ANY, status_code=599)
+        if transport_failure == "timeout":
+            http.post(_COLLISION_URL, exc=requests.Timeout("synthetic timeout"))
+        elif transport_failure == "connection":
+            http.post(
+                _COLLISION_URL,
+                exc=requests.ConnectionError("synthetic connection failure"),
+            )
+        else:
+            http.post(
+                _COLLISION_URL,
+                status_code=status,
+                json=_failure_payload(case_name),
+            )
+        adapter = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model=_FAILURE_MODEL,
+            api_key=_COLLISION_KEY,
+            base_url=f"{_COLLISION_ROOT}/",
+        )
+        completed = []
+        with pytest.raises(error_type):
+            if streaming:
+                list(adapter.stream_chat(
+                    messages=[UserMessage(content="Say hello.")],
+                    max_tokens=17,
+                    temperature=0.4,
+                    top_p=0.8,
+                    on_done=completed.append,
+                ))
+            else:
+                adapter.chat(
+                    messages=[UserMessage(content="Say hello.")],
+                    max_tokens=17,
+                    temperature=0.4,
+                    top_p=0.8,
+                )
+
+        assert http.call_count == 1
+        assert len(http.request_history) == 1
+        request = http.request_history[0]
+        assert request.method == "POST"
+        assert request.url == _COLLISION_URL
+        assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+        assert request.json() == _collision_body(_FAILURE_MODEL, streaming=streaming)
+        assert completed == []
+        assert forbidden == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+@pytest.mark.parametrize(
+    "case_name,status,error_type,transport_failure", _FAILURE_CASES
+)
+async def test_async_failures_never_fall_back_or_retry(
+    mode, case_name, status, error_type, transport_failure, monkeypatch
+):
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    real_async_client = httpx.AsyncClient
+    streaming = mode == "astream_chat"
+    outgoing = []
+
+    def handler(request):
+        outgoing.append(request)
+        if transport_failure == "timeout":
+            raise httpx.TimeoutException("synthetic timeout", request=request)
+        if transport_failure == "connection":
+            raise httpx.ConnectError("synthetic connection failure", request=request)
+        return httpx.Response(
+            status,
+            json=_failure_payload(case_name),
+        )
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda: real_async_client(transport=transport),
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model=_FAILURE_MODEL,
+        api_key=_COLLISION_KEY,
+        base_url=f"{_COLLISION_ROOT}/",
+    )
+    completed = []
+    with pytest.raises(error_type):
+        if streaming:
+            _ = [
+                text
+                async for text in adapter.astream_chat(
+                    messages=[UserMessage(content="Say hello.")],
+                    max_tokens=17,
+                    temperature=0.4,
+                    top_p=0.8,
+                    on_done=completed.append,
+                )
+            ]
+        else:
+            await adapter.achat(
+                messages=[UserMessage(content="Say hello.")],
+                max_tokens=17,
+                temperature=0.4,
+                top_p=0.8,
+            )
+
+    assert len(outgoing) == 1
+    request = outgoing[0]
+    assert request.method == "POST"
+    assert str(request.url) == _COLLISION_URL
+    assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+    assert json.loads(request.content) == _collision_body(
+        _FAILURE_MODEL, streaming=streaming
+    )
+    assert completed == []
+    assert forbidden == []
+
+
+def _native_gpt5_response():
+    return {
+        "id": "resp-native-fixture",
+        "model": "gpt-5",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "content": [{"type": "output_text", "text": "Official fixture"}],
+        }],
+        "usage": {
+            "input_tokens": 2,
+            "output_tokens": 3,
+            "total_tokens": 5,
+            "input_tokens_details": {"cached_tokens": 0},
+        },
+    }
+
+
+def _assert_native_gpt5_request(request):
+    assert request.method == "POST"
+    assert str(request.url).endswith("/v1/responses")
+    assert request.headers["Authorization"] == "Bearer synthetic-official-key"
+    body = (
+        request.json()
+        if hasattr(request, "json")
+        else json.loads(request.content)
+    )
+    assert body["model"] == "gpt-5"
+    assert body["max_output_tokens"] == 17
+    assert body["reasoning"] == {"effort": "minimal"}
+    assert "max_tokens" not in body
+    assert "messages" not in body
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("first_compatible_fails", (False, True))
+def test_compatible_and_official_sync_instances_keep_roots_keys_and_profiles_isolated(
+    first_compatible_fails, monkeypatch
+):
+    forbidden = []
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        _forbid_official_lookup("socket.getaddrinfo", forbidden),
+    )
+    monkeypatch.setattr(
+        OrganizationPluginDiscovery,
+        "discover",
+        _forbid_official_lookup("OrganizationPluginDiscovery.discover", forbidden),
+    )
+
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(requests_mock.ANY, status_code=599)
+        compatible_responses = [
+            {"status_code": 400, "json": _failure_payload("unsupported-feature")}
+            if first_compatible_fails
+            else {"status_code": 200, "json": text_response(
+                model="gpt-5", usage=_COLLISION_USAGE
+            )},
+            {"status_code": 200, "json": text_response(
+                model="gpt-5", usage=_COLLISION_USAGE
+            )},
+        ]
+        http.post(_COLLISION_URL, compatible_responses)
+        http.post(
+            "https://api.openai.com/v1/responses",
+            status_code=200,
+            json=_native_gpt5_response(),
+        )
+        compatible = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="gpt-5",
+            api_key=_COLLISION_KEY,
+            base_url=f"{_COLLISION_ROOT}/",
+        )
+        assert compatible.adapter.model_spec is None
+        assert compatible.adapter.pricing is None
+        if first_compatible_fails:
+            with pytest.raises(LLMAPIClientError):
+                compatible.chat(
+                    [UserMessage(content="Say hello.")],
+                    max_tokens=17,
+                    temperature=0.4,
+                    top_p=0.8,
+                )
+        else:
+            _assert_collision_response(
+                compatible.chat(
+                    [UserMessage(content="Say hello.")],
+                    max_tokens=17,
+                    temperature=0.4,
+                    top_p=0.8,
+                ),
+                "gpt-5",
+            )
+
+        official = UniversalLLMAPIAdapter(
+            organization="openai",
+            model="gpt-5",
+            api_key="synthetic-official-key",
+        )
+        assert official.adapter.model_spec is not None
+        assert official.adapter.pricing is not None
+        official_response = official.chat(
+            [UserMessage(content="Say hello.")], max_tokens=17
+        )
+        assert official_response.content == "Official fixture"
+        assert official_response.cost_total is not None
+
+        _assert_collision_response(
+            compatible.chat(
+                [UserMessage(content="Say hello.")],
+                max_tokens=17,
+                temperature=0.4,
+                top_p=0.8,
+            ),
+            "gpt-5",
+        )
+
+    attempts = http.request_history
+    assert len(attempts) == 3
+    assert [request.url for request in attempts] == [
+        _COLLISION_URL,
+        "https://api.openai.com/v1/responses",
+        _COLLISION_URL,
+    ]
+    for index in (0, 2):
+        request = attempts[index]
+        assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+        assert request.json() == _collision_body("gpt-5", streaming=False)
+    _assert_native_gpt5_request(attempts[1])
+    assert forbidden == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_compatible_fails", (False, True))
+async def test_compatible_and_official_async_instances_keep_roots_keys_and_profiles_isolated(
+    first_compatible_fails, monkeypatch
+):
+    forbidden = []
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        _forbid_official_lookup("socket.getaddrinfo", forbidden),
+    )
+    monkeypatch.setattr(
+        OrganizationPluginDiscovery,
+        "discover",
+        _forbid_official_lookup("OrganizationPluginDiscovery.discover", forbidden),
+    )
+    real_async_client = httpx.AsyncClient
+    attempts = []
+
+    def handler(request):
+        attempts.append(request)
+        if str(request.url).endswith("/v1/responses"):
+            return httpx.Response(200, json=_native_gpt5_response())
+        is_first_compatible = sum(
+            str(item.url) == _COLLISION_URL for item in attempts
+        ) == 1
+        if first_compatible_fails and is_first_compatible:
+            return httpx.Response(400, json=_failure_payload("unsupported-feature"))
+        return httpx.Response(
+            200,
+            json=text_response(model="gpt-5", usage=_COLLISION_USAGE),
+        )
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda: real_async_client(transport=transport),
+    )
+    compatible = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="gpt-5",
+        api_key=_COLLISION_KEY,
+        base_url=f"{_COLLISION_ROOT}/",
+    )
+    assert compatible.adapter.model_spec is None
+    assert compatible.adapter.pricing is None
+    if first_compatible_fails:
+        with pytest.raises(LLMAPIClientError):
+            await compatible.achat(
+                [UserMessage(content="Say hello.")],
+                max_tokens=17,
+                temperature=0.4,
+                top_p=0.8,
+            )
+    else:
+        _assert_collision_response(
+            await compatible.achat(
+                [UserMessage(content="Say hello.")],
+                max_tokens=17,
+                temperature=0.4,
+                top_p=0.8,
+            ),
+            "gpt-5",
+        )
+
+    official = UniversalLLMAPIAdapter(
+        organization="openai",
+        model="gpt-5",
+        api_key="synthetic-official-key",
+    )
+    assert official.adapter.model_spec is not None
+    assert official.adapter.pricing is not None
+    official_response = await official.achat(
+        [UserMessage(content="Say hello.")], max_tokens=17
+    )
+    assert official_response.content == "Official fixture"
+    assert official_response.cost_total is not None
+
+    _assert_collision_response(
+        await compatible.achat(
+            [UserMessage(content="Say hello.")],
+            max_tokens=17,
+            temperature=0.4,
+            top_p=0.8,
+        ),
+        "gpt-5",
+    )
+
+    assert len(attempts) == 3
+    assert [str(request.url) for request in attempts] == [
+        _COLLISION_URL,
+        "https://api.openai.com/v1/responses",
+        _COLLISION_URL,
+    ]
+    for index in (0, 2):
+        request = attempts[index]
+        assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+        assert json.loads(request.content) == _collision_body(
+            "gpt-5", streaming=False
+        )
+    _assert_native_gpt5_request(attempts[1])
     assert forbidden == []

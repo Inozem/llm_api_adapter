@@ -678,6 +678,52 @@ def test_openai_compatible_rejects_conflicting_service_provider_before_selection
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("organization", "service_provider", "base_url"),
+    [
+        ("openai", None, "https://custom.invalid/v1"),
+        ("mistral", "openrouter", False),
+        ("mistral", "external-hosted", 0),
+    ],
+)
+def test_noncompatible_root_is_rejected_before_native_or_hosted_factory(
+    monkeypatch,
+    organization,
+    service_provider,
+    base_url,
+    openai_compatible_no_io,
+    openai_compatible_no_adapter_selection,
+):
+    factory_calls = []
+
+    class HostedFactory:
+        def __init__(self, **kwargs):
+            factory_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({
+            "openrouter": HostedFactory,
+            "external-hosted": HostedFactory,
+        }),
+    )
+
+    kwargs = {} if service_provider is None else {"service_provider": service_provider}
+    with pytest.raises(LLMConfigError):
+        UniversalLLMAPIAdapter(
+            organization=organization,
+            model="gpt-5" if organization == "openai" else "mistral-large",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            base_url=base_url,
+            **kwargs,
+        )
+
+    assert factory_calls == []
+    assert openai_compatible_no_adapter_selection == []
+
+
+@pytest.mark.unit
 def test_getattr_missing_raises_attribute_error(monkeypatch):
     @dataclass
     class FakeAdapter(universal_module.LLMAdapterBase):
