@@ -114,7 +114,10 @@ class _OpenAIPayloadMixin:
         capture_reasoning: bool,
     ) -> Dict[str, Any]:
         params: Dict[str, Any] = {
-            "input": normalized_messages.to_openai_responses_input(),
+            "input": self._responses_input_for_request(
+                normalized_messages,
+                previous_response,
+            ),
             "tools": self._map_tools_to_openai_responses(tools),
             "tool_choice": self._map_tool_choice_to_openai_responses(
                 normalized_tool_choice
@@ -212,7 +215,10 @@ class _OpenAIPayloadMixin:
             ),
         }
         if use_responses_api:
-            params["input"] = normalized_messages.to_openai_responses_input()
+            params["input"] = self._responses_input_for_request(
+                normalized_messages,
+                previous_response,
+            )
             params["tools"] = self._map_tools_to_openai_responses(tools)
             params["tool_choice"] = self._map_tool_choice_to_openai_responses(
                 normalized_tool_choice
@@ -250,6 +256,21 @@ class _OpenAIPayloadMixin:
                     },
                 }
         return {key: value for key, value in params.items() if value is not None}
+
+    @staticmethod
+    def _responses_input_for_request(
+        normalized_messages: Messages,
+        previous_response: Optional[ChatResponse],
+    ) -> List[Dict[str, Any]]:
+        """Use server context for calls covered by a Responses continuation ID."""
+        input_items = normalized_messages.to_openai_responses_input()
+        if previous_response is None or previous_response.response_id is None:
+            return input_items
+        return [
+            item
+            for item in input_items
+            if not (isinstance(item, Mapping) and item.get("type") == "function_call")
+        ]
 
     def _map_tools_to_openai(
         self,

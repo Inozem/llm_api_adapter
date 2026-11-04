@@ -10,11 +10,12 @@ from collections.abc import Mapping
 from urllib.parse import quote, urlsplit
 
 from ..errors.config_errors import LLMConfigError
-from ..errors.llm_api_error import LLMAPIClientError
+from ..errors.llm_api_error import InvalidToolArgumentsError, LLMAPIClientError
 from ..llms.openai.async_client import OpenAIAsyncClient
 from ..llms.openai.sync_client import OpenAISyncClient
 from ..llms.transports import validate_sync_transport
 from .openai.adapter import OpenAIAdapter
+from .structured_output import validate_core_portable_schema
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +203,20 @@ class OpenAICompatibleAdapter(OpenAIAdapter):
         ):
             raise self._malformed_response()
         self._validate_message_fields(message)
-        return super()._normalize_chat_completions_response(response)
+        try:
+            return super()._normalize_chat_completions_response(response)
+        except InvalidToolArgumentsError as error:
+            error.detail = (
+                "openai_compatible returned malformed tool arguments; "
+                "ensure the server returns valid JSON arguments for each tool call."
+            )
+            error.args = (f"{error.message} Detail: {error.detail}",)
+            raise error from None
+
+    @staticmethod
+    def _to_openai_structured_output_schema(schema: dict) -> dict:
+        """Validate against the Core portable profile with compatible-mode context."""
+        return validate_core_portable_schema(schema, provider="openai_compatible")
 
     def _validate_chat_completions_stream_event(self, event: object) -> None:
         """Validate compatible Chat Completions events before shared coercion."""

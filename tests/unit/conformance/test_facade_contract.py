@@ -31,6 +31,7 @@ from src.llm_api_adapter.llms.streaming import SSEEvent
 from src.llm_api_adapter.llms.transports import SSEFrameDecoder
 from src.llm_api_adapter.models.messages.chat_message import AIMessage, ToolMessage, UserMessage
 from src.llm_api_adapter.models.messages.file_parts import ImagePart
+from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 from src.llm_api_adapter.models.responses.chat_response import Usage
 from src.llm_api_adapter.models.tools import ToolCall, ToolSpec
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -1787,6 +1788,96 @@ async def test_facade_astream_chat_preserves_caller_tool_result_history(case):
     transport.assert_called_once()
     _assert_shared_tool_history_payload(case, transport.call_args.kwargs)
     assert len(completed) == 1
+
+
+def _openai_responses_continuation_case():
+    return next(
+        case.values[0] for case in CASES
+        if case.values[0].organization == "openai"
+    )
+
+
+def _assert_openai_responses_continuation_payload(payload):
+    assert payload["previous_response_id"] == "resp_previous"
+    assert payload["input"] == [
+        {"role": "user", "content": "What is the weather?"},
+        {
+            "type": "function_call_output",
+            "call_id": "call_history",
+            "output": '{"temperature": 18}',
+        },
+    ]
+    assert not any(
+        isinstance(item, dict) and item.get("type") == "function_call"
+        for item in payload["input"]
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("chat", "stream_chat"))
+def test_openai_responses_continuation_uses_server_tool_call_context(method):
+    case = _openai_responses_continuation_case()
+    history = _shared_tool_history(case)
+    original_history = deepcopy(history)
+    previous = ChatResponse(content="", response_id="resp_previous")
+    tool = _shared_test_tool()
+    if method == "chat":
+        transport = Mock(return_value=_JSONResponse(case.response_factory()))
+        with patch.object(case.sync_client_class, "_send_request", new=transport):
+            _facade(case).chat(
+                messages=history, tools=[tool], previous_response=previous,
+                max_tokens=case.max_tokens,
+            )
+        payload = transport.call_args.args[1]
+    else:
+        transport = Mock(return_value=iter(case.stream_events_factory()))
+        with patch.object(case.sync_client_class, "stream", new=transport):
+            list(_facade(case).stream_chat(
+                messages=history, tools=[tool], previous_response=previous,
+                max_tokens=case.max_tokens,
+            ))
+        payload = transport.call_args.kwargs
+
+    assert history == original_history
+    transport.assert_called_once()
+    _assert_openai_responses_continuation_payload(payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("achat", "astream_chat"))
+async def test_openai_responses_async_continuation_uses_server_tool_call_context(method):
+    case = _openai_responses_continuation_case()
+    history = _shared_tool_history(case)
+    original_history = deepcopy(history)
+    previous = ChatResponse(content="", response_id="resp_previous")
+    tool = _shared_test_tool()
+    if method == "achat":
+        transport = AsyncMock(return_value=case.response_factory())
+        with patch.object(case.async_client_class, "_send_request", new=transport):
+            await _facade(case).achat(
+                messages=history, tools=[tool], previous_response=previous,
+                max_tokens=case.max_tokens,
+            )
+        payload = transport.await_args.args[1]
+        transport.assert_awaited_once()
+    else:
+        async def events():
+            for event in case.stream_events_factory():
+                yield event
+
+        transport = Mock(return_value=events())
+        with patch.object(case.async_client_class, "stream", new=transport):
+            async for _text in _facade(case).astream_chat(
+                messages=history, tools=[tool], previous_response=previous,
+                max_tokens=case.max_tokens,
+            ):
+                pass
+        payload = transport.call_args.kwargs
+        transport.assert_called_once()
+
+    assert history == original_history
+    _assert_openai_responses_continuation_payload(payload)
 
 
 # Compatible structured-output coverage keeps request ownership, response parsing,

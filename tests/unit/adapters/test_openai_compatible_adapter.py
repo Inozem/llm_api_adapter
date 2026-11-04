@@ -23,8 +23,10 @@ from src.llm_api_adapter.errors.llm_api_error import (
     LLMAPITimeoutError,
     InvalidToolArgumentsError,
     InvalidToolSchemaError,
+    JSONSchemaError,
     ToolChoiceError,
 )
+from src.llm_api_adapter.adapters.openai.adapter import OpenAIAdapter
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
@@ -2974,6 +2976,85 @@ def test_compatible_empty_completion_without_optional_metadata_normalizes(
     assert response.finish_reason == "stop"
     assert response.response_id is None
     assert response.usage is None
+
+
+@pytest.mark.unit
+def test_compatible_portable_schema_diagnostic_uses_compatible_provider_label():
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string", "pattern": "x+"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    original = json.loads(json.dumps(schema))
+    adapter = _new_adapter(
+        api_key="test-key", model="vendor/schema", base_url="https://example.invalid/v1"
+    )
+
+    with pytest.raises(JSONSchemaError) as caught:
+        adapter._to_openai_structured_output_schema(schema)
+
+    assert "openai_compatible" in caught.value.detail
+    assert "#/properties/answer" in caught.value.detail
+    assert "pattern" in caught.value.detail
+    assert schema == original
+
+
+@pytest.mark.unit
+def test_compatible_malformed_tool_arguments_have_mode_correct_safe_diagnostic():
+    malformed = tool_call_response(
+        name="lookup", arguments_json='{"city":', call_id="call_bad_arguments"
+    )
+    compatible = _new_adapter(
+        api_key="test-key", model="vendor/tool-validation",
+        base_url="https://example.invalid/v1",
+    )
+    native = OpenAIAdapter(api_key="test-key", model="gpt-4o-mini")
+
+    with pytest.raises(InvalidToolArgumentsError) as compatible_error:
+        compatible._normalize_chat_completions_response(malformed)
+    with pytest.raises(InvalidToolArgumentsError) as native_error:
+        native._normalize_chat_completions_response(malformed)
+
+    assert "openai_compatible" in compatible_error.value.detail
+    assert "OpenAI" not in compatible_error.value.detail
+    assert "OpenAI" in native_error.value.detail
+    assert "{\"city\":" not in compatible_error.value.detail
+
+
+@pytest.mark.unit
+def test_compatible_tool_diagnostic_preserves_sdk_error_identity_and_attributes(
+    monkeypatch,
+):
+    compatible = _new_adapter(
+        api_key="test-key", model="vendor/tool-validation",
+        base_url="https://example.invalid/v1",
+    )
+    original_error = InvalidToolArgumentsError(
+        detail="OpenAI tool arguments JSON parse failed: private argument text"
+    )
+    original_error.custom_marker = object()
+    original_marker = original_error.custom_marker
+
+    def raise_original(cls, response):
+        raise original_error
+
+    monkeypatch.setattr(ChatResponse, "from_openai_response", classmethod(raise_original))
+    with pytest.raises(InvalidToolArgumentsError) as caught:
+        compatible._normalize_chat_completions_response({
+            "choices": [{
+                "message": {"content": ""},
+                "finish_reason": "stop",
+            }],
+        })
+
+    assert caught.value is original_error
+    assert caught.value.custom_marker is original_marker
+    assert "openai_compatible" in caught.value.detail
+    assert "private argument text" not in caught.value.detail
+    assert caught.value.args == (
+        f"{caught.value.message} Detail: {caught.value.detail}",
+    )
 
 
 @pytest.mark.unit
