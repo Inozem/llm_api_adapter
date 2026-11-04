@@ -1307,6 +1307,334 @@ def test_compatible_and_official_sync_instances_keep_roots_keys_and_profiles_iso
     assert forbidden == []
 
 
+def _assert_t018_public_result(adapter, mode):
+    if mode == "stream_chat":
+        completed = []
+        visible = list(
+            adapter.stream_chat(
+                messages=[UserMessage(content="Say hello.")],
+                max_tokens=17,
+                temperature=0.4,
+                top_p=0.8,
+                on_done=completed.append,
+            )
+        )
+        return visible, completed
+    response = adapter.chat(
+        messages=[UserMessage(content="Say hello.")],
+        max_tokens=17,
+        temperature=0.4,
+        top_p=0.8,
+    )
+    return response, []
+
+
+_T018_SYNC_ROUTES = (
+    ("chat", "requests"),
+    ("stream_chat", "requests"),
+    ("chat", "httpx"),
+    ("stream_chat", "httpx"),
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode,transport", _T018_SYNC_ROUTES)
+def test_compatible_sync_modes_preserve_transport_and_normalized_result(
+    mode, transport, monkeypatch
+):
+    model = "vendor/unregistered-model"
+    streaming = mode == "stream_chat"
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    requests_seen = []
+
+    if transport == "requests":
+        def forbidden_httpx_client(*_args, **_kwargs):
+            raise AssertionError("default requests route constructed HTTPX Client")
+
+        monkeypatch.setattr(httpx, "Client", forbidden_httpx_client)
+        with requests_mock.Mocker(real_http=False) as http:
+            if streaming:
+                http.post(
+                    _COLLISION_URL,
+                    text="\n".join(_collision_sse_lines(model)),
+                    headers={"Content-Type": "text/event-stream"},
+                )
+            else:
+                http.post(
+                    _COLLISION_URL,
+                    json=text_response(model=model, usage=_COLLISION_USAGE),
+                )
+            adapter = UniversalLLMAPIAdapter(
+                organization="openai_compatible",
+                model=model,
+                api_key=_COLLISION_KEY,
+                base_url=f"{_COLLISION_ROOT}/",
+            )
+            result, completed = _assert_t018_public_result(adapter, mode)
+            if streaming:
+                visible = result
+                assert visible == ["Fixture reply"]
+                assert len(completed) == 1
+                _assert_collision_response(completed[0], model)
+            else:
+                _assert_collision_response(result, model)
+            assert http.call_count == 1
+            request = http.request_history[0]
+            assert request.method == "POST"
+            assert request.url == _COLLISION_URL
+            assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+            assert request.headers["Content-Type"] == "application/json"
+            assert request.json() == _collision_body(model, streaming=streaming)
+            assert forbidden == []
+        return
+
+    real_client = httpx.Client
+
+    def handler(request):
+        requests_seen.append(request)
+        if streaming:
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content="\n".join(_collision_sse_lines(model)),
+            )
+        return httpx.Response(
+            200,
+            json=text_response(model=model, usage=_COLLISION_USAGE),
+        )
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda: real_client(transport=httpx.MockTransport(handler)),
+    )
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("explicit HTTPX route used requests")
+        ),
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model=model,
+        api_key=_COLLISION_KEY,
+        base_url=f"{_COLLISION_ROOT}/",
+        transport="httpx",
+    )
+    result, completed = _assert_t018_public_result(adapter, mode)
+    if streaming:
+        visible = result
+        assert visible == ["Fixture reply"]
+        assert len(completed) == 1
+        _assert_collision_response(completed[0], model)
+    else:
+        _assert_collision_response(result, model)
+    assert len(requests_seen) == 1
+    request = requests_seen[0]
+    assert request.method == "POST"
+    assert str(request.url) == _COLLISION_URL
+    assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+    assert request.headers["Content-Type"] == "application/json"
+    assert json.loads(request.content) == _collision_body(model, streaming=streaming)
+    assert forbidden == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+async def test_compatible_async_modes_preserve_httpx_route_and_normalized_result(
+    mode, monkeypatch
+):
+    model = "vendor/unregistered-model"
+    streaming = mode == "astream_chat"
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    requests_seen = []
+    real_async_client = httpx.AsyncClient
+
+    def handler(request):
+        requests_seen.append(request)
+        if streaming:
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content="\n".join(_collision_sse_lines(model)),
+            )
+        return httpx.Response(
+            200,
+            json=text_response(model=model, usage=_COLLISION_USAGE),
+        )
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda: real_async_client(transport=httpx.MockTransport(handler)),
+    )
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("async HTTPX route used requests")
+        ),
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model=model,
+        api_key=_COLLISION_KEY,
+        base_url=f"{_COLLISION_ROOT}/",
+    )
+    if streaming:
+        completed = []
+        visible = [
+            text
+            async for text in adapter.astream_chat(
+                messages=[UserMessage(content="Say hello.")],
+                max_tokens=17,
+                temperature=0.4,
+                top_p=0.8,
+                on_done=completed.append,
+            )
+        ]
+        assert visible == ["Fixture reply"]
+        assert len(completed) == 1
+        _assert_collision_response(completed[0], model)
+    else:
+        _assert_collision_response(
+            await adapter.achat(
+                messages=[UserMessage(content="Say hello.")],
+                max_tokens=17,
+                temperature=0.4,
+                top_p=0.8,
+            ),
+            model,
+        )
+    assert len(requests_seen) == 1
+    request = requests_seen[0]
+    assert request.method == "POST"
+    assert str(request.url) == _COLLISION_URL
+    assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+    assert request.headers["Content-Type"] == "application/json"
+    assert json.loads(request.content) == _collision_body(model, streaming=streaming)
+    assert forbidden == []
+
+
+def _block_httpx_import(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+    attempts = []
+
+    def missing_httpx(name, *args, **kwargs):
+        if name == "httpx":
+            raise ImportError("httpx is missing")
+        return real_import(name, *args, **kwargs)
+
+    def forbidden(name):
+        def fail(*_args, **_kwargs):
+            attempts.append(name)
+            raise AssertionError(f"unavailable HTTPX route attempted {name}")
+
+        return fail
+
+    monkeypatch.setattr(builtins, "__import__", missing_httpx)
+    monkeypatch.setattr(httpx, "Client", forbidden("httpx.Client"))
+    monkeypatch.setattr(httpx, "AsyncClient", forbidden("httpx.AsyncClient"))
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden("socket.getaddrinfo"))
+    return attempts
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+def test_compatible_default_requests_modes_work_without_httpx(mode, monkeypatch):
+    model = "vendor/unregistered-model"
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(
+            _COLLISION_URL,
+            text="\n".join(_collision_sse_lines(model))
+            if mode == "stream_chat"
+            else None,
+            json=None
+            if mode == "stream_chat"
+            else text_response(model=model, usage=_COLLISION_USAGE),
+            headers={"Content-Type": "text/event-stream"}
+            if mode == "stream_chat"
+            else {"Content-Type": "application/json"},
+        )
+        default = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model=model,
+            api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT,
+        )
+        attempts = []
+        with pytest.MonkeyPatch.context() as scoped:
+            attempts = _block_httpx_import(scoped)
+            result, completed = _assert_t018_public_result(default, mode)
+        if mode == "chat":
+            _assert_collision_response(result, model)
+        else:
+            assert result == ["Fixture reply"]
+            assert len(completed) == 1
+            _assert_collision_response(completed[0], model)
+        assert attempts == []
+        assert http.call_count == 1
+        request = http.request_history[0]
+        assert request.method == "POST"
+        assert request.url == _COLLISION_URL
+        assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+        assert request.headers["Content-Type"] == "application/json"
+        assert request.json() == _collision_body(model, streaming=mode == "stream_chat")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+def test_compatible_explicit_sync_httpx_requires_extra(mode, monkeypatch):
+    model = "vendor/unregistered-model"
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model=model,
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+        transport="httpx",
+    )
+    with requests_mock.Mocker(real_http=False) as http:
+        with pytest.MonkeyPatch.context() as scoped:
+            attempts = _block_httpx_import(scoped)
+            with pytest.raises(ImportError, match=r"llm-api-adapter\[httpx\]"):
+                if mode == "chat":
+                    adapter.chat([UserMessage(content="Say hello.")])
+                else:
+                    list(adapter.stream_chat([UserMessage(content="Say hello.")]))
+        assert attempts == []
+        assert http.call_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+async def test_compatible_async_httpx_requires_extra(mode, monkeypatch):
+    model = "vendor/unregistered-model"
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model=model,
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+    )
+    with requests_mock.Mocker(real_http=False) as http:
+        with pytest.MonkeyPatch.context() as scoped:
+            attempts = _block_httpx_import(scoped)
+            with pytest.raises(ImportError, match=r"llm-api-adapter\[async\]"):
+                if mode == "achat":
+                    await adapter.achat([UserMessage(content="Say hello.")])
+                else:
+                    async for _text in adapter.astream_chat(
+                        [UserMessage(content="Say hello.")]
+                    ):
+                        pass
+        assert attempts == []
+        assert http.call_count == 0
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("first_compatible_fails", (False, True))

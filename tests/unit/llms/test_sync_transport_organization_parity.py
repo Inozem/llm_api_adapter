@@ -18,6 +18,7 @@ import requests
 
 from src.llm_api_adapter.errors.llm_api_error import LLMAPIRateLimitError
 from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
+from src.llm_api_adapter.adapters.openai_compatible_adapter import OpenAICompatibleAdapter
 from src.llm_api_adapter.llms.anthropic.sync_client import ClaudeSyncClient
 from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
@@ -26,6 +27,13 @@ from src.llm_api_adapter.llm_registry.llm_registry import Pricing
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.models.responses.chat_response import Usage
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from tests.fixtures.openai_compatible import (
+    FIXTURE_CREATED,
+    FIXTURE_ID,
+    FIXTURE_MODEL,
+    text_sse_lines,
+    usage_payload,
+)
 
 
 @dataclass(frozen=True)
@@ -53,6 +61,8 @@ class OrganizationCase:
     expected_stream_events: list[SSEEvent]
     error_payload: dict[str, Any]
     stream_error_lines: list[str]
+    client_factory: Callable[[str], Any] | None = None
+    facade_kwargs: dict[str, Any] | None = None
 
 
 _USER_MESSAGES = [{"role": "user", "content": "Hi"}]
@@ -271,6 +281,147 @@ ORGANIZATION_CASES = (
             "",
         ],
     ),
+    OrganizationCase(
+        name="openai_compatible",
+        client_class=OpenAISyncClient,
+        organization="openai_compatible",
+        model="vendor/arbitrary-model",
+        client_kwargs={
+            "messages": _USER_MESSAGES,
+            "max_tokens": 17,
+            "temperature": 0.4,
+            "top_p": 0.8,
+        },
+        public_stream_kwargs={
+            "max_tokens": 17,
+            "temperature": 0.4,
+            "top_p": 0.8,
+        },
+        expected_json_request=RequestTrace(
+            url="https://example.invalid/gateway/tenant/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer test-key",
+                "Content-Type": "application/json",
+            },
+            payload={
+                "model": "vendor/arbitrary-model",
+                "messages": _USER_MESSAGES,
+                "max_completion_tokens": 17,
+                "temperature": 0.4,
+                "top_p": 0.8,
+            },
+            timeout=None,
+            stream=False,
+        ),
+        expected_stream_request=RequestTrace(
+            url="https://example.invalid/gateway/tenant/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer test-key",
+                "Content-Type": "application/json",
+            },
+            payload={
+                "model": "vendor/arbitrary-model",
+                "messages": _USER_MESSAGES,
+                "max_completion_tokens": 17,
+                "temperature": 0.4,
+                "top_p": 0.8,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            },
+            timeout=None,
+            stream=True,
+        ),
+        stream_lines=[
+            line.replace(
+                f'"model":"{FIXTURE_MODEL}"',
+                '"model":"vendor/arbitrary-model"',
+            )
+            for line in text_sse_lines(
+                "Hello!",
+                fragments=("Hel", "lo!"),
+                usage=usage_payload(
+                    2, 3, 5, prompt_tokens_details={"cached_tokens": 1}
+                ),
+            )
+        ],
+        expected_stream_events=[
+            SSEEvent(
+                event=None,
+                data={
+                    "id": FIXTURE_ID,
+                    "object": "chat.completion.chunk",
+                    "created": FIXTURE_CREATED,
+                    "model": "vendor/arbitrary-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "Hel"},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+            ),
+            SSEEvent(
+                event=None,
+                data={
+                    "id": FIXTURE_ID,
+                    "object": "chat.completion.chunk",
+                    "created": FIXTURE_CREATED,
+                    "model": "vendor/arbitrary-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "lo!"},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+            ),
+            SSEEvent(
+                event=None,
+                data={
+                    "id": FIXTURE_ID,
+                    "object": "chat.completion.chunk",
+                    "created": FIXTURE_CREATED,
+                    "model": "vendor/arbitrary-model",
+                    "choices": [
+                        {"index": 0, "delta": {}, "finish_reason": "stop"}
+                    ],
+                },
+            ),
+            SSEEvent(
+                event=None,
+                data={
+                    "id": FIXTURE_ID,
+                    "object": "chat.completion.chunk",
+                    "created": FIXTURE_CREATED,
+                    "model": "vendor/arbitrary-model",
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 2,
+                        "completion_tokens": 3,
+                        "total_tokens": 5,
+                        "prompt_tokens_details": {"cached_tokens": 1},
+                    },
+                },
+            ),
+        ],
+        error_payload={
+            "error": {"type": "rate_limit_exceeded", "message": "Slow down"}
+        },
+        stream_error_lines=[
+            "event: error",
+            'data: {"error":{"type":"rate_limit_exceeded","message":"Slow down"}}',
+            "",
+        ],
+        client_factory=lambda transport: OpenAICompatibleAdapter(
+            api_key="test-key",
+            model="vendor/arbitrary-model",
+            base_url="https://example.invalid/gateway/tenant/v1/",
+            transport=transport,
+        )._create_sync_client(),
+        facade_kwargs={"base_url": "https://example.invalid/gateway/tenant/v1/"},
+    ),
 )
 
 
@@ -435,6 +586,12 @@ def _assert_lifecycle(capture: _Capture) -> None:
         assert capture.httpx_client_close_calls == 1
 
 
+def _client_for(case: OrganizationCase, transport: str):
+    if case.client_factory is not None:
+        return case.client_factory(transport)
+    return case.client_class(api_key="test-key", transport=transport)
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("case", ORGANIZATION_CASES, ids=lambda case: case.name)
 def test_sync_json_provider_requests_are_identical_for_both_transports(
@@ -442,7 +599,7 @@ def test_sync_json_provider_requests_are_identical_for_both_transports(
 ):
     captures = {}
     for transport in ("requests", "httpx"):
-        client = case.client_class(api_key="test-key", transport=transport)
+        client = _client_for(case, transport)
         response = _response_for(transport, body={"provider": case.name})
         captures[transport] = _run(
             transport,
@@ -467,7 +624,7 @@ def test_sync_http_error_mapping_is_identical_for_both_transports(
 ):
     captures = {}
     for transport in ("requests", "httpx"):
-        client = case.client_class(api_key="test-key", transport=transport)
+        client = _client_for(case, transport)
         response = _response_for(
             transport,
             body=case.error_payload,
@@ -496,7 +653,7 @@ def test_sync_sse_framing_and_cleanup_are_identical_for_both_transports(
 ):
     captures = {}
     for transport in ("requests", "httpx"):
-        client = case.client_class(api_key="test-key", transport=transport)
+        client = _client_for(case, transport)
         response = _response_for(transport, lines=case.stream_lines)
         captures[transport] = _run(
             transport,
@@ -521,7 +678,7 @@ def test_sync_sse_error_mapping_is_identical_for_both_transports(
 ):
     captures = {}
     for transport in ("requests", "httpx"):
-        client = case.client_class(api_key="test-key", transport=transport)
+        client = _client_for(case, transport)
         response = _response_for(transport, lines=case.stream_error_lines)
         captures[transport] = _run(
             transport,
@@ -554,6 +711,7 @@ def test_sync_transport_preserves_public_stream_callback_order(
                 model=case.model,
                 api_key="test-key",
                 transport=transport,
+                **(case.facade_kwargs or {}),
             )
             order: list[tuple[str, str]] = []
             yielded = []
