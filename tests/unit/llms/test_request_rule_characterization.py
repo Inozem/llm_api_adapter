@@ -498,3 +498,32 @@ def test_google_argon_omits_unsupported_sampling_for_both_clients(
     if expected_warnings:
         assert all(warning.category is UserWarning for warning in caught)
         assert all("gemini-4-argon" in str(warning.message) for warning in caught)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
+def test_official_openai_collision_models_keep_registered_native_behavior(client_class):
+    client = client_class(api_key="test_api_key")
+
+    assert client.endpoint == "https://api.openai.com/v1"
+    assert client._official_behavior_enabled is True
+    assert client._should_use_responses_api("gpt-5") is True
+    assert client._should_use_responses_api("gpt-5-2025-08-07") is True
+    assert client._should_use_responses_api("gpt-4.1-mini") is False
+    assert client._prepare_chat_payload_for_model(
+        "gpt-4.1-mini",
+        {"messages": [], "max_tokens": 256},
+    ) == {
+        "model": "gpt-4.1-mini",
+        "messages": [],
+        "max_completion_tokens": 256,
+    }
+
+    with _captured_warnings() as caught:
+        warnings.simplefilter("always")
+        reasoning_payload = client._prepare_responses_payload_for_model(
+            "gpt-5",
+            {"reasoning_effort": "none"},
+        )
+    assert reasoning_payload["reasoning"] == {"effort": "minimal"}
+    assert caught == []
