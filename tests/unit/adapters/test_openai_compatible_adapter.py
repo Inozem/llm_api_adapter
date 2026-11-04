@@ -2,6 +2,7 @@
 
 import json
 import socket
+import traceback
 
 import httpx
 import pytest
@@ -184,6 +185,31 @@ def test_api_root_validation_rejects_invalid_roots_without_echoing_input(root):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "root",
+    (
+        "https://user:credential-marker@example.invalid/v1",
+        "https://example.invalid/v1?credential-marker",
+        "https://example.invalid/v1#credential-marker",
+    ),
+)
+def test_compatible_configuration_errors_do_not_echo_credentials_or_roots(root):
+    key = "configuration-key-marker"
+    with pytest.raises(LLMConfigError) as caught:
+        UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="arbitrary/model",
+            api_key=key,
+            base_url=root,
+        )
+
+    for value in (str(caught.value), repr(caught.value)):
+        assert key not in value
+        assert "credential-marker" not in value
+        assert "example.invalid" not in value
+
+
+@pytest.mark.unit
 def test_constructor_preserves_model_and_disables_official_profile():
     adapter = OpenAICompatibleAdapter(
         api_key="synthetic-key",
@@ -200,6 +226,504 @@ def test_constructor_preserves_model_and_disables_official_profile():
     assert adapter.is_adaptive_thinking is False
     assert "synthetic-key" not in repr(adapter)
     assert "example.invalid" not in repr(adapter)
+
+
+@pytest.mark.unit
+def test_compatible_diagnostic_repr_redacts_instance_secrets_without_mutating_values():
+    key = "repr-secret/+marker-123"
+    encoded_key = "repr-secret%2f%2bmarker-123"
+    model = f"vendor/{key}"
+    root = f"https://example.invalid/proxy/{encoded_key}/v1"
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model=model,
+        api_key=key,
+        base_url=root,
+    )
+    sync_client = facade.adapter._create_sync_client()
+    async_client = facade.adapter._create_async_client()
+    native = OpenAISyncClient(api_key="native-secret-marker-456")
+
+    for value in (repr(facade), repr(facade.adapter), repr(sync_client), repr(async_client)):
+        assert key not in value
+        assert encoded_key not in value
+    assert facade.model == model
+    assert facade.base_url == root
+    assert sync_client.endpoint == root
+    assert async_client.endpoint == root
+    assert "native-secret-marker-456" not in repr(native)
+    assert native._diagnostic_formatter is None
+    assert native == OpenAISyncClient(api_key="native-secret-marker-456")
+    assert repr(native) == (
+        "OpenAISyncClient(api_key='native-s...-456', "
+        "endpoint='https://api.openai.com/v1')"
+    )
+
+
+@pytest.mark.unit
+def test_native_facade_repr_stays_unchanged():
+    facade = UniversalLLMAPIAdapter(
+        organization="openai",
+        model="gpt-4o-mini",
+        api_key="native-secret-marker",
+    )
+    assert repr(facade) == (
+        "UniversalLLMAPIAdapter(organization='openai', "
+        "service_provider='openai', model='gpt-4o-mini', "
+        "transport='requests', api_key='native-s...rker')"
+    )
+
+
+@pytest.mark.unit
+def test_facade_repr_uses_explicit_mode_gate_and_handles_partial_instances():
+    expected = (
+        "UniversalLLMAPIAdapter(organization='openai', "
+        "service_provider='openai', model='gpt-4o-mini', "
+        "transport='requests', api_key='native-s...rker')"
+    )
+    native = UniversalLLMAPIAdapter(
+        organization="openai",
+        model="gpt-4o-mini",
+        api_key="native-secret-marker",
+    )
+    native.adapter._format_compatible_diagnostic = lambda _text: "changed"
+    assert repr(native) == expected
+
+    partial = object.__new__(UniversalLLMAPIAdapter)
+    partial.organization = "openai"
+    partial.model = "gpt-4o-mini"
+    partial.api_key = "native-secret-marker"
+    partial.transport = "requests"
+    partial.service_provider = "openai"
+    assert repr(partial) == expected
+
+    compatible = object.__new__(UniversalLLMAPIAdapter)
+    compatible.organization = "openai_compatible"
+    compatible.model = "vendor/partial-secret-marker"
+    compatible.api_key = "partial-secret-marker"
+    compatible.transport = "requests"
+    compatible.service_provider = "openai_compatible"
+    result = repr(compatible)
+    assert "partial-secret-marker" not in result
+
+
+_DIAGNOSTIC_KEY = "diagnostic-secret-marker-987"
+_DIAGNOSTIC_URL = "https://url-user:url-password'quote@echo.invalid/v1"
+_DIAGNOSTIC_QUERY_URL = 'https://echo.invalid/v1?token="query-secret-marker"'
+_DIAGNOSTIC_FRAGMENT_URL = "https://echo.invalid/v1?token=query-marker#frag-marker"
+_DIAGNOSTIC_TEXT = (
+    f"echo {_DIAGNOSTIC_KEY} and {_DIAGNOSTIC_URL} "
+    f"{_DIAGNOSTIC_QUERY_URL} {_DIAGNOSTIC_FRAGMENT_URL}"
+)
+
+
+def _assert_diagnostics_redacted(error, caplog):
+    rendered = "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
+    )
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    for marker in (
+        _DIAGNOSTIC_KEY,
+        "url-user",
+        "url-password",
+        "quote",
+        "query-secret-marker",
+        "query-marker",
+        "frag-marker",
+    ):
+        assert marker not in str(error)
+        assert marker not in repr(error)
+        assert marker not in rendered
+        assert marker not in messages
+    assert any(
+        reason in str(error).lower()
+        for reason in ("authentication", "timed out", "client error", "server error")
+    )
+    assert "redacted URL" in str(error)
+
+
+@pytest.mark.unit
+def test_credential_url_redaction_precedes_valid_scheme_matching_api_key():
+    from src.llm_api_adapter.adapters.openai_compatible_adapter import (
+        _redact_compatible_diagnostic,
+    )
+
+    diagnostic = "https://url-user:url-pass@echo.invalid/v1"
+    redacted = _redact_compatible_diagnostic(diagnostic, "https")
+
+    assert "url-pass" not in redacted
+    assert redacted == "[redacted URL]"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+def test_json_escaped_credential_is_redacted_at_real_error_boundary(mode, caplog):
+    key = "wire'\\slash/key"
+    url = f"{_COLLISION_ROOT}/chat/completions"
+    payload = {
+        "error": {
+            "message": f"invalid credential {key}",
+            "type": "invalid_api_key",
+        }
+    }
+    with requests_mock.Mocker(real_http=False) as http:
+        if mode == "chat":
+            http.post(url, status_code=401, json=payload)
+        else:
+            event = f"event: error\ndata: {json.dumps(payload)}\n\n"
+            http.post(
+                url,
+                status_code=200,
+                text=event,
+                headers={"Content-Type": "text/event-stream"},
+            )
+        adapter = _new_adapter(
+            api_key=key,
+            model="arbitrary/model",
+            base_url=_COLLISION_ROOT,
+        )
+        with pytest.raises(LLMAPIAuthorizationError) as caught:
+            if mode == "stream_chat":
+                list(adapter.stream_chat([UserMessage(content="hello")]))
+            else:
+                adapter.chat([UserMessage(content="hello")])
+
+    rendered_traceback = "".join(
+        traceback.format_exception(
+            type(caught.value), caught.value, caught.value.__traceback__
+        )
+    )
+    log_messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert key not in str(caught.value)
+    assert key not in repr(caught.value)
+    assert key not in rendered_traceback
+    assert key not in log_messages
+    assert http.call_count == 1
+    request = http.request_history[0]
+    assert request.url == url
+    assert request.headers["Authorization"] == f"Bearer {key}"
+
+
+@pytest.mark.unit
+def test_redactor_matches_mixed_case_percent_hex_without_casefolding_key():
+    from src.llm_api_adapter.adapters.openai_compatible_adapter import (
+        _redact_compatible_diagnostic,
+    )
+
+    key = "a/+marker"
+    mixed_percent_case = "endpoint https://echo.invalid/a%2f%2Bmarker/v1"
+    case_changed_letter = "endpoint https://echo.invalid/A%2f%2Bmarker/v1"
+
+    assert "a%2f%2Bmarker" not in _redact_compatible_diagnostic(
+        mixed_percent_case, key
+    )
+    assert "A%2f%2Bmarker" in _redact_compatible_diagnostic(
+        case_changed_letter, key
+    )
+    different_encoded_bytes = "endpoint https://echo.invalid/a%41%42marker/v1"
+    assert different_encoded_bytes in _redact_compatible_diagnostic(
+        different_encoded_bytes, key
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+def test_requests_http_error_diagnostics_are_redacted_before_logs_and_traceback(
+    mode, caplog
+):
+    url = f"{_COLLISION_ROOT}/chat/completions"
+    body = {"error": {"message": _DIAGNOSTIC_TEXT, "type": "invalid_api_key"}}
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, status_code=401, json=body)
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="arbitrary/model",
+            api_key=_DIAGNOSTIC_KEY,
+            base_url=f"{_COLLISION_ROOT}/",
+        )
+        with pytest.raises(LLMAPIAuthorizationError) as caught:
+            if mode == "stream_chat":
+                list(facade.stream_chat([UserMessage(content="hello")]))
+            else:
+                facade.chat([UserMessage(content="hello")])
+
+    _assert_diagnostics_redacted(caught.value, caplog)
+    assert http.call_count == 1
+    request = http.request_history[0]
+    assert request.url == url
+    assert request.headers["Authorization"] == f"Bearer {_DIAGNOSTIC_KEY}"
+    assert request.json()["model"] == "arbitrary/model"
+
+
+@pytest.mark.unit
+def test_requests_timeout_diagnostics_redact_transport_log(caplog):
+    url = f"{_COLLISION_ROOT}/chat/completions"
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, exc=requests.Timeout(_DIAGNOSTIC_TEXT))
+        adapter = _new_adapter(
+            api_key=_DIAGNOSTIC_KEY,
+            model="arbitrary/model",
+            base_url=_COLLISION_ROOT,
+        )
+        with pytest.raises(LLMAPITimeoutError) as caught:
+            adapter.chat([UserMessage(content="hello")])
+
+    _assert_diagnostics_redacted(caught.value, caplog)
+    assert http.call_count == 1
+    assert http.request_history[0].url == url
+    assert http.request_history[0].headers["Authorization"] == f"Bearer {_DIAGNOSTIC_KEY}"
+
+
+@pytest.mark.unit
+def test_compatible_error_redaction_preserves_instance_without_reinitializing():
+    adapter = _new_adapter(
+        api_key=_DIAGNOSTIC_KEY,
+        model="arbitrary/model",
+        base_url=_COLLISION_ROOT,
+    )
+    error = LLMAPIClientError(detail=f"echo {_DIAGNOSTIC_KEY}")
+    error.status_code = 418
+    error.args = ("status detail", f"Client error: {_DIAGNOSTIC_KEY}")
+
+    def forbidden_reinit():
+        raise AssertionError("error lifecycle hook must not be called")
+
+    error.__post_init__ = forbidden_reinit
+    with pytest.raises(LLMAPIClientError) as caught:
+        adapter.handle_error(error)
+
+    assert caught.value is error
+    assert caught.value.status_code == 418
+    assert caught.value.detail == "echo [redacted]"
+    assert _DIAGNOSTIC_KEY not in str(caught.value)
+    assert _DIAGNOSTIC_KEY not in repr(caught.value)
+    assert caught.value.args == ("status detail", "Client error: [redacted]")
+
+
+@pytest.mark.unit
+def test_success_content_and_caller_callback_error_are_not_redacted():
+    url = f"{_COLLISION_ROOT}/chat/completions"
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(
+            url,
+            response_list=[
+                {"json": text_response(content=_DIAGNOSTIC_KEY)},
+                {
+                    "text": "\n".join(
+                        text_sse_lines(_DIAGNOSTIC_KEY, usage=_COLLISION_USAGE)
+                    ),
+                    "headers": {"Content-Type": "text/event-stream"},
+                },
+            ],
+        )
+        adapter = _new_adapter(
+            api_key=_DIAGNOSTIC_KEY,
+            model="arbitrary/model",
+            base_url=_COLLISION_ROOT,
+        )
+        response = adapter.chat([UserMessage(content="hello")])
+        assert response.content == _DIAGNOSTIC_KEY
+
+        callback_error = RuntimeError(_DIAGNOSTIC_KEY, "caller-owned marker")
+
+        def fail_callback(_delta):
+            raise callback_error
+
+        with pytest.raises(RuntimeError) as caught:
+            list(
+                adapter.stream_chat(
+                    [UserMessage(content="hello")],
+                    on_delta=fail_callback,
+                )
+            )
+
+    assert caught.value is callback_error
+    assert caught.value.args == (_DIAGNOSTIC_KEY, "caller-owned marker")
+    assert http.call_count == 2
+
+
+@pytest.mark.unit
+def test_sync_httpx_http_error_diagnostics_are_redacted_before_logs(caplog, monkeypatch):
+    real_client = httpx.Client
+    requests_seen = []
+
+    def handler(request):
+        requests_seen.append(request)
+        return httpx.Response(
+            401,
+            json={"error": {"message": _DIAGNOSTIC_TEXT, "type": "invalid_api_key"}},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "Client", lambda: real_client(transport=transport))
+    adapter = OpenAICompatibleAdapter(
+        api_key=_DIAGNOSTIC_KEY,
+        model="arbitrary/model",
+        base_url=_COLLISION_ROOT,
+        transport="httpx",
+    )
+    with pytest.raises(LLMAPIAuthorizationError) as caught:
+        adapter.chat([UserMessage(content="hello")])
+
+    _assert_diagnostics_redacted(caught.value, caplog)
+    assert len(requests_seen) == 1
+    assert str(requests_seen[0].url) == f"{_COLLISION_ROOT}/chat/completions"
+    assert requests_seen[0].headers["Authorization"] == f"Bearer {_DIAGNOSTIC_KEY}"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+@pytest.mark.parametrize(
+    "failure,error_type",
+    (("timeout", LLMAPITimeoutError), ("connection", LLMAPIClientError)),
+)
+def test_sync_httpx_transport_failure_diagnostics_are_redacted(
+    mode, failure, error_type, caplog, monkeypatch
+):
+    real_client = httpx.Client
+    requests_seen = []
+
+    def handler(request):
+        requests_seen.append(request)
+        if failure == "timeout":
+            raise httpx.TimeoutException(_DIAGNOSTIC_TEXT, request=request)
+        raise httpx.ConnectError(_DIAGNOSTIC_TEXT, request=request)
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "Client", lambda: real_client(transport=transport))
+    adapter = OpenAICompatibleAdapter(
+        api_key=_DIAGNOSTIC_KEY,
+        model="arbitrary/model",
+        base_url=_COLLISION_ROOT,
+        transport="httpx",
+    )
+    with pytest.raises(error_type) as caught:
+        if mode == "stream_chat":
+            list(adapter.stream_chat([UserMessage(content="hello")]))
+        else:
+            adapter.chat([UserMessage(content="hello")])
+
+    _assert_diagnostics_redacted(caught.value, caplog)
+    assert len(requests_seen) == 1
+    assert str(requests_seen[0].url) == f"{_COLLISION_ROOT}/chat/completions"
+    assert requests_seen[0].headers["Authorization"] == f"Bearer {_DIAGNOSTIC_KEY}"
+
+
+@pytest.mark.unit
+def test_stream_error_diagnostics_are_redacted_and_skip_completion(caplog):
+    url = f"{_COLLISION_ROOT}/chat/completions"
+    event = {
+        "error": {"type": "invalid_api_key", "message": _DIAGNOSTIC_TEXT}
+    }
+    event_text = f"event: error\ndata: {json.dumps(event)}\n\n"
+    completed = []
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, text=event_text, headers={"Content-Type": "text/event-stream"})
+        adapter = _new_adapter(
+            api_key=_DIAGNOSTIC_KEY,
+            model="arbitrary/model",
+            base_url=_COLLISION_ROOT,
+        )
+        with pytest.raises(LLMAPIAuthorizationError) as caught:
+            list(adapter.stream_chat([UserMessage(content="hello")], on_done=completed.append))
+
+    _assert_diagnostics_redacted(caught.value, caplog)
+    assert http.call_count == 1
+    assert http.request_history[0].url == url
+    assert completed == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+async def test_async_httpx_http_error_diagnostics_are_redacted_before_logs(
+    mode, caplog, monkeypatch
+):
+    real_client = httpx.AsyncClient
+    requests_seen = []
+
+    def handler(request):
+        requests_seen.append(request)
+        return httpx.Response(
+            401,
+            json={"error": {"message": _DIAGNOSTIC_TEXT, "type": "invalid_api_key"}},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda: real_client(transport=transport),
+    )
+    adapter = OpenAICompatibleAdapter(
+        api_key=_DIAGNOSTIC_KEY,
+        model="arbitrary/model",
+        base_url=_COLLISION_ROOT,
+    )
+    with pytest.raises(LLMAPIAuthorizationError) as caught:
+        if mode == "astream_chat":
+            _ = [
+                text
+                async for text in adapter.astream_chat(
+                    [UserMessage(content="hello")]
+                )
+            ]
+        else:
+            await adapter.achat([UserMessage(content="hello")])
+
+    _assert_diagnostics_redacted(caught.value, caplog)
+    assert len(requests_seen) == 1
+    assert str(requests_seen[0].url) == f"{_COLLISION_ROOT}/chat/completions"
+    assert requests_seen[0].headers["Authorization"] == f"Bearer {_DIAGNOSTIC_KEY}"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+@pytest.mark.parametrize(
+    "failure,error_type",
+    (("timeout", LLMAPITimeoutError), ("connection", LLMAPIClientError)),
+)
+async def test_async_httpx_transport_failure_diagnostics_are_redacted(
+    mode, failure, error_type, caplog, monkeypatch
+):
+    real_client = httpx.AsyncClient
+    requests_seen = []
+
+    def handler(request):
+        requests_seen.append(request)
+        if failure == "timeout":
+            raise httpx.TimeoutException(_DIAGNOSTIC_TEXT, request=request)
+        raise httpx.ConnectError(_DIAGNOSTIC_TEXT, request=request)
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda: real_client(transport=transport),
+    )
+    adapter = OpenAICompatibleAdapter(
+        api_key=_DIAGNOSTIC_KEY,
+        model="arbitrary/model",
+        base_url=_COLLISION_ROOT,
+    )
+    with pytest.raises(error_type) as caught:
+        if mode == "astream_chat":
+            _ = [
+                text
+                async for text in adapter.astream_chat(
+                    [UserMessage(content="hello")]
+                )
+            ]
+        else:
+            await adapter.achat([UserMessage(content="hello")])
+
+    _assert_diagnostics_redacted(caught.value, caplog)
+    assert len(requests_seen) == 1
+    assert str(requests_seen[0].url) == f"{_COLLISION_ROOT}/chat/completions"
+    assert requests_seen[0].headers["Authorization"] == f"Bearer {_DIAGNOSTIC_KEY}"
 
 
 @pytest.mark.unit

@@ -8,6 +8,7 @@ from .adapters.openai_adapter import OpenAIAdapter
 from .adapters.google_adapter import GoogleAdapter
 from .adapters.openai_compatible_adapter import (
     OpenAICompatibleAdapter,
+    _redact_compatible_diagnostic,
     _validate_api_root,
 )
 from .errors.config_errors import LLMConfigError, OrganizationNotInstalledError
@@ -42,11 +43,14 @@ class UniversalLLMAPIAdapter:
 
     def __repr__(self) -> str:
         masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
-        return (
+        result = (
             f"UniversalLLMAPIAdapter(organization='{self.organization}', "
             f"service_provider='{self.service_provider}', model='{self.model}', "
             f"transport='{self.transport}', api_key='{masked}')"
         )
+        if self.organization == OpenAICompatibleAdapter.company:
+            return _redact_compatible_diagnostic(result, self.api_key)
+        return result
 
     def __post_init__(self) -> None:
         if not self.organization or not isinstance(self.organization, str):

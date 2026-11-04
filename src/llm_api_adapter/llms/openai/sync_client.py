@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import logging
-from typing import Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 # Kept as a module attribute for existing white-box patch points. Requests are
 # now called by ``RequestsSyncTransport``.
@@ -47,13 +47,29 @@ class OpenAISyncClient:
         repr=False,
         compare=False,
     )
+    _diagnostic_formatter: Callable[[object], str] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         self._sync_transport = create_sync_transport(self.transport)
 
     def __repr__(self) -> str:
         masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
-        return f"OpenAISyncClient(api_key='{masked}', endpoint='{self.endpoint}')"
+        result = f"OpenAISyncClient(api_key='{masked}', endpoint='{self.endpoint}')"
+        return self._format_diagnostic(result)
+
+    def _set_diagnostic_formatter(
+        self, formatter: Callable[[object], str] | None
+    ) -> None:
+        self._diagnostic_formatter = formatter
+
+    def _format_diagnostic(self, value: object) -> Any:
+        formatter = self._diagnostic_formatter
+        return formatter(value) if formatter is not None else value
 
     def _headers(self):
         return {
@@ -219,7 +235,7 @@ class OpenAISyncClient:
             error_type = error.get("type") or error.get("code")
             error_message = error.get("message")
         except Exception as e:
-            logger.warning("Failed to parse error response: %s", e)
+            logger.warning("Failed to parse error response: %s", self._format_diagnostic(e))
             error_type = None
             error_message = None
         detail = error_message or str(http_err)

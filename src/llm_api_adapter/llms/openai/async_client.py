@@ -20,7 +20,8 @@ class OpenAIAsyncClient(OpenAISyncClient):
             if len(self.api_key) > 12
             else "***"
         )
-        return f"OpenAIAsyncClient(api_key='{masked}', endpoint='{self.endpoint}')"
+        result = f"OpenAIAsyncClient(api_key='{masked}', endpoint='{self.endpoint}')"
+        return self._format_diagnostic(result)
 
     async def complete(self, model: str, timeout: float | None = None, **kwargs):
         if self._should_use_responses_api(model):
