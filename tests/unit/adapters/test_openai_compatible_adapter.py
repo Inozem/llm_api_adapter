@@ -3,6 +3,7 @@
 import json
 import socket
 import traceback
+import asyncio
 
 import httpx
 import pytest
@@ -25,13 +26,17 @@ from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
+from src.llm_api_adapter.models.tools import ToolSpec
 from src.llm_api_adapter.organization_registry import OrganizationPluginDiscovery
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from tests.fixtures.openai_compatible import (
     FIXTURE_ID,
     FIXTURE_MODEL,
+    event_lines,
+    premature_eof_sse_lines,
     text_response,
     text_sse_lines,
+    tool_call_sse_lines,
     usage_payload,
 )
 
@@ -877,6 +882,155 @@ def _collision_sse_lines(model):
     return [line.replace(model_field, replacement) for line in lines]
 
 
+def _fragmented_text_and_tool_sse_lines():
+    """Join existing protocol fixtures into one valid tool-completion stream."""
+    text = premature_eof_sse_lines(
+        "Hi!", content_fragments=("H", "i!")
+    )
+    tool = tool_call_sse_lines(
+        name="lookup",
+        arguments_json='{"city":"Haifa"}',
+        argument_fragments=("{\"ci", 'ty\":', '"Ha', 'ifa"}',),
+        call_id="call_fragmented_1",
+        usage=usage_payload(4, 2, 6),
+    )
+    return text + tool
+
+
+def _tool_spec():
+    return ToolSpec(
+        name="lookup",
+        json_schema={
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+            "additionalProperties": False,
+        },
+    )
+
+
+class _CountedRequestsStreamResponse:
+    def __init__(self, lines):
+        self.lines = lines
+        self.close_count = 0
+
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self, decode_unicode=False):
+        del decode_unicode
+        yield from self.lines
+
+    def close(self):
+        self.close_count += 1
+
+
+class _CountedSyncByteStream(httpx.SyncByteStream):
+    def __init__(self, content):
+        self.content = content
+        self.close_count = 0
+
+    def __iter__(self):
+        yield self.content
+
+    def close(self):
+        self.close_count += 1
+
+
+class _CountedAsyncByteStream(httpx.AsyncByteStream):
+    def __init__(self, lines, suspended=None, release=None):
+        self.lines = lines
+        self.suspended = suspended
+        self.release = release
+        self.close_count = 0
+
+    async def __aiter__(self):
+        for index, line in enumerate(self.lines):
+            yield (line + "\n").encode()
+            if index == len(self.lines) - 1 and self.suspended is not None:
+                self.suspended.set()
+                await self.release.wait()
+
+    async def aclose(self):
+        self.close_count += 1
+
+
+def _counted_sync_stream_route(transport, lines, monkeypatch, model):
+    requests_seen = []
+    client_closes = []
+    if transport == "requests":
+        response = _CountedRequestsStreamResponse(lines)
+
+        def post(url, **kwargs):
+            requests_seen.append((url, kwargs))
+            return response
+
+        monkeypatch.setattr(requests, "post", post)
+        adapter = UniversalLLMAPIAdapter(
+            organization="openai_compatible", model=model,
+            api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT,
+        )
+        return adapter, requests_seen, response, client_closes, None
+
+    byte_stream = _CountedSyncByteStream("\n".join(lines).encode())
+    real_client = httpx.Client
+
+    def handler(request):
+        requests_seen.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            stream=byte_stream,
+        )
+
+    client = real_client(transport=httpx.MockTransport(handler))
+    original_close = client.close
+
+    def close_client():
+        client_closes.append(True)
+        original_close()
+
+    client.close = close_client
+    monkeypatch.setattr(httpx, "Client", lambda: client)
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible", model=model,
+        api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT, transport="httpx",
+    )
+    return adapter, requests_seen, byte_stream, client_closes, client
+
+
+def _counted_async_stream_route(
+    lines, monkeypatch, model, *, suspended=None, release=None
+):
+    requests_seen = []
+    client_closes = []
+    byte_stream = _CountedAsyncByteStream(lines, suspended, release)
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        requests_seen.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            stream=byte_stream,
+        )
+
+    client = real_client(transport=httpx.MockTransport(handler))
+    original_aclose = client.aclose
+
+    async def close_client():
+        client_closes.append(True)
+        await original_aclose()
+
+    client.aclose = close_client
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible", model=model,
+        api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT,
+    )
+    return adapter, requests_seen, byte_stream, client_closes, client
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("model", _COLLIDING_MODELS)
 @pytest.mark.parametrize("mode", ("chat", "stream_chat"))
@@ -1305,6 +1459,340 @@ def test_compatible_and_official_sync_instances_keep_roots_keys_and_profiles_iso
         assert request.json() == _collision_body("gpt-5", streaming=False)
     _assert_native_gpt5_request(attempts[1])
     assert forbidden == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+def test_compatible_fragmented_text_tool_and_usage_complete_in_sync_transports(
+    transport, monkeypatch
+):
+    model = "vendor/arbitrary-stream-model"
+    lines = _fragmented_text_and_tool_sse_lines()
+    completed = []
+    tools = []
+    chunks = []
+    final_order = []
+
+    def record_chunk(chunk):
+        chunks.append(chunk)
+        final_order.append(f"chunk:{chunk.text}")
+
+    def record_delta(text):
+        final_order.append(f"delta:{text}")
+
+    def record_tool(tool):
+        tools.append(tool)
+        final_order.append("tool")
+
+    def record_done(response):
+        completed.append(response)
+        final_order.append("done")
+
+    adapter, requests_seen, stream_resource, client_closes, client = (
+        _counted_sync_stream_route(transport, lines, monkeypatch, model)
+    )
+    try:
+        visible = []
+        for text in adapter.stream_chat(
+                [UserMessage(content="Find a city.")],
+                tools=[_tool_spec()], buffer_chars=2,
+                on_chunk=record_chunk, on_delta=record_delta,
+                on_tool_call=record_tool, on_done=record_done,
+            ):
+            visible.append(text)
+            final_order.append(f"yield:{text}")
+        assert len(requests_seen) == 1
+        if transport == "requests":
+            assert requests_seen[0][0] == _COLLISION_URL
+            assert requests_seen[0][1]["json"]["model"] == model
+        else:
+            assert str(requests_seen[0].url) == _COLLISION_URL
+            assert json.loads(requests_seen[0].content)["model"] == model
+            assert len(client_closes) == 1
+        assert stream_resource.close_count == 1
+        assert visible == ["Hi", "!"]
+        assert len(tools) == len(completed) == 1
+        assert final_order == [
+            "chunk:Hi", "delta:Hi", "yield:Hi", "chunk:!", "delta:!",
+            "yield:!", "tool", "done",
+        ]
+        assert chunks[0].usage is None
+        assert chunks[-1].usage is not None
+        assert chunks[-1].usage.input_tokens == 4
+        assert chunks[-1].usage.output_tokens == 2
+        assert chunks[-1].usage.total_tokens == 6
+        assert tools[0].name == "lookup"
+        assert tools[0].arguments == {"city": "Haifa"}
+        assert tools[0].call_id == "call_fragmented_1"
+        response = completed[0]
+        assert response.content == "Hi!"
+        assert response.tool_calls == [tools[0]]
+        assert response.usage.input_tokens == 4
+        assert response.usage.output_tokens == 2
+        assert response.usage.total_tokens == 6
+        assert response.cost_input is response.cost_output is response.cost_total is None
+        assert response.currency is None
+        assert response.cost_breakdown is None
+    finally:
+        if stream_resource.close_count == 0:
+            stream_resource.close()
+        if transport == "httpx" and not client_closes:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+@pytest.mark.parametrize("outcome", ("eof", "error"))
+def test_compatible_sync_stream_without_terminal_outcome_is_not_success(
+    transport, outcome, monkeypatch
+):
+    model = "vendor/unregistered-model"
+    lines = premature_eof_sse_lines("pending")
+    if outcome == "error":
+        lines += event_lines({"type": "error", "error": {"message": "stream rejected"}})
+    completed = []
+    visible = []
+    adapter, requests_seen, stream_resource, client_closes, client = (
+        _counted_sync_stream_route(transport, lines, monkeypatch, model)
+    )
+    caught = None
+    try:
+        try:
+            for text in adapter.stream_chat(
+                [UserMessage(content="Hello")], buffer_chars=64,
+                on_done=completed.append,
+            ):
+                visible.append(text)
+        except LLMAPIClientError as error:
+            caught = error
+
+        assert len(requests_seen) == 1
+        if transport == "requests":
+            assert requests_seen[0][0] == _COLLISION_URL
+            source_close_count = stream_resource.close_count
+            assert source_close_count == 1
+        else:
+            assert str(requests_seen[0].url) == _COLLISION_URL
+            source_close_count = stream_resource.close_count
+            client_close_count = len(client_closes)
+            assert source_close_count == 1
+            assert client_close_count == 1
+        assert isinstance(caught, LLMAPIClientError) and not visible and not completed, (
+            f"terminal outcome={caught!r}; visible={visible!r}; done={completed!r}"
+        )
+        if outcome == "error":
+            assert "stream rejected" in str(caught)
+    finally:
+        if stream_resource.close_count == 0:
+            stream_resource.close()
+        if transport == "httpx" and not client_closes:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compatible_async_fragmented_text_tool_and_usage_complete(monkeypatch):
+    model = "vendor/arbitrary-stream-model"
+    lines = _fragmented_text_and_tool_sse_lines()
+    completed = []
+    tools = []
+    chunks = []
+    final_order = []
+
+    def record_chunk(chunk):
+        chunks.append(chunk)
+        final_order.append(f"chunk:{chunk.text}")
+
+    def record_delta(text):
+        final_order.append(f"delta:{text}")
+
+    def record_tool(tool):
+        tools.append(tool)
+        final_order.append("tool")
+
+    def record_done(response):
+        completed.append(response)
+        final_order.append("done")
+    adapter, requests_seen, stream_resource, client_closes, client = (
+        _counted_async_stream_route(lines, monkeypatch, model)
+    )
+    try:
+        visible = []
+        async for text in adapter.astream_chat(
+                [UserMessage(content="Find a city.")],
+                tools=[_tool_spec()], buffer_chars=2,
+                on_chunk=record_chunk, on_delta=record_delta,
+                on_tool_call=record_tool, on_done=record_done,
+            ):
+            visible.append(text)
+            final_order.append(f"yield:{text}")
+
+        assert len(requests_seen) == 1
+        assert str(requests_seen[0].url) == _COLLISION_URL
+        assert json.loads(requests_seen[0].content)["model"] == model
+        assert stream_resource.close_count == 1
+        assert len(client_closes) == 1
+        assert visible == ["Hi", "!"]
+        assert len(tools) == len(completed) == 1
+        assert final_order == [
+            "chunk:Hi", "delta:Hi", "yield:Hi", "chunk:!", "delta:!",
+            "yield:!", "tool", "done",
+        ]
+        assert len(chunks) == 2
+        assert chunks[0].usage is None
+        assert chunks[-1].usage is not None
+        assert chunks[-1].usage.input_tokens == 4
+        assert chunks[-1].usage.output_tokens == 2
+        assert chunks[-1].usage.total_tokens == 6
+        assert tools[0].name == "lookup"
+        assert tools[0].arguments == {"city": "Haifa"}
+        assert tools[0].call_id == "call_fragmented_1"
+        assert completed[0].tool_calls == [tools[0]]
+        assert completed[0].usage.input_tokens == 4
+        assert completed[0].usage.output_tokens == 2
+        assert completed[0].usage.total_tokens == 6
+        assert completed[0].cost_total is None
+        assert completed[0].cost_input is None
+        assert completed[0].cost_output is None
+        assert completed[0].currency is None
+        assert completed[0].cost_breakdown is None
+    finally:
+        if stream_resource.close_count == 0:
+            await stream_resource.aclose()
+        if not client_closes:
+            await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ("eof", "error"))
+async def test_compatible_async_stream_without_terminal_outcome_is_not_success(
+    outcome, monkeypatch
+):
+    model = "vendor/unregistered-model"
+    lines = premature_eof_sse_lines("pending")
+    if outcome == "error":
+        lines += event_lines({"type": "error", "error": {"message": "stream rejected"}})
+    completed = []
+    visible = []
+    adapter, requests_seen, stream_resource, client_closes, client = (
+        _counted_async_stream_route(lines, monkeypatch, model)
+    )
+    caught = None
+    try:
+        try:
+            async for text in adapter.astream_chat(
+                [UserMessage(content="Hello")], buffer_chars=64,
+                on_done=completed.append,
+            ):
+                visible.append(text)
+        except LLMAPIClientError as error:
+            caught = error
+
+        assert len(requests_seen) == 1
+        assert str(requests_seen[0].url) == _COLLISION_URL
+        stream_close_count = stream_resource.close_count
+        client_close_count = len(client_closes)
+        assert stream_close_count == 1
+        assert client_close_count == 1
+        assert isinstance(caught, LLMAPIClientError) and not visible and not completed, (
+            f"terminal outcome={caught!r}; visible={visible!r}; done={completed!r}"
+        )
+        if outcome == "error":
+            assert "stream rejected" in str(caught)
+    finally:
+        if stream_resource.close_count == 0:
+            await stream_resource.aclose()
+        if not client_closes:
+            await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+def test_compatible_sync_transport_early_close_releases_owned_resources(
+    transport, monkeypatch
+):
+    model = "vendor/unregistered-model"
+    lines = text_sse_lines(
+        "Hello!", fragments=("He", "llo!"), usage=usage_payload(2, 3, 5)
+    )
+    completed = []
+    adapter, requests_seen, stream_resource, client_closes, client = (
+        _counted_sync_stream_route(transport, lines, monkeypatch, model)
+    )
+
+    stream = adapter.stream_chat(
+        [UserMessage(content="Hello")], buffer_chars=4, on_done=completed.append
+    )
+    try:
+        assert next(stream) == "Hell"
+        stream.close()
+        if transport == "requests":
+            assert stream_resource.close_count == 1
+            assert requests_seen[0][0] == _COLLISION_URL
+        else:
+            assert stream_resource.close_count == 1
+            assert client_closes == [True]
+            assert str(requests_seen[0].url) == _COLLISION_URL
+        assert len(requests_seen) == 1
+        assert completed == []
+    finally:
+        stream.close()
+        if stream_resource.close_count == 0:
+            stream_resource.close()
+        if transport == "httpx" and not client_closes:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compatible_async_cancellation_releases_httpx_stream_once(monkeypatch):
+    model = "vendor/unregistered-model"
+    lines = premature_eof_sse_lines(
+        "Hello!", content_fragments=("He", "llo!")
+    )
+    suspended = asyncio.Event()
+    release = asyncio.Event()
+    first_chunk = asyncio.Event()
+    completed = []
+    adapter, requests_seen, stream_bytes, client_closes, client = (
+        _counted_async_stream_route(
+            lines, monkeypatch, model, suspended=suspended, release=release
+        )
+    )
+
+    async def consume():
+        async for _text in adapter.astream_chat(
+            [UserMessage(content="Hello")], buffer_chars=4,
+            on_done=completed.append,
+        ):
+            first_chunk.set()
+
+    task = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(first_chunk.wait(), timeout=2)
+        await asyncio.wait_for(suspended.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+
+        assert len(requests_seen) == 1
+        assert str(requests_seen[0].url) == _COLLISION_URL
+        assert stream_bytes.close_count == 1
+        assert client_closes == [True]
+        assert completed == []
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if stream_bytes.close_count == 0:
+            await stream_bytes.aclose()
+        if not client_closes:
+            await client.aclose()
 
 
 def _assert_t018_public_result(adapter, mode):

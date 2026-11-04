@@ -7,6 +7,7 @@ contract without credentials or live API calls.
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
@@ -1161,6 +1162,235 @@ async def test_facade_streams_skip_finalization_when_cancelled(case):
         await stream.aclose()
 
     assert async_done == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_buffered_sync_early_close_releases_source_without_success(case):
+    closed: list[bool] = []
+    done: list[Any] = []
+
+    def source():
+        try:
+            yield from case.stream_events_factory()
+        finally:
+            closed.append(True)
+
+    raw_source = source()
+    try:
+        with patch.object(case.sync_client_class, "stream", return_value=raw_source):
+            stream = _facade(case).stream_chat(
+                **_chat_kwargs(case), buffer_chars=4, on_done=done.append
+            )
+            assert next(stream) == "Hell"
+            stream.close()
+
+        assert closed == [True]
+        assert done == []
+    finally:
+        raw_source.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_buffered_async_early_close_releases_source_without_success(case):
+    closed: list[bool] = []
+    done: list[Any] = []
+
+    async def source():
+        try:
+            for event in case.stream_events_factory():
+                yield event
+        finally:
+            closed.append(True)
+
+    raw_source = source()
+    try:
+        with patch.object(case.async_client_class, "stream", return_value=raw_source):
+            stream = _facade(case).astream_chat(
+                **_chat_kwargs(case), buffer_chars=4, on_done=done.append
+            )
+            assert await anext(stream) == "Hell"
+            await stream.aclose()
+
+        assert closed == [True]
+        assert done == []
+    finally:
+        await raw_source.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+def test_facade_sync_callback_failure_remains_caller_owned(case):
+    failure = RuntimeError("caller callback failure", case.organization)
+    closed: list[bool] = []
+    done: list[Any] = []
+
+    def source():
+        try:
+            yield from case.stream_events_factory()
+        finally:
+            closed.append(True)
+
+    raw_source = source()
+
+    def fail(_text):
+        raise failure
+
+    with patch.object(case.sync_client_class, "stream", return_value=raw_source):
+        try:
+            with pytest.raises(RuntimeError) as raised:
+                next(
+                    _facade(case).stream_chat(
+                        **_chat_kwargs(case), on_delta=fail, on_done=done.append
+                    )
+                )
+
+            assert raised.value is failure
+            assert raised.value.args == ("caller callback failure", case.organization)
+            assert closed == [True]
+            assert done == []
+        finally:
+            raw_source.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_async_awaitable_callbacks_are_awaited_in_order(case):
+    order: list[str] = []
+
+    def on_chunk(chunk):
+        async def record_chunk():
+            order.append(f"chunk:{chunk.text}")
+
+        return record_chunk()
+
+    def on_delta(text):
+        async def record_delta():
+            order.append(f"delta:{text}")
+
+        return record_delta()
+
+    def on_done(response):
+        async def record_done():
+            order.append(f"done:{response.content}")
+
+        return record_done()
+
+    with patch.object(
+        case.async_client_class,
+        "stream",
+        return_value=_as_async_iter(case.stream_events_factory()),
+    ):
+        output = [
+            text
+            async for text in _facade(case).astream_chat(
+                **_chat_kwargs(case),
+                buffer_chars=4,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_done=on_done,
+            )
+        ]
+
+    assert output == ["Hell", "o!"]
+    assert order == [
+        "chunk:Hell", "delta:Hell", "chunk:o!", "delta:o!", "done:Hello!"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_async_callback_failure_remains_caller_owned(case):
+    failure = RuntimeError("async caller callback failure", case.organization)
+    closed: list[bool] = []
+    done: list[Any] = []
+
+    async def source():
+        try:
+            for event in case.stream_events_factory():
+                yield event
+        finally:
+            closed.append(True)
+
+    raw_source = source()
+
+    def fail(_text):
+        async def raise_failure():
+            raise failure
+
+        return raise_failure()
+
+    try:
+        with patch.object(case.async_client_class, "stream", return_value=raw_source):
+            with pytest.raises(RuntimeError) as raised:
+                async for _text in _facade(case).astream_chat(
+                    **_chat_kwargs(case), on_delta=fail, on_done=done.append
+                ):
+                    pass
+
+        assert raised.value is failure
+        assert raised.value.args == ("async caller callback failure", case.organization)
+        assert closed == [True]
+        assert done == []
+    finally:
+        await raw_source.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_async_task_cancellation_releases_suspended_source(case):
+    suspended = asyncio.Event()
+    release = asyncio.Event()
+    closed: list[bool] = []
+    done: list[Any] = []
+    visible: list[str] = []
+
+    async def source():
+        try:
+            events = case.stream_events_factory()
+            for event in events[:-1]:
+                yield event
+            suspended.set()
+            await release.wait()
+            yield events[-1]
+        finally:
+            closed.append(True)
+
+    raw_source = source()
+    task = None
+
+    async def consume():
+        async for _text in _facade(case).astream_chat(
+            **_chat_kwargs(case), buffer_chars=64, on_done=done.append
+        ):
+            visible.append(_text)
+
+    try:
+        with patch.object(case.async_client_class, "stream", return_value=raw_source):
+            task = asyncio.create_task(consume())
+            await asyncio.wait_for(suspended.wait(), timeout=2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=2)
+
+        assert closed == [True]
+        assert visible == []
+        assert done == []
+    finally:
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=2)
+            except asyncio.CancelledError:
+                pass
+        release.set()
+        await raw_source.aclose()
 
 
 @pytest.mark.unit
