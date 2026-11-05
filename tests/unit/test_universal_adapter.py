@@ -15,6 +15,7 @@ from src.llm_api_adapter.errors.config_errors import (
     LLMConfigError,
     OrganizationNotInstalledError,
 )
+from src.llm_api_adapter.llm_registry.llm_registry import Pricing, PricingTier
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 
@@ -431,7 +432,7 @@ def test_mistral_request_failure_does_not_fall_back_to_zai(monkeypatch):
 def test_public_constructor_signature_remains_compatible():
     parameters = inspect.signature(UniversalLLMAPIAdapter).parameters
 
-    assert list(parameters) == [
+    assert list(parameters)[:6] == [
         "organization",
         "model",
         "api_key",
@@ -439,7 +440,7 @@ def test_public_constructor_signature_remains_compatible():
         "service_provider",
         "base_url",
     ]
-    assert [parameter.default for parameter in parameters.values()] == [
+    assert [parameter.default for parameter in list(parameters.values())[:6]] == [
         inspect.Parameter.empty,
         inspect.Parameter.empty,
         inspect.Parameter.empty,
@@ -447,6 +448,299 @@ def test_public_constructor_signature_remains_compatible():
         None,
         None,
     ]
+
+
+@pytest.mark.unit
+def test_caller_pricing_constructor_signature_appends_optional_override():
+    parameters = inspect.signature(UniversalLLMAPIAdapter).parameters
+
+    assert list(parameters) == [
+        "organization",
+        "model",
+        "api_key",
+        "transport",
+        "service_provider",
+        "base_url",
+        "pricing_override",
+    ]
+    assert parameters["pricing_override"].default is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pricing_override", [object(), {}, [], "invalid"])
+def test_caller_pricing_invalid_override_fails_before_selection_or_io(
+    pricing_override,
+    openai_compatible_no_io,
+    openai_compatible_no_adapter_selection,
+):
+    with pytest.raises(LLMConfigError):
+        UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="vendor/model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            base_url="https://example.invalid/v1",
+            pricing_override=pricing_override,
+        )
+
+    assert openai_compatible_no_adapter_selection == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "pricing_override",
+    [
+        pytest.param(Pricing(tiers=()), id="empty-tiers"),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, -1, 1),)),
+            id="negative-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(True, 1, 1),)),
+            id="bool-boundary-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(1.5, 1, 1),)),
+            id="fractional-boundary-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(object(),)),
+            id="malformed-tier-element",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(100, 1, 1), PricingTier(50, 1, 1))),
+            id="non-increasing-boundaries",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, 1), PricingTier(100, 1, 1))),
+            id="unbounded-before-final-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, float("nan"), 1),)),
+            id="nan-input-rate",
+        ),
+        pytest.param(
+            Pricing(tiers=[PricingTier(None, 1, 1)]),
+            id="non-tuple-tiers",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, float("inf"), 1),)),
+            id="nonfinite-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, "1", 1),)),
+            id="string-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, True, 1),)),
+            id="bool-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, -1),)),
+            id="negative-output-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, "2"),)),
+            id="string-output-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, True),)),
+            id="bool-output-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, float("inf")),)),
+            id="nonfinite-output-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, 1, float("nan")),)),
+            id="nan-cache-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, 1, "2"),)),
+            id="string-cache-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, 1, True),)),
+            id="bool-cache-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, 1, -1),)),
+            id="negative-cache-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, 1, None, "2"),)),
+            id="string-cache-write-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, 1, None, True),)),
+            id="bool-cache-write-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, 1, None, -1),)),
+            id="negative-cache-write-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, 1, None, float("inf")),)),
+            id="nonfinite-cache-write-rate-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(0, 1, 1),)),
+            id="nonpositive-boundary-in-direct-tier",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, 1),), currency=""),
+            id="empty-direct-currency",
+        ),
+        pytest.param(
+            Pricing(tiers=(PricingTier(None, 1, 1),), currency=1),
+            id="nonstring-direct-currency",
+        ),
+    ],
+)
+def test_caller_pricing_malformed_direct_dataclass_fails_before_selection(
+    pricing_override,
+    openai_compatible_no_io,
+    openai_compatible_no_adapter_selection,
+):
+    with pytest.raises(LLMConfigError):
+        UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="vendor/model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            base_url="https://example.invalid/v1",
+            pricing_override=pricing_override,
+        )
+    assert openai_compatible_no_adapter_selection == []
+
+
+@pytest.mark.unit
+def test_caller_pricing_override_is_compatible_mode_only_before_selection(
+    openai_compatible_no_io,
+    openai_compatible_no_adapter_selection,
+):
+    pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": None, "input_per_1m": 1, "output_per_1m": 2}],
+        currency="USD",
+    )
+    with pytest.raises(LLMConfigError):
+        UniversalLLMAPIAdapter(
+            organization="openai",
+            model="gpt-5",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            pricing_override=pricing,
+        )
+    assert openai_compatible_no_adapter_selection == []
+
+
+@pytest.mark.unit
+def test_caller_pricing_native_facade_accessors_preserve_registry_isolation():
+    omitted = UniversalLLMAPIAdapter(
+        organization="openai", model="gpt-5", api_key="test-key"
+    )
+    explicit_none = UniversalLLMAPIAdapter(
+        organization="openai",
+        model="gpt-5",
+        api_key="test-key",
+        pricing_override=None,
+    )
+    registered = omitted.adapter.model_spec.pricing_tiers
+
+    assert omitted.adapter.pricing is not None
+    assert explicit_none.adapter.pricing is not None
+    assert omitted.pricing is omitted.adapter.pricing
+    assert explicit_none.pricing is explicit_none.adapter.pricing
+    assert omitted.pricing is not explicit_none.pricing
+    before = registered.tiers
+
+    omitted.pricing.set_in_per_1m(77.0)
+    omitted.pricing.set_currency("JPY")
+
+    assert omitted.pricing.currency == "JPY"
+    assert omitted.pricing.tiers[0].in_per_token == pytest.approx(77 / 1_000_000)
+    assert explicit_none.pricing.tiers == before
+    assert registered.tiers == before
+
+
+@pytest.mark.unit
+def test_caller_pricing_none_is_not_forwarded_to_strict_legacy_factory(
+    monkeypatch, openai_compatible_no_io
+):
+    class StrictLegacyFactory:
+        def __init__(
+            self,
+            *,
+            company,
+            model,
+            api_key,
+            transport,
+            service_provider,
+        ):
+            self.company = company
+            self.model = model
+            self.api_key = api_key
+            self.transport = transport
+            self.service_provider = service_provider
+
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({"legacy-provider": StrictLegacyFactory}),
+    )
+    legacy = UniversalLLMAPIAdapter(
+        "external-org",
+        "vendor-model",
+        "test-key",
+        "requests",
+        "legacy-provider",
+        None,
+        pricing_override=None,
+    )
+
+    assert isinstance(legacy.adapter, StrictLegacyFactory)
+    assert legacy.adapter.company == "external-org"
+    assert legacy.adapter.service_provider == "legacy-provider"
+
+
+@pytest.mark.unit
+def test_caller_pricing_compatible_six_position_call_remains_valid(openai_compatible_no_io):
+    facade = UniversalLLMAPIAdapter(
+        "openai_compatible",
+        "vendor/six-position-model",
+        SYNTHETIC_API_KEY_MARKER,
+        "requests",
+        None,
+        "https://example.invalid/v1",
+    )
+
+    assert facade.adapter.model == "vendor/six-position-model"
+    assert facade.adapter.model_spec is None
+    assert facade.adapter.pricing is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("organization", "service_provider"),
+    [("openai", None), ("mistral", "openrouter")],
+    ids=["native", "hosted"],
+)
+def test_caller_pricing_override_for_other_factories_fails_before_selection(
+    organization,
+    service_provider,
+    openai_compatible_no_io,
+    openai_compatible_no_adapter_selection,
+):
+    pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": None, "input_per_1m": 1, "output_per_1m": 2}],
+        currency="USD",
+    )
+    with pytest.raises(LLMConfigError):
+        UniversalLLMAPIAdapter(
+            organization=organization,
+            model="gpt-5" if organization == "openai" else "hosted-model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            service_provider=service_provider,
+            pricing_override=pricing,
+        )
+    assert openai_compatible_no_adapter_selection == []
 
 
 @pytest.mark.unit

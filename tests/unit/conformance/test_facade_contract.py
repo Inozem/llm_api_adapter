@@ -35,6 +35,7 @@ from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 from src.llm_api_adapter.models.responses.chat_response import Usage
 from src.llm_api_adapter.models.tools import ToolCall, ToolSpec
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from src.llm_api_adapter.llm_registry.llm_registry import Pricing
 from tests.fixtures.structured_output import (
     FLAT_OBJECT_SCHEMA,
     NESTED_PYDANTIC_RESPONSE_JSON,
@@ -2425,6 +2426,89 @@ def test_compatible_stream_terminal_outcome_skips_structured_parsing(outcome, re
     assert json.loads("".join(visible)) == json.loads(content)
     assert len(completed) == 1
     _assert_structured_terminal_outcome(completed[0], case, outcome)
+    transport.assert_called_once()
+
+
+def _caller_pricing_facade(case):
+    pricing = Pricing.from_dict(
+        [{
+            "up_to_prompt_tokens": None,
+            "input_per_1m": 10,
+            "output_per_1m": 20,
+        }],
+        currency="EUR",
+    )
+    facade = UniversalLLMAPIAdapter(
+        organization=case.organization,
+        model=case.model,
+        api_key="test-api-key",
+        pricing_override=pricing,
+        **dict(case.connection_kwargs),
+    )
+    return facade, pricing
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("chat", "stream_chat"))
+def test_caller_pricing_compatible_sync_facade_finalizes_costs(method):
+    case = _COMPATIBLE_CASE
+    facade, caller_pricing = _caller_pricing_facade(case)
+    completed = []
+    if method == "chat":
+        transport = Mock(return_value=_JSONResponse(case.response_factory()))
+        with patch.object(case.sync_client_class, "_send_request", new=transport):
+            response = facade.chat(**_chat_kwargs(case))
+    else:
+        transport = Mock(return_value=iter(case.stream_events_factory()))
+        with patch.object(case.sync_client_class, "stream", new=transport):
+            list(facade.stream_chat(
+                **_chat_kwargs(case),
+                buffer_chars=64,
+                on_done=completed.append,
+            ))
+        assert len(completed) == 1
+        response = completed[0]
+
+    assert response.cost_input == pytest.approx(2 * 10 / 1_000_000)
+    assert response.cost_output == pytest.approx(3 * 20 / 1_000_000)
+    assert response.cost_total == pytest.approx(80 / 1_000_000)
+    assert response.currency == "EUR"
+    assert response.cost_breakdown is None
+    assert facade.adapter.model_spec is None
+    assert facade.adapter.pricing is not None
+    assert facade.pricing is facade.adapter.pricing
+    assert caller_pricing.currency == "EUR"
+    transport.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("achat", "astream_chat"))
+async def test_caller_pricing_compatible_async_facade_finalizes_costs(method):
+    case = _COMPATIBLE_CASE
+    facade, _caller_pricing = _caller_pricing_facade(case)
+    completed = []
+    if method == "achat":
+        transport = AsyncMock(return_value=case.response_factory())
+        with patch.object(case.async_client_class, "_send_request", new=transport):
+            response = await facade.achat(**_chat_kwargs(case))
+    else:
+        transport = Mock(return_value=_as_async_iter(case.stream_events_factory()))
+        with patch.object(case.async_client_class, "stream", new=transport):
+            async for _text in facade.astream_chat(
+                **_chat_kwargs(case), buffer_chars=64, on_done=completed.append
+            ):
+                pass
+        assert len(completed) == 1
+        response = completed[0]
+
+    assert response.cost_input == pytest.approx(2 * 10 / 1_000_000)
+    assert response.cost_output == pytest.approx(3 * 20 / 1_000_000)
+    assert response.cost_total == pytest.approx(80 / 1_000_000)
+    assert response.currency == "EUR"
+    assert response.cost_breakdown is None
+    assert facade.adapter.model_spec is None
+    assert facade.adapter.pricing is not None
     transport.assert_called_once()
 
 

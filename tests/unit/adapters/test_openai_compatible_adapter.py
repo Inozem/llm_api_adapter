@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import warnings
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -32,8 +33,10 @@ from src.llm_api_adapter.errors.llm_api_error import (
     ToolChoiceError,
 )
 from src.llm_api_adapter.adapters.openai.adapter import OpenAIAdapter
+from src.llm_api_adapter.llm_registry.llm_registry import Pricing
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
+from src.llm_api_adapter.llms.transports import SSEFrameDecoder
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 from src.llm_api_adapter.models.tools import ToolSpec
@@ -1988,6 +1991,695 @@ async def test_compatible_async_metadata_contract_matrix(mode, usage, expected_u
         assert forbidden == []
     finally:
         await client.aclose()
+
+
+def _caller_pricing_fixture():
+    return Pricing.from_dict(
+        [
+            {
+                "up_to_prompt_tokens": 2,
+                "input_per_1m": 100,
+                "output_per_1m": 200,
+                "cache_read_input_per_1m": 10,
+            },
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": 300,
+                "output_per_1m": 400,
+                "cache_read_input_per_1m": 30,
+            },
+        ],
+        currency="EUR",
+    )
+
+
+def _assert_caller_pricing_response(response):
+    # Select by inclusive input=2; cached input is a disjoint priced component.
+    assert response.usage.input_tokens == 2
+    assert response.usage.cached_tokens == 1
+    assert response.cost_input == pytest.approx(110 / 1_000_000)
+    assert response.cost_output == pytest.approx(600 / 1_000_000)
+    assert response.cost_total == pytest.approx(710 / 1_000_000)
+    assert response.currency == "EUR"
+    assert response.cost_breakdown is None
+
+
+def _caller_boundary_pricing():
+    return Pricing.from_dict(
+        [
+            {
+                "up_to_prompt_tokens": 100,
+                "input_per_1m": 100,
+                "output_per_1m": 200,
+                "cache_read_input_per_1m": 1,
+                "cache_write_input_per_1m": 2,
+            },
+            {
+                "up_to_prompt_tokens": None,
+                "input_per_1m": 300,
+                "output_per_1m": 400,
+                "cache_read_input_per_1m": 30,
+                "cache_write_input_per_1m": 40,
+            },
+        ],
+        currency="CAD",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("input_tokens", "input_rate", "output_rate"),
+    [(99, 100, 200), (100, 100, 200), (101, 300, 400)],
+    ids=["below-boundary", "at-boundary", "above-boundary"],
+)
+def test_caller_pricing_compatible_tiers_use_full_inclusive_input(
+    input_tokens, input_rate, output_rate, monkeypatch
+):
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    model = "gpt-5"
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model=model,
+        base_url=_COLLISION_ROOT,
+        pricing=_caller_boundary_pricing(),
+    )
+    usage = usage_payload(
+        input_tokens,
+        5,
+        input_tokens + 5,
+        prompt_tokens_details={"cached_tokens": 0, "cache_write_tokens": 0},
+    )
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(_COLLISION_URL, json=text_response(model=model, usage=usage))
+        response = adapter.chat([UserMessage("hello")])
+
+    assert adapter.model_spec is None
+    assert adapter.pricing is not None
+    assert forbidden == []
+    assert http.call_count == 1
+    assert http.request_history[0].json()["model"] == model
+    assert response.cost_input == pytest.approx(input_tokens * input_rate / 1_000_000)
+    assert response.cost_output == pytest.approx(5 * output_rate / 1_000_000)
+    assert response.cost_total == pytest.approx(
+        (input_tokens * input_rate + 5 * output_rate) / 1_000_000
+    )
+    assert response.currency == "CAD"
+    assert response.cost_breakdown is None
+
+
+@pytest.mark.unit
+def test_caller_pricing_cache_tier_uses_full_input_and_disjoint_read_write_counts(
+    monkeypatch,
+):
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    model = "gpt-5"
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model=model,
+        base_url=_COLLISION_ROOT,
+        pricing=_caller_boundary_pricing(),
+    )
+    # Inclusive input crosses 100; uncached input is only 11 and stays below it.
+    usage = usage_payload(
+        101,
+        5,
+        106,
+        prompt_tokens_details={"cached_tokens": 60, "cache_write_tokens": 30},
+    )
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(_COLLISION_URL, json=text_response(model=model, usage=usage))
+        response = adapter.chat([UserMessage("hello")])
+
+    assert adapter.model_spec is None
+    assert adapter.pricing is not None
+    assert forbidden == []
+    assert http.request_history[0].json()["model"] == model
+    assert response.usage.input_tokens == 101
+    assert response.usage.cached_tokens == 60
+    assert response.usage.cache_write_tokens == 30
+    assert response.cost_input == pytest.approx((11 * 300 + 60 * 30 + 30 * 40) / 1_000_000)
+    assert response.cost_output == pytest.approx(5 * 400 / 1_000_000)
+    assert response.cost_total == pytest.approx(8_300 / 1_000_000)
+    assert response.currency == "CAD"
+    assert response.cost_breakdown is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ["vendor/caller-tariff-model", "gpt-5"])
+@pytest.mark.parametrize("transport", ["requests", "httpx"])
+@pytest.mark.parametrize("mode", ["chat", "stream_chat"])
+def test_caller_pricing_is_used_for_compatible_sync_requests(
+    model, transport, mode, monkeypatch
+):
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    pricing = _caller_pricing_fixture()
+    response_body = text_response(model=model, usage=_COLLISION_USAGE)
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model=model,
+        base_url=_COLLISION_ROOT,
+        transport=transport,
+        pricing=pricing,
+    )
+    outgoing = []
+    streaming = mode == "stream_chat"
+    stream_body = "\n".join(text_sse_lines("Fixture reply", usage=_COLLISION_USAGE))
+
+    if transport == "requests":
+        with requests_mock.Mocker(real_http=False) as http:
+            if streaming:
+                http.post(
+                    _COLLISION_URL,
+                    text=stream_body,
+                    headers={"Content-Type": "text/event-stream"},
+                )
+                completed = []
+                assert list(adapter.stream_chat(
+                    [UserMessage("hello")],
+                    buffer_chars=len("Fixture reply") + 20,
+                    on_done=completed.append,
+                )) == ["Fixture reply"]
+                response = completed[0]
+            else:
+                http.post(_COLLISION_URL, json=response_body)
+                response = adapter.chat([UserMessage("hello")])
+            assert http.call_count == 1
+            assert http.request_history[0].url == _COLLISION_URL
+            assert http.request_history[0].json()["model"] == model
+    else:
+        def handler(request):
+            outgoing.append(request)
+            if streaming:
+                return httpx.Response(
+                    200,
+                    headers={"Content-Type": "text/event-stream"},
+                    content=stream_body,
+                )
+            return httpx.Response(200, json=response_body)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        _install_counted_httpx_client(monkeypatch, client)
+        if streaming:
+            completed = []
+            assert list(adapter.stream_chat(
+                [UserMessage("hello")],
+                buffer_chars=len("Fixture reply") + 20,
+                on_done=completed.append,
+            )) == ["Fixture reply"]
+            response = completed[0]
+        else:
+            response = adapter.chat([UserMessage("hello")])
+        assert len(outgoing) == 1
+        assert str(outgoing[0].url) == _COLLISION_URL
+        assert json.loads(outgoing[0].content)["model"] == model
+        client.close()
+
+    assert adapter.model_spec is None
+    assert forbidden == []
+    _assert_caller_pricing_response(response)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["vendor/caller-tariff-model", "gpt-5"])
+@pytest.mark.parametrize("mode", ["achat", "astream_chat"])
+async def test_caller_pricing_is_used_for_compatible_async_requests(
+    model, mode, monkeypatch
+):
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    pricing = _caller_pricing_fixture()
+    outgoing = []
+    streaming = mode == "astream_chat"
+    response_body = text_response(model=model, usage=_COLLISION_USAGE)
+
+    def handler(request):
+        outgoing.append(request)
+        if streaming:
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content="\n".join(
+                    text_sse_lines("Fixture reply", usage=_COLLISION_USAGE)
+                ),
+            )
+        return httpx.Response(200, json=response_body)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    _install_counted_httpx_client(monkeypatch, client, asynchronous=True)
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model=model,
+        base_url=_COLLISION_ROOT,
+        transport="httpx",
+        pricing=pricing,
+    )
+    try:
+        if streaming:
+            completed = []
+            visible = [
+                item async for item in adapter.astream_chat(
+                    [UserMessage("hello")],
+                    buffer_chars=len("Fixture reply") + 20,
+                    on_done=completed.append,
+                )
+            ]
+            assert visible == ["Fixture reply"]
+            response = completed[0]
+        else:
+            response = await adapter.achat([UserMessage("hello")])
+        assert len(outgoing) == 1
+        assert str(outgoing[0].url) == _COLLISION_URL
+        assert json.loads(outgoing[0].content)["model"] == model
+        assert adapter.model_spec is None
+        assert forbidden == []
+        _assert_caller_pricing_response(response)
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_caller_pricing_concurrent_async_responses_keep_cache_evidence_isolated(
+    monkeypatch,
+):
+    pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": None, "input_per_1m": 10, "output_per_1m": 20}],
+        currency="USD",
+    )
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model="vendor/concurrent-pricing",
+        base_url=_COLLISION_ROOT,
+        transport="httpx",
+        pricing=pricing,
+    )
+    valid_started = asyncio.Event()
+    invalid_finished = asyncio.Event()
+
+    async def complete(*args, **kwargs):
+        messages = kwargs["messages"]
+        prompt = messages[-1]["content"]
+        if prompt == "invalid-cache":
+            await valid_started.wait()
+            invalid_finished.set()
+            usage = usage_payload(
+                10,
+                5,
+                15,
+                prompt_tokens_details={"cached_tokens": 11},
+            )
+        else:
+            valid_started.set()
+            await invalid_finished.wait()
+            usage = usage_payload(10, 5, 15)
+        return text_response("reply", model=adapter.model, usage=usage)
+
+    monkeypatch.setattr(OpenAIAsyncClient, "complete", complete)
+    assert adapter.pricing is not None
+    valid_task = asyncio.create_task(adapter.achat([UserMessage("valid")]))
+    invalid_task = asyncio.create_task(
+        adapter.achat([UserMessage("invalid-cache")])
+    )
+    try:
+        valid_response, invalid_response = await asyncio.wait_for(
+            asyncio.gather(valid_task, invalid_task),
+            timeout=2,
+        )
+    finally:
+        for task in (valid_task, invalid_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(valid_task, invalid_task, return_exceptions=True),
+            timeout=2,
+        )
+
+    assert valid_response.usage.input_tokens == 10
+    assert valid_response.cost_input == pytest.approx(100 / 1_000_000)
+    assert valid_response.cost_output == pytest.approx(100 / 1_000_000)
+    assert valid_response.cost_total == pytest.approx(200 / 1_000_000)
+    assert invalid_response.usage.input_tokens == 10
+    assert invalid_response.usage.cached_tokens is None
+    assert invalid_response.cost_input is None
+    assert invalid_response.cost_output == pytest.approx(100 / 1_000_000)
+    assert invalid_response.cost_total is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_caller_pricing_interleaved_async_streams_keep_cache_evidence_local(
+    monkeypatch,
+):
+    pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": None, "input_per_1m": 10, "output_per_1m": 20}],
+        currency="USD",
+    )
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model="vendor/interleaved-pricing",
+        base_url=_COLLISION_ROOT,
+        transport="httpx",
+        pricing=pricing,
+    )
+    valid_usage_seen = asyncio.Event()
+    invalid_usage_seen = asyncio.Event()
+    allow_valid_finish = asyncio.Event()
+    allow_invalid_finish = asyncio.Event()
+    valid_done = asyncio.Event()
+
+    async def stream(self, **kwargs):
+        prompt = kwargs["messages"][-1]["content"]
+        is_valid = prompt == "valid-stream"
+        usage = (
+            usage_payload(10, 5, 15)
+            if is_valid
+            else usage_payload(
+                10,
+                5,
+                15,
+                prompt_tokens_details={"cached_tokens": 11},
+            )
+        )
+        seen = valid_usage_seen if is_valid else invalid_usage_seen
+        gate = allow_valid_finish if is_valid else allow_invalid_finish
+        if not is_valid:
+            await valid_usage_seen.wait()
+        for event in _caller_pricing_sse_events(usage):
+            yield event
+            if isinstance(event.data, dict) and "usage" in event.data:
+                seen.set()
+                await gate.wait()
+
+    monkeypatch.setattr(OpenAIAsyncClient, "stream", stream)
+    assert adapter.pricing is not None
+    valid_completed = []
+    invalid_completed = []
+
+    def mark_valid_done(response):
+        valid_completed.append(response)
+        valid_done.set()
+
+    async def consume(prompt, completed, *, on_done=None):
+        return [
+            chunk async for chunk in adapter.astream_chat(
+                [UserMessage(prompt)],
+                buffer_chars=64,
+                on_done=on_done or completed.append,
+            )
+        ]
+
+    valid_task = asyncio.create_task(
+        consume("valid-stream", valid_completed, on_done=mark_valid_done)
+    )
+    invalid_task = asyncio.create_task(
+        consume("invalid-cache-stream", invalid_completed)
+    )
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(valid_usage_seen.wait(), invalid_usage_seen.wait()),
+            timeout=2,
+        )
+        allow_valid_finish.set()
+        await asyncio.wait_for(valid_done.wait(), timeout=2)
+        allow_invalid_finish.set()
+        valid_visible, invalid_visible = await asyncio.wait_for(
+            asyncio.gather(valid_task, invalid_task),
+            timeout=2,
+        )
+    finally:
+        allow_valid_finish.set()
+        allow_invalid_finish.set()
+        for task in (valid_task, invalid_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(valid_task, invalid_task, return_exceptions=True),
+            timeout=2,
+        )
+
+    assert valid_visible == ["Fixture reply"]
+    assert invalid_visible == ["Fixture reply"]
+    assert len(valid_completed) == len(invalid_completed) == 1
+    valid_response = valid_completed[0]
+    invalid_response = invalid_completed[0]
+    assert valid_response.cost_input == pytest.approx(100 / 1_000_000)
+    assert valid_response.cost_output == pytest.approx(100 / 1_000_000)
+    assert valid_response.cost_total == pytest.approx(200 / 1_000_000)
+    assert invalid_response.usage.input_tokens == 10
+    assert invalid_response.usage.cached_tokens is None
+    assert invalid_response.cost_input is None
+    assert invalid_response.cost_output == pytest.approx(100 / 1_000_000)
+    assert invalid_response.cost_total is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cache_rate", [None, 5])
+def test_caller_pricing_contradictory_cache_usage_never_invents_input_cost(
+    cache_rate,
+):
+    tier = {
+        "up_to_prompt_tokens": None,
+        "input_per_1m": 10,
+        "output_per_1m": 20,
+    }
+    if cache_rate is not None:
+        tier["cache_read_input_per_1m"] = cache_rate
+    pricing = Pricing.from_dict([tier], currency="EUR")
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model="vendor/contradictory-cache",
+        base_url=_COLLISION_ROOT,
+        pricing=pricing,
+    )
+    assert adapter.pricing is not None
+    invalid_usage = usage_payload(
+        10,
+        5,
+        15,
+        prompt_tokens_details={"cached_tokens": 11},
+    )
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(
+            _COLLISION_URL,
+            json=text_response(model=adapter.model, usage=invalid_usage),
+        )
+        response = adapter.chat([UserMessage("hello")])
+
+    assert http.call_count == 1
+    assert response.usage.input_tokens == 10
+    assert response.usage.output_tokens == 5
+    assert response.usage.cached_tokens is None
+    assert response.cost_input is None
+    assert response.cost_output == pytest.approx(100 / 1_000_000)
+    assert response.cost_total is None
+
+
+_CALLER_PRICING_USAGE_CASES = (
+    pytest.param(
+        _METADATA_ABSENT, False,
+        None, None, None, None, None,
+        id="no-usage",
+    ),
+    pytest.param(
+        usage_payload(completion_tokens=5, total_tokens=5), False,
+        (None, 5, 5, None, None), None, None, None, None,
+        id="missing-input",
+    ),
+    pytest.param(
+        usage_payload(100, total_tokens=100), False,
+        (100, None, 100, None, None), 1000 / 1_000_000, None, None, "EUR",
+        id="missing-output",
+    ),
+    pytest.param(
+        usage_payload(100, 5), False,
+        (100, 5, None, None, None), 1000 / 1_000_000,
+        100 / 1_000_000, 1100 / 1_000_000, "EUR",
+        id="missing-total-with-components",
+    ),
+    pytest.param(
+        usage_payload(0, 0, 0, prompt_tokens_details={"cached_tokens": 0}), False,
+        (0, 0, 0, 0, None), 0, 0, 0, "EUR",
+        id="reported-zero-counts",
+    ),
+    pytest.param(
+        usage_payload(
+            10, 5, 15, prompt_tokens_details={"cached_tokens": 11}
+        ), False,
+        (10, 5, 15, None, None), None, 100 / 1_000_000, None, "EUR",
+        id="contradictory-cache-without-cache-tariff",
+    ),
+    pytest.param(
+        usage_payload(
+            10, 5, 15, prompt_tokens_details={"cached_tokens": 11}
+        ), True,
+        (10, 5, 15, None, None), None, 100 / 1_000_000, None, "EUR",
+        id="contradictory-cache-with-cache-tariff",
+    ),
+    pytest.param(
+        usage_payload(
+            10, 5, 15, prompt_tokens_details={"cached_tokens": "bad"}
+        ), False,
+        (10, 5, 15, None, None), None, 100 / 1_000_000, None, "EUR",
+        id="malformed-cache-without-cache-tariff",
+    ),
+    pytest.param(
+        usage_payload(
+            10, 5, 15, prompt_tokens_details={"cached_tokens": "bad"}
+        ), True,
+        (10, 5, 15, None, None), None, 100 / 1_000_000, None, "EUR",
+        id="malformed-cache-with-cache-tariff",
+    ),
+    pytest.param(
+        usage_payload(100, 5, 105, prompt_tokens_details={"cached_tokens": 20}),
+        False,
+        (100, 5, 105, 20, None), None, 100 / 1_000_000, None, "EUR",
+        id="positive-cache-without-rate",
+    ),
+    pytest.param(
+        usage_payload(100, 5, 105), True,
+        (100, 5, 105, None, None), None, 100 / 1_000_000, None, "EUR",
+        id="configured-cache-rate-without-count",
+    ),
+)
+
+
+def _caller_pricing_sse_events(usage):
+    decoder = SSEFrameDecoder()
+    events = [
+        event
+        for line in text_sse_lines("Fixture reply", **(
+            {} if usage is _METADATA_ABSENT else {"usage": usage}
+        ))
+        if (event := decoder.feed(line)) is not None
+    ]
+    final = decoder.finish()
+    if final is not None:
+        events.append(final)
+    return events
+
+
+async def _caller_pricing_async_events(events):
+    for event in events:
+        yield event
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("chat", "achat", "stream_chat", "astream_chat"))
+@pytest.mark.parametrize(
+    "usage,cache_rate,expected_usage,expected_input,expected_output,expected_total,currency",
+    _CALLER_PRICING_USAGE_CASES,
+)
+async def test_caller_pricing_public_modes_preserve_partial_and_cache_usage(
+    mode,
+    usage,
+    cache_rate,
+    expected_usage,
+    expected_input,
+    expected_output,
+    expected_total,
+    currency,
+    monkeypatch,
+):
+    tier = {
+        "up_to_prompt_tokens": None,
+        "input_per_1m": 10,
+        "output_per_1m": 20,
+    }
+    if cache_rate:
+        tier["cache_read_input_per_1m"] = 5
+    pricing = Pricing.from_dict([tier], currency="EUR")
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model="vendor/public-pricing-metadata",
+        base_url=_COLLISION_ROOT,
+        transport="httpx" if mode in ("achat", "astream_chat") else "requests",
+        pricing=pricing,
+    )
+    assert adapter.pricing is not None
+    response_body = text_response(
+        model=adapter.model,
+        **({} if usage is _METADATA_ABSENT else {"usage": usage}),
+    )
+    events = _caller_pricing_sse_events(usage)
+    chunks = []
+    completed = []
+    streaming = mode in ("stream_chat", "astream_chat")
+    if mode in ("chat", "stream_chat"):
+        if streaming:
+            monkeypatch.setattr(OpenAISyncClient, "stream", lambda self, **kwargs: iter(events))
+            visible = list(adapter.stream_chat(
+                [UserMessage("hello")],
+                buffer_chars=len("Fixture reply") + 20,
+                on_chunk=chunks.append,
+                on_done=completed.append,
+            ))
+            assert visible == ["Fixture reply"]
+            response = completed[0]
+        else:
+            monkeypatch.setattr(OpenAISyncClient, "complete", lambda self, **kwargs: response_body)
+            response = adapter.chat([UserMessage("hello")])
+    else:
+        if streaming:
+            monkeypatch.setattr(
+                OpenAIAsyncClient,
+                "stream",
+                lambda self, **kwargs: _caller_pricing_async_events(events),
+            )
+            visible = [
+                item async for item in adapter.astream_chat(
+                    [UserMessage("hello")],
+                    buffer_chars=len("Fixture reply") + 20,
+                    on_chunk=chunks.append,
+                    on_done=completed.append,
+                )
+            ]
+            assert visible == ["Fixture reply"]
+            response = completed[0]
+        else:
+            monkeypatch.setattr(
+                OpenAIAsyncClient,
+                "complete",
+                AsyncMock(return_value=response_body),
+            )
+            response = await adapter.achat([UserMessage("hello")])
+
+    if expected_usage is None:
+        assert response.usage is None
+    else:
+        assert (
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            response.usage.total_tokens,
+            response.usage.cached_tokens,
+            response.usage.cache_write_tokens,
+        ) == expected_usage
+    for actual, expected in (
+        (response.cost_input, expected_input),
+        (response.cost_output, expected_output),
+        (response.cost_total, expected_total),
+    ):
+        if expected is None:
+            assert actual is None
+        elif expected == 0:
+            assert actual == 0
+        else:
+            assert actual == pytest.approx(expected)
+    assert response.currency == currency
+    assert response.cost_breakdown is None
+    if streaming:
+        assert len(completed) == 1
+        assert len(chunks) == 1
+        if expected_usage is None:
+            assert chunks[0].usage is None
+        else:
+            assert (
+                chunks[0].usage.input_tokens,
+                chunks[0].usage.output_tokens,
+                chunks[0].usage.total_tokens,
+                chunks[0].usage.cached_tokens,
+                chunks[0].usage.cache_write_tokens,
+            ) == expected_usage
 
 
 @pytest.mark.unit
