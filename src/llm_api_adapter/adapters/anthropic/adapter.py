@@ -265,7 +265,7 @@ class AnthropicAdapter(
         _ = previous_response
         client = ClaudeAsyncClient(api_key=self.api_key)
         events = client.stream(**params)
-        try:
+        async with self._closing_async_source(events):
             async for text in self._consume_stream_async(
                 events,
                 effective_schema,
@@ -279,10 +279,6 @@ class AnthropicAdapter(
                 on_reasoning,
             ):
                 yield text
-        finally:
-            close_events = getattr(events, "aclose", None)
-            if close_events is not None:
-                await close_events()
 
     def stream_chat(
         self,

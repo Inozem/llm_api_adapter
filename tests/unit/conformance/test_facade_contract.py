@@ -522,6 +522,33 @@ async def _as_async_iter(events: list[SSEEvent]) -> AsyncIterator[SSEEvent]:
         yield event
 
 
+class _CountedAsyncSource:
+    """Provider-shaped source whose owner close can fail independently."""
+
+    def __init__(self, events=(), *, next_error=None, close_error=None):
+        self._events = iter(events)
+        self.next_error = next_error
+        self.close_error = close_error
+        self.close_count = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.next_error is not None:
+            error, self.next_error = self.next_error, None
+            raise error
+        try:
+            return next(self._events)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+    async def aclose(self):
+        self.close_count += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
 _TERMINAL_OUTCOME_FIXTURES = tuple(
     outcome
     for outcome in STRUCTURED_OUTPUT_OUTCOMES
@@ -1396,6 +1423,184 @@ async def test_facade_async_task_cancellation_releases_suspended_source(case):
                 pass
         release.set()
         await raw_source.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize(
+    "await_callback",
+    (False, True),
+    ids=("sync-callback", "awaitable-callback"),
+)
+async def test_facade_async_callback_failure_survives_source_close_failure(
+    case, await_callback
+):
+    failure = RuntimeError("caller failure", case.organization)
+    close_failure = RuntimeError("close failure", case.organization)
+    source = _CountedAsyncSource(
+        case.stream_events_factory(), close_error=close_failure
+    )
+    done: list[Any] = []
+
+    def fail(_text):
+        if await_callback:
+            async def raise_failure():
+                raise failure
+
+            return raise_failure()
+        raise failure
+
+    with patch.object(case.async_client_class, "stream", return_value=source):
+        with pytest.raises(RuntimeError) as raised:
+            async for _text in _facade(case).astream_chat(
+                **_chat_kwargs(case), on_delta=fail, on_done=done.append
+            ):
+                pass
+
+    assert raised.value is failure
+    assert raised.value.args == ("caller failure", case.organization)
+    assert source.close_count == 1
+    assert done == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_async_provider_failure_survives_source_close_failure(case):
+    failure = LLMAPIRateLimitError(
+        message="Rate limited during streaming.",
+        detail=f"provider stream for {case.organization}",
+    )
+    close_failure = RuntimeError("close failure", case.organization)
+    source = _CountedAsyncSource(next_error=failure, close_error=close_failure)
+    done: list[Any] = []
+
+    with patch.object(case.async_client_class, "stream", return_value=source):
+        with pytest.raises(LLMAPIRateLimitError) as raised:
+            async for _text in _facade(case).astream_chat(
+                **_chat_kwargs(case), on_done=done.append
+            ):
+                pass
+
+    assert raised.value is failure
+    assert raised.value.args == (
+        "Rate limited during streaming. Detail: provider stream for "
+        f"{case.organization}",
+    )
+    assert raised.value.detail == f"provider stream for {case.organization}"
+    assert source.close_count == 1
+    assert done == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_async_cancellation_survives_source_close_failure(case):
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+    close_failure = RuntimeError("close failure", case.organization)
+    source = _CountedAsyncSource(
+        case.stream_events_factory(), close_error=close_failure
+    )
+    done: list[Any] = []
+
+    async def on_delta(_text):
+        callback_started.set()
+        await release_callback.wait()
+
+    async def consume():
+        async for _text in _facade(case).astream_chat(
+            **_chat_kwargs(case), on_delta=on_delta, on_done=done.append
+        ):
+            pass
+
+    with patch.object(case.async_client_class, "stream", return_value=source):
+        task = asyncio.create_task(consume())
+        try:
+            await asyncio.wait_for(callback_started.wait(), timeout=2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=2)
+        finally:
+            release_callback.set()
+            if not task.done():
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+    assert source.close_count == 1
+    assert done == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_async_early_close_survives_source_close_failure(case):
+    close_failure = RuntimeError("close failure", case.organization)
+    source = _CountedAsyncSource(
+        case.stream_events_factory(), close_error=close_failure
+    )
+    done: list[Any] = []
+
+    stream = None
+    try:
+        with patch.object(case.async_client_class, "stream", return_value=source):
+            stream = _facade(case).astream_chat(
+                **_chat_kwargs(case), buffer_chars=1, on_done=done.append
+            )
+            assert await stream.__anext__()
+            await stream.aclose()
+    finally:
+        if stream is not None:
+            await stream.aclose()
+        await asyncio.get_running_loop().shutdown_asyncgens()
+
+    assert source.close_count == 1
+    assert done == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_async_normal_exhaustion_propagates_source_close_failure(case):
+    close_failure = RuntimeError("close failure", case.organization)
+    source = _CountedAsyncSource(
+        case.stream_events_factory(), close_error=close_failure
+    )
+
+    with patch.object(case.async_client_class, "stream", return_value=source):
+        with pytest.raises(RuntimeError) as raised:
+            async for _text in _facade(case).astream_chat(
+                **_chat_kwargs(case)
+            ):
+                pass
+
+    assert raised.value is close_failure
+    assert source.close_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("case", CASES)
+async def test_facade_async_close_failure_is_not_hidden_in_caller_except(case):
+    close_failure = RuntimeError("close failure", case.organization)
+    source = _CountedAsyncSource(
+        case.stream_events_factory(), close_error=close_failure
+    )
+
+    with patch.object(case.async_client_class, "stream", return_value=source):
+        with pytest.raises(RuntimeError) as raised:
+            try:
+                raise LookupError("unrelated caller exception")
+            except LookupError:
+                async for _text in _facade(case).astream_chat(
+                    **_chat_kwargs(case)
+                ):
+                    pass
+
+    assert raised.value is close_failure
+    assert source.close_count == 1
 
 
 @pytest.mark.unit

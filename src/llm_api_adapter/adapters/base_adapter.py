@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 import json
@@ -530,6 +531,29 @@ class LLMAdapterBase(ABC):
                 return response_model.model_validate(parsed_json, strict=False)
             except Exception as e:
                 raise JSONSchemaError(detail=f"Response failed Pydantic validation: {e}")
+
+    @asynccontextmanager
+    async def _closing_async_source(self, source: Any) -> AsyncIterator[None]:
+        """Close an owned source, preserving failures from stream processing.
+
+        If processing exits with any ``BaseException`` (including cancellation
+        or ``GeneratorExit``), a close failure is secondary and the original
+        exception is re-raised. On normal exit, close failures propagate.
+        """
+        try:
+            yield
+        except BaseException:
+            close = getattr(source, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except BaseException:
+                    pass
+            raise
+        else:
+            close = getattr(source, "aclose", None)
+            if close is not None:
+                await close()
 
     def _iter_provider_stream_events(self, events: Iterator[Any]) -> Iterator[Any]:
         """Yield provider events while preserving the adapter error contract.

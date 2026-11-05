@@ -286,7 +286,7 @@ class OpenAIAdapter(_OpenAIPayloadMixin, _OpenAIStreamingMixin, LLMAdapterBase):
             capture_reasoning=capture_reasoning,
         )
         events = client.stream(timeout=timeout_s, **params)
-        try:
+        async with self._closing_async_source(events):
             if use_responses_api:
                 async for text in self._consume_responses_stream_async(
                     events,
@@ -313,9 +313,5 @@ class OpenAIAdapter(_OpenAIPayloadMixin, _OpenAIStreamingMixin, LLMAdapterBase):
                 on_chunk,
             ):
                 yield text
-        finally:
-            close_events = getattr(events, "aclose", None)
-            if close_events is not None:
-                await close_events()
 
 
