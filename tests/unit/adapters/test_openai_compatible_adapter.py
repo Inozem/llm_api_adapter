@@ -33,7 +33,7 @@ from src.llm_api_adapter.errors.llm_api_error import (
     ToolChoiceError,
 )
 from src.llm_api_adapter.adapters.openai.adapter import OpenAIAdapter
-from src.llm_api_adapter.llm_registry.llm_registry import Pricing
+from src.llm_api_adapter.llm_registry.llm_registry import Pricing, PricingTier
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
 from src.llm_api_adapter.llms.transports import SSEFrameDecoder
@@ -2011,6 +2011,86 @@ def _caller_pricing_fixture():
         ],
         currency="EUR",
     )
+
+
+_INVALID_CALLER_PRICING_CASES = [
+    pytest.param(object(), id="wrong-object"),
+    pytest.param({}, id="mapping"),
+    pytest.param([], id="list"),
+    pytest.param("invalid", id="string"),
+    pytest.param(Pricing(tiers=()), id="empty-tiers"),
+    pytest.param(Pricing(tiers=[PricingTier(None, 1, 1)]), id="non-tuple-tiers"),
+    pytest.param(Pricing(tiers=(object(),)), id="malformed-tier"),
+    pytest.param(Pricing(tiers=(PricingTier(0, 1, 1),)), id="zero-boundary"),
+    pytest.param(Pricing(tiers=(PricingTier(True, 1, 1),)), id="boolean-boundary"),
+    pytest.param(Pricing(tiers=(PricingTier(1.5, 1, 1),)), id="fractional-boundary"),
+    pytest.param(
+        Pricing(tiers=(PricingTier(100, 1, 1), PricingTier(50, 1, 1))),
+        id="non-increasing-boundaries",
+    ),
+    pytest.param(
+        Pricing(tiers=(PricingTier(None, 1, 1), PricingTier(100, 1, 1))),
+        id="unbounded-before-final-tier",
+    ),
+    pytest.param(Pricing(tiers=(PricingTier(None, -1, 1),)), id="negative-input"),
+    pytest.param(Pricing(tiers=(PricingTier(None, float("nan"), 1),)), id="nan-input"),
+    pytest.param(Pricing(tiers=(PricingTier(None, float("inf"), 1),)), id="infinite-input"),
+    pytest.param(Pricing(tiers=(PricingTier(None, "1", 1),)), id="string-input"),
+    pytest.param(Pricing(tiers=(PricingTier(None, True, 1),)), id="boolean-input"),
+    pytest.param(Pricing(tiers=(PricingTier(None, 1, -1),)), id="negative-output"),
+    pytest.param(Pricing(tiers=(PricingTier(None, 1, float("nan")),)), id="nan-output"),
+    pytest.param(Pricing(tiers=(PricingTier(None, 1, float("inf")),)), id="infinite-output"),
+    pytest.param(Pricing(tiers=(PricingTier(None, 1, "2"),)), id="string-output"),
+    pytest.param(Pricing(tiers=(PricingTier(None, 1, True),)), id="boolean-output"),
+    pytest.param(
+        Pricing(tiers=(PricingTier(None, 1, 1, float("nan")),)), id="nan-cache-read"
+    ),
+    pytest.param(
+        Pricing(tiers=(PricingTier(None, 1, 1, "2"),)), id="string-cache-read"
+    ),
+    pytest.param(
+        Pricing(tiers=(PricingTier(None, 1, 1, True),)), id="boolean-cache-read"
+    ),
+    pytest.param(
+        Pricing(tiers=(PricingTier(None, 1, 1, -1),)), id="negative-cache-read"
+    ),
+    pytest.param(
+        Pricing(tiers=(PricingTier(None, 1, 1, None, "2"),)), id="string-cache-write"
+    ),
+    pytest.param(
+        Pricing(tiers=(PricingTier(None, 1, 1, None, True),)), id="boolean-cache-write"
+    ),
+    pytest.param(
+        Pricing(tiers=(PricingTier(None, 1, 1, None, -1),)), id="negative-cache-write"
+    ),
+    pytest.param(
+        Pricing(tiers=(PricingTier(None, 1, 1, None, float("inf")),)),
+        id="infinite-cache-write",
+    ),
+    pytest.param(Pricing(tiers=(PricingTier(None, 1, 1),), currency=""), id="empty-currency"),
+    pytest.param(Pricing(tiers=(PricingTier(None, 1, 1),), currency=1), id="nonstring-currency"),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pricing", _INVALID_CALLER_PRICING_CASES)
+def test_caller_pricing_invalid_direct_input_fails_during_compatible_construction(
+    pricing, monkeypatch
+):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("invalid pricing validation attempted I/O")
+
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden)
+    monkeypatch.setattr(requests.sessions.Session, "request", forbidden)
+    monkeypatch.setattr(httpx.Client, "send", forbidden)
+
+    with pytest.raises(LLMConfigError):
+        OpenAICompatibleAdapter(
+            api_key="synthetic-test-key-not-a-credential",
+            model="vendor/invalid-pricing",
+            base_url="https://example.invalid/v1",
+            pricing=pricing,
+        )
 
 
 def _assert_caller_pricing_response(response):

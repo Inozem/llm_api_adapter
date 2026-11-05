@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import ipaddress
 import logging
@@ -14,6 +15,12 @@ from ..errors.llm_api_error import InvalidToolArgumentsError, LLMAPIClientError
 from ..llms.openai.async_client import OpenAIAsyncClient
 from ..llms.openai.sync_client import OpenAISyncClient
 from ..llms.transports import validate_sync_transport
+from ..llm_registry.llm_registry import (
+    Pricing,
+    PricingTier,
+    _finite_non_negative_rate,
+    _positive_int,
+)
 from .openai.adapter import OpenAIAdapter
 from .openai.payloads import _cache_token_counts, _token_count
 from .structured_output import validate_core_portable_schema
@@ -23,6 +30,87 @@ logger = logging.getLogger(__name__)
 
 
 _URI_RE = re.compile(r"(?i)\bhttps?://[^\s<>]+")
+
+
+def _validate_compatible_pricing(pricing: object) -> Pricing:
+    """Validate a caller tariff without exposing its content in diagnostics."""
+    error = LLMConfigError(message="pricing must be a valid Pricing object.")
+    if not isinstance(pricing, Pricing):
+        raise error
+    try:
+        if not isinstance(pricing.tiers, tuple) or not pricing.tiers:
+            raise ValueError
+        if not isinstance(pricing.currency, str) or not pricing.currency:
+            raise ValueError
+        for tier in pricing.tiers:
+            if not isinstance(tier, PricingTier):
+                raise ValueError
+            if tier.up_to_prompt_tokens is not None:
+                _positive_int(tier.up_to_prompt_tokens, "up_to_prompt_tokens")
+            _finite_non_negative_rate(tier.in_per_token, "in_per_token")
+            _finite_non_negative_rate(tier.out_per_token, "out_per_token")
+            if tier.cache_read_in_per_token is not None:
+                _finite_non_negative_rate(
+                    tier.cache_read_in_per_token, "cache_read_in_per_token"
+                )
+            if tier.cache_write_in_per_token is not None:
+                _finite_non_negative_rate(
+                    tier.cache_write_in_per_token, "cache_write_in_per_token"
+                )
+        Pricing._validate_tiers(pricing.tiers)
+    except (TypeError, ValueError, OverflowError):
+        raise error from None
+    return pricing
+
+
+def _compatible_cache_usage_is_valid(
+    raw_usage: object,
+    *,
+    details_field: str = "prompt_tokens_details",
+    input_field: str = "prompt_tokens",
+) -> bool:
+    """Retain only whether normalization discarded cache-accounting evidence."""
+    if not isinstance(raw_usage, Mapping):
+        return True
+    if details_field not in raw_usage:
+        return True
+    details = raw_usage[details_field]
+    if not isinstance(details, Mapping):
+        return False
+    for name in ("cached_tokens", "cache_write_tokens"):
+        if name in details and _token_count(details[name]) is None:
+            return False
+    input_tokens = _token_count(raw_usage.get(input_field))
+    if input_tokens is not None:
+        cache_counts = [
+            _token_count(details.get(name))
+            for name in ("cached_tokens", "cache_write_tokens")
+        ]
+        if sum(value for value in cache_counts if value is not None) > input_tokens:
+            return False
+    return True
+
+
+def _attach_compatible_cache_usage_validity(
+    usage: Usage,
+    raw_usage: object,
+    *,
+    input_field: str,
+) -> Usage:
+    """Preserve pricing evidence lost when normalization drops malformed or
+    contradictory cache data.
+    """
+    details_field = (
+        "input_tokens_details"
+        if input_field == "input_tokens"
+        else "prompt_tokens_details"
+    )
+    usage._compatible_cache_usage_valid = _compatible_cache_usage_is_valid(
+        raw_usage,
+        details_field=details_field,
+        input_field=input_field,
+    )
+    return usage
 
 
 def _normalize_compatible_usage(
@@ -55,12 +143,16 @@ def _normalize_compatible_usage(
         cached_tokens = None
         cache_write_tokens = None
 
-    return Usage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        total_tokens=total_tokens,
-        cached_tokens=cached_tokens,
-        cache_write_tokens=cache_write_tokens,
+    return _attach_compatible_cache_usage_validity(
+        Usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
+        ),
+        raw_usage,
+        input_field=input_field,
     )
 
 
@@ -189,13 +281,35 @@ class OpenAICompatibleAdapter(OpenAIAdapter):
             )
         self.transport = validate_sync_transport(self.transport)
         self.base_url = _validate_api_root(self.base_url)
+        if self.pricing is not None:
+            _validate_compatible_pricing(self.pricing)
+            self.pricing = deepcopy(self.pricing)
         self.model_spec = None
-        self.pricing = None
         self.is_reasoning = False
         self.is_adaptive_thinking = False
 
     def _format_compatible_diagnostic(self, text: object) -> str:
         return _redact_compatible_diagnostic(text, self.api_key)
+
+    def _apply_response_pricing(self, chat_response) -> None:
+        """Use shared arithmetic while preserving compatible usage completeness."""
+        if not self.pricing or chat_response.usage is None:
+            return
+        input_tokens = chat_response.usage.input_tokens
+        if input_tokens is None:
+            return
+        try:
+            self.pricing.tier_for_prompt_tokens(input_tokens)
+        except ValueError:
+            # A finite caller schedule may intentionally leave higher counts
+            # uncovered; no rate or currency can be inferred for that response.
+            return
+        super()._apply_response_pricing(chat_response)
+        if not getattr(
+            chat_response.usage, "_compatible_cache_usage_valid", True
+        ):
+            chat_response.cost_input = None
+            chat_response.cost_total = None
 
     @staticmethod
     def _malformed_response() -> LLMAPIClientError:

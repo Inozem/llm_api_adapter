@@ -1290,6 +1290,28 @@ if response.usage is not None:
     print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
 ```
 
+To replace a complete tariff, assign an existing `Pricing` object to the actual
+adapter. This also initializes pricing when it is currently `None`:
+
+```python
+from llm_api_adapter.llm_registry.llm_registry import Pricing
+
+# Illustrative caller-defined rates per million tokens.
+google.adapter.pricing = Pricing.from_dict(
+    [{
+        "up_to_prompt_tokens": None,
+        "input_per_1m": 1.5,
+        "output_per_1m": 3.0,
+    }],
+    currency="EUR",
+)
+```
+
+Reading `google.pricing` and calling its setters delegates to that same object.
+Whole-object replacement uses `google.adapter.pricing`; ordinary assignment to
+the facade's own `google.pricing` attribute is not forwarded. Provider-specific
+billing rules and separately metered-operation rates remain unchanged.
+
 ## Logging
 
 The library uses Python's standard `logging` module and does not configure handlers.

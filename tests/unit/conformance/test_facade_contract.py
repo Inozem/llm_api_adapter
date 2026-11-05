@@ -2442,9 +2442,9 @@ def _caller_pricing_facade(case):
         organization=case.organization,
         model=case.model,
         api_key="test-api-key",
-        pricing_override=pricing,
         **dict(case.connection_kwargs),
     )
+    facade.adapter.pricing = pricing
     return facade, pricing
 
 
