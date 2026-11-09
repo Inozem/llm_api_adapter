@@ -12,6 +12,24 @@ from src.llm_api_adapter.adapters.openai_compatible.adapter import (
 from src.llm_api_adapter.adapters.openai_compatible.common.adapter import (
     _OpenAIExecutionMixin,
 )
+from src.llm_api_adapter.adapters.openai.payloads import (
+    _OpenAIPayloadMixin,
+    _apply_cache_usage as native_apply_cache_usage,
+    _cache_token_counts as native_cache_token_counts,
+    _token_count as native_token_count,
+)
+from src.llm_api_adapter.adapters.openai.streaming import _OpenAIStreamingMixin
+from src.llm_api_adapter.adapters.openai_compatible.chat_completions.payloads import (
+    _ChatCompletionsPayloadMixin,
+)
+from src.llm_api_adapter.adapters.openai_compatible.chat_completions.streaming import (
+    _ChatCompletionsStreamingMixin,
+)
+from src.llm_api_adapter.adapters.openai_compatible.common.usage import (
+    _apply_cache_usage,
+    _cache_token_counts,
+    _token_count,
+)
 from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
 from src.llm_api_adapter.adapters.openai_adapter import (
     OpenAIAsyncClient,
@@ -227,3 +245,50 @@ def test_native_and_compatible_adapters_share_neutral_execution_owner():
         owner_method = getattr(_OpenAIExecutionMixin, name)
         assert getattr(OpenAIAdapter, name) is owner_method
         assert getattr(OpenAICompatibleAdapter, name) is owner_method
+
+
+@pytest.mark.unit
+def test_native_and_compatible_adapters_share_chat_protocol_owners_and_usage_helpers():
+    assert issubclass(_OpenAIPayloadMixin, _ChatCompletionsPayloadMixin)
+    assert issubclass(_OpenAIStreamingMixin, _ChatCompletionsStreamingMixin)
+
+    for name in (
+        "_build_chat_completions_params",
+        "_map_tools_to_openai",
+        "_map_tool_choice_to_openai",
+    ):
+        owner_method = getattr(_ChatCompletionsPayloadMixin, name)
+        assert getattr(OpenAIAdapter, name) is owner_method
+        assert getattr(OpenAICompatibleAdapter, name) is owner_method
+
+    # Compatible mode keeps its validation overrides as dynamic hooks around
+    # these shared implementations.
+    assert OpenAIAdapter._normalize_chat_completions_response is (
+        _ChatCompletionsPayloadMixin._normalize_chat_completions_response
+    )
+    assert OpenAIAdapter._validate_chat_completions_stream_event is (
+        _ChatCompletionsPayloadMixin._validate_chat_completions_stream_event
+    )
+    assert OpenAICompatibleAdapter._normalize_chat_completions_response is not (
+        _ChatCompletionsPayloadMixin._normalize_chat_completions_response
+    )
+    assert OpenAICompatibleAdapter._validate_chat_completions_stream_event is not (
+        _ChatCompletionsPayloadMixin._validate_chat_completions_stream_event
+    )
+
+    for name in (
+        "_consume_chat_completions_stream_async",
+        "_consume_chat_completions_stream",
+        "_update_legacy_stream_metadata",
+        "_consume_legacy_stream_choice",
+        "_accumulate_legacy_tool_calls",
+        "_build_legacy_stream_response",
+    ):
+        owner_method = getattr(_ChatCompletionsStreamingMixin, name)
+        assert getattr(OpenAIAdapter, name) is owner_method
+        assert getattr(OpenAICompatibleAdapter, name) is owner_method
+
+    assert native_token_count is _token_count
+    assert native_cache_token_counts is _cache_token_counts
+    assert native_apply_cache_usage is _apply_cache_usage
+    assert _OpenAIStreamingMixin._token_count is _token_count
