@@ -1,3 +1,21 @@
+<!--
+Sync Impact Report (temporary review material; remove before committing)
+Version change: 0.6.0 -> 0.7.0 (MINOR: explicit caller-tariff policy and compatible-mode exception)
+Modified principles: III. Registry and Abstraction First (title unchanged).
+Modified baseline: Registry, continuation, usage, pricing, and errors.
+Added section: Organization tariffs and compatible-mode pricing.
+Removed sections: none.
+Rationale: verified organization tariffs and explicit caller-local tariffs have different provenance;
+openai_compatible is a connection mode whose prices can only come from caller-supplied data.
+Compatibility impact: preserve existing organization pricing overrides, Pricing/PricingTier,
+assignment/setters, and reported-usage calculation; no constructor, dependency, or E2E change.
+Validation: active template resolved; existing file/dictionary/parameter tariff paths checked
+offline; document content, version/date, scope, and diff reviewed.
+Follow-up: synchronize architecture, public pricing guidance, and feature 008 plan/tasks/contracts
+through their existing pending documentation work; retain completed task/evidence history.
+Deferred placeholders: none.
+-->
+
 # llm-api-adapter Constitution
 
 ## Core Principles
@@ -34,6 +52,12 @@ Contributors MUST reuse established adapters, transports, message/response norma
 helpers, registries, and plugin discovery before creating an abstraction. They MUST NOT add
 model-name prefixes, ad-hoc model lists, or one-off provider conditionals when registry metadata
 or a generic handler can express the behavior.
+
+Verified organization/provider model profiles MUST keep their standard tariffs in their owning
+organization registries. The `openai_compatible` connection mode is exempt from requiring an
+organization tariff catalogue: its only tariff source is explicit caller-supplied data, governed
+by the canonical pricing policy below. Existing caller-local organization pricing overrides MUST
+remain supported without turning caller rates into verified registry facts.
 
 Values with shared meaning MUST use existing configuration, constants, mappings, registry data,
 or a narrowly scoped new abstraction rather than hardcoded duplicates. Registry data changes MUST
@@ -181,11 +205,13 @@ work before the corrected behavior may be used for a release decision.
   identifier or opaque replay material MAY be sent only when the exact model and adapter declare
   that behavior; otherwise the adapter MUST use caller-provided history and serialize no unsupported
   continuation field.
-- Usage and costs MUST use provider-reported data and verified rates. Unknown, invalid, or
-  contradictory usage MUST NOT be estimated or treated as zero. A missing counter MAY use a default
-  only when the applicable provider contract unambiguously establishes its value for that response
-  context; such defaults MUST NOT be inferred or generalized beyond the verified contract. Parsed
-  counts with neither a provider value nor an applicable documented default MUST remain `None`; an
+- Usage MUST use provider-reported data. Calculated costs MUST use the applicable verified
+  organization tariff or explicit caller-supplied tariff under the pricing policy below.
+  Unknown, invalid, or contradictory usage MUST NOT be estimated or treated as zero. A missing
+  counter MAY use a default only when the applicable provider contract unambiguously establishes
+  its value for that response context; such defaults MUST NOT be inferred or generalized beyond
+  the verified contract. Parsed counts with neither a provider value nor an applicable documented
+  default MUST remain `None`; an
   explicitly reported zero remains `0`. Reported cache reads and writes MUST be confirmed input
   components, remain distinct, and never be double-counted. Cache rates apply only to components that
   may occur automatically during ordinary requests and whose quantities providers report. A
@@ -197,6 +223,35 @@ work before the corrected behavior may be used for a release decision.
   tool-argument, tool-choice, structured-output, and configuration failures MUST map to the public
   error hierarchy. Common validation failures and declared unsupported inputs MUST fail before an
   outbound provider request.
+
+### Organization tariffs and compatible-mode pricing
+
+- Verified standard tariffs are required for registered organization/provider model profiles and
+  MUST remain owned by their organization registries. Native integrations MUST retain their
+  registry-based default pricing and existing caller-local assignment/setter overrides. An
+  unknown model MUST receive no inferred tariff.
+- `organization="openai_compatible"` is an explicit exception to the organization tariff-catalogue
+  requirement. It MUST default to no tariff and MUST use only explicit external caller tariffs
+  for calculated costs. It MUST NOT automatically borrow bundled rates from any organization,
+  including when a model identifier matches a registered model. No model registration or bundled
+  compatible tariff catalogue is required.
+- External caller tariffs MUST be configurable from an explicitly loaded registry-format JSON
+  file, explicit numeric parameters, or dictionary entries in the existing `pricing_tiers`
+  structure. File/dictionary input MUST reuse the existing tariff schema; all forms MUST normalize
+  to the existing `Pricing`/`PricingTier` objects and use the established pricing assignment/setter
+  and calculation paths. Explicit file loading and tariff selection belong to caller configuration,
+  without requiring another facade constructor pricing option or implicit registry lookup.
+- Caller tariffs are local accounting inputs, not verified provider prices or evidence of model
+  capabilities. Selecting a tariff from a file MUST NOT import model limits, aliases, request
+  rules or capability claims into compatible mode. Local configuration MUST preserve bundled
+  registry data, existing constructor-copy and ordinary-assignment reference semantics, units,
+  currency, tier/cache rules, and provider-specific billing behavior.
+- Without an explicit caller tariff, compatible calculated costs, currency and calculated cost
+  breakdowns MUST remain unavailable. With a caller tariff, all applicable execution modes MUST
+  reuse the existing calculator and sufficiently reported usage. Finite nonnegative rates,
+  including zero, MUST remain valid; missing or contradictory required usage, an uncovered tier,
+  or an unpriceable incurred component MUST NOT produce an invented complete total. Supplying a
+  tariff MUST NOT relax usage, validation, security, lifecycle, or release requirements.
 
 ### Capability and E2E evidence catalogue
 
@@ -274,4 +329,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.6.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-10-18
+**Version**: 0.7.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-09
