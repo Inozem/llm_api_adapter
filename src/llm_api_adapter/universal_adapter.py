@@ -6,7 +6,7 @@ from .adapters.base_adapter import LLMAdapterBase
 from .adapters.anthropic_adapter import AnthropicAdapter
 from .adapters.openai_adapter import OpenAIAdapter
 from .adapters.google_adapter import GoogleAdapter
-from .adapters.openai_compatible_adapter import (
+from .adapters.openai_compatible.adapter import (
     OpenAICompatibleAdapter,
     _redact_compatible_diagnostic,
     _validate_api_root,

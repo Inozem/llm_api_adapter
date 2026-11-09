@@ -4664,3 +4664,34 @@ async def test_compatible_async_buffered_metadata_snapshot(usage, expected_usage
         assert forbidden == []
     finally:
         await client.aclose()
+
+
+@pytest.mark.unit
+def test_compatible_canonical_and_legacy_imports_share_facade_class():
+    from importlib import import_module
+
+    for package in ("src.llm_api_adapter", "llm_api_adapter"):
+        canonical = import_module(
+            f"{package}.adapters.openai_compatible.adapter"
+        )
+        legacy = import_module(
+            f"{package}.adapters.openai_compatible_adapter"
+        )
+        facade = import_module(f"{package}.universal_adapter")
+
+        assert legacy.OpenAICompatibleAdapter is canonical.OpenAICompatibleAdapter
+        assert (
+            facade.SERVICE_PROVIDER_REGISTRY.get("openai_compatible")
+            is canonical.OpenAICompatibleAdapter
+        )
+        for name in (
+            "_validate_api_root",
+            "_redact_compatible_diagnostic",
+            "_validate_compatible_pricing",
+            "_compatible_cache_usage_is_valid",
+            "_attach_compatible_cache_usage_validity",
+            "_normalize_compatible_usage",
+            "_cache_token_counts",
+            "_token_count",
+        ):
+            assert getattr(legacy, name) is getattr(canonical, name)
