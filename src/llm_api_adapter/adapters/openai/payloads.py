@@ -14,9 +14,10 @@ from ..openai_compatible.common.usage import (
     _cache_token_counts,
     _token_count,
 )
+from ..openai_compatible.responses.payloads import _ResponsesPayloadMixin
 
 
-class _OpenAIPayloadMixin(_ChatCompletionsPayloadMixin):
+class _OpenAIPayloadMixin(_ChatCompletionsPayloadMixin, _ResponsesPayloadMixin):
     """Build provider payloads while keeping adapter-level options normalized."""
 
     def _build_chat_params(
@@ -80,32 +81,20 @@ class _OpenAIPayloadMixin(_ChatCompletionsPayloadMixin):
         effective_schema: Optional[dict],
         capture_reasoning: bool,
     ) -> Dict[str, Any]:
-        params: Dict[str, Any] = {
-            "input": self._responses_input_for_request(
+        params = self._build_responses_wire_params(
+            input_items=self._responses_input_for_request(
                 normalized_messages,
                 previous_response,
             ),
-            "tools": self._map_tools_to_openai_responses(tools),
-            "tool_choice": self._map_tool_choice_to_openai_responses(
-                normalized_tool_choice
-            ),
-        }
+            instructions=normalized_messages.to_openai_responses_instructions(),
+            tools=tools,
+            normalized_tool_choice=normalized_tool_choice,
+            effective_schema=effective_schema,
+        )
         if capture_reasoning:
             params["capture_reasoning"] = True
-        instructions = normalized_messages.to_openai_responses_instructions()
-        if instructions is not None:
-            params["instructions"] = instructions
         if previous_response is not None and previous_response.response_id is not None:
             params["previous_response_id"] = previous_response.response_id
-        if effective_schema is not None:
-            params["text"] = {
-                "format": {
-                    "type": "json_schema",
-                    "name": "response",
-                    "strict": True,
-                    "schema": self._to_openai_structured_output_schema(effective_schema),
-                }
-            }
         return params
 
     def _parse_chat_response(
@@ -116,15 +105,9 @@ class _OpenAIPayloadMixin(_ChatCompletionsPayloadMixin):
         capture_reasoning: bool,
     ) -> ChatResponse:
         if use_responses_api:
-            parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
-            chat_response = ChatResponse.from_openai_responses_response(
+            return self._normalize_responses_response(
                 response,
-                **parser_kwargs,
-            )
-            return _apply_cache_usage(
-                chat_response,
-                response,
-                details_field="input_tokens_details",
+                capture_reasoning=capture_reasoning,
             )
         return self._normalize_chat_completions_response(response)
 
@@ -154,30 +137,16 @@ class _OpenAIPayloadMixin(_ChatCompletionsPayloadMixin):
             ),
         }
         if use_responses_api:
-            params["input"] = self._responses_input_for_request(
-                normalized_messages,
-                previous_response,
+            params.update(
+                self._build_responses_chat_params(
+                    normalized_messages=normalized_messages,
+                    tools=tools,
+                    normalized_tool_choice=normalized_tool_choice,
+                    previous_response=previous_response,
+                    effective_schema=effective_schema,
+                    capture_reasoning=capture_reasoning,
+                )
             )
-            params["tools"] = self._map_tools_to_openai_responses(tools)
-            params["tool_choice"] = self._map_tool_choice_to_openai_responses(
-                normalized_tool_choice
-            )
-            instructions = normalized_messages.to_openai_responses_instructions()
-            if instructions is not None:
-                params["instructions"] = instructions
-            if previous_response is not None and previous_response.response_id is not None:
-                params["previous_response_id"] = previous_response.response_id
-            if effective_schema is not None:
-                params["text"] = {
-                    "format": {
-                        "type": "json_schema",
-                        "name": "response",
-                        "strict": True,
-                        "schema": self._to_openai_structured_output_schema(effective_schema),
-                    }
-                }
-            if capture_reasoning:
-                params["capture_reasoning"] = True
         else:
             params.update(
                 self._build_chat_completions_params(
@@ -228,38 +197,3 @@ class _OpenAIPayloadMixin(_ChatCompletionsPayloadMixin):
                 "OpenAI reasoning resolution must produce a categorical value"
             )
         return provider_value
-
-    def _map_tools_to_openai_responses(
-        self,
-        tools: Optional[List[ToolSpec]],
-    ) -> Optional[List[Dict[str, Any]]]:
-        if not tools:
-            return None
-
-        result: List[Dict[str, Any]] = []
-        for tool in tools:
-            result.append(
-                {
-                    "type": "function",
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.json_schema,
-                }
-            )
-        return result
-
-    def _map_tool_choice_to_openai_responses(self, tool_choice: Any) -> Any:
-        if tool_choice is None:
-            return None
-        if tool_choice == "auto":
-            return "auto"
-        if tool_choice == "none":
-            return "none"
-        if tool_choice == "any":
-            return "required"
-        if isinstance(tool_choice, str):
-            return {
-                "type": "function",
-                "name": tool_choice,
-            }
-        return tool_choice

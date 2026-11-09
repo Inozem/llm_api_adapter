@@ -25,6 +25,13 @@ from src.llm_api_adapter.adapters.openai_compatible.chat_completions.payloads im
 from src.llm_api_adapter.adapters.openai_compatible.chat_completions.streaming import (
     _ChatCompletionsStreamingMixin,
 )
+from src.llm_api_adapter.adapters.openai_compatible.responses.payloads import (
+    _ResponsesPayloadMixin,
+)
+from src.llm_api_adapter.adapters.openai_compatible.responses.streaming import (
+    _ResponsesStreamState,
+    _ResponsesStreamingMixin,
+)
 from src.llm_api_adapter.adapters.openai_compatible.common.usage import (
     _apply_cache_usage,
     _cache_token_counts,
@@ -292,3 +299,54 @@ def test_native_and_compatible_adapters_share_chat_protocol_owners_and_usage_hel
     assert native_cache_token_counts is _cache_token_counts
     assert native_apply_cache_usage is _apply_cache_usage
     assert _OpenAIStreamingMixin._token_count is _token_count
+
+
+@pytest.mark.unit
+def test_native_responses_protocol_owners_keep_policy_and_eof_native():
+    from src.llm_api_adapter.adapters.openai import streaming as native_streaming
+
+    assert _OpenAIPayloadMixin.__bases__ == (
+        _ChatCompletionsPayloadMixin,
+        _ResponsesPayloadMixin,
+    )
+    assert _OpenAIStreamingMixin.__bases__ == (
+        _ChatCompletionsStreamingMixin,
+        _ResponsesStreamingMixin,
+    )
+    assert OpenAIAdapter._map_tools_to_openai_responses is (
+        _ResponsesPayloadMixin._map_tools_to_openai_responses
+    )
+    assert OpenAIAdapter._map_tool_choice_to_openai_responses is (
+        _ResponsesPayloadMixin._map_tool_choice_to_openai_responses
+    )
+    assert OpenAIAdapter._normalize_responses_response is (
+        _ResponsesPayloadMixin._normalize_responses_response
+    )
+    assert OpenAIAdapter._consume_responses_stream_event is (
+        _ResponsesStreamingMixin._consume_responses_stream_event
+    )
+    assert OpenAIAdapter._responses_input_for_request is (
+        _OpenAIPayloadMixin._responses_input_for_request
+    )
+    assert OpenAIAdapter._resolve_openai_reasoning_effort is (
+        _OpenAIPayloadMixin._resolve_openai_reasoning_effort
+    )
+    assert OpenAIAdapter._build_responses_stream_response.__module__.endswith(
+        ".openai.adapter"
+    )
+    assert native_streaming._ResponsesStreamState is _ResponsesStreamState
+    assert native_streaming._cache_token_counts is _cache_token_counts
+    assert not hasattr(OpenAICompatibleAdapter, "_build_responses_stream_response")
+
+    with patch.object(
+        _OpenAIStreamingMixin,
+        "_token_count",
+        staticmethod(lambda value: 7 if value == 1 else None),
+    ):
+        usage = OpenAIAdapter._normalize_stream_usage(
+            {"input_tokens": 1, "output_tokens": 1},
+            input_field="input_tokens",
+            output_field="output_tokens",
+        )
+    assert usage.input_tokens == 7
+    assert usage.output_tokens == 7
