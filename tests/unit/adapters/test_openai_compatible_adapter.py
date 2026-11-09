@@ -47,6 +47,7 @@ from tests.fixtures.openai_compatible import (
     FIXTURE_MODEL,
     event_lines,
     premature_eof_sse_lines,
+    responses_text_response,
     text_response,
     text_sse_lines,
     tool_call_response,
@@ -90,12 +91,36 @@ def _new_adapter(*, api_key: str, model: str, base_url: str):
     from src.llm_api_adapter.adapters.openai_compatible_adapter import (
         OpenAICompatibleAdapter,
     )
-
     return OpenAICompatibleAdapter(
         api_key=api_key,
         model=model,
         base_url=base_url,
     )
+
+
+@pytest.fixture
+def constructor_no_io(monkeypatch):
+    """Record and block network/discovery attempts during constructor tests."""
+    attempts = []
+
+    def guard(name):
+        def forbidden(*_args, **_kwargs):
+            attempts.append(name)
+            raise AssertionError(f"constructor crossed forbidden boundary: {name}")
+
+        return forbidden
+
+    monkeypatch.setattr(socket, "getaddrinfo", guard("socket.getaddrinfo"))
+    monkeypatch.setattr(requests.sessions.Session, "send", guard("requests.Session.send"))
+    monkeypatch.setattr(httpx.Client, "send", guard("httpx.Client.send"))
+    monkeypatch.setattr(httpx.AsyncClient, "send", guard("httpx.AsyncClient.send"))
+    monkeypatch.setattr(
+        OrganizationPluginDiscovery,
+        "discover",
+        guard("OrganizationPluginDiscovery.discover"),
+    )
+    yield attempts
+    assert attempts == []
 
 
 _INVALID_TOOL_REQUEST_CASES = [
@@ -4695,3 +4720,188 @@ def test_compatible_canonical_and_legacy_imports_share_facade_class():
             "_token_count",
         ):
             assert getattr(legacy, name) is getattr(canonical, name)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("api_variant_option", "expected_variant"),
+    [
+        ({}, "chat_completions"),
+        ({"api_variant": None}, "chat_completions"),
+        ({"api_variant": "chat_completions"}, "chat_completions"),
+        ({"api_variant": "responses"}, "responses"),
+    ],
+)
+def test_direct_constructor_accepts_only_effective_api_selection(
+    api_variant_option, expected_variant, constructor_no_io
+):
+    adapter = OpenAICompatibleAdapter(
+        api_key="synthetic-constructor-key",
+        model="vendor/arbitrary-model",
+        base_url="https://example.invalid/gateway/v1/",
+        **api_variant_option,
+    )
+
+    assert adapter.api_variant == expected_variant
+    assert adapter.model == "vendor/arbitrary-model"
+    assert adapter.base_url == "https://example.invalid/gateway/v1"
+    assert adapter.model_spec is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "api_variant",
+    [
+        "",
+        " ",
+        "chat_completions ",
+        " Chat_Completions",
+        "Chat_Completions",
+        "RESPONSES",
+        "responses ",
+        "completion",
+        False,
+        True,
+        0,
+        1,
+        [],
+        {},
+    ],
+)
+def test_direct_constructor_rejects_invalid_api_variant(api_variant, constructor_no_io):
+    with pytest.raises(LLMConfigError):
+        OpenAICompatibleAdapter(
+            api_key="synthetic-constructor-key",
+            model="vendor/arbitrary-model",
+            base_url="https://example.invalid/v1",
+            api_variant=api_variant,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "api_variant_option",
+    [{}, {"api_variant": None}, {"api_variant": "chat_completions"},
+     {"api_variant": "responses"}],
+)
+@pytest.mark.parametrize(
+    "resource_suffix",
+    ["/chat/completions", "/responses"],
+)
+def test_direct_constructor_rejects_both_full_resource_roots_for_every_variant(
+    api_variant_option, resource_suffix, constructor_no_io
+):
+    with pytest.raises(LLMConfigError):
+        OpenAICompatibleAdapter(
+            api_key="synthetic-constructor-key",
+            model="vendor/arbitrary-model",
+            base_url=f"https://example.invalid/gateway/v1{resource_suffix}/",
+            **api_variant_option,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("root", "api_variant_option", "expected_url"),
+    [
+        (
+            "https://example.invalid/gateway/tenant/v1/",
+            {},
+            "https://example.invalid/gateway/tenant/v1/chat/completions",
+        ),
+        (
+            "https://example.invalid/gateway/tenant/v1",
+            {"api_variant": None},
+            "https://example.invalid/gateway/tenant/v1/chat/completions",
+        ),
+        (
+            "http://localhost:8080/api/",
+            {"api_variant": "chat_completions"},
+            "http://localhost:8080/api/chat/completions",
+        ),
+        (
+            "https://example.invalid/gateway/tenant/v1/",
+            {"api_variant": "responses"},
+            "https://example.invalid/gateway/tenant/v1/responses",
+        ),
+        (
+            "http://localhost:8080/api",
+            {"api_variant": "responses"},
+            "http://localhost:8080/api/responses",
+        ),
+    ],
+)
+def test_facade_sync_text_chat_routes_to_selected_api_and_preserves_model(
+    root, api_variant_option, expected_url
+):
+    model = "vendor/exact/unregistered-model"
+    variant = api_variant_option.get("api_variant") or "chat_completions"
+    body_factory = responses_text_response if variant == "responses" else text_response
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(
+            expected_url,
+            json=body_factory("Compatible reply", model=model),
+        )
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model=model,
+            api_key="synthetic-route-key",
+            base_url=root,
+            **api_variant_option,
+        )
+        response = facade.chat([UserMessage(content="Say hello.")])
+
+    assert http.call_count == 1
+    request = http.request_history[0]
+    assert request.url == expected_url
+    assert request.json()["model"] == model
+    assert response.content == "Compatible reply"
+    assert response.model == model
+
+
+@pytest.mark.unit
+def test_compatible_instances_keep_roots_and_api_variants_isolated():
+    chat_root = "https://example.invalid/one/proxy/v1"
+    responses_root = "http://localhost:8080/two/api"
+    chat_url = f"{chat_root}/chat/completions"
+    responses_url = f"{responses_root}/responses"
+    chat_model = "vendor/chat-model"
+    responses_model = "vendor/responses-model"
+
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(chat_url, json=text_response("Chat route", model=chat_model))
+        http.post(
+            responses_url,
+            json=responses_text_response("Responses route", model=responses_model),
+        )
+        chat_facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model=chat_model,
+            api_key="synthetic-chat-key",
+            base_url=chat_root,
+            api_variant="chat_completions",
+        )
+        responses_facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model=responses_model,
+            api_key="synthetic-responses-key",
+            base_url=f"{responses_root}/",
+            api_variant="responses",
+        )
+
+        chat_response = chat_facade.chat([UserMessage(content="First")])
+        responses_response = responses_facade.chat([UserMessage(content="Second")])
+        chat_response_again = chat_facade.chat([UserMessage(content="Third")])
+
+    assert [request.url for request in http.request_history] == [
+        chat_url,
+        responses_url,
+        chat_url,
+    ]
+    assert [request.headers["Authorization"] for request in http.request_history] == [
+        "Bearer synthetic-chat-key",
+        "Bearer synthetic-responses-key",
+        "Bearer synthetic-chat-key",
+    ]
+    assert chat_response.content == chat_response_again.content == "Chat route"
+    assert responses_response.content == "Responses route"

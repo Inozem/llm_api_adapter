@@ -438,12 +438,14 @@ def test_public_constructor_signature_remains_compatible():
         "transport",
         "service_provider",
         "base_url",
+        "api_variant",
     ]
     assert [parameter.default for parameter in parameters.values()] == [
         inspect.Parameter.empty,
         inspect.Parameter.empty,
         inspect.Parameter.empty,
         "requests",
+        None,
         None,
         None,
     ]
@@ -793,3 +795,273 @@ def test_getattr_missing_raises_attribute_error(monkeypatch):
     )
     with pytest.raises(AttributeError):
         adapter.nonexistent_method()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("api_variant_option", "expected_variant"),
+    [
+        ({}, "chat_completions"),
+        ({"api_variant": None}, "chat_completions"),
+        ({"api_variant": "chat_completions"}, "chat_completions"),
+        ({"api_variant": "responses"}, "responses"),
+    ],
+)
+def test_facade_api_variant_defaults_and_passes_resolved_value_to_generic_factory(
+    monkeypatch, openai_compatible_no_io, api_variant_option, expected_variant
+):
+    """Connection contract:
+
+    organization — “Exact `openai_compatible` selector; other organizations retain native selection.”
+    model — “Existing nonempty exact string, no registry alias/snapshot inference.”
+    key — “Existing explicit nonempty credential; never persisted or disclosed.”
+    transport — “Existing requests default, explicit optional sync HTTPX, optional async.”
+    provider — “Omitted means compatible mode's own key; conflicting value fails.”
+    root — “Facade default None; valid HTTP(S) API root required only in compatible mode.”
+    API — “Facade default None; compatible effective default `chat_completions`, otherwise exact `chat_completions` or `responses`. Non-None is forbidden for other organizations.”
+    """
+    factory_calls = []
+
+    class GenericFactory:
+        def __init__(self, **kwargs):
+            factory_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({"openai_compatible": GenericFactory}),
+    )
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="vendor/exact-model-name",
+        api_key=SYNTHETIC_API_KEY_MARKER,
+        base_url="https://example.invalid/gateway/v1///",
+        **api_variant_option,
+    )
+
+    assert facade.model == "vendor/exact-model-name"
+    assert facade.service_provider == "openai_compatible"
+    assert factory_calls == [{
+        "company": "openai_compatible",
+        "model": "vendor/exact-model-name",
+        "api_key": SYNTHETIC_API_KEY_MARKER,
+        "transport": "requests",
+        "service_provider": "openai_compatible",
+        "base_url": "https://example.invalid/gateway/v1",
+        "api_variant": expected_variant,
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "api_variant",
+    [
+        "",
+        " ",
+        "chat_completions ",
+        " Chat_Completions",
+        "Chat_Completions",
+        "RESPONSES",
+        "responses ",
+        "completion",
+        False,
+        True,
+        0,
+        1,
+        [],
+        {},
+    ],
+)
+def test_facade_rejects_invalid_api_variant_before_discovery_or_io(
+    api_variant,
+    openai_compatible_no_io,
+    openai_compatible_no_adapter_selection,
+):
+    with pytest.raises(LLMConfigError):
+        UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="vendor/exact-model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            base_url="https://example.invalid/v1",
+            api_variant=api_variant,
+        )
+    assert openai_compatible_no_adapter_selection == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("organization", "service_provider"),
+    [("openai", None), ("mistral", "external-hosted")],
+)
+@pytest.mark.parametrize(
+    "api_variant",
+    ["chat_completions", "responses", "invalid", "", False, 0],
+)
+def test_noncompatible_api_variant_rejected_before_native_or_hosted_factory(
+    monkeypatch,
+    openai_compatible_no_io,
+    openai_compatible_no_adapter_selection,
+    organization,
+    service_provider,
+    api_variant,
+):
+    factory_calls = []
+
+    class HostedFactory:
+        def __init__(self, **kwargs):
+            factory_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({"external-hosted": HostedFactory}),
+    )
+    options = {} if service_provider is None else {"service_provider": service_provider}
+    with pytest.raises(LLMConfigError):
+        UniversalLLMAPIAdapter(
+            organization=organization,
+            model="gpt-5" if organization == "openai" else "vendor/model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            api_variant=api_variant,
+            **options,
+        )
+
+    assert factory_calls == []
+    assert openai_compatible_no_adapter_selection == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "api_variant_option",
+    [{}, {"api_variant": None}],
+)
+def test_legacy_factory_kwargs_omit_api_variant_for_omitted_and_none(
+    monkeypatch, openai_compatible_no_io, api_variant_option
+):
+    factory_calls = []
+
+    class LegacyFactory:
+        def __init__(self, **kwargs):
+            factory_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({"legacy-provider": LegacyFactory}),
+    )
+    facade = UniversalLLMAPIAdapter(
+        "external-org",
+        "vendor/model",
+        SYNTHETIC_API_KEY_MARKER,
+        "requests",
+        "legacy-provider",
+        **api_variant_option,
+    )
+
+    assert facade.adapter is not None
+    assert factory_calls == [{
+        "company": "external-org",
+        "model": "vendor/model",
+        "api_key": SYNTHETIC_API_KEY_MARKER,
+        "transport": "requests",
+        "service_provider": "legacy-provider",
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("organization", "provider_option", "expected_company", "expected_provider"),
+    [
+        ("openai", {}, "openai", "openai"),
+        (
+            "mistral",
+            {"service_provider": "external-hosted"},
+            "mistral",
+            "external-hosted",
+        ),
+    ],
+)
+@pytest.mark.parametrize("api_variant_option", [{}, {"api_variant": None}])
+def test_native_and_hosted_factory_kwargs_omit_api_variant_and_root(
+    monkeypatch,
+    openai_compatible_no_io,
+    organization,
+    provider_option,
+    expected_company,
+    expected_provider,
+    api_variant_option,
+):
+    factory_calls = []
+
+    class FactorySpy:
+        def __init__(self, **kwargs):
+            factory_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        universal_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({
+            "openai": FactorySpy,
+            "external-hosted": FactorySpy,
+        }),
+    )
+    facade = UniversalLLMAPIAdapter(
+        organization,
+        "gpt-5" if organization == "openai" else "vendor/model",
+        SYNTHETIC_API_KEY_MARKER,
+        **provider_option,
+        **api_variant_option,
+    )
+
+    assert facade.adapter is not None
+    assert factory_calls == [{
+        "company": expected_company,
+        "model": "gpt-5" if organization == "openai" else "vendor/model",
+        "api_key": SYNTHETIC_API_KEY_MARKER,
+        "transport": "requests",
+        "service_provider": expected_provider,
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "api_variant_option",
+    [{}, {"api_variant": None}, {"api_variant": "chat_completions"},
+     {"api_variant": "responses"}],
+)
+@pytest.mark.parametrize("resource_suffix", ["/chat/completions", "/responses"])
+def test_facade_rejects_both_full_resource_roots_for_every_api_variant(
+    openai_compatible_no_io,
+    openai_compatible_no_adapter_selection,
+    api_variant_option,
+    resource_suffix,
+):
+    with pytest.raises(LLMConfigError):
+        UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="vendor/model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            base_url=f"https://example.invalid/gateway/v1{resource_suffix}/",
+            **api_variant_option,
+        )
+    assert openai_compatible_no_adapter_selection == []
+
+
+@pytest.mark.unit
+def test_compatible_seventh_positional_argument_selects_responses_before_io(
+    openai_compatible_no_io,
+):
+    facade = UniversalLLMAPIAdapter(
+        "openai_compatible",
+        "vendor/seventh-position-model",
+        SYNTHETIC_API_KEY_MARKER,
+        "requests",
+        None,
+        "https://example.invalid/gateway/v1/",
+        "responses",
+    )
+
+    assert facade.model == "vendor/seventh-position-model"
+    assert facade.adapter.model == "vendor/seventh-position-model"
+    assert facade.base_url == "https://example.invalid/gateway/v1"
+    assert facade.adapter.api_variant == "responses"

@@ -1,4 +1,4 @@
-"""Credential-free Chat Completions payloads and SSE wire fixtures.
+"""Credential-free Chat Completions and Responses JSON, plus Chat-only SSE fixtures.
 
 These deterministic factories describe protocol data only. They make no
 network requests and do not imply support by any particular server or model.
@@ -106,6 +106,28 @@ def chat_completion_response(
 def text_response(content: str = "Fixture reply", **kwargs: Any) -> dict[str, Any]:
     """Build a completed visible-text response."""
     return chat_completion_response(content=content, **kwargs)
+
+
+def responses_text_response(
+    content: str = "Fixture reply",
+    *,
+    response_id: str = "resp-fixture-001",
+    model: str = FIXTURE_MODEL,
+) -> dict[str, Any]:
+    """Build a minimal completed Responses envelope containing visible text."""
+    return {
+        "id": response_id,
+        "object": "response",
+        "status": "completed",
+        "model": model,
+        "output": [{
+            "id": "msg-fixture-001",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": content, "annotations": []}],
+        }],
+    }
 
 
 def tool_call_response(
@@ -299,7 +321,8 @@ __all__ = [
     "invalid_usage_payload", "model_invalid_structured_result_response",
     "partial_usage_payload", "portable_schema", "premature_eof_sse_lines", "refusal_response",
     "refusal_sse_lines",
-    "structured_result_response", "structured_result_sse_lines", "text_response",
+    "responses_text_response", "structured_result_response", "structured_result_sse_lines",
+    "text_response",
     "text_sse_lines", "tool_call_response", "tool_call_sse_lines", "usage_payload",
     "zero_usage_payload",
 ]
