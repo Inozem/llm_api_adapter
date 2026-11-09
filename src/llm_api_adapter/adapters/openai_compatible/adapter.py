@@ -21,8 +21,10 @@ from ...llm_registry.llm_registry import (
     _finite_non_negative_rate,
     _positive_int,
 )
-from ..openai.adapter import OpenAIAdapter
-from ..openai.payloads import _cache_token_counts, _token_count
+from ..base_adapter import LLMAdapterBase
+from ..openai.streaming import _OpenAIStreamingMixin
+from ..openai.payloads import _OpenAIPayloadMixin, _cache_token_counts, _token_count
+from .common.adapter import _OpenAIExecutionMixin
 from ..structured_output import validate_core_portable_schema
 from ...models.responses.chat_response import Usage
 
@@ -259,7 +261,12 @@ def _validate_api_root(base_url: object) -> str:
 
 
 @dataclass(repr=False)
-class OpenAICompatibleAdapter(OpenAIAdapter):
+class OpenAICompatibleAdapter(
+    _OpenAIExecutionMixin,
+    _OpenAIPayloadMixin,
+    _OpenAIStreamingMixin,
+    LLMAdapterBase,
+):
     """OpenAI Chat Completions behavior for an explicitly selected API root."""
 
     company: str = "openai_compatible"

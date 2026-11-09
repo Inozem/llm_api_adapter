@@ -1,10 +1,18 @@
 from unittest.mock import AsyncMock, patch
 import json
+from dataclasses import is_dataclass
 
 import pytest
 
 from src.llm_api_adapter.adapters.openai import adapter as openai_adapter_module
 from src.llm_api_adapter.adapters.openai.adapter import OpenAIAdapter
+from src.llm_api_adapter.adapters.openai_compatible.adapter import (
+    OpenAICompatibleAdapter,
+)
+from src.llm_api_adapter.adapters.openai_compatible.common.adapter import (
+    _OpenAIExecutionMixin,
+)
+from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
 from src.llm_api_adapter.adapters.openai_adapter import (
     OpenAIAsyncClient,
     OpenAISyncClient,
@@ -205,3 +213,17 @@ def test_default_hooks_forward_only_the_existing_constructor_keywords():
 
     sync_constructor.assert_called_once_with(api_key="test-key", transport="httpx")
     async_constructor.assert_called_once_with(api_key="test-key")
+
+
+@pytest.mark.unit
+def test_native_and_compatible_adapters_share_neutral_execution_owner():
+    assert is_dataclass(OpenAIAdapter)
+    assert is_dataclass(OpenAICompatibleAdapter)
+    assert issubclass(OpenAIAdapter, LLMAdapterBase)
+    assert issubclass(OpenAICompatibleAdapter, LLMAdapterBase)
+    assert not issubclass(OpenAICompatibleAdapter, OpenAIAdapter)
+
+    for name in ("chat", "achat", "stream_chat", "astream_chat", "_astream_chat"):
+        owner_method = getattr(_OpenAIExecutionMixin, name)
+        assert getattr(OpenAIAdapter, name) is owner_method
+        assert getattr(OpenAICompatibleAdapter, name) is owner_method

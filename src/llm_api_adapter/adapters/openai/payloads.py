@@ -52,6 +52,21 @@ def _apply_cache_usage(
 class _OpenAIPayloadMixin:
     """Build provider payloads while keeping adapter-level options normalized."""
 
+    def _normalize_chat_completions_response(
+        self,
+        response: dict,
+    ) -> ChatResponse:
+        """Normalize a complete Chat Completions response before finalization."""
+        chat_response = ChatResponse.from_openai_response(response)
+        return _apply_cache_usage(
+            chat_response,
+            response,
+            details_field="prompt_tokens_details",
+        )
+
+    def _validate_chat_completions_stream_event(self, event: Any) -> None:
+        """Hook for organization-specific validation of Chat Completions events."""
+
     def _build_chat_params(
         self,
         *,
