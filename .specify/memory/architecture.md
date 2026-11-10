@@ -52,6 +52,13 @@ organization's supported behavior. Organization clients and transports own endpo
 HTTP/SSE resource handling, raw event consumption, and translation of raw failures to public error
 categories. They must not leak raw provider events or payload objects through the common API.
 
+`OpenAIAdapter` directly inherits the concrete `OpenAICompatibleAdapter`. Its five request/stream
+execution methods and shared payload assembly are inherited from that protocol parent. Small
+native policy overrides retain registry initialization, verified model behavior, reasoning,
+continuation, usage, pricing, errors and historical stream completion. The native constructor
+keeps its existing fields; compatible-only connection settings remain class-level defaults in
+the native subclass and do not enter its constructor or dataclass comparison.
+
 OpenAI-style adapters share request assembly and response dispatch in
 `adapters/openai_compatible/common/payloads.py`, composing the existing Chat Completions and
 Responses protocol components. Native payload wrappers retain reasoning, continuation and schema

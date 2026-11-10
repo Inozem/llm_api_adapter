@@ -84,9 +84,10 @@ conflicts must fail before discovery or I/O; neither model names nor a server
 failure may select another API or endpoint. Unknown models have no verified
 capabilities, native reasoning defaults, limits or registered prices.
 
-Both native OpenAI and compatible mode use the shared neutral execution and
-sibling protocol components under `adapters/openai_compatible/`. Native
-registry rules, continuation and pricing stay in native policy; generic
+`OpenAIAdapter` directly inherits `OpenAICompatibleAdapter`, using the same
+five execution methods and sibling protocol components under
+`adapters/openai_compatible/`. Native registry rules, continuation and
+pricing stay in native policy; generic
 Responses uses `store=false` and full caller history without continuation
 IDs or opaque replay. Preserve native constructor/import/module-patch
 contracts when changing this shared code. Reuse existing validators,
@@ -97,7 +98,10 @@ Compatible factories use generic clients with an explicit endpoint and no
 native-policy switch. Shared request assembly and response dispatch live in
 `adapters/openai_compatible/common/payloads.py`. Keep generic imports
 independent of native OpenAI policy modules, and preserve native policy hooks
-when changing shared assembly.
+when changing shared assembly. Preserve the native eight-parameter and
+compatible ten-parameter dataclass constructors, real keyword acceptance,
+repr/equality and module-bound/subclass hooks. Native overrides retain
+integration policy; exact-model differences remain registry data.
 
 Exercise both compatible APIs and the omitted-selector Chat default in the
 existing unit/mocked-integration and shared conformance suites. Reuse scenario

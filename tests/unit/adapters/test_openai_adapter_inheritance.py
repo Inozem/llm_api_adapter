@@ -1,4 +1,4 @@
-"""Characterization for the independent OpenAI protocol adapters."""
+"""Characterization for the shared native and compatible adapter hierarchy."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import textwrap
+from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
@@ -57,6 +58,11 @@ def test_native_and_compatible_constructor_signatures_and_positional_calls():
         for signature in (native_signature, compatible_signature)
         for parameter in signature.parameters.values()
     )
+    assert OpenAIAdapter.__match_args__ == tuple(
+        name for name, _, _ in native_expected
+    )
+    assert "base_url" not in {field.name for field in fields(OpenAIAdapter)}
+    assert "api_variant" not in {field.name for field in fields(OpenAIAdapter)}
 
     native = OpenAIAdapter(
         "key", "gpt-4o", "openai", "requests", None, False, False, None
@@ -77,6 +83,15 @@ def test_native_and_compatible_constructor_signatures_and_positional_calls():
     assert compatible.company == "openai_compatible"
     assert compatible.base_url == "https://example.test/v1"
     assert compatible.api_variant == "responses"
+
+    equal_native = OpenAIAdapter(api_key="key", model="gpt-4o")
+    assert native == equal_native
+    assert native != OpenAIAdapter(
+        api_key="key",
+        model="gpt-4o",
+        company="openai_compatible",
+        service_provider="openai",
+    )
 
 
 @pytest.mark.unit
@@ -107,6 +122,36 @@ def test_compatible_reasoning_hook_rejects_non_categorical_provider_value(monkey
         match="OpenAI reasoning resolution must produce a categorical value",
     ):
         adapter._resolve_protocol_reasoning_effort("high")
+
+
+@pytest.mark.unit
+def test_native_repr_and_error_handling_keep_base_authority(monkeypatch, caplog):
+    adapter = OpenAIAdapter(api_key="native-key", model="gpt-4o")
+
+    def reject_generic_diagnostic(*args, **kwargs):
+        raise AssertionError("native behavior used compatible diagnostics")
+
+    monkeypatch.setattr(
+        OpenAICompatibleAdapter,
+        "_format_compatible_diagnostic",
+        reject_generic_diagnostic,
+    )
+    assert repr(adapter) == (
+        "OpenAIAdapter(company='openai', model='gpt-4o', "
+        "transport='requests', api_key='***')"
+    )
+
+    error = RuntimeError("native provider error")
+    with pytest.raises(RuntimeError) as caught:
+        try:
+            raise error
+        except RuntimeError as active_error:
+            adapter.handle_error(active_error, "native failure")
+    assert caught.value is error
+    assert (
+        "Error with the provider 'openai' the model 'gpt-4o': native failure."
+        in caplog.text
+    )
 
 
 @pytest.mark.unit

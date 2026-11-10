@@ -247,6 +247,7 @@ def test_default_hooks_forward_only_the_existing_constructor_keywords():
 def test_native_and_compatible_adapters_share_neutral_execution_owner():
     assert is_dataclass(OpenAIAdapter)
     assert is_dataclass(OpenAICompatibleAdapter)
+    assert OpenAIAdapter.__bases__ == (OpenAICompatibleAdapter,)
     assert issubclass(OpenAIAdapter, LLMAdapterBase)
     assert issubclass(OpenAICompatibleAdapter, LLMAdapterBase)
     assert not issubclass(OpenAICompatibleAdapter, OpenAIAdapter)
@@ -255,6 +256,7 @@ def test_native_and_compatible_adapters_share_neutral_execution_owner():
         owner_method = getattr(_OpenAIExecutionMixin, name)
         assert getattr(OpenAIAdapter, name) is owner_method
         assert getattr(OpenAICompatibleAdapter, name) is owner_method
+        assert name not in OpenAIAdapter.__dict__
 
 
 @pytest.mark.unit
@@ -312,6 +314,8 @@ def test_native_and_compatible_adapters_share_chat_protocol_owners_and_usage_hel
     assert native_cache_token_counts is _cache_token_counts
     assert native_apply_cache_usage is _apply_cache_usage
     assert _OpenAIStreamingMixin._token_count is _token_count
+    assert OpenAIAdapter._token_count is _token_count
+    assert OpenAIAdapter._token_count(7) == 7
 
 
 @pytest.mark.unit
