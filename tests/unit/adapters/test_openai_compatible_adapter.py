@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import warnings
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 import pytest
@@ -53,6 +53,8 @@ from tests.fixtures.openai_compatible import (
     responses_response,
     responses_text_response,
     responses_text_sse_lines,
+    responses_tool_call_response,
+    responses_tool_call_sse_lines,
     text_response,
     text_sse_lines,
     tool_call_response,
@@ -60,6 +62,8 @@ from tests.fixtures.openai_compatible import (
     usage_payload,
     zero_usage_payload,
 )
+from src.llm_api_adapter.models.messages.chat_message import AIMessage, Prompt, ToolMessage
+from src.llm_api_adapter.models.messages.file_parts import DocumentPart, FilePart, ImagePart
 
 
 _ENDPOINT_CASES = [
@@ -6466,3 +6470,688 @@ async def test_compatible_responses_async_transport_errors_do_not_fallback(
         outgoing[0], model, stream=mode == "astream_chat"
     )
     assert done == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("choice", ("auto", "none", "any", "lookup"))
+def test_compatible_responses_tool_choices_and_parsed_calls_use_selected_route(choice):
+    model = "vendor/responses-tool-choice"
+    url = f"{_COLLISION_ROOT}/responses"
+    call_response = responses_tool_call_response(
+        name="lookup", arguments_json='{"city":"Haifa"}', call_id="call_responses_123",
+        model=model,
+    )
+    response_body = (
+        call_response if choice != "none"
+        else responses_text_response("Tools disabled", model=model)
+    )
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, json=response_body)
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible", model=model, api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT, api_variant="responses",
+        )
+        result = facade.chat(
+            [UserMessage(content="Find a city")],
+            tools=[_tool_spec()], tool_choice=choice,
+        )
+
+    assert http.call_count == 1
+    request = http.request_history[0]
+    assert request.url == url
+    assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+    payload = request.json()
+    assert payload["model"] == model
+    assert payload["store"] is False
+    assert payload["tools"][0]["name"] == "lookup"
+    assert payload["tools"][0]["parameters"] == _tool_spec().json_schema
+    assert payload["tool_choice"] == {
+        "auto": "auto",
+        "none": "none",
+        "any": "required",
+        "lookup": {"type": "function", "name": "lookup"},
+    }[choice]
+    if choice == "none":
+        assert not result.tool_calls
+    else:
+        assert [(call.name, call.arguments, call.call_id) for call in result.tool_calls] == [
+            ("lookup", {"city": "Haifa"}, "call_responses_123")
+        ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+def test_compatible_responses_fragmented_tool_arguments_finalize_once(transport, monkeypatch):
+    model = "vendor/responses-fragmented-tools"
+    lines = responses_tool_call_sse_lines(
+        name="lookup",
+        arguments_json='{"city":"Haifa"}',
+        argument_fragments=("{\"city\":", "\"Haifa\"}"),
+        call_id="call_responses_fragmented", model=model,
+    )
+    adapter, outgoing, resource, client_closes, client = _counted_sync_stream_route(
+        transport, lines, monkeypatch, model, api_variant="responses"
+    )
+    constructions = (
+        _install_counted_httpx_client(monkeypatch, client) if transport == "httpx" else []
+    )
+    tool_callbacks, completed, callback_order = [], [], []
+    try:
+        chunks = list(adapter.stream_chat(
+            [UserMessage(content="Find a city")],
+            tools=[_tool_spec()], tool_choice="any", buffer_chars=64,
+            on_tool_call=lambda call: (tool_callbacks.append(call), callback_order.append("tool")),
+            on_done=lambda response: (completed.append(response), callback_order.append("done")),
+        ))
+        assert chunks == []
+        assert len(completed) == 1
+        assert [(call.name, call.arguments, call.call_id) for call in completed[0].tool_calls] == [
+            ("lookup", {"city": "Haifa"}, "call_responses_fragmented")
+        ]
+        assert len(tool_callbacks) == 1
+        assert tool_callbacks[0].call_id == "call_responses_fragmented"
+        assert callback_order == ["tool", "done"]
+        assert len(outgoing) == 1
+        _assert_selected_responses_request(
+            outgoing[0], model, stream=True, api_variant="responses"
+        )
+        request_body = (
+            outgoing[0][1]["json"] if transport == "requests"
+            else json.loads(outgoing[0].content)
+        )
+        assert request_body["tools"][0]["parameters"] == _tool_spec().json_schema
+        assert request_body["tool_choice"] == "required"
+        assert resource.close_count == 1
+        if transport == "httpx":
+            assert constructions == [True]
+            assert client_closes == [True]
+    finally:
+        if resource.close_count == 0:
+            resource.close()
+        if transport == "httpx" and not client_closes:
+            client.close()
+
+
+_MISSING_TOOL_ARGUMENT = object()
+_MALFORMED_RETURNED_TOOL_ARGUMENTS = (
+    pytest.param("not-json", id="malformed-json"),
+    pytest.param("null", id="json-null"),
+    pytest.param("[]", id="json-array"),
+    pytest.param('"text"', id="json-scalar"),
+    pytest.param(" ", id="blank"),
+    pytest.param(None, id="raw-null"),
+    pytest.param([], id="raw-list"),
+    pytest.param(False, id="raw-bool"),
+    pytest.param(1, id="raw-int"),
+    pytest.param(_MISSING_TOOL_ARGUMENT, id="missing"),
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("api_variant", ("chat_completions", "responses"))
+@pytest.mark.parametrize("arguments", _MALFORMED_RETURNED_TOOL_ARGUMENTS)
+def test_compatible_facade_rejects_malformed_returned_tool_arguments_safely(
+    api_variant, arguments,
+):
+    model = "vendor/malformed-tool-arguments"
+    url = f"{_COLLISION_ROOT}/" + (
+        "responses" if api_variant == "responses" else "chat/completions"
+    )
+    if api_variant == "responses":
+        response_body = responses_tool_call_response(
+            name="lookup", arguments_json="{}", call_id="call_bad", model=model,
+        )
+        if arguments is _MISSING_TOOL_ARGUMENT:
+            response_body["output"][0].pop("arguments")
+        else:
+            response_body["output"][0]["arguments"] = deepcopy(arguments)
+    else:
+        response_body = tool_call_response(
+            name="lookup", arguments_json="{}", call_id="call_bad"
+        )
+        function = response_body["choices"][0]["message"]["tool_calls"][0]["function"]
+        if arguments is _MISSING_TOOL_ARGUMENT:
+            function.pop("arguments")
+        else:
+            function["arguments"] = deepcopy(arguments)
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, json=response_body)
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible", model=model, api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT, api_variant=api_variant,
+        )
+        with pytest.raises(InvalidToolArgumentsError) as caught:
+            facade.chat(
+                [UserMessage(content="Find a city")],
+                tools=[_tool_spec()], tool_choice="any",
+            )
+    assert http.call_count == 1
+    _assert_selected_responses_request(
+        http.request_history[0], model, stream=False, api_variant=api_variant
+    )
+    assert _COLLISION_KEY not in str(caught.value)
+    if isinstance(arguments, str) and arguments.strip():
+        assert arguments not in str(caught.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kwargs,error_type", _INVALID_TOOL_REQUEST_CASES)
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+def test_compatible_responses_rejects_invalid_tool_requests_before_send(
+    kwargs, error_type, mode,
+):
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible", model="vendor/invalid-response-tool-request",
+        api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT, api_variant="responses",
+    )
+    method = "_stream_request" if mode == "stream_chat" else "_send_request"
+    with patch.object(OpenAISyncClient, method, new=Mock()) as send:
+        with pytest.raises(error_type):
+            _invoke_compatible_sync(facade, mode, kwargs)
+    send.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs,error_type", _INVALID_TOOL_REQUEST_CASES)
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+async def test_compatible_responses_async_rejects_invalid_tool_requests_before_send(
+    kwargs, error_type, mode,
+):
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible", model="vendor/invalid-response-tool-request",
+        api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT, api_variant="responses",
+    )
+    method = "_stream_request" if mode == "astream_chat" else "_send_request"
+    with patch.object(OpenAIAsyncClient, method, new=Mock()) as send:
+        with pytest.raises(error_type):
+            await _invoke_compatible_async(facade, mode, kwargs)
+    send.assert_not_called()
+
+
+@pytest.mark.unit
+def test_compatible_responses_serializes_mixed_roles_and_permitted_media_without_fetching():
+    model = "vendor/responses-messages-media"
+    url = f"{_COLLISION_ROOT}/responses"
+    history = [
+        Prompt("system instruction"),
+        UserMessage(
+            "inspect files",
+            files=[
+                ImagePart(url="https://media.example.test/picture.png"),
+                ImagePart(data=b"tiny-image", media_type="image/png"),
+                DocumentPart(url="https://media.example.test/guide.pdf"),
+                DocumentPart(data=b"%PDF-tiny", media_type="application/pdf"),
+            ],
+        ),
+        {"role": "assistant", "content": "I will inspect them"},
+        {"role": "user", "content": "continue"},
+        ToolMessage(content='{"ok":true}', tool_call_id="call_media"),
+    ]
+    original_history = deepcopy(history)
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, json=responses_text_response("done", model=model))
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible", model=model, api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT, api_variant="responses",
+        )
+        response = facade.chat(history)
+
+    assert http.call_count == 1
+    assert response.content == "done"
+    assert history == original_history
+    request = http.request_history[0]
+    assert request.url == url
+    assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+    payload = request.json()
+    assert payload["model"] == model
+    assert payload["store"] is False
+    assert payload["instructions"] == "system instruction"
+    assert payload["input"][0]["role"] == "user"
+    media = payload["input"][0]["content"]
+    assert media[0] == {"type": "input_text", "text": "inspect files"}
+    assert media[1] == {
+        "type": "input_image", "image_url": "https://media.example.test/picture.png"
+    }
+    assert media[2]["type"] == "input_image"
+    assert media[2]["image_url"] == "data:image/png;base64,dGlueS1pbWFnZQ=="
+    assert media[3] == {"type": "input_file", "file_url": "https://media.example.test/guide.pdf"}
+    assert payload["input"][1] == {"role": "assistant", "content": "I will inspect them"}
+    assert payload["input"][2] == {"role": "user", "content": "continue"}
+    assert payload["input"][3] == {
+        "type": "function_call_output", "call_id": "call_media", "output": '{"ok":true}'
+    }
+    assert media[4]["type"] == "input_file"
+    assert media[4]["filename"] == "document.pdf"
+    assert media[4]["file_data"] == "data:application/pdf;base64,JVBERi10aW55"
+
+
+@pytest.mark.unit
+def test_compatible_responses_unsupported_generic_file_part_fails_before_send():
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible", model="vendor/file-rejection",
+        api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT, api_variant="responses",
+    )
+    with requests_mock.Mocker(real_http=False) as http:
+        with pytest.raises(ValueError):
+            facade.chat([
+                UserMessage("unsupported", files=[FilePart(
+                    url="https://media.example.test/data.txt", media_type="text/plain"
+                )])
+            ])
+    assert http.call_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ("chat", "achat", "stream_chat", "astream_chat"))
+@pytest.mark.parametrize("capture_reasoning", (False, True), ids=("reasoning-off", "reasoning-on"))
+async def test_compatible_responses_captures_only_returned_reasoning_when_opted_in(
+    method, capture_reasoning, monkeypatch,
+):
+    model = "vendor/returned-reasoning"
+    url = f"{_COLLISION_ROOT}/responses"
+    reasoning_item = {
+        "id": "reasoning-1", "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": "Returned summary"}],
+        "content": [{"type": "reasoning_text", "text": "Private content"}],
+    }
+    message_item = {
+        "id": "message-1", "type": "message", "status": "completed",
+        "role": "assistant", "content": [
+            {"type": "output_text", "text": "Visible answer", "annotations": []}
+        ],
+    }
+    body = responses_response(
+        output=[reasoning_item, message_item], model=model,
+    )
+    stream_lines = []
+    for event_type, delta, sequence in (
+        ("response.reasoning_summary_text.delta", "Returned summary", 0),
+        ("response.reasoning_text.delta", "Private content", 1),
+        ("response.output_text.delta", "Visible answer", 2),
+    ):
+        stream_lines.extend(event_lines({
+            "type": event_type, "delta": delta, "sequence_number": sequence,
+            "item_id": "reasoning-1" if "reasoning" in event_type else "message-1",
+            "output_index": 0 if "reasoning" in event_type else 1,
+            "content_index": 0,
+        }))
+    stream_lines.extend(event_lines({
+        "type": "response.completed",
+        "response": responses_response(
+            output=[reasoning_item, message_item], model=model,
+        ),
+        "sequence_number": 3,
+    }))
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible", model=model, api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT, api_variant="responses",
+    )
+    completed, visible, reasoning_callbacks, outgoing = [], [], [], []
+    request_kwargs = {"capture_reasoning": capture_reasoning}
+    if method == "chat":
+        with requests_mock.Mocker(real_http=False) as http:
+            http.post(url, json=body)
+            result = facade.chat([UserMessage("Question")], **request_kwargs)
+        assert http.call_count == 1
+        request = http.request_history[0]
+        payload = request.json()
+    elif method == "achat":
+        real_client = httpx.AsyncClient
+
+        def handler(request):
+            outgoing.append(request)
+            return httpx.Response(200, json=body, request=request)
+
+        client = real_client(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
+        try:
+            result = await facade.achat([UserMessage("Question")], **request_kwargs)
+        finally:
+            await client.aclose()
+        assert len(outgoing) == 1
+        request = outgoing[0]
+        payload = json.loads(request.content)
+    elif method == "stream_chat":
+        facade, outgoing, resource, client_closes, client = _counted_sync_stream_route(
+            "requests", stream_lines, monkeypatch, model, api_variant="responses"
+        )
+        try:
+            visible.extend(facade.stream_chat(
+                [UserMessage("Question")], on_done=completed.append,
+                on_reasoning=reasoning_callbacks.append, **request_kwargs,
+            ))
+            assert len(outgoing) == 1
+            assert resource.close_count == 1
+        finally:
+            if resource.close_count == 0:
+                resource.close()
+        request = outgoing[0]
+        payload = request[1]["json"]
+    else:
+        facade, outgoing, resource, client_closes, client = _counted_async_stream_route(
+            stream_lines, monkeypatch, model, api_variant="responses"
+        )
+        try:
+            async for text in facade.astream_chat(
+                [UserMessage("Question")], on_done=completed.append,
+                on_reasoning=reasoning_callbacks.append, **request_kwargs,
+            ):
+                visible.append(text)
+            assert len(outgoing) == 1
+            assert resource.close_count == 1
+        finally:
+            if resource.close_count == 0:
+                await resource.aclose()
+            if client is not None and not client_closes:
+                await client.aclose()
+        request = outgoing[0]
+        payload = json.loads(request.content)
+
+    if method in ("chat", "achat"):
+        assert str(request.url) == url
+    _assert_selected_responses_request(request, model, stream=method in ("stream_chat", "astream_chat"))
+    assert payload["store"] is False
+    assert not {"reasoning", "reasoning_effort", "summary", "reasoning_summary"} & payload.keys()
+    if method in ("stream_chat", "astream_chat"):
+        assert "".join(visible) == "Visible answer"
+        assert len(completed) == 1
+        result = completed[0]
+        if capture_reasoning:
+            assert [event.text for event in reasoning_callbacks] == [
+                "Returned summary", "Private content",
+            ]
+        else:
+            assert reasoning_callbacks == []
+    else:
+        assert result.content == "Visible answer"
+    if capture_reasoning:
+        assert {event.text for event in result.reasoning_events} == {
+            "Returned summary", "Private content",
+        }
+    else:
+        assert result.reasoning_events == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("feature", ("tools", "schema"))
+def test_compatible_responses_feature_rejection_preserves_selected_request(feature):
+    model = "vendor/responses-feature-rejection"
+    url = f"{_COLLISION_ROOT}/responses"
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}},
+              "required": ["answer"], "additionalProperties": False}
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, status_code=400, json=_failure_payload("unsupported-feature"))
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible", model=model, api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT, api_variant="responses",
+        )
+        with pytest.raises(LLMAPIClientError):
+            if feature == "tools":
+                facade.chat(
+                    [UserMessage(content="Use a tool")],
+                    tools=[_tool_spec()], tool_choice="any",
+                )
+            else:
+                facade.chat(
+                    [UserMessage(content="Return structured result")],
+                    json_schema=schema,
+                )
+    assert http.call_count == 1
+    request = http.request_history[0]
+    assert request.url == url
+    payload = request.json()
+    assert payload["model"] == model
+    assert payload["store"] is False
+    if feature == "tools":
+        assert payload["tool_choice"] == "required"
+        assert payload["tools"][0]["parameters"] == _tool_spec().json_schema
+        assert "text" not in payload
+    else:
+        assert payload["text"]["format"]["schema"] == schema
+        assert "tools" not in payload or payload["tools"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("api_variant", ("chat_completions", "responses"))
+@pytest.mark.parametrize("decoded", (False, True), ids=("json-text", "decoded-dict"))
+def test_compatible_empty_tool_arguments_remain_legitimate_objects(api_variant, decoded):
+    model = "vendor/legitimate-empty-tool-arguments"
+    url = f"{_COLLISION_ROOT}/" + (
+        "responses" if api_variant == "responses" else "chat/completions"
+    )
+    if api_variant == "responses":
+        body = responses_tool_call_response(
+            name="lookup", arguments_json="{}", call_id="call_empty", model=model,
+        )
+        if decoded:
+            body["output"][0]["arguments"] = {}
+    else:
+        body = tool_call_response(name="lookup", arguments_json="{}", call_id="call_empty")
+        if decoded:
+            body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = {}
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, json=body)
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible", model=model, api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT, api_variant=api_variant,
+        )
+        response = facade.chat(
+            [UserMessage(content="Find a city")], tools=[_tool_spec()], tool_choice="any",
+        )
+    assert http.call_count == 1
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].arguments == {}
+    assert response.tool_calls[0].call_id == "call_empty"
+
+
+@pytest.mark.unit
+def test_compatible_responses_malformed_tool_stream_never_flushes_pending_output():
+    model = "vendor/responses-malformed-stream-tool"
+    url = f"{_COLLISION_ROOT}/responses"
+    malformed = "{\"city\":"
+    terminal = responses_response(
+        output=[
+            {"id": "msg-pending", "type": "message", "status": "completed",
+             "role": "assistant", "content": [
+                 {"type": "output_text", "text": "pending", "annotations": []}
+             ]},
+            {"id": "fc-bad", "type": "function_call", "call_id": "call_bad_stream",
+             "name": "lookup", "arguments": malformed, "status": "completed"},
+        ], model=model,
+    )
+    lines = event_lines({
+        "type": "response.output_text.delta", "delta": "pending",
+        "item_id": "msg-pending", "output_index": 0, "content_index": 0,
+    })
+    lines.extend(event_lines({
+        "type": "response.function_call_arguments.delta", "delta": malformed,
+        "call_id": "call_bad_stream", "item_id": "fc-bad", "output_index": 1,
+    }))
+    lines.extend(event_lines({"type": "response.completed", "response": terminal}))
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, text="\n".join(lines), headers={"Content-Type": "text/event-stream"})
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible", model=model, api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT, api_variant="responses",
+        )
+        visible, deltas, chunks, tools, completed = [], [], [], [], []
+        with pytest.raises(InvalidToolArgumentsError):
+            visible.extend(facade.stream_chat(
+                [UserMessage(content="Find a city")], tools=[_tool_spec()],
+                tool_choice="any", buffer_chars=64, on_delta=deltas.append,
+                on_chunk=chunks.append,
+                on_tool_call=tools.append, on_done=completed.append,
+            ))
+    assert http.call_count == 1
+    _assert_selected_responses_request(http.request_history[0], model, stream=True)
+    assert visible == []
+    assert deltas == []
+    assert chunks == []
+    assert tools == []
+    assert completed == []
+
+
+def _malformed_arguments_fixture(api_variant, arguments_json, model):
+    """Build malformed tool output after pending text; the terminal is authoritative.
+
+    Responses argument deltas stay fragmented, while its terminal response carries
+    the complete tool call that the adapter validates.
+    """
+    if api_variant == "responses":
+        response = responses_tool_call_response(
+            name="lookup", arguments_json=arguments_json,
+            call_id="call_malformed_matrix", model=model,
+        )
+        response["output"].insert(0, {
+            "id": "msg-pending", "type": "message", "status": "completed",
+            "role": "assistant", "content": [
+                {"type": "output_text", "text": "pending", "annotations": []}
+            ],
+        })
+        argument_events = responses_tool_call_sse_lines(
+            name="lookup", arguments_json=arguments_json,
+            argument_fragments=(arguments_json[:1], arguments_json[1:]),
+            call_id="call_malformed_matrix", model=model,
+        )
+        prefix_event = event_lines({
+            "type": "response.output_text.delta", "delta": "pending",
+            "item_id": "msg-pending", "output_index": 0, "content_index": 0,
+        })
+        terminal_event = event_lines({
+            "type": "response.completed", "response": response,
+        })
+        return response, prefix_event + argument_events[:-2] + terminal_event
+    response = tool_call_response(
+        name="lookup", arguments_json=arguments_json,
+        call_id="call_malformed_matrix",
+    )
+    lines = premature_eof_sse_lines("pending") + tool_call_sse_lines(
+        name="lookup", arguments_json=arguments_json,
+        argument_fragments=(arguments_json[:1], arguments_json[1:]),
+        call_id="call_malformed_matrix",
+    )
+    return response, lines
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("api_variant", ("chat_completions", "responses"))
+@pytest.mark.parametrize("arguments_json", ("null", "[]"), ids=("json-null", "json-array"))
+@pytest.mark.parametrize(
+    ("mode", "transport"),
+    (("chat", "httpx"), ("stream_chat", "requests"), ("stream_chat", "httpx")),
+)
+def test_compatible_malformed_nonobject_arguments_fail_sync_across_transports(
+    api_variant, arguments_json, mode, transport, monkeypatch,
+):
+    model = "vendor/malformed-arguments-sync-matrix"
+    resource = "responses" if api_variant == "responses" else "chat/completions"
+    url = f"{_COLLISION_ROOT}/{resource}"
+    body, lines = _malformed_arguments_fixture(api_variant, arguments_json, model)
+    visible, deltas, chunks, tools, completed = [], [], [], [], []
+    if mode == "chat":
+        outgoing = []
+        client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: _capture_httpx_request(request, outgoing, body)
+        ))
+        _install_counted_httpx_client(monkeypatch, client)
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible", model=model, api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT, api_variant=api_variant, transport="httpx",
+        )
+        try:
+            with pytest.raises(InvalidToolArgumentsError):
+                facade.chat([UserMessage("Call lookup")], tools=[_tool_spec()])
+        finally:
+            client.close()
+        assert len(outgoing) == 1
+        request = outgoing[0]
+    else:
+        facade, outgoing, response_resource, client_closes, client = _counted_sync_stream_route(
+            transport, lines, monkeypatch, model, api_variant=api_variant
+        )
+        constructions = (
+            _install_counted_httpx_client(monkeypatch, client) if transport == "httpx" else []
+        )
+        try:
+            with pytest.raises(InvalidToolArgumentsError):
+                visible.extend(facade.stream_chat(
+                    [UserMessage("Call lookup")], tools=[_tool_spec()],
+                    buffer_chars=64, on_delta=deltas.append, on_chunk=chunks.append,
+                    on_tool_call=tools.append, on_done=completed.append,
+                ))
+            assert visible == [] and deltas == [] and chunks == [] and tools == [] and completed == []
+            assert len(outgoing) == 1
+            request = outgoing[0]
+            assert response_resource.close_count == 1
+            if transport == "httpx":
+                assert constructions == [True]
+                assert client_closes == [True]
+        finally:
+            if response_resource.close_count == 0:
+                response_resource.close()
+            if transport == "httpx" and not client_closes:
+                client.close()
+    _assert_selected_responses_request(
+        request, model, stream=mode == "stream_chat", api_variant=api_variant,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_variant", ("chat_completions", "responses"))
+@pytest.mark.parametrize("arguments_json", ("null", "[]"), ids=("json-null", "json-array"))
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+async def test_compatible_malformed_nonobject_arguments_fail_async(
+    api_variant, arguments_json, mode, monkeypatch,
+):
+    model = "vendor/malformed-arguments-async-matrix"
+    resource = "responses" if api_variant == "responses" else "chat/completions"
+    url = f"{_COLLISION_ROOT}/{resource}"
+    body, lines = _malformed_arguments_fixture(api_variant, arguments_json, model)
+    visible, deltas, chunks, tools, completed = [], [], [], [], []
+    if mode == "achat":
+        outgoing = []
+        real_client = httpx.AsyncClient
+        client = real_client(transport=httpx.MockTransport(
+            lambda request: _capture_httpx_request(request, outgoing, body)
+        ))
+        _install_counted_httpx_client(monkeypatch, client, asynchronous=True)
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible", model=model, api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT, api_variant=api_variant,
+        )
+        try:
+            with pytest.raises(InvalidToolArgumentsError):
+                await facade.achat([UserMessage("Call lookup")], tools=[_tool_spec()])
+        finally:
+            await client.aclose()
+        assert len(outgoing) == 1
+        request = outgoing[0]
+    else:
+        facade, outgoing, response_resource, client_closes, client = _counted_async_stream_route(
+            lines, monkeypatch, model, api_variant=api_variant
+        )
+        _install_counted_httpx_client(monkeypatch, client, asynchronous=True)
+        try:
+            with pytest.raises(InvalidToolArgumentsError):
+                async for text in facade.astream_chat(
+                    [UserMessage("Call lookup")], tools=[_tool_spec()],
+                    buffer_chars=64, on_delta=deltas.append, on_chunk=chunks.append,
+                    on_tool_call=tools.append, on_done=completed.append,
+                ):
+                    visible.append(text)
+            assert visible == [] and deltas == [] and chunks == [] and tools == [] and completed == []
+            assert len(outgoing) == 1
+            request = outgoing[0]
+            assert response_resource.close_count == 1
+            assert client_closes == [True]
+        finally:
+            if response_resource.close_count == 0:
+                await response_resource.aclose()
+            if not client_closes:
+                await client.aclose()
+    _assert_selected_responses_request(
+        request, model, stream=mode == "astream_chat", api_variant=api_variant,
+    )

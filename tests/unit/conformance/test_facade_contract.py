@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Callable
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -46,11 +46,19 @@ from tests.fixtures.structured_output import (
 from tests.fixtures.openai_compatible import (
     FIXTURE_MODEL,
     chat_completion_response,
+    event_lines,
     incomplete_response,
     incomplete_sse_lines,
     premature_eof_sse_lines,
     refusal_response,
     refusal_sse_lines,
+    responses_incomplete_response,
+    responses_refusal_response,
+    responses_response,
+    responses_text_response,
+    responses_text_sse_lines,
+    responses_tool_call_response,
+    responses_tool_call_sse_lines,
     structured_result_sse_lines,
     text_response,
     text_sse_lines,
@@ -2781,3 +2789,540 @@ async def test_compatible_astream_terminal_outcome_skips_structured_parsing(
     assert len(completed) == 1
     _assert_structured_terminal_outcome(completed[0], case, outcome)
     transport.assert_called_once()
+
+
+def _compatible_responses_case():
+    """Return a bounded Responses case without changing the shared CASES table."""
+    return replace(
+        _COMPATIBLE_CASE,
+        model="vendor/conformance-responses-tools",
+        connection_kwargs=(
+            ("base_url", "https://example.invalid/proxy/v1/"),
+            ("api_variant", "responses"),
+        ),
+        wire_format="openai_responses",
+        message_key="input",
+        structured_schema_path=("text", "format", "schema"),
+        response_factory=_compatible_responses_response,
+        stream_events_factory=_compatible_responses_stream_events,
+    )
+
+
+def _compatible_responses_response(
+    content="ok", *, include_tool=False, include_reasoning=False,
+):
+    del include_reasoning
+    if include_tool:
+        return responses_tool_call_response(
+            name="get_weather", arguments_json='{"city": "Tel Aviv"}',
+            call_id="call_123", model="vendor/conformance-responses-tools",
+        )
+    return responses_text_response(
+        content, model="vendor/conformance-responses-tools"
+    )
+
+
+def _compatible_responses_stream_events():
+    return _decode_compatible_sse(
+        responses_text_sse_lines("ok", model="vendor/conformance-responses-tools")
+    )
+
+
+def _responses_tool_stream_events():
+    return _decode_compatible_sse(
+        responses_tool_call_sse_lines(
+            name="get_weather",
+            arguments_json='{"city": "Tel Aviv"}',
+            argument_fragments=("{\"city\": ", "\"Tel Aviv\"}"),
+            call_id="call_123",
+            model="vendor/conformance-responses-tools",
+        )
+    )
+
+
+def _responses_stream_request_probe(client_class, events, *, asynchronous=False):
+    """Patch only transport streaming, preserving the client's wire formatting."""
+    observed = []
+
+    def stream_request(_client, url, payload, timeout=None):
+        observed.append((url, deepcopy(payload), timeout))
+        return _as_async_iter(events) if asynchronous else iter(events)
+
+    return patch.object(client_class, "_stream_request", new=stream_request), observed
+
+
+def _assert_responses_stream_request(observed, case):
+    assert len(observed) == 1
+    url, payload, _timeout = observed[0]
+    root = dict(case.connection_kwargs)["base_url"].rstrip("/")
+    assert url == f"{root}/responses"
+    assert payload["model"] == case.model
+    assert payload["store"] is False
+    assert payload["stream"] is True
+    return payload
+
+
+def _assert_responses_ordinary_request(url, payload, case):
+    root = dict(case.connection_kwargs)["base_url"].rstrip("/")
+    assert url == f"{root}/responses"
+    assert payload["model"] == case.model
+    assert payload["store"] is False
+    assert not payload.get("stream", False)
+    return payload
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("chat", "achat", "stream_chat", "astream_chat"))
+@pytest.mark.parametrize("choice", ("auto", "none", "any", "get_weather"))
+def test_compatible_responses_tool_choices_and_completed_calls(method, choice):
+    case = _compatible_responses_case()
+    tool = _shared_test_tool()
+    response = (
+        _compatible_responses_response(include_tool=True)
+        if choice != "none" else _compatible_responses_response()
+    )
+    completed = []
+    if method == "chat":
+        transport = Mock(return_value=_JSONResponse(response))
+        with patch.object(case.sync_client_class, "_send_request", new=transport):
+            result = _facade(case).chat(
+                **_chat_kwargs(case), tools=[tool], tool_choice=choice
+            )
+        payload = transport.call_args.args[1]
+        transport.assert_called_once()
+    elif method == "stream_chat":
+        events = (
+            _responses_tool_stream_events() if choice != "none"
+            else _compatible_responses_stream_events()
+        )
+        context, observed = _responses_stream_request_probe(case.sync_client_class, events)
+        with context:
+            list(_facade(case).stream_chat(
+                **_chat_kwargs(case), tools=[tool], tool_choice=choice,
+                on_done=completed.append,
+            ))
+        payload = _assert_responses_stream_request(observed, case)
+        result = completed[0]
+    elif method == "achat":
+        transport = AsyncMock(return_value=response)
+        with patch.object(case.async_client_class, "_send_request", new=transport):
+            result = asyncio.run(_facade(case).achat(
+                **_chat_kwargs(case), tools=[tool], tool_choice=choice
+            ))
+        payload = transport.await_args.args[1]
+        transport.assert_awaited_once()
+    else:
+        events = (
+            _responses_tool_stream_events() if choice != "none"
+            else _compatible_responses_stream_events()
+        )
+        context, observed = _responses_stream_request_probe(
+            case.async_client_class, events, asynchronous=True
+        )
+        async def run():
+            async for _text in _facade(case).astream_chat(
+                **_chat_kwargs(case), tools=[tool], tool_choice=choice,
+                on_done=completed.append,
+            ):
+                pass
+        with context:
+            asyncio.run(run())
+        payload = _assert_responses_stream_request(observed, case)
+        result = completed[0]
+
+    assert payload["tool_choice"] == _expected_shared_tool_choice(case, choice)
+    _assert_shared_tool_declaration(payload, case, tool)
+    if method in ("chat", "achat"):
+        url = transport.call_args.args[0] if method == "chat" else transport.await_args.args[0]
+        _assert_responses_ordinary_request(url, payload, case)
+    if choice == "none":
+        assert not result.tool_calls
+    else:
+        _assert_shared_tool_call_ids(result, case)
+
+
+def _assert_responses_history_has_no_replay(payload, case):
+    _assert_shared_tool_history_payload(case, payload)
+    serialized = payload[case.message_key]
+    assert len(serialized) == 3
+    assert serialized[0] == {"role": "user", "content": "What is the weather?"}
+    assert serialized[1]["type"] == "function_call"
+    assert serialized[2] == {
+        "type": "function_call_output",
+        "call_id": "call_history",
+        "output": '{"temperature": 18}',
+    }
+    assert not {"previous_response_id", "conversation", "previous_response"} & payload.keys()
+    for marker in ("opaque-replay-sentinel", "resp_unrelated_previous", "unrelated prior content"):
+        assert marker not in repr(payload)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("chat", "achat", "stream_chat", "astream_chat"))
+def test_compatible_responses_uses_full_caller_tool_history_with_previous_id(method):
+    case = _compatible_responses_case()
+    history = _shared_tool_history(case)
+    original_history = deepcopy(history)
+    previous = ChatResponse(
+        response_id="resp_unrelated_previous", content="unrelated prior content",
+        tool_calls=[ToolCall(name="unrelated", arguments={"x": 1}, call_id="call_extra")],
+        provider_data={"replay": "opaque-replay-sentinel"},
+    )
+    original_previous = deepcopy(previous)
+    if method == "chat":
+        transport = Mock(return_value=_JSONResponse(_compatible_responses_response()))
+        with patch.object(case.sync_client_class, "_send_request", new=transport):
+            _facade(case).chat(
+                messages=history, tools=[_shared_test_tool()], previous_response=previous,
+            )
+        payload = transport.call_args.args[1]
+        transport.assert_called_once()
+    elif method == "stream_chat":
+        context, observed = _responses_stream_request_probe(
+            case.sync_client_class, _compatible_responses_stream_events()
+        )
+        with context:
+            list(_facade(case).stream_chat(
+                messages=history, tools=[_shared_test_tool()], previous_response=previous,
+            ))
+        payload = _assert_responses_stream_request(observed, case)
+    elif method == "achat":
+        transport = AsyncMock(return_value=_compatible_responses_response())
+        with patch.object(case.async_client_class, "_send_request", new=transport):
+            asyncio.run(_facade(case).achat(
+                messages=history, tools=[_shared_test_tool()], previous_response=previous,
+            ))
+        payload = transport.await_args.args[1]
+        transport.assert_awaited_once()
+    else:
+        context, observed = _responses_stream_request_probe(
+            case.async_client_class, _compatible_responses_stream_events(), asynchronous=True
+        )
+        async def run():
+            async for _text in _facade(case).astream_chat(
+                messages=history, tools=[_shared_test_tool()], previous_response=previous,
+            ):
+                pass
+        with context:
+            asyncio.run(run())
+        payload = _assert_responses_stream_request(observed, case)
+
+    assert history == original_history
+    assert previous == original_previous
+    _assert_responses_history_has_no_replay(payload, case)
+    if method in ("chat", "achat"):
+        url = transport.call_args.args[0] if method == "chat" else transport.await_args.args[0]
+        _assert_responses_ordinary_request(url, payload, case)
+
+
+def _responses_structured_result(content):
+    return responses_response(
+        output=[{
+            "id": "msg-structured",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": content, "annotations": []}],
+        }],
+        model="vendor/conformance-responses-tools",
+    )
+
+
+def _responses_structured_events(content):
+    return _decode_compatible_sse(
+        responses_text_sse_lines(content, model="vendor/conformance-responses-tools")
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("chat", "achat", "stream_chat", "astream_chat"))
+@pytest.mark.parametrize(("fixture_name", "expected"), _COMPATIBLE_SCHEMA_RESULTS)
+def test_compatible_responses_parses_portable_nested_schemas(method, fixture_name, expected):
+    case = _compatible_responses_case()
+    source_schema = deepcopy(PORTABLE_PROFILE_SCHEMAS[fixture_name])
+    original_schema = deepcopy(source_schema)
+    content = json.dumps(expected)
+    if method == "chat":
+        transport = Mock(return_value=_JSONResponse(_responses_structured_result(content)))
+        with patch.object(case.sync_client_class, "_send_request", new=transport):
+            response = _facade(case).chat(**_chat_kwargs(case), json_schema=source_schema)
+        payload = transport.call_args.args[1]
+        _assert_responses_ordinary_request(transport.call_args.args[0], payload, case)
+        transport.assert_called_once()
+    elif method == "stream_chat":
+        completed = []
+        context, observed = _responses_stream_request_probe(
+            case.sync_client_class, _responses_structured_events(content)
+        )
+        with context:
+            list(_facade(case).stream_chat(
+                **_chat_kwargs(case), json_schema=source_schema, on_done=completed.append,
+            ))
+        response, payload = completed[0], _assert_responses_stream_request(observed, case)
+    elif method == "achat":
+        transport = AsyncMock(return_value=_responses_structured_result(content))
+        with patch.object(case.async_client_class, "_send_request", new=transport):
+            response = asyncio.run(_facade(case).achat(
+                **_chat_kwargs(case), json_schema=source_schema,
+            ))
+        payload = transport.await_args.args[1]
+        _assert_responses_ordinary_request(transport.await_args.args[0], payload, case)
+        transport.assert_awaited_once()
+    else:
+        completed = []
+        context, observed = _responses_stream_request_probe(
+            case.async_client_class, _responses_structured_events(content), asynchronous=True
+        )
+        async def run():
+            async for _text in _facade(case).astream_chat(
+                **_chat_kwargs(case), json_schema=source_schema, on_done=completed.append,
+            ):
+                pass
+        with context:
+            asyncio.run(run())
+        response, payload = completed[0], _assert_responses_stream_request(observed, case)
+
+    assert response.parsed_json == expected
+    assert response.parsed_model is None
+    assert _structured_schema_from_payload(case, payload) == original_schema
+    assert source_schema == original_schema
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("chat", "achat", "stream_chat", "astream_chat"))
+@pytest.mark.parametrize("invalid", (False, True), ids=("valid", "custom-validator-failure"))
+def test_compatible_responses_validates_original_response_model(method, invalid):
+    case = _compatible_responses_case()
+    content = '{"contact":{"name":"Grace"}}' if invalid else NESTED_PYDANTIC_RESPONSE_JSON
+    response = _responses_structured_result(content)
+    events = _responses_structured_events(content)
+    if method == "chat":
+        transport = Mock(return_value=_JSONResponse(response))
+        completed, visible, deltas, chunks, tool_callbacks = [], [], [], [], []
+        with patch.object(case.sync_client_class, "_send_request", new=transport):
+            if invalid:
+                with pytest.raises(JSONSchemaError):
+                    _facade(case).chat(**_chat_kwargs(case), response_model=_AdaOnlyNestedResponse)
+            else:
+                result = _facade(case).chat(
+                    **_chat_kwargs(case), response_model=_AdaOnlyNestedResponse,
+                )
+        request_payload = transport.call_args.args[1]
+        _assert_responses_ordinary_request(transport.call_args.args[0], request_payload, case)
+        transport.assert_called_once()
+    elif method == "stream_chat":
+        completed, visible, deltas, chunks, tool_callbacks = [], [], [], [], []
+        context, observed = _responses_stream_request_probe(case.sync_client_class, events)
+        with context:
+            stream = _facade(case).stream_chat(
+                **_chat_kwargs(case), response_model=_AdaOnlyNestedResponse,
+                buffer_chars=64, on_delta=deltas.append, on_chunk=chunks.append,
+                on_tool_call=tool_callbacks.append, on_done=completed.append,
+            )
+            if invalid:
+                with pytest.raises(JSONSchemaError):
+                    visible.extend(stream)
+            else:
+                visible.extend(stream)
+        request_payload = _assert_responses_stream_request(observed, case)
+        if not invalid:
+            result = completed[0]
+    elif method == "achat":
+        transport = AsyncMock(return_value=response)
+        completed, visible, deltas, chunks, tool_callbacks = [], [], [], [], []
+        with patch.object(case.async_client_class, "_send_request", new=transport):
+            if invalid:
+                with pytest.raises(JSONSchemaError):
+                    asyncio.run(_facade(case).achat(
+                        **_chat_kwargs(case), response_model=_AdaOnlyNestedResponse,
+                    ))
+            else:
+                result = asyncio.run(_facade(case).achat(
+                    **_chat_kwargs(case), response_model=_AdaOnlyNestedResponse,
+                ))
+        request_payload = transport.await_args.args[1]
+        _assert_responses_ordinary_request(transport.await_args.args[0], request_payload, case)
+        transport.assert_awaited_once()
+    else:
+        completed, visible, deltas, chunks, tool_callbacks = [], [], [], [], []
+        context, observed = _responses_stream_request_probe(
+            case.async_client_class, events, asynchronous=True
+        )
+        async def run():
+            stream = _facade(case).astream_chat(
+                **_chat_kwargs(case), response_model=_AdaOnlyNestedResponse,
+                buffer_chars=64, on_delta=deltas.append, on_chunk=chunks.append,
+                on_tool_call=tool_callbacks.append, on_done=completed.append,
+            )
+            if invalid:
+                with pytest.raises(JSONSchemaError):
+                    async for text in stream:
+                        visible.append(text)
+            else:
+                async for text in stream:
+                    visible.append(text)
+        with context:
+            asyncio.run(run())
+        request_payload = _assert_responses_stream_request(observed, case)
+        if not invalid:
+            result = completed[0]
+
+    schema = _structured_schema_from_payload(case, request_payload)
+    assert "$defs" not in schema
+    assert not _contains_reference(schema)
+    if invalid:
+        if method in ("stream_chat", "astream_chat"):
+            assert visible == []
+            assert deltas == []
+            assert chunks == []
+            assert tool_callbacks == []
+            assert completed == []
+        return
+    assert result.parsed_json == json.loads(NESTED_PYDANTIC_RESPONSE_JSON)
+    assert type(result.parsed_model) is _AdaOnlyNestedResponse
+    assert result.parsed_model.contact.name == "Ada"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("chat", "achat", "stream_chat", "astream_chat"))
+@pytest.mark.parametrize("outcome", ("invalid-json", "invalid-model", "refusal", "incomplete"))
+def test_compatible_responses_invalid_and_terminal_structured_results(method, outcome):
+    case = _compatible_responses_case()
+    if outcome == "invalid-json":
+        content = '{"contact":'
+        response = _responses_structured_result(content)
+        events = _responses_structured_events(content)
+        request = {"json_schema": PORTABLE_PROFILE_SCHEMAS["inline_nested_object"]}
+    elif outcome == "invalid-model":
+        content = '{"contact": {}}'
+        response = _responses_structured_result(content)
+        events = _responses_structured_events(content)
+        request = {"response_model": NestedPydanticResponse}
+    elif outcome == "refusal":
+        response = responses_refusal_response(model=case.model)
+        events = _decode_compatible_sse(
+            event_lines({"type": "response.completed", "response": response})
+        )
+        request = {"response_model": NestedPydanticResponse}
+    else:
+        response = responses_incomplete_response(model=case.model)
+        events = _decode_compatible_sse(
+            event_lines({"type": "response.incomplete", "response": response})
+        )
+        request = {"response_model": NestedPydanticResponse}
+
+    if method == "chat":
+        transport = Mock(return_value=_JSONResponse(response))
+        with patch.object(case.sync_client_class, "_send_request", new=transport):
+            if outcome.startswith("invalid-"):
+                with pytest.raises(JSONSchemaError):
+                    _facade(case).chat(**_chat_kwargs(case), **request)
+                result = None
+            else:
+                result = _facade(case).chat(**_chat_kwargs(case), **request)
+        _assert_responses_ordinary_request(
+            transport.call_args.args[0], transport.call_args.args[1], case
+        )
+        transport.assert_called_once()
+    elif method == "stream_chat":
+        completed, visible, deltas, chunks, tool_callbacks = [], [], [], [], []
+        context, observed = _responses_stream_request_probe(case.sync_client_class, events)
+        with context:
+            stream = _facade(case).stream_chat(
+                **_chat_kwargs(case), **request, buffer_chars=64,
+                on_delta=deltas.append, on_chunk=chunks.append,
+                on_tool_call=tool_callbacks.append, on_done=completed.append,
+            )
+            if outcome.startswith("invalid-"):
+                with pytest.raises(JSONSchemaError):
+                    visible.extend(stream)
+                result = None
+            else:
+                visible.extend(stream)
+                result = completed[0]
+        _assert_responses_stream_request(observed, case)
+    elif method == "achat":
+        transport = AsyncMock(return_value=response)
+        with patch.object(case.async_client_class, "_send_request", new=transport):
+            if outcome.startswith("invalid-"):
+                with pytest.raises(JSONSchemaError):
+                    asyncio.run(_facade(case).achat(**_chat_kwargs(case), **request))
+                result = None
+            else:
+                result = asyncio.run(_facade(case).achat(**_chat_kwargs(case), **request))
+        _assert_responses_ordinary_request(
+            transport.await_args.args[0], transport.await_args.args[1], case
+        )
+        transport.assert_awaited_once()
+    else:
+        completed, visible, deltas, chunks, tool_callbacks = [], [], [], [], []
+        context, observed = _responses_stream_request_probe(
+            case.async_client_class, events, asynchronous=True
+        )
+        async def run():
+            stream = _facade(case).astream_chat(
+                **_chat_kwargs(case), **request, buffer_chars=64,
+                on_delta=deltas.append, on_chunk=chunks.append,
+                on_tool_call=tool_callbacks.append, on_done=completed.append,
+            )
+            if outcome.startswith("invalid-"):
+                with pytest.raises(JSONSchemaError):
+                    async for text in stream:
+                        visible.append(text)
+                return None
+            async for text in stream:
+                visible.append(text)
+            return completed[0]
+        with context:
+            result = asyncio.run(run())
+        _assert_responses_stream_request(observed, case)
+
+    if outcome.startswith("invalid-"):
+        if method in ("stream_chat", "astream_chat"):
+            assert visible == []
+            assert deltas == []
+            assert chunks == []
+            assert tool_callbacks == []
+            assert completed == []
+        return
+    assert result.parsed_json is None
+    assert result.parsed_model is None
+    if outcome == "refusal":
+        assert result.refusal == "Fixture refusal"
+        assert result.incomplete_reason is None
+    else:
+        assert result.incomplete_reason == "max_output_tokens"
+        assert result.refusal is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("chat", "achat", "stream_chat", "astream_chat"))
+@pytest.mark.parametrize("invalid_request", _COMPATIBLE_INVALID_REQUESTS)
+def test_compatible_responses_invalid_portable_requests_fail_before_send(method, invalid_request):
+    case = _compatible_responses_case()
+    request = _compatible_invalid_request(invalid_request)
+    original_request = deepcopy(request)
+    send = Mock()
+    if method == "chat":
+        with patch.object(case.sync_client_class, "_send_request", new=send):
+            with pytest.raises(JSONSchemaError):
+                _facade(case).chat(**_chat_kwargs(case), **request)
+    elif method == "stream_chat":
+        with patch.object(case.sync_client_class, "_stream_request", new=send):
+            with pytest.raises(JSONSchemaError):
+                list(_facade(case).stream_chat(**_chat_kwargs(case), **request))
+    elif method == "achat":
+        with patch.object(case.async_client_class, "_send_request", new=send):
+            with pytest.raises(JSONSchemaError):
+                asyncio.run(_facade(case).achat(**_chat_kwargs(case), **request))
+    else:
+        with patch.object(case.async_client_class, "_stream_request", new=send):
+            with pytest.raises(JSONSchemaError):
+                async def run():
+                    async for _text in _facade(case).astream_chat(
+                        **_chat_kwargs(case), **request,
+                    ):
+                        pass
+                asyncio.run(run())
+    send.assert_not_called()
+    assert request == original_request

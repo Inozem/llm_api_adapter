@@ -167,6 +167,28 @@ def responses_refusal_response(refusal: str = "Fixture refusal", **kwargs: Any) 
     return responses_response(output=output, status="completed", **kwargs)
 
 
+def responses_tool_call_response(
+    name: str = "lookup",
+    arguments_json: str = '{"query":"fixture"}',
+    *,
+    call_id: str = "call_fixture_001",
+    item_id: str = "fc-fixture-001",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Build a completed Responses function call with raw JSON arguments."""
+    return responses_response(
+        output=[{
+            "id": item_id,
+            "type": "function_call",
+            "call_id": call_id,
+            "name": name,
+            "arguments": arguments_json,
+            "status": "completed",
+        }],
+        **kwargs,
+    )
+
+
 def responses_incomplete_response(
     content: str = "Partial fixture answer",
     *,
@@ -289,6 +311,43 @@ def responses_text_sse_lines(
         "type": event_type,
         "response": response,
         "sequence_number": len(pieces),
+    }))
+    return lines
+
+
+def responses_tool_call_sse_lines(
+    name: str = "lookup",
+    arguments_json: str = '{"query":"fixture"}',
+    *,
+    argument_fragments: list[str] | tuple[str, ...] | None = None,
+    call_id: str = "call_fixture_001",
+    item_id: str = "fc-fixture-001",
+    model: str = FIXTURE_MODEL,
+) -> list[str]:
+    """Build fragmented function-call argument deltas and a completed result."""
+    arguments = _fragments(arguments_json, argument_fragments)
+    lines: list[str] = []
+    count = max(len(arguments), 1)
+    for index in range(count):
+        payload: dict[str, Any] = {
+            "type": "response.function_call_arguments.delta",
+            "call_id": call_id,
+            "item_id": item_id,
+            "output_index": 0,
+            "delta": arguments[index] if index < len(arguments) else "",
+            "sequence_number": index,
+        }
+        lines.extend(event_lines(payload))
+    lines.extend(event_lines({
+        "type": "response.completed",
+        "response": responses_tool_call_response(
+            name=name,
+            arguments_json=arguments_json,
+            call_id=call_id,
+            item_id=item_id,
+            model=model,
+        ),
+        "sequence_number": count,
     }))
     return lines
 
@@ -423,6 +482,7 @@ __all__ = [
     "refusal_sse_lines",
     "responses_empty_response", "responses_incomplete_response", "responses_refusal_response",
     "responses_response", "responses_text_response", "responses_text_sse_lines",
+    "responses_tool_call_response", "responses_tool_call_sse_lines",
     "structured_result_response", "structured_result_sse_lines",
     "text_response",
     "text_sse_lines", "tool_call_response", "tool_call_sse_lines", "usage_payload",
