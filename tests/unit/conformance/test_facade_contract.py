@@ -8,19 +8,24 @@ contract without credentials or live API calls.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
+import socket
+import sys
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Callable
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import requests_mock
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from src.llm_api_adapter.errors.llm_api_error import (
     JSONSchemaError,
     LLMAPIRateLimitError,
 )
+from src.llm_api_adapter.adapters.openai_compatible.common.adapter import _OpenAIExecutionMixin
 from src.llm_api_adapter.llms.anthropic.async_client import ClaudeAsyncClient
 from src.llm_api_adapter.llms.anthropic.sync_client import ClaudeSyncClient
 from src.llm_api_adapter.llms.google.async_client import GeminiAsyncClient
@@ -141,6 +146,27 @@ def _compatible_stream_events() -> list[SSEEvent]:
             usage=_compatible_usage(),
         ),
     )
+
+
+def _compatible_responses_shared_response(
+    content: str = "ok",
+    *,
+    include_tool: bool = False,
+    include_reasoning: bool = False,
+) -> dict[str, Any]:
+    response = deepcopy(_openai_response(
+        content,
+        include_tool=include_tool,
+        include_reasoning=include_reasoning,
+    ))
+    response["model"] = FIXTURE_MODEL
+    return response
+
+
+def _compatible_responses_shared_stream_events() -> list[SSEEvent]:
+    events = deepcopy(_openai_stream_events())
+    events[-1].data["response"]["model"] = FIXTURE_MODEL
+    return events
 
 
 def _openai_response(
@@ -445,6 +471,38 @@ CASES = (
         ),
         id="openai_compatible",
     ),
+    pytest.param(
+        OrganizationConformanceCase(
+            organization="openai_compatible",
+            model=FIXTURE_MODEL,
+            max_tokens=64,
+            connection_kwargs=(
+                ("base_url", "https://example.invalid/proxy/v1/"),
+                ("api_variant", "responses"),
+            ),
+            wire_format="openai_responses",
+            sync_client_class=OpenAISyncClient,
+            async_client_class=OpenAIAsyncClient,
+            message_key="input",
+            structured_schema_path=("text", "format", "schema"),
+            response_factory=_compatible_responses_shared_response,
+            stream_events_factory=_compatible_responses_shared_stream_events,
+            expected_usage=Usage(
+                input_tokens=2,
+                output_tokens=3,
+                total_tokens=5,
+                cached_tokens=0,
+                cache_write_tokens=None,
+            ),
+            expected_currency=None,
+            expected_cost_total_available=False,
+            expected_reasoning_texts=("Plan",),
+            expected_refusal="Fixture refusal",
+            expected_incomplete_reason="max_output_tokens",
+            expected_native_profile=False,
+        ),
+        id="openai_compatible_responses",
+    ),
 )
 
 
@@ -570,6 +628,30 @@ def _terminal_outcome_response(
     content: str | None,
 ) -> dict[str, Any]:
     """Return the native terminal shape for one structured-output outcome."""
+    if case.wire_format == "openai_responses" and case.organization == "openai_compatible":
+        if outcome_name == "refusal":
+            return responses_refusal_response(
+                case.expected_refusal,
+                model=case.model,
+                usage={
+                    "input_tokens": 2,
+                    "output_tokens": 0,
+                    "total_tokens": 2,
+                    "input_tokens_details": {"cached_tokens": 0},
+                },
+            )
+        if outcome_name == "incomplete_result":
+            return responses_incomplete_response(
+                model=case.model,
+                usage={
+                    "input_tokens": 2,
+                    "output_tokens": 3,
+                    "total_tokens": 5,
+                    "input_tokens_details": {"cached_tokens": 0},
+                },
+            )
+        return case.response_factory(content or "")
+
     if case.wire_format == "openai_responses":
         if outcome_name == "refusal":
             return {
@@ -2209,7 +2291,10 @@ async def test_compatible_async_continuation_keeps_caller_history_without_replay
 _COMPATIBLE_CASE_MATCHES = tuple(
     case.values[0]
     for case in CASES
-    if case.values[0].organization == "openai_compatible"
+    if (
+        case.values[0].organization == "openai_compatible"
+        and case.values[0].wire_format == "openai_chat_completions"
+    )
 )
 assert len(_COMPATIBLE_CASE_MATCHES) == 1
 _COMPATIBLE_CASE = _COMPATIBLE_CASE_MATCHES[0]
@@ -3326,3 +3411,372 @@ def test_compatible_responses_invalid_portable_requests_fail_before_send(method,
                 asyncio.run(run())
     send.assert_not_called()
     assert request == original_request
+
+
+def _facade_with_sync_transport(case, transport):
+    return UniversalLLMAPIAdapter(
+        organization=case.organization,
+        model=case.model,
+        api_key="test-api-key",
+        transport=transport,
+        **dict(case.connection_kwargs),
+    )
+
+
+def _execution_cases():
+    return (CASES[0].values[0], CASES[3].values[0], CASES[4].values[0])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case", _execution_cases(),
+    ids=("native-openai", "compatible-chat", "compatible-responses"),
+)
+@pytest.mark.parametrize("method", ("chat", "achat", "stream_chat", "astream_chat"))
+def test_neutral_execution_mixin_dispatches_each_facade_method(case, method, monkeypatch):
+    """Exercise the original shared entry points and protocol hooks through the facade."""
+    facade = _facade(case)
+    adapter = facade.adapter
+    assert isinstance(adapter, _OpenAIExecutionMixin)
+    entry_calls = []
+    entry_name = method
+    original_entry = getattr(_OpenAIExecutionMixin, entry_name)
+
+    if entry_name == "astream_chat":
+        def instrument_entry(self, *args, **kwargs):
+            entry_calls.append(entry_name)
+            return original_entry(self, *args, **kwargs)
+    elif entry_name == "achat":
+        async def instrument_entry(self, *args, **kwargs):
+            entry_calls.append(entry_name)
+            return await original_entry(self, *args, **kwargs)
+    else:
+        def instrument_entry(self, *args, **kwargs):
+            entry_calls.append(entry_name)
+            return original_entry(self, *args, **kwargs)
+
+    monkeypatch.setattr(_OpenAIExecutionMixin, entry_name, instrument_entry)
+    if method == "astream_chat":
+        original_async_dispatch = _OpenAIExecutionMixin._astream_chat
+
+        async def instrument_async_dispatch(self, *args, **kwargs):
+            entry_calls.append("_astream_chat")
+            async for text in original_async_dispatch(self, *args, **kwargs):
+                yield text
+
+        monkeypatch.setattr(_OpenAIExecutionMixin, "_astream_chat", instrument_async_dispatch)
+
+    hook_name = "_build_chat_params" if method in ("chat", "achat") else "_build_stream_params"
+    hook = Mock(wraps=getattr(adapter, hook_name))
+    setattr(adapter, hook_name, hook)
+    observed = []
+
+    def sync_send(client, url, payload, timeout=None):
+        observed.append((url, deepcopy(payload), client))
+        return _JSONResponse(case.response_factory())
+
+    async def async_send(client, url, payload, timeout=None):
+        observed.append((url, deepcopy(payload), client))
+        return case.response_factory()
+
+    def sync_stream(client, url, payload, timeout=None):
+        observed.append((url, deepcopy(payload), client))
+        return iter(case.stream_events_factory())
+
+    def async_stream(client, url, payload, timeout=None):
+        observed.append((url, deepcopy(payload), client))
+        return _as_async_iter(case.stream_events_factory())
+
+    if method == "chat":
+        with patch.object(case.sync_client_class, "_send_request", new=sync_send):
+            result = facade.chat(**_chat_kwargs(case))
+    elif method == "achat":
+        with patch.object(case.async_client_class, "_send_request", new=async_send):
+            result = asyncio.run(facade.achat(**_chat_kwargs(case)))
+    elif method == "stream_chat":
+        with patch.object(case.sync_client_class, "_stream_request", new=sync_stream):
+            completed = []
+            list(facade.stream_chat(**_chat_kwargs(case), on_done=completed.append))
+            result = completed[0]
+    else:
+        with patch.object(case.async_client_class, "_stream_request", new=async_stream):
+            async def run():
+                completed = []
+                async for _text in facade.astream_chat(
+                    **_chat_kwargs(case), on_done=completed.append,
+                ):
+                    pass
+                return completed[0]
+            result = asyncio.run(run())
+
+    assert entry_calls == (["astream_chat", "_astream_chat"] if method == "astream_chat" else [method])
+    assert hook.call_count == 1
+    assert len(observed) == 1
+    url, payload, _client = observed[0]
+    expected_resource = "responses" if case.wire_format == "openai_responses" else "chat/completions"
+    assert url.endswith("/" + expected_resource)
+    assert payload["model"] == case.model
+    assert payload[case.message_key]
+    if case.organization == "openai":
+        assert "api_variant" not in dict(case.connection_kwargs)
+        assert payload["input"]
+    assert result.content == ("Hello!" if method in ("stream_chat", "astream_chat") else "ok")
+
+
+_COMPATIBLE_EXECUTION_LANES = (
+    ("chat", "requests"),
+    ("chat", "httpx"),
+    ("stream_chat", "requests"),
+    ("stream_chat", "httpx"),
+    ("achat", "httpx"),
+    ("astream_chat", "httpx"),
+)
+
+
+def _events_as_sse_body(events: list[SSEEvent]) -> str:
+    lines = []
+    for event in events:
+        if event.done:
+            lines.append("data: [DONE]\r\n\r\n")
+            continue
+        if event.event is not None:
+            lines.append(f"event: {event.event}\r\n")
+        lines.append(f"data: {json.dumps(event.data, separators=(',', ':'))}\r\n\r\n")
+    return "".join(lines)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", (CASES[3].values[0], CASES[4].values[0]), ids=("chat", "responses"))
+@pytest.mark.parametrize("lane", _COMPATIBLE_EXECUTION_LANES, ids=lambda lane: f"{lane[0]}-{lane[1]}")
+@pytest.mark.parametrize("caller_pricing", (False, True), ids=("unpriced", "caller-priced"))
+def test_compatible_api_transport_and_caller_pricing_matrix(case, lane, caller_pricing):
+    method, transport_name = lane
+    if caller_pricing:
+        facade, pricing = _caller_pricing_facade(case)
+        facade.adapter.transport = transport_name
+    else:
+        facade = _facade_with_sync_transport(case, transport_name)
+
+    messages = [UserMessage("Hello")]
+    original_messages = deepcopy(messages)
+    observed = []
+    completed = []
+    callback_order = []
+    chunks = []
+    visible = []
+    url = f"{dict(case.connection_kwargs)['base_url'].rstrip('/')}/"
+    url += "responses" if case.wire_format == "openai_responses" else "chat/completions"
+    is_stream = method in ("stream_chat", "astream_chat")
+    response_payload = case.response_factory()
+    stream_body = _events_as_sse_body(case.stream_events_factory())
+
+    def record_chunk(chunk):
+        chunks.append(chunk)
+        callback_order.append("chunk")
+
+    def record_done(response):
+        completed.append(response)
+        callback_order.append("done")
+
+    def invoke():
+        if method == "chat":
+            return facade.chat(messages=messages, max_tokens=case.max_tokens)
+        if method == "achat":
+            return asyncio.run(facade.achat(messages=messages, max_tokens=case.max_tokens))
+        if method == "stream_chat":
+            visible.extend(facade.stream_chat(
+                messages=messages, max_tokens=case.max_tokens, buffer_chars=64,
+                on_chunk=record_chunk, on_done=record_done,
+            ))
+        else:
+            async def run():
+                async for text in facade.astream_chat(
+                    messages=messages, max_tokens=case.max_tokens, buffer_chars=64,
+                    on_chunk=record_chunk, on_done=record_done,
+                ):
+                    visible.append(text)
+            asyncio.run(run())
+        return completed[0]
+
+    if transport_name == "requests":
+        with requests_mock.Mocker(real_http=False) as http:
+            if is_stream:
+                http.post(url, text=stream_body, headers={"Content-Type": "text/event-stream"})
+            else:
+                http.post(url, json=response_payload)
+            result = invoke()
+            assert http.call_count == 1
+            request = http.request_history[0]
+            payload = request.json()
+            observed.append(request)
+    else:
+        httpx = importlib.import_module("httpx")
+
+        def handler(request):
+            observed.append(request)
+            if is_stream:
+                return httpx.Response(
+                    200, text=stream_body, headers={"Content-Type": "text/event-stream"},
+                )
+            return httpx.Response(200, json=response_payload)
+
+        mock_transport = httpx.MockTransport(handler)
+        if method in ("chat", "stream_chat"):
+            client = httpx.Client(transport=mock_transport)
+            with patch.object(httpx, "Client", return_value=client):
+                result = invoke()
+        else:
+            client = httpx.AsyncClient(transport=mock_transport)
+            with patch.object(httpx, "AsyncClient", return_value=client):
+                result = invoke()
+        assert len(observed) == 1
+        request = observed[0]
+        payload = json.loads(request.content)
+
+    assert messages == original_messages
+    assert len(observed) == 1
+    assert request.method == "POST"
+    assert str(request.url) == url
+    assert request.headers["Authorization"] == "Bearer test-api-key"
+    assert payload["model"] == case.model
+    assert payload[case.message_key] == [{"role": "user", "content": "Hello"}]
+    if case.wire_format == "openai_responses":
+        assert payload["max_output_tokens"] == case.max_tokens
+        assert payload["store"] is False
+        assert "max_tokens" not in payload
+        assert "max_completion_tokens" not in payload
+        assert "stream_options" not in payload
+        if is_stream:
+            assert payload["stream"] is True
+        else:
+            assert not payload.get("stream", False)
+    else:
+        assert payload["max_completion_tokens"] == case.max_tokens
+        assert "max_tokens" not in payload
+        if is_stream:
+            assert payload["stream"] is True
+            assert payload["stream_options"] == {"include_usage": True}
+        else:
+            assert not payload.get("stream", False)
+            assert "stream_options" not in payload
+    assert result.usage == case.expected_usage
+    assert result.content == ("Hello!" if is_stream else "ok")
+    if is_stream:
+        assert "".join(visible) == "Hello!"
+    assert facade.adapter.model_spec is None
+    if caller_pricing:
+        assert result.cost_input == pytest.approx(20 / 1_000_000)
+        assert result.cost_output == pytest.approx(60 / 1_000_000)
+        assert result.cost_total == pytest.approx(80 / 1_000_000)
+        assert result.currency == "EUR"
+        assert result.cost_breakdown is None
+        assert facade.adapter.pricing is pricing
+    else:
+        _assert_usage_and_pricing(result, case)
+    if is_stream:
+        assert len(completed) == 1
+        assert completed[0] is result
+        assert callback_order == ["chunk", "done"]
+        assert "".join(chunk.text for chunk in chunks) == "Hello!"
+        assert chunks[-1].usage == case.expected_usage
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ("chat", "stream_chat"))
+def test_compatible_responses_requests_transport_works_without_httpx(method, monkeypatch):
+    case = CASES[4].values[0]
+    facade = _facade_with_sync_transport(case, "requests")
+    url = f"{dict(case.connection_kwargs)['base_url'].rstrip('/')}/responses"
+    body = (
+        json.dumps(case.response_factory())
+        if method == "chat"
+        else _events_as_sse_body(case.stream_events_factory())
+    )
+    forbidden = []
+    try:
+        httpx = importlib.import_module("httpx")
+    except ImportError:
+        httpx = None
+
+    def forbid_httpx(*args, **kwargs):
+        forbidden.append("httpx construction")
+        raise AssertionError("Requests transport attempted to construct HTTPX")
+
+    def forbid_dns(*args, **kwargs):
+        forbidden.append("DNS")
+        raise AssertionError("Mocked requests transport attempted DNS")
+
+    if httpx is not None:
+        monkeypatch.setattr(httpx, "Client", forbid_httpx)
+        monkeypatch.setattr(httpx, "AsyncClient", forbid_httpx)
+    monkeypatch.setattr(socket, "getaddrinfo", forbid_dns)
+    with requests_mock.Mocker(real_http=False) as http, patch.dict(sys.modules, {"httpx": None}):
+        http.post(
+            url,
+            text=body,
+            headers={
+                "Content-Type": "application/json" if method == "chat" else "text/event-stream",
+            },
+        )
+        if method == "chat":
+            result = facade.chat(**_chat_kwargs(case))
+        else:
+            completed = []
+            list(facade.stream_chat(**_chat_kwargs(case), on_done=completed.append))
+            result = completed[0]
+        assert http.call_count == 1
+        assert http.request_history[0].url == url
+    assert result.content == ("ok" if method == "chat" else "Hello!")
+    assert forbidden == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("method", "extra"),
+    (
+        ("chat", "httpx"),
+        ("stream_chat", "httpx"),
+        ("achat", "async"),
+        ("astream_chat", "async"),
+    ),
+)
+def test_compatible_responses_optional_httpx_failures_precede_io(method, extra, monkeypatch):
+    case = CASES[4].values[0]
+    facade = _facade_with_sync_transport(case, "httpx")
+    url = f"{dict(case.connection_kwargs)['base_url'].rstrip('/')}/responses"
+    attempts = []
+
+    def forbid_io(name):
+        def forbidden(*args, **kwargs):
+            attempts.append(name)
+            raise AssertionError(f"Unexpected outbound attempt through {name}")
+        return forbidden
+
+    try:
+        httpx = importlib.import_module("httpx")
+    except ImportError:
+        httpx = None
+    if httpx is not None:
+        monkeypatch.setattr(httpx.Client, "send", forbid_io("httpx sync send"))
+        monkeypatch.setattr(httpx.AsyncClient, "send", forbid_io("httpx async send"))
+        monkeypatch.setattr(httpx, "Client", forbid_io("httpx sync constructor"))
+        monkeypatch.setattr(httpx, "AsyncClient", forbid_io("httpx async constructor"))
+    monkeypatch.setattr(socket, "getaddrinfo", forbid_io("DNS"))
+
+    with requests_mock.Mocker(real_http=False) as http, patch.dict(sys.modules, {"httpx": None}):
+        http.post(url, status_code=599)
+        with pytest.raises(ImportError) as error:
+            if method == "chat":
+                facade.chat(**_chat_kwargs(case))
+            elif method == "stream_chat":
+                list(facade.stream_chat(**_chat_kwargs(case)))
+            elif method == "achat":
+                asyncio.run(facade.achat(**_chat_kwargs(case)))
+            else:
+                async def run():
+                    async for _text in facade.astream_chat(**_chat_kwargs(case)):
+                        pass
+                asyncio.run(run())
+        assert http.call_count == 0
+    assert f"llm-api-adapter[{extra}]" in str(error.value)
+    assert attempts == []
