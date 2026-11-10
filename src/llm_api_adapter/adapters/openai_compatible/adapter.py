@@ -30,6 +30,8 @@ from ...models.responses.chat_response import Usage
 
 logger = logging.getLogger(__name__)
 
+_COMPATIBLE_API_VARIANTS = ("chat_completions", "responses")
+
 
 _URI_RE = re.compile(r"(?i)\bhttps?://[^\s<>]+")
 
@@ -252,12 +254,28 @@ def _validate_api_root(base_url: object) -> str:
     except ValueError:
         raise error from None
 
-    if parsed.path.rstrip("/").endswith("/chat/completions"):
+    if parsed.path.rstrip("/").endswith(("/chat/completions", "/responses")):
         raise LLMConfigError(
-            message="base_url must be an API root, not the Chat Completions resource."
+            message="base_url must be an API root, not a resource URL."
         )
 
     return base_url.rstrip("/")
+
+
+def _validate_compatible_connection(
+    base_url: object, api_variant: object
+) -> tuple[str, str]:
+    """Return a normalized root and explicit compatible protocol selection."""
+    normalized_root = _validate_api_root(base_url)
+    if api_variant is None:
+        return normalized_root, _COMPATIBLE_API_VARIANTS[0]
+    if not isinstance(api_variant, str) or api_variant not in _COMPATIBLE_API_VARIANTS:
+        raise LLMConfigError(
+            message=(
+                "api_variant must be 'chat_completions' or 'responses'."
+            )
+        )
+    return normalized_root, api_variant
 
 
 @dataclass(repr=False)
@@ -267,10 +285,11 @@ class OpenAICompatibleAdapter(
     _OpenAIStreamingMixin,
     LLMAdapterBase,
 ):
-    """OpenAI Chat Completions behavior for an explicitly selected API root."""
+    """OpenAI-compatible behavior for an explicit API root and protocol."""
 
     company: str = "openai_compatible"
     base_url: str = ""
+    api_variant: str | None = None
 
     def __post_init__(self) -> None:
         """Initialize compatible mode without resolving official registry metadata."""
@@ -292,7 +311,9 @@ class OpenAICompatibleAdapter(
                 )
             )
         self.transport = validate_sync_transport(self.transport)
-        self.base_url = _validate_api_root(self.base_url)
+        self.base_url, self.api_variant = _validate_compatible_connection(
+            self.base_url, self.api_variant
+        )
         if self.pricing is not None:
             _validate_compatible_pricing(self.pricing)
             self.pricing = deepcopy(self.pricing)
@@ -473,6 +494,7 @@ class OpenAICompatibleAdapter(
             transport=self.transport,
         )
         client._set_official_behavior_enabled(False)
+        client._set_api_variant(self.api_variant)
         client._set_diagnostic_formatter(self._format_compatible_diagnostic)
         return client
 
@@ -482,5 +504,6 @@ class OpenAICompatibleAdapter(
             endpoint=self.base_url,
         )
         client._set_official_behavior_enabled(False)
+        client._set_api_variant(self.api_variant)
         client._set_diagnostic_formatter(self._format_compatible_diagnostic)
         return client

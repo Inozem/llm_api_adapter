@@ -47,6 +47,12 @@ class OpenAISyncClient:
         repr=False,
         compare=False,
     )
+    _api_variant_override: str | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
     _diagnostic_formatter: Callable[[object], str] | None = field(
         default=None,
         init=False,
@@ -120,7 +126,7 @@ class OpenAISyncClient:
 
     def _should_use_responses_api(self, model: str) -> bool:
         if not self._official_behavior_enabled:
-            return False
+            return self._api_variant_override == "responses"
         return model_api_variant("openai", model) == "responses"
 
     def _prepare_chat_payload_for_model(
@@ -139,6 +145,10 @@ class OpenAISyncClient:
 
     def _set_official_behavior_enabled(self, enabled: bool) -> None:
         self._official_behavior_enabled = enabled
+
+    def _set_api_variant(self, api_variant: str | None) -> None:
+        """Set the instance-local route used when official policy is disabled."""
+        self._api_variant_override = api_variant
 
     def _prepare_responses_payload_for_model(self, model: str, kwargs: dict) -> dict:
         payload = {"model": model, **dict(kwargs)}

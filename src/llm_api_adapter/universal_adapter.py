@@ -9,7 +9,7 @@ from .adapters.google_adapter import GoogleAdapter
 from .adapters.openai_compatible.adapter import (
     OpenAICompatibleAdapter,
     _redact_compatible_diagnostic,
-    _validate_api_root,
+    _validate_compatible_connection,
 )
 from .errors.config_errors import LLMConfigError, OrganizationNotInstalledError
 from .llm_registry.llm_registry import LLM_REGISTRY
@@ -40,6 +40,7 @@ class UniversalLLMAPIAdapter:
     transport: str = "requests"
     service_provider: str | None = None
     base_url: str | None = None
+    api_variant: str | None = None
 
     def __repr__(self) -> str:
         masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
@@ -86,6 +87,16 @@ class UniversalLLMAPIAdapter:
                     "organization='openai_compatible'."
                 )
             )
+        if (
+            self.organization != OpenAICompatibleAdapter.company
+            and self.api_variant is not None
+        ):
+            raise LLMConfigError(
+                message=(
+                    "api_variant is supported only for "
+                    "organization='openai_compatible'."
+                )
+            )
         if self.organization == OpenAICompatibleAdapter.company:
             if self.service_provider is None:
                 self.service_provider = self.organization
@@ -99,7 +110,9 @@ class UniversalLLMAPIAdapter:
                         "service_provider='openai_compatible'."
                     )
                 )
-            self.base_url = _validate_api_root(self.base_url)
+            self.base_url, self.api_variant = _validate_compatible_connection(
+                self.base_url, self.api_variant
+            )
         elif self.service_provider is None:
             self.service_provider = self.organization
         elif (
@@ -134,6 +147,7 @@ class UniversalLLMAPIAdapter:
             )
             if organization == OpenAICompatibleAdapter.company:
                 factory_kwargs["base_url"] = self.base_url
+                factory_kwargs["api_variant"] = self.api_variant
             return adapter_factory(**factory_kwargs)
         if service_provider == organization:
             known_organization = KNOWN_ORGANIZATION_PACKAGES.get(organization)
