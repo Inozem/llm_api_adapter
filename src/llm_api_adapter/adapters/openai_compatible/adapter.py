@@ -595,6 +595,11 @@ class OpenAICompatibleAdapter(
                 capture_reasoning=capture_reasoning,
             )
             self._validate_normalized_tool_arguments(chat_response)
+            chat_response.usage = _normalize_compatible_usage(
+                response.get("usage"),
+                input_field="input_tokens",
+                output_field="output_tokens",
+            )
             return chat_response
         except InvalidToolArgumentsError as error:
             self._sanitize_tool_arguments_error(error)
