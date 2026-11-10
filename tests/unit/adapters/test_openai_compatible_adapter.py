@@ -5104,3 +5104,238 @@ async def test_async_compatible_responses_failed_sse_redacts_diagnostics_and_doe
     payload = json.loads(request.content)
     assert payload["model"] == "vendor/arbitrary-model"
     assert payload["stream"] is True
+
+
+def _compatible_responses_text_stream_lines(model, content):
+    return event_lines(
+        {
+            "type": "response.output_text.delta",
+            "delta": content,
+            "item_id": "msg-fixture-001",
+            "output_index": 0,
+            "content_index": 0,
+            "sequence_number": 0,
+            "logprobs": [],
+        }
+    ) + event_lines(
+        {
+            "type": "response.completed",
+            "response": responses_text_response(content, model=model),
+            "sequence_number": 1,
+        }
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ["vendor/unregistered-responses", "gpt-5"])
+@pytest.mark.parametrize("mode", ["chat", "stream_chat"])
+@pytest.mark.parametrize("transport", ["requests", "httpx"])
+def test_compatible_responses_sync_facade_text_uses_selected_root_and_model(
+    model, mode, transport, monkeypatch
+):
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    root = "http://localhost:8080/gateway/v1"
+    url = f"{root}/responses"
+    content = "Compatible Responses text"
+    completed = []
+    outgoing = []
+
+    if transport == "requests":
+        with requests_mock.Mocker(real_http=False) as http:
+            if mode == "chat":
+                http.post(url, json=responses_text_response(content, model=model))
+            else:
+                http.post(
+                    url,
+                    text="\n".join(
+                        _compatible_responses_text_stream_lines(model, content)
+                    )
+                    + "\n",
+                    headers={"Content-Type": "text/event-stream"},
+                )
+            facade = UniversalLLMAPIAdapter(
+                organization="openai_compatible",
+                model=model,
+                api_key="synthetic-responses-key",
+                base_url=root,
+                api_variant="responses",
+                transport=transport,
+            )
+            if mode == "chat":
+                response = facade.chat([UserMessage(content="Hello")])
+            else:
+                visible = list(
+                    facade.stream_chat(
+                        [UserMessage(content="Hello")],
+                        on_done=completed.append,
+                    )
+                )
+                response = completed[0]
+            assert http.call_count == 1
+            request = http.request_history[0]
+            assert request.url == url
+            assert request.headers["Authorization"] == "Bearer synthetic-responses-key"
+            payload = request.json()
+    else:
+        real_client = httpx.Client
+
+        def handler(request):
+            outgoing.append(request)
+            if mode == "chat":
+                return httpx.Response(
+                    200,
+                    json=responses_text_response(content, model=model),
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content="\n".join(
+                    _compatible_responses_text_stream_lines(model, content)
+                ) + "\n",
+                request=request,
+            )
+
+        client = real_client(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr(httpx, "Client", lambda: client)
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model=model,
+            api_key="synthetic-responses-key",
+            base_url=root,
+            api_variant="responses",
+            transport=transport,
+        )
+        try:
+            if mode == "chat":
+                response = facade.chat([UserMessage(content="Hello")])
+            else:
+                visible = list(
+                    facade.stream_chat(
+                        [UserMessage(content="Hello")],
+                        on_done=completed.append,
+                    )
+                )
+                response = completed[0]
+            assert len(outgoing) == 1
+            request = outgoing[0]
+            assert str(request.url) == url
+            assert request.headers["Authorization"] == "Bearer synthetic-responses-key"
+            payload = json.loads(request.content)
+        finally:
+            client.close()
+
+    assert payload["model"] == model
+    assert payload["store"] is False
+    assert payload["input"] == [{"role": "user", "content": "Hello"}]
+    assert ("stream" in payload) is (mode == "stream_chat")
+    assert response.content == content
+    assert response.model == model
+    if mode == "stream_chat":
+        assert visible == [content]
+        assert len(completed) == 1
+    assert forbidden == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["vendor/unregistered-responses", "gpt-5"])
+@pytest.mark.parametrize("mode", ["achat", "astream_chat"])
+async def test_compatible_responses_async_facade_text_uses_selected_root_and_model(
+    model, mode, monkeypatch
+):
+    forbidden = _guard_official_model_lookups(monkeypatch)
+    root = "http://localhost:8080/gateway/v1"
+    url = f"{root}/responses"
+    content = "Compatible Responses text"
+    outgoing = []
+    completed = []
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        outgoing.append(request)
+        if mode == "achat":
+            return httpx.Response(
+                200,
+                json=responses_text_response(content, model=model),
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content="\n".join(
+                _compatible_responses_text_stream_lines(model, content)
+            ) + "\n",
+            request=request,
+        )
+
+    client = real_client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model=model,
+        api_key="synthetic-responses-key",
+        base_url=root,
+        api_variant="responses",
+    )
+    try:
+        if mode == "achat":
+            response = await facade.achat([UserMessage(content="Hello")])
+        else:
+            visible = [
+                text
+                async for text in facade.astream_chat(
+                    [UserMessage(content="Hello")],
+                    on_done=completed.append,
+                )
+            ]
+            response = completed[0]
+    finally:
+        await client.aclose()
+
+    assert len(outgoing) == 1
+    request = outgoing[0]
+    assert str(request.url) == url
+    assert request.headers["Authorization"] == "Bearer synthetic-responses-key"
+    payload = json.loads(request.content)
+    assert payload["model"] == model
+    assert payload["store"] is False
+    assert payload["input"] == [{"role": "user", "content": "Hello"}]
+    assert ("stream" in payload) is (mode == "astream_chat")
+    assert response.content == content
+    assert response.model == model
+    if mode == "astream_chat":
+        assert visible == [content]
+        assert len(completed) == 1
+    assert forbidden == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("request_kwargs", "expected_bound"),
+    [
+        ({"input": [], "max_output_tokens": 23}, 23),
+        ({"input": [], "max_tokens": None, "max_output_tokens": 23}, 23),
+        ({"input": [], "max_tokens": 7, "max_output_tokens": 23}, 7),
+        ({"messages": [], "max_tokens": None, "max_output_tokens": None}, None),
+        ({"messages": []}, None),
+    ],
+)
+def test_compatible_responses_preparation_preserves_normalized_output_bound(
+    request_kwargs, expected_bound
+):
+    original = deepcopy(request_kwargs)
+    client = OpenAISyncClient(api_key="synthetic-responses-key")
+    client._set_official_behavior_enabled(False)
+
+    payload = client._prepare_responses_payload_for_model(
+        "vendor/arbitrary-model", request_kwargs
+    )
+
+    assert request_kwargs == original
+    assert payload["model"] == "vendor/arbitrary-model"
+    assert payload["store"] is False
+    if expected_bound is None:
+        assert "max_output_tokens" not in payload
+    else:
+        assert payload["max_output_tokens"] == expected_bound

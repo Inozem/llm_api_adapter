@@ -202,12 +202,18 @@ def test_disabled_policy_keeps_explicit_sync_responses_methods_available():
 
     send.assert_called_once_with(
         "https://api.openai.com/v1/responses",
-        {"model": "gpt-5", "input": [], "max_output_tokens": 8},
+        {"model": "gpt-5", "input": [], "max_output_tokens": 8, "store": False},
         None,
     )
     stream.assert_called_once_with(
         "https://api.openai.com/v1/responses",
-        {"model": "gpt-5", "input": [], "max_output_tokens": 8, "stream": True},
+        {
+            "model": "gpt-5",
+            "input": [],
+            "max_output_tokens": 8,
+            "store": False,
+            "stream": True,
+        },
         None,
     )
 
@@ -237,7 +243,7 @@ async def test_disabled_policy_keeps_explicit_async_responses_method_available()
     assert calls == [
         (
             "https://api.openai.com/v1/responses",
-            {"model": "gpt-5", "input": [], "max_output_tokens": 8},
+            {"model": "gpt-5", "input": [], "max_output_tokens": 8, "store": False},
             None,
         ),
         (
@@ -246,6 +252,7 @@ async def test_disabled_policy_keeps_explicit_async_responses_method_available()
                 "model": "gpt-5",
                 "input": [],
                 "max_output_tokens": 8,
+                "store": False,
                 "stream": True,
             },
             None,

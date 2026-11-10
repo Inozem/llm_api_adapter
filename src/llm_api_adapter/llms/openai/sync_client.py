@@ -151,6 +151,9 @@ class OpenAISyncClient:
         self._api_variant_override = api_variant
 
     def _prepare_responses_payload_for_model(self, model: str, kwargs: dict) -> dict:
+        if not self._official_behavior_enabled:
+            return _prepare_compatible_responses_payload(model, kwargs)
+
         payload = {"model": model, **dict(kwargs)}
         if "messages" in payload:
             payload["input"] = payload.pop("messages")
@@ -302,15 +305,7 @@ def _prepare_compatible_chat_payload(
     if max_tokens is not None:
         payload["max_completion_tokens"] = max_tokens
 
-    for key in ("temperature", "top_p"):
-        value = payload.get(key)
-        is_numeric_default = (
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and value == 1
-        )
-        if is_numeric_default:
-            payload.pop(key)
+    _omit_numeric_sampling_defaults(payload)
 
     if streaming:
         stream_options = payload.get("stream_options")
@@ -320,3 +315,47 @@ def _prepare_compatible_chat_payload(
         }
 
     return payload
+
+
+def _prepare_compatible_responses_payload(model: str, kwargs: dict) -> dict:
+    """Prepare stateless Responses fields without Chat or native policy fields."""
+    payload = {"model": model, **dict(kwargs)}
+
+    if "messages" in payload:
+        payload["input"] = payload.pop("messages")
+
+    max_tokens = payload.pop("max_tokens", None)
+    if max_tokens is not None:
+        payload["max_output_tokens"] = max_tokens
+    elif payload.get("max_output_tokens") is None:
+        payload.pop("max_output_tokens", None)
+
+    for key in (
+        "max_completion_tokens",
+        "stream_options",
+        "reasoning_effort",
+        "reasoning_level",
+        "capture_reasoning",
+        "reasoning",
+        "previous_response_id",
+        "conversation",
+    ):
+        payload.pop(key, None)
+
+    _omit_numeric_sampling_defaults(payload)
+
+    payload["store"] = False
+    return payload
+
+
+def _omit_numeric_sampling_defaults(payload: dict) -> None:
+    """Omit the shared numeric defaults while preserving booleans and overrides."""
+    for key in ("temperature", "top_p"):
+        value = payload.get(key)
+        is_numeric_default = (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value == 1
+        )
+        if is_numeric_default:
+            payload.pop(key)

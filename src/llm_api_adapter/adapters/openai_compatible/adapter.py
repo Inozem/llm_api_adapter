@@ -8,6 +8,7 @@ import ipaddress
 import logging
 import re
 from collections.abc import Mapping
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlsplit
 
 from ...errors.config_errors import LLMConfigError
@@ -26,7 +27,9 @@ from ..openai.streaming import _OpenAIStreamingMixin
 from ..openai.payloads import _OpenAIPayloadMixin, _cache_token_counts, _token_count
 from .common.adapter import _OpenAIExecutionMixin
 from ..structured_output import validate_core_portable_schema
-from ...models.responses.chat_response import Usage
+from ...models.messages.chat_message import Messages
+from ...models.responses.chat_response import ChatResponse, Usage
+from ...models.tools import ToolSpec
 
 logger = logging.getLogger(__name__)
 
@@ -461,6 +464,25 @@ class OpenAICompatibleAdapter(
     def __repr__(self) -> str:
         inherited = super().__repr__()
         return self._format_compatible_diagnostic(inherited)
+
+    def _build_responses_chat_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        previous_response: Optional[ChatResponse],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> Dict[str, Any]:
+        """Build stateless compatible Responses input without native replay policy."""
+        return self._build_responses_wire_params(
+            input_items=normalized_messages.to_openai_responses_input(),
+            instructions=normalized_messages.to_openai_responses_instructions(),
+            tools=tools,
+            normalized_tool_choice=normalized_tool_choice,
+            effective_schema=effective_schema,
+        )
 
     def handle_error(self, error: Exception, error_message: str | None = None):
         """Keep mapped error identity while making compatible diagnostics safe."""
