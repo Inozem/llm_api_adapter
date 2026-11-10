@@ -4905,3 +4905,202 @@ def test_compatible_instances_keep_roots_and_api_variants_isolated():
     ]
     assert chat_response.content == chat_response_again.content == "Chat route"
     assert responses_response.content == "Responses route"
+
+
+@pytest.mark.unit
+def test_compatible_responses_is_stateless_and_does_not_inherit_reasoning_policy():
+    model = "vendor/arbitrary-responses-model"
+    url = f"{_COLLISION_ROOT}/responses"
+    previous = ChatResponse(response_id="opaque-native-response-id")
+    history = [UserMessage(content="Use caller history only.")]
+
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, json=responses_text_response("Stateless reply", model=model))
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model=model,
+            api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT,
+            api_variant="responses",
+        )
+        with warnings.catch_warnings(record=True) as emitted_warnings:
+            warnings.simplefilter("always")
+            response = facade.chat(
+                history,
+                max_tokens=17,
+                temperature=1.0,
+                top_p=1,
+                capture_reasoning=True,
+                reasoning_level="high",
+                previous_response=previous,
+            )
+
+    assert len(emitted_warnings) == 1
+    assert emitted_warnings[0].category is UserWarning
+    assert "not verified" in str(emitted_warnings[0].message)
+    assert "reasoning is disabled" in str(emitted_warnings[0].message)
+    assert http.call_count == 1
+    request = http.request_history[0]
+    assert request.url == url
+    assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+    body = request.json()
+    assert body["model"] == model
+    assert body["max_output_tokens"] == 17
+    assert body["input"] == [
+        {"role": "user", "content": "Use caller history only."}
+    ]
+    assert not {
+        "messages",
+        "max_tokens",
+        "max_completion_tokens",
+        "stream_options",
+        "reasoning",
+        "reasoning_effort",
+        "reasoning_level",
+        "capture_reasoning",
+        "previous_response_id",
+        "conversation",
+    } & body.keys()
+    assert body["store"] is False
+    assert "temperature" not in body and "top_p" not in body
+    assert response.content == "Stateless reply"
+    assert response.reasoning_events == []
+
+
+@pytest.mark.unit
+def test_compatible_responses_http_error_redacts_credentials_and_sends_once(caplog):
+    url = f"{_COLLISION_ROOT}/responses"
+    body = {"error": {"message": _DIAGNOSTIC_TEXT, "type": "invalid_api_key"}}
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, status_code=401, json=body)
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="vendor/arbitrary-model",
+            api_key=_DIAGNOSTIC_KEY,
+            base_url=_COLLISION_ROOT,
+            api_variant="responses",
+        )
+        with pytest.raises(LLMAPIAuthorizationError) as caught:
+            facade.chat([UserMessage(content="hello")])
+
+    _assert_diagnostics_redacted(caught.value, caplog)
+    assert http.call_count == 1
+    request = http.request_history[0]
+    assert request.url == url
+    assert request.headers["Authorization"] == f"Bearer {_DIAGNOSTIC_KEY}"
+
+
+@pytest.mark.unit
+def test_compatible_responses_capture_reasoning_does_not_request_native_summary():
+    model = "vendor/arbitrary-responses-model"
+    url = f"{_COLLISION_ROOT}/responses"
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, json=responses_text_response("No synthetic reasoning", model=model))
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model=model,
+            api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT,
+            api_variant="responses",
+        )
+        with warnings.catch_warnings(record=True) as emitted_warnings:
+            warnings.simplefilter("always")
+            response = facade.chat(
+                [UserMessage(content="Hello")],
+                capture_reasoning=True,
+                reasoning_level="high",
+            )
+
+    assert len(emitted_warnings) == 1
+    assert emitted_warnings[0].category is UserWarning
+    assert "not verified" in str(emitted_warnings[0].message)
+    assert "reasoning is disabled" in str(emitted_warnings[0].message)
+    assert http.call_count == 1
+    body = http.request_history[0].json()
+    assert body["model"] == model
+    assert not {"reasoning", "reasoning_effort", "reasoning_level", "capture_reasoning"} & body.keys()
+    assert response.content == "No synthetic reasoning"
+    assert response.reasoning_events == []
+
+
+@pytest.mark.unit
+def test_compatible_responses_failed_sse_redacts_diagnostics_and_does_not_retry(caplog):
+    url = f"{_COLLISION_ROOT}/responses"
+    event = {
+        "type": "response.failed",
+        "response": {
+            "error": {"type": "invalid_api_key", "message": _DIAGNOSTIC_TEXT}
+        },
+    }
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(
+            url,
+            text=f"event: response.failed\ndata: {json.dumps(event)}\n\n",
+            headers={"Content-Type": "text/event-stream"},
+        )
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="vendor/arbitrary-model",
+            api_key=_DIAGNOSTIC_KEY,
+            base_url=_COLLISION_ROOT,
+            api_variant="responses",
+        )
+        with pytest.raises(LLMAPIAuthorizationError) as caught:
+            list(facade.stream_chat([UserMessage(content="hello")]))
+
+    _assert_diagnostics_redacted(caught.value, caplog)
+    assert http.call_count == 1
+    request = http.request_history[0]
+    assert request.url == url
+    assert request.headers["Authorization"] == f"Bearer {_DIAGNOSTIC_KEY}"
+    assert request.json()["model"] == "vendor/arbitrary-model"
+    assert request.json()["stream"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_async_compatible_responses_failed_sse_redacts_diagnostics_and_does_not_retry(
+    caplog, monkeypatch
+):
+    url = f"{_COLLISION_ROOT}/responses"
+    event = {
+        "type": "response.failed",
+        "response": {
+            "error": {"type": "invalid_api_key", "message": _DIAGNOSTIC_TEXT}
+        },
+    }
+    outgoing = []
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        outgoing.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content=f"event: response.failed\ndata: {json.dumps(event)}\n\n",
+            request=request,
+        )
+
+    client = real_client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="vendor/arbitrary-model",
+        api_key=_DIAGNOSTIC_KEY,
+        base_url=_COLLISION_ROOT,
+        api_variant="responses",
+    )
+    try:
+        with pytest.raises(LLMAPIAuthorizationError) as caught:
+            [text async for text in facade.astream_chat([UserMessage(content="hello")])]
+    finally:
+        await client.aclose()
+
+    _assert_diagnostics_redacted(caught.value, caplog)
+    assert len(outgoing) == 1
+    request = outgoing[0]
+    assert str(request.url) == url
+    assert request.headers["Authorization"] == f"Bearer {_DIAGNOSTIC_KEY}"
+    payload = json.loads(request.content)
+    assert payload["model"] == "vendor/arbitrary-model"
+    assert payload["stream"] is True

@@ -82,6 +82,48 @@ def test_policy_is_instance_local():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("client_class", CLIENTS, ids=("sync", "async"))
+def test_api_variant_override_is_private_and_does_not_change_client_identity(client_class):
+    chat_client = client_class(api_key="test_api_key")
+    responses_client = client_class(api_key="test_api_key")
+    native_client = client_class(api_key="test_api_key")
+    route_field = next(
+        item for item in fields(client_class) if item.name == "_api_variant_override"
+    )
+
+    assert not route_field.init
+    assert not route_field.repr
+    assert not route_field.compare
+    assert chat_client == responses_client == native_client
+    assert "responses" not in repr(chat_client)
+
+    chat_client._set_official_behavior_enabled(False)
+    chat_client._set_api_variant("chat_completions")
+    assert chat_client._should_use_responses_api("vendor/arbitrary-model") is False
+
+    responses_client._set_official_behavior_enabled(False)
+    responses_client._set_api_variant("responses")
+    assert responses_client._should_use_responses_api("vendor/arbitrary-model") is True
+    assert chat_client._should_use_responses_api("vendor/arbitrary-model") is False
+    assert chat_client == responses_client == native_client
+    assert "responses" not in repr(responses_client)
+
+    assert native_client._should_use_responses_api("gpt-5") is True
+    assert native_client._should_use_responses_api("gpt-4.1-mini") is False
+    assert responses_client._should_use_responses_api("vendor/arbitrary-model") is True
+    assert chat_client._should_use_responses_api("vendor/arbitrary-model") is False
+
+
+@pytest.mark.unit
+def test_native_policy_still_selects_registered_api_independent_of_override():
+    client = OpenAISyncClient(api_key="test_api_key")
+    client._set_api_variant("chat_completions")
+
+    assert client._should_use_responses_api("gpt-5") is True
+    assert client._should_use_responses_api("gpt-4.1-mini") is False
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("model", ("gpt-5", "arbitrary-model"))
 def test_disabled_sync_complete_and_stream_dispatch_to_chat(model):
     client = OpenAISyncClient(api_key="test_api_key", endpoint="https://local.test/v1")
