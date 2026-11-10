@@ -461,6 +461,169 @@ class OpenAICompatibleAdapter(
             ):
                 raise self._malformed_response()
 
+    @staticmethod
+    def _malformed_responses_response() -> LLMAPIClientError:
+        return LLMAPIClientError(
+            message="The compatible server returned a malformed Responses response."
+        )
+
+    def _validate_responses_response(
+        self,
+        response: object,
+        *,
+        expected_status: str | None = None,
+    ) -> None:
+        """Validate the Responses envelope before shared coercion."""
+        malformed = self._malformed_responses_response
+        if not isinstance(response, Mapping):
+            raise malformed()
+        if "object" in response and response["object"] != "response":
+            raise malformed()
+        status = response.get("status")
+        if status not in ("completed", "incomplete"):
+            raise malformed()
+        if expected_status is not None and status != expected_status:
+            raise malformed()
+        output = response.get("output")
+        if not isinstance(output, list):
+            raise malformed()
+
+        for item in output:
+            self._validate_responses_output_item(item)
+
+        if response.get("incomplete_details") is not None:
+            details = response["incomplete_details"]
+            if not isinstance(details, Mapping):
+                raise malformed()
+            if "reason" in details and not isinstance(details["reason"], str):
+                raise malformed()
+
+    def _validate_responses_output_item(self, item: object) -> None:
+        """Validate a Responses output item and its message content."""
+        malformed = self._malformed_responses_response
+        if not isinstance(item, Mapping):
+            raise malformed()
+        item_type = item.get("type")
+        if not isinstance(item_type, str) or not item_type:
+            raise malformed()
+        if "status" in item and (
+            not isinstance(item["status"], str) or not item["status"]
+        ):
+            raise malformed()
+        if item_type != "message":
+            return
+        content = item.get("content")
+        if not isinstance(content, list):
+            raise malformed()
+        for content_item in content:
+            self._validate_responses_content_item(content_item)
+
+    def _validate_responses_content_item(self, content_item: object) -> None:
+        """Validate a Responses message content part."""
+        malformed = self._malformed_responses_response
+        if not isinstance(content_item, Mapping):
+            raise malformed()
+        content_type = content_item.get("type")
+        if not isinstance(content_type, str) or not content_type:
+            raise malformed()
+        if content_type in ("output_text", "text"):
+            if not isinstance(content_item.get("text"), str):
+                raise malformed()
+        elif content_type == "refusal":
+            if not isinstance(content_item.get("refusal"), str):
+                raise malformed()
+
+    def _normalize_responses_response(
+        self,
+        response: dict,
+        *,
+        capture_reasoning: bool,
+    ) -> ChatResponse:
+        self._validate_responses_response(response)
+        return super()._normalize_responses_response(
+            response,
+            capture_reasoning=capture_reasoning,
+        )
+
+    def _validate_responses_stream_event(self, event: object) -> None:
+        """Validate SSE structure before mutation.
+
+        The client maps provider error events before they reach this hook.
+        """
+        if getattr(event, "done", False):
+            return
+        payload = getattr(event, "data", None)
+        if not isinstance(payload, Mapping):
+            raise self._malformed_responses_response()
+
+        payload_type = payload.get("type")
+        named_type = getattr(event, "event", None)
+        if payload_type is not None and (
+            not isinstance(payload_type, str) or not payload_type
+        ):
+            raise self._malformed_responses_response()
+        if named_type is not None and (
+            not isinstance(named_type, str) or not named_type
+        ):
+            raise self._malformed_responses_response()
+        if (
+            payload_type is not None
+            and named_type is not None
+            and payload_type != named_type
+        ):
+            raise self._malformed_responses_response()
+        event_type = named_type or payload_type
+        if event_type is None:
+            raise self._malformed_responses_response()
+
+        if event_type in ("error", "response.failed"):
+            raise self._malformed_responses_response()
+        if not event_type.startswith("response."):
+            raise self._malformed_responses_response()
+
+        if "choices" in payload:
+            raise self._malformed_responses_response()
+        if "response" in payload and not isinstance(
+            payload["response"], Mapping
+        ):
+            raise self._malformed_responses_response()
+        if event_type in (
+            "response.output_text.delta",
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_text.delta",
+            "response.function_call_arguments.delta",
+        ) and not isinstance(payload.get("delta"), str):
+            raise self._malformed_responses_response()
+
+        if event_type in ("response.completed", "response.incomplete"):
+            self._validate_responses_response(
+                payload.get("response"),
+                expected_status=(
+                    "completed"
+                    if event_type == "response.completed"
+                    else "incomplete"
+                ),
+            )
+
+    def _finalize_responses_stream(
+        self,
+        state: Any,
+        *,
+        capture_reasoning: bool,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        """Finalize only after a validated compatible Responses terminal event."""
+        if state.final_response is None:
+            raise self._malformed_responses_response()
+        self._validate_responses_response(state.final_response)
+        return super()._finalize_responses_stream(
+            state,
+            capture_reasoning=capture_reasoning,
+            effective_schema=effective_schema,
+            response_model=response_model,
+        )
+
     def __repr__(self) -> str:
         inherited = super().__repr__()
         return self._format_compatible_diagnostic(inherited)

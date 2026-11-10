@@ -83,6 +83,7 @@ class _ResponsesStreamingMixin:
         on_delta: Optional[AsyncOnDelta],
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
+        self._validate_responses_stream_event(event)
         payload = event.data if isinstance(event.data, Mapping) else {}
         event_type = event.event or payload.get("type")
         response_data = payload.get("response")
@@ -205,6 +206,7 @@ class _ResponsesStreamingMixin:
         on_delta: Optional[OnDelta],
         on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
+        self._validate_responses_stream_event(event)
         payload = event.data if isinstance(event.data, Mapping) else {}
         event_type = event.event or payload.get("type")
         response_data = payload.get("response")
@@ -343,6 +345,10 @@ class _ResponsesStreamingMixin:
             effective_schema=effective_schema,
             response_model=response_model,
         )
+
+    def _validate_responses_stream_event(self, event: Any) -> None:
+        """Protocol-policy hook; native OpenAI retains its permissive behavior."""
+        return None
 
     @staticmethod
     def _response_event_usage(
