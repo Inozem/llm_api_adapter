@@ -23,8 +23,10 @@ from ...llm_registry.llm_registry import (
     _positive_int,
 )
 from ..base_adapter import LLMAdapterBase
-from ..openai.streaming import _OpenAIStreamingMixin
-from ..openai.payloads import _OpenAIPayloadMixin, _cache_token_counts, _token_count
+from .chat_completions.streaming import _ChatCompletionsStreamingMixin
+from .common.payloads import _OpenAICompatiblePayloadMixin
+from .common.usage import _cache_token_counts, _token_count
+from .responses.streaming import _ResponsesStreamingMixin
 from .common.adapter import _OpenAIExecutionMixin
 from ..structured_output import validate_core_portable_schema
 from ...models.messages.chat_message import Messages
@@ -288,8 +290,9 @@ def _validate_compatible_connection(
 @dataclass(repr=False)
 class OpenAICompatibleAdapter(
     _OpenAIExecutionMixin,
-    _OpenAIPayloadMixin,
-    _OpenAIStreamingMixin,
+    _OpenAICompatiblePayloadMixin,
+    _ChatCompletionsStreamingMixin,
+    _ResponsesStreamingMixin,
     LLMAdapterBase,
 ):
     """OpenAI-compatible behavior for an explicit API root and protocol."""
@@ -330,6 +333,22 @@ class OpenAICompatibleAdapter(
 
     def _format_compatible_diagnostic(self, text: object) -> str:
         return _redact_compatible_diagnostic(text, self.api_key)
+
+    def _resolve_protocol_reasoning_effort(
+        self,
+        reasoning_level: str | int | None,
+    ) -> str | None:
+        """Warn and omit controls when this connection has no verified profile."""
+        if reasoning_level is None:
+            return None
+        provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
+        if provider_value is None:
+            return None
+        if not isinstance(provider_value, str):
+            raise TypeError(
+                "OpenAI reasoning resolution must produce a categorical value"
+            )
+        return provider_value
 
     def _apply_response_pricing(self, chat_response) -> None:
         """Use shared arithmetic while preserving compatible usage completeness."""

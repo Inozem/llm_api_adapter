@@ -12,6 +12,9 @@ from src.llm_api_adapter.adapters.openai_compatible.adapter import (
 from src.llm_api_adapter.adapters.openai_compatible.common.adapter import (
     _OpenAIExecutionMixin,
 )
+from src.llm_api_adapter.adapters.openai_compatible.common.payloads import (
+    _OpenAICompatiblePayloadMixin,
+)
 from src.llm_api_adapter.adapters.openai.payloads import (
     _OpenAIPayloadMixin,
     _apply_cache_usage as native_apply_cache_usage,
@@ -256,8 +259,18 @@ def test_native_and_compatible_adapters_share_neutral_execution_owner():
 
 @pytest.mark.unit
 def test_native_and_compatible_adapters_share_chat_protocol_owners_and_usage_helpers():
-    assert issubclass(_OpenAIPayloadMixin, _ChatCompletionsPayloadMixin)
+    assert issubclass(_OpenAICompatiblePayloadMixin, _ChatCompletionsPayloadMixin)
+    assert issubclass(_OpenAIPayloadMixin, _OpenAICompatiblePayloadMixin)
     assert issubclass(_OpenAIStreamingMixin, _ChatCompletionsStreamingMixin)
+
+    for name in (
+        "_build_chat_params",
+        "_build_stream_params",
+        "_parse_chat_response",
+    ):
+        owner_method = getattr(_OpenAICompatiblePayloadMixin, name)
+        assert getattr(OpenAIAdapter, name) is owner_method
+        assert getattr(OpenAICompatibleAdapter, name) is owner_method
 
     for name in (
         "_build_chat_completions_params",
@@ -305,10 +318,11 @@ def test_native_and_compatible_adapters_share_chat_protocol_owners_and_usage_hel
 def test_native_responses_protocol_owners_keep_policy_and_eof_native():
     from src.llm_api_adapter.adapters.openai import streaming as native_streaming
 
-    assert _OpenAIPayloadMixin.__bases__ == (
+    assert _OpenAICompatiblePayloadMixin.__bases__ == (
         _ChatCompletionsPayloadMixin,
         _ResponsesPayloadMixin,
     )
+    assert _OpenAIPayloadMixin.__bases__ == (_OpenAICompatiblePayloadMixin,)
     assert _OpenAIStreamingMixin.__bases__ == (
         _ChatCompletionsStreamingMixin,
         _ResponsesStreamingMixin,

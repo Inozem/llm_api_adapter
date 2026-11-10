@@ -94,7 +94,10 @@ factories, lifecycle and pricing arithmetic. Low-level sync/async HTTP and SSE
 execution lives in `llms/openai_compatible/`; concrete `llms/openai/` clients
 retain native routing, request rules, reasoning and existing patch points.
 Compatible factories use generic clients with an explicit endpoint and no
-native-policy switch.
+native-policy switch. Shared request assembly and response dispatch live in
+`adapters/openai_compatible/common/payloads.py`. Keep generic imports
+independent of native OpenAI policy modules, and preserve native policy hooks
+when changing shared assembly.
 
 Exercise both compatible APIs and the omitted-selector Chat default in the
 existing unit/mocked-integration and shared conformance suites. Reuse scenario
@@ -105,7 +108,7 @@ unknown/zero/cache usage and caller-priced/unpriced results. Focused examples:
 
 ```bash
 python -m pytest -q --import-mode=importlib -m unit tests/unit/test_universal_adapter.py tests/unit/adapters/test_openai_compatible_adapter.py tests/unit/adapters/test_pricing_lifecycle.py tests/unit/conformance/test_facade_contract.py
-python -m pytest -q --import-mode=importlib -m unit tests/unit/adapters/test_openai_client_construction.py tests/unit/adapters/test_openai_response_normalization.py tests/unit/llms/openai tests/unit/llms/openai_compatible
+python -m pytest -q --import-mode=importlib -m unit tests/unit/adapters/test_openai_client_construction.py tests/unit/adapters/test_openai_adapter_inheritance.py tests/unit/adapters/test_openai_response_normalization.py tests/unit/llms/openai tests/unit/llms/openai_compatible
 ```
 
 Run affected complete Core and installed organization-package deterministic

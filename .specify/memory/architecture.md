@@ -52,6 +52,13 @@ organization's supported behavior. Organization clients and transports own endpo
 HTTP/SSE resource handling, raw event consumption, and translation of raw failures to public error
 categories. They must not leak raw provider events or payload objects through the common API.
 
+OpenAI-style adapters share request assembly and response dispatch in
+`adapters/openai_compatible/common/payloads.py`, composing the existing Chat Completions and
+Responses protocol components. Native payload wrappers retain reasoning, continuation and schema
+policy. The compatible adapter imports neutral protocol components and usage helpers directly,
+without initializing native OpenAI adapter/client modules. Policy hooks preserve the distinct
+native and generic behavior while execution, validation and lifecycle keep their existing owners.
+
 Native OpenAI and compatible mode share the low-level sync/async HTTP and SSE execution in
 `llms/openai_compatible/`. These generic clients require an explicit endpoint and use the
 configured API, defaulting to Chat Completions, without native registry or model-rule imports.
