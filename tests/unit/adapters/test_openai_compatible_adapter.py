@@ -36,6 +36,8 @@ from src.llm_api_adapter.adapters.openai.adapter import OpenAIAdapter
 from src.llm_api_adapter.llm_registry.llm_registry import Pricing, PricingTier
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
+from src.llm_api_adapter.llms.openai_compatible.async_client import OpenAICompatibleAsyncClient
+from src.llm_api_adapter.llms.openai_compatible.sync_client import OpenAICompatibleSyncClient
 from src.llm_api_adapter.llms.transports import SSEEvent, SSEFrameDecoder
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
@@ -874,12 +876,12 @@ def test_client_hooks_use_selected_root_and_only_compatible_policy():
     native_sync = OpenAISyncClient(api_key="native-key")
     native_async = OpenAIAsyncClient(api_key="native-key")
 
-    assert isinstance(sync_client, OpenAISyncClient)
-    assert isinstance(async_client, OpenAIAsyncClient)
+    assert type(sync_client) is OpenAICompatibleSyncClient
+    assert type(async_client) is OpenAICompatibleAsyncClient
     assert sync_client.endpoint == async_client.endpoint == "https://example.invalid/proxy/v1"
     assert sync_client.transport == "requests"
-    assert sync_client._official_behavior_enabled is False
-    assert async_client._official_behavior_enabled is False
+    assert not hasattr(sync_client, "_official_behavior_enabled")
+    assert not hasattr(async_client, "_official_behavior_enabled")
     assert native_sync.endpoint == native_async.endpoint == "https://api.openai.com/v1"
     assert native_sync._official_behavior_enabled is True
     assert native_async._official_behavior_enabled is True
@@ -2413,7 +2415,7 @@ async def test_caller_pricing_concurrent_async_responses_keep_cache_evidence_iso
             usage = usage_payload(10, 5, 15)
         return text_response("reply", model=adapter.model, usage=usage)
 
-    monkeypatch.setattr(OpenAIAsyncClient, "complete", complete)
+    monkeypatch.setattr(OpenAICompatibleAsyncClient, "complete", complete)
     assert adapter.pricing is not None
     valid_task = asyncio.create_task(adapter.achat([UserMessage("valid")]))
     invalid_task = asyncio.create_task(
@@ -2489,7 +2491,7 @@ async def test_caller_pricing_interleaved_async_streams_keep_cache_evidence_loca
                 seen.set()
                 await gate.wait()
 
-    monkeypatch.setattr(OpenAIAsyncClient, "stream", stream)
+    monkeypatch.setattr(OpenAICompatibleAsyncClient, "stream", stream)
     assert adapter.pricing is not None
     valid_completed = []
     invalid_completed = []
@@ -2726,7 +2728,7 @@ async def test_caller_pricing_public_modes_preserve_partial_and_cache_usage(
     streaming = mode in ("stream_chat", "astream_chat")
     if mode in ("chat", "stream_chat"):
         if streaming:
-            monkeypatch.setattr(OpenAISyncClient, "stream", lambda self, **kwargs: iter(events))
+            monkeypatch.setattr(OpenAICompatibleSyncClient, "stream", lambda self, **kwargs: iter(events))
             visible = list(adapter.stream_chat(
                 [UserMessage("hello")],
                 buffer_chars=len("Fixture reply") + 20,
@@ -2736,12 +2738,12 @@ async def test_caller_pricing_public_modes_preserve_partial_and_cache_usage(
             assert visible == ["Fixture reply"]
             response = completed[0]
         else:
-            monkeypatch.setattr(OpenAISyncClient, "complete", lambda self, **kwargs: response_body)
+            monkeypatch.setattr(OpenAICompatibleSyncClient, "complete", lambda self, **kwargs: response_body)
             response = adapter.chat([UserMessage("hello")])
     else:
         if streaming:
             monkeypatch.setattr(
-                OpenAIAsyncClient,
+                OpenAICompatibleAsyncClient,
                 "stream",
                 lambda self, **kwargs: _caller_pricing_async_events(events),
             )
@@ -2757,7 +2759,7 @@ async def test_caller_pricing_public_modes_preserve_partial_and_cache_usage(
             response = completed[0]
         else:
             monkeypatch.setattr(
-                OpenAIAsyncClient,
+                OpenAICompatibleAsyncClient,
                 "complete",
                 AsyncMock(return_value=response_body),
             )
@@ -3151,7 +3153,7 @@ async def test_responses_caller_pricing_concurrent_results_keep_cache_evidence_l
         response["usage"] = usage
         return response
 
-    monkeypatch.setattr(OpenAIAsyncClient, "_send_request", send_request)
+    monkeypatch.setattr(OpenAICompatibleAsyncClient, "_send_request", send_request)
     valid_task = asyncio.create_task(adapter.achat([UserMessage("valid")]))
     invalid_task = asyncio.create_task(adapter.achat([UserMessage("invalid-cache")]))
     try:
@@ -3238,7 +3240,7 @@ async def test_responses_caller_pricing_interleaved_streams_keep_cache_evidence_
             "type": "response.completed", "response": response,
         })
 
-    monkeypatch.setattr(OpenAIAsyncClient, "_stream_request", stream_request)
+    monkeypatch.setattr(OpenAICompatibleAsyncClient, "_stream_request", stream_request)
     valid_completed = []
     invalid_completed = []
 
@@ -7323,7 +7325,7 @@ def test_compatible_responses_rejects_invalid_tool_requests_before_send(
         api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT, api_variant="responses",
     )
     method = "_stream_request" if mode == "stream_chat" else "_send_request"
-    with patch.object(OpenAISyncClient, method, new=Mock()) as send:
+    with patch.object(OpenAICompatibleSyncClient, method, new=Mock()) as send:
         with pytest.raises(error_type):
             _invoke_compatible_sync(facade, mode, kwargs)
     send.assert_not_called()
@@ -7341,7 +7343,7 @@ async def test_compatible_responses_async_rejects_invalid_tool_requests_before_s
         api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT, api_variant="responses",
     )
     method = "_stream_request" if mode == "astream_chat" else "_send_request"
-    with patch.object(OpenAIAsyncClient, method, new=Mock()) as send:
+    with patch.object(OpenAICompatibleAsyncClient, method, new=Mock()) as send:
         with pytest.raises(error_type):
             await _invoke_compatible_async(facade, mode, kwargs)
     send.assert_not_called()

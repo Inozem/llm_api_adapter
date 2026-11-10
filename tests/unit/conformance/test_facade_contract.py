@@ -32,6 +32,8 @@ from src.llm_api_adapter.llms.google.async_client import GeminiAsyncClient
 from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
+from src.llm_api_adapter.llms.openai_compatible.async_client import OpenAICompatibleAsyncClient
+from src.llm_api_adapter.llms.openai_compatible.sync_client import OpenAICompatibleSyncClient
 from src.llm_api_adapter.llms.streaming import SSEEvent
 from src.llm_api_adapter.llms.transports import SSEFrameDecoder
 from src.llm_api_adapter.models.messages.chat_message import AIMessage, ToolMessage, UserMessage
@@ -449,8 +451,8 @@ CASES = (
             max_tokens=64,
             connection_kwargs=(("base_url", "https://example.invalid/proxy/v1/"),),
             wire_format="openai_chat_completions",
-            sync_client_class=OpenAISyncClient,
-            async_client_class=OpenAIAsyncClient,
+            sync_client_class=OpenAICompatibleSyncClient,
+            async_client_class=OpenAICompatibleAsyncClient,
             message_key="messages",
             structured_schema_path=("response_format", "json_schema", "schema"),
             response_factory=_compatible_response,
@@ -481,8 +483,8 @@ CASES = (
                 ("api_variant", "responses"),
             ),
             wire_format="openai_responses",
-            sync_client_class=OpenAISyncClient,
-            async_client_class=OpenAIAsyncClient,
+            sync_client_class=OpenAICompatibleSyncClient,
+            async_client_class=OpenAICompatibleAsyncClient,
             message_key="input",
             structured_schema_path=("text", "format", "schema"),
             response_factory=_compatible_responses_shared_response,

@@ -90,7 +90,11 @@ registry rules, continuation and pricing stay in native policy; generic
 Responses uses `store=false` and full caller history without continuation
 IDs or opaque replay. Preserve native constructor/import/module-patch
 contracts when changing this shared code. Reuse existing validators,
-factories, lifecycle and pricing arithmetic.
+factories, lifecycle and pricing arithmetic. Low-level sync/async HTTP and SSE
+execution lives in `llms/openai_compatible/`; concrete `llms/openai/` clients
+retain native routing, request rules, reasoning and existing patch points.
+Compatible factories use generic clients with an explicit endpoint and no
+native-policy switch.
 
 Exercise both compatible APIs and the omitted-selector Chat default in the
 existing unit/mocked-integration and shared conformance suites. Reuse scenario
@@ -101,7 +105,7 @@ unknown/zero/cache usage and caller-priced/unpriced results. Focused examples:
 
 ```bash
 python -m pytest -q --import-mode=importlib -m unit tests/unit/test_universal_adapter.py tests/unit/adapters/test_openai_compatible_adapter.py tests/unit/adapters/test_pricing_lifecycle.py tests/unit/conformance/test_facade_contract.py
-python -m pytest -q --import-mode=importlib -m unit tests/unit/adapters/test_openai_client_construction.py tests/unit/adapters/test_openai_response_normalization.py tests/unit/llms/openai
+python -m pytest -q --import-mode=importlib -m unit tests/unit/adapters/test_openai_client_construction.py tests/unit/adapters/test_openai_response_normalization.py tests/unit/llms/openai tests/unit/llms/openai_compatible
 ```
 
 Run affected complete Core and installed organization-package deterministic

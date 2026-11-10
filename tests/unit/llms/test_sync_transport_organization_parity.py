@@ -22,6 +22,7 @@ from src.llm_api_adapter.adapters.openai_compatible_adapter import OpenAICompati
 from src.llm_api_adapter.llms.anthropic.sync_client import ClaudeSyncClient
 from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
+from src.llm_api_adapter.llms.openai_compatible.sync_client import OpenAICompatibleSyncClient
 from src.llm_api_adapter.llms.transports import SSEEvent
 from src.llm_api_adapter.llm_registry.llm_registry import Pricing
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
@@ -283,7 +284,7 @@ ORGANIZATION_CASES = (
     ),
     OrganizationCase(
         name="openai_compatible",
-        client_class=OpenAISyncClient,
+        client_class=OpenAICompatibleSyncClient,
         organization="openai_compatible",
         model="vendor/arbitrary-model",
         client_kwargs={

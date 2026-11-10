@@ -52,6 +52,15 @@ organization's supported behavior. Organization clients and transports own endpo
 HTTP/SSE resource handling, raw event consumption, and translation of raw failures to public error
 categories. They must not leak raw provider events or payload objects through the common API.
 
+Native OpenAI and compatible mode share the low-level sync/async HTTP and SSE execution in
+`llms/openai_compatible/`. These generic clients require an explicit endpoint and use the
+configured API, defaulting to Chat Completions, without native registry or model-rule imports.
+Concrete clients in `llms/openai/` retain native route, request-rule and reasoning policy, the
+official endpoint default, and existing constructor, import and module-patch contracts. Native
+async remains a native-sync subclass and shares the common async execution mixin. The compatible
+adapter constructs generic clients directly; its clients have no native-policy switch. Existing
+transports, cleanup and public errors remain the shared authorities.
+
 ### Shared models
 
 Messages, file parts, tool definitions and calls, response/usage/cost values, stream chunks, and

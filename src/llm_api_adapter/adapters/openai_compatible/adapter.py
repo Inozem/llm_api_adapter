@@ -13,8 +13,8 @@ from urllib.parse import quote, urlsplit
 
 from ...errors.config_errors import LLMConfigError
 from ...errors.llm_api_error import InvalidToolArgumentsError, LLMAPIClientError
-from ...llms.openai.async_client import OpenAIAsyncClient
-from ...llms.openai.sync_client import OpenAISyncClient
+from ...llms.openai_compatible.async_client import OpenAICompatibleAsyncClient
+from ...llms.openai_compatible.sync_client import OpenAICompatibleSyncClient
 from ...llms.transports import validate_sync_transport
 from ...llm_registry.llm_registry import (
     Pricing,
@@ -738,23 +738,21 @@ class OpenAICompatibleAdapter(
         logger.error(logger_message)
         raise error from None
 
-    def _create_sync_client(self) -> OpenAISyncClient:
-        client = OpenAISyncClient(
+    def _create_sync_client(self) -> OpenAICompatibleSyncClient:
+        client = OpenAICompatibleSyncClient(
             api_key=self.api_key,
             endpoint=self.base_url,
             transport=self.transport,
         )
-        client._set_official_behavior_enabled(False)
         client._set_api_variant(self.api_variant)
         client._set_diagnostic_formatter(self._format_compatible_diagnostic)
         return client
 
-    def _create_async_client(self) -> OpenAIAsyncClient:
-        client = OpenAIAsyncClient(
+    def _create_async_client(self) -> OpenAICompatibleAsyncClient:
+        client = OpenAICompatibleAsyncClient(
             api_key=self.api_key,
             endpoint=self.base_url,
         )
-        client._set_official_behavior_enabled(False)
         client._set_api_variant(self.api_variant)
         client._set_diagnostic_formatter(self._format_compatible_diagnostic)
         return client
