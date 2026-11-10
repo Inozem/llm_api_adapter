@@ -1,21 +1,3 @@
-<!--
-Sync Impact Report (temporary review material; remove before committing)
-Version change: 0.6.0 -> 0.7.0 (MINOR: explicit caller-tariff policy and compatible-mode exception)
-Modified principles: III. Registry and Abstraction First (title unchanged).
-Modified baseline: Registry, continuation, usage, pricing, and errors.
-Added section: Organization tariffs and compatible-mode pricing.
-Removed sections: none.
-Rationale: verified organization tariffs and explicit caller-local tariffs have different provenance;
-openai_compatible is a connection mode whose prices can only come from caller-supplied data.
-Compatibility impact: preserve existing organization pricing overrides, Pricing/PricingTier,
-assignment/setters, and reported-usage calculation; no constructor, dependency, or E2E change.
-Validation: active template resolved; existing file/dictionary/parameter tariff paths checked
-offline; document content, version/date, scope, and diff reviewed.
-Follow-up: synchronize architecture, public pricing guidance, and feature 008 plan/tasks/contracts
-through their existing pending documentation work; retain completed task/evidence history.
-Deferred placeholders: none.
--->
-
 # llm-api-adapter Constitution
 
 ## Core Principles
@@ -156,6 +138,31 @@ work before the corrected behavior may be used for a release decision.
 - The base installation MUST retain its minimal dependency boundary. HTTPX, async support, and
   organization packages MUST remain optional installations unless an approved breaking change
   explicitly revises that boundary.
+
+### Compatible connections and native policy
+
+- `organization="openai_compatible"` is a connection mode within the same public contract. It MUST
+  require an explicit valid HTTP(S) API root in `base_url` and preserve the caller's nonempty model
+  identifier without registration. Its optional `api_variant` MUST accept `chat_completions` or
+  `responses`; omission or `None` MUST select Chat Completions. Both APIs MUST retain the four
+  common execution methods and applicable validation, normalization and lifecycle requirements.
+- Non-`None` `base_url` and `api_variant` inputs MUST be accepted only in compatible mode; supplying
+  them for another organization MUST fail configuration before provider I/O. Omitting them MUST
+  preserve native endpoint and API selection. Compatible selection MUST NOT infer an API from a
+  model name, probe for support, or fall back to another API, endpoint, model or official service.
+- Generic connections MUST NOT require a registered model or API-specific capability profile and
+  MUST NOT acquire verified model facts, aliases, rules, limits, reasoning defaults, continuation
+  assumptions or tariffs from a matching native model name. They remain unverified connections;
+  choosing a wire protocol is not evidence that a server implements every common capability.
+- Reusing protocol components MUST preserve isolation between native model policy and generic
+  connection policy. Native integrations MUST retain their registry-owned facts and existing
+  request, reasoning, continuation, usage and pricing behavior. Compatible mode MUST retain common
+  SDK invariants, reported-data honesty and the caller-tariff policy below without importing
+  provider-specific accounting defaults or disabling an always-on capability.
+- Deterministic protocol evidence and shared implementation MUST NOT be treated as certification
+  of an arbitrary endpoint or as a replacement for an existing native/provider release gate.
+  Exact-model native profiles, scenario selection and candidate validation remain authoritative
+  for their existing native scope.
 
 ### Requests, responses, and streaming
 
@@ -329,4 +336,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.7.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-09
+**Version**: 0.8.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-10
