@@ -47,7 +47,12 @@ from tests.fixtures.openai_compatible import (
     FIXTURE_MODEL,
     event_lines,
     premature_eof_sse_lines,
+    responses_empty_response,
+    responses_incomplete_response,
+    responses_refusal_response,
+    responses_response,
     responses_text_response,
+    responses_text_sse_lines,
     text_response,
     text_sse_lines,
     tool_call_response,
@@ -1043,9 +1048,10 @@ class _CountedAsyncByteStream(httpx.AsyncByteStream):
         self.close_count += 1
 
 
-def _counted_sync_stream_route(transport, lines, monkeypatch, model):
+def _counted_sync_stream_route(transport, lines, monkeypatch, model, api_variant=None):
     requests_seen = []
     client_closes = []
+    variant_kwargs = {"api_variant": api_variant} if api_variant is not None else {}
     if transport == "requests":
         response = _CountedRequestsStreamResponse(lines)
 
@@ -1057,10 +1063,11 @@ def _counted_sync_stream_route(transport, lines, monkeypatch, model):
         adapter = UniversalLLMAPIAdapter(
             organization="openai_compatible", model=model,
             api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT,
+            **variant_kwargs,
         )
         return adapter, requests_seen, response, client_closes, None
 
-    byte_stream = _CountedSyncByteStream("\n".join(lines).encode())
+    byte_stream = _CountedSyncByteStream("".join(line + "\n" for line in lines).encode())
     real_client = httpx.Client
 
     def handler(request):
@@ -1083,15 +1090,17 @@ def _counted_sync_stream_route(transport, lines, monkeypatch, model):
     adapter = UniversalLLMAPIAdapter(
         organization="openai_compatible", model=model,
         api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT, transport="httpx",
+        **variant_kwargs,
     )
     return adapter, requests_seen, byte_stream, client_closes, client
 
 
 def _counted_async_stream_route(
-    lines, monkeypatch, model, *, suspended=None, release=None
+    lines, monkeypatch, model, *, suspended=None, release=None, api_variant=None
 ):
     requests_seen = []
     client_closes = []
+    variant_kwargs = {"api_variant": api_variant} if api_variant is not None else {}
     byte_stream = _CountedAsyncByteStream(lines, suspended, release)
     real_client = httpx.AsyncClient
 
@@ -1115,6 +1124,7 @@ def _counted_async_stream_route(
     adapter = UniversalLLMAPIAdapter(
         organization="openai_compatible", model=model,
         api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT,
+        **variant_kwargs,
     )
     return adapter, requests_seen, byte_stream, client_closes, client
 
@@ -5106,6 +5116,959 @@ async def test_async_compatible_responses_failed_sse_redacts_diagnostics_and_doe
     assert payload["stream"] is True
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("body_factory", "content", "finish_reason", "refusal", "incomplete"),
+    [
+        (lambda: responses_text_response("ordinary text"), "ordinary text", "completed", None, None),
+        (responses_empty_response, None, "completed", None, None),
+        (responses_refusal_response, None, "completed", "Fixture refusal", None),
+        (
+            responses_incomplete_response,
+            "Partial fixture answer",
+            "incomplete",
+            None,
+            "max_output_tokens",
+        ),
+    ],
+    ids=("completed-text", "empty-completed", "refusal", "incomplete"),
+)
+def test_compatible_responses_ordinary_terminal_outcomes_are_normalized(
+    body_factory, content, finish_reason, refusal, incomplete
+):
+    url = f"{_COLLISION_ROOT}/responses"
+    with requests_mock.Mocker(real_http=False) as http:
+        http.post(url, json=body_factory())
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="vendor/terminal-outcome",
+            api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT,
+            api_variant="responses",
+        )
+        response = facade.chat([UserMessage(content="Hello")])
+
+    assert http.call_count == 1
+    request = http.request_history[0]
+    assert request.url == url
+    assert request.headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+    assert request.json()["model"] == "vendor/terminal-outcome"
+    assert response.content == content
+    assert response.finish_reason == finish_reason
+    assert response.refusal == refusal
+    assert response.incomplete_reason == incomplete
+    assert response.parsed_json is None
+    assert response.parsed_model is None
+    assert response.usage is None
+    assert response.cost_total is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body_factory", "content", "finish_reason", "refusal", "incomplete"),
+    [
+        (responses_empty_response, None, "completed", None, None),
+        (responses_refusal_response, None, "completed", "Fixture refusal", None),
+        (
+            responses_incomplete_response,
+            "Partial fixture answer",
+            "incomplete",
+            None,
+            "max_output_tokens",
+        ),
+    ],
+    ids=("empty-completed", "refusal", "incomplete"),
+)
+async def test_compatible_responses_async_ordinary_terminal_outcomes(
+    body_factory, content, finish_reason, refusal, incomplete, monkeypatch
+):
+    model = "vendor/async-terminal-outcome"
+    url = f"{_COLLISION_ROOT}/responses"
+    outgoing = []
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        outgoing.append(request)
+        return httpx.Response(200, json=body_factory(model=model), request=request)
+
+    client = real_client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model=model,
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+        api_variant="responses",
+    )
+    try:
+        response = await facade.achat([UserMessage(content="Hello")])
+    finally:
+        await client.aclose()
+
+    assert len(outgoing) == 1
+    assert str(outgoing[0].url) == url
+    assert outgoing[0].headers["Authorization"] == f"Bearer {_COLLISION_KEY}"
+    assert json.loads(outgoing[0].content)["model"] == model
+    assert response.model == model
+    assert response.content == content
+    assert response.finish_reason == finish_reason
+    assert response.refusal == refusal
+    assert response.incomplete_reason == incomplete
+    assert response.parsed_json is None
+    assert response.parsed_model is None
+    assert response.usage is None
+
+
+_RESPONSES_MALFORMED_JSON_CASES = (
+    pytest.param(None, id="json-null"),
+    pytest.param([], id="array"),
+    pytest.param("text", id="string"),
+    pytest.param({"choices": []}, id="chat-shaped"),
+    pytest.param({"object": "response", "output": []}, id="missing-status"),
+    pytest.param({"status": "queued", "output": []}, id="unknown-status"),
+    pytest.param({"status": "completed"}, id="missing-output"),
+    pytest.param({"status": "completed", "output": {}}, id="non-list-output"),
+    pytest.param({"status": "completed", "output": [None]}, id="non-mapping-item"),
+    pytest.param(
+        {"status": "completed", "output": [{"type": "message", "content": {}}]},
+        id="non-list-content",
+    ),
+    pytest.param(
+        {
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": 7}]}],
+        },
+        id="non-string-text",
+    ),
+    pytest.param(
+        {
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "refusal", "refusal": []}]}],
+        },
+        id="non-string-refusal",
+    ),
+    pytest.param(
+        {"status": "incomplete", "output": [], "incomplete_details": "bad"},
+        id="invalid-incomplete-details",
+    ),
+)
+
+
+def _assert_selected_responses_request(request, model, *, stream, api_variant="responses"):
+    resource = "responses" if api_variant == "responses" else "chat/completions"
+    expected_url = f"{_COLLISION_ROOT}/{resource}"
+    if isinstance(request, tuple):
+        url, kwargs = request
+        headers = kwargs.get("headers", {})
+        payload = kwargs.get("json")
+        if payload is None:
+            payload = json.loads(kwargs.get("data", "{}"))
+    else:
+        url = str(request.url)
+        headers = request.headers
+        try:
+            payload = json.loads(request.content)
+        except AttributeError:
+            payload = request.json()
+    assert url == expected_url
+    assert headers.get("Authorization") == f"Bearer {_COLLISION_KEY}"
+    assert payload["model"] == model
+    assert payload.get("stream", False) is stream
+    if api_variant == "responses":
+        assert payload.get("store") is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("body", _RESPONSES_MALFORMED_JSON_CASES)
+def test_compatible_responses_rejects_malformed_selected_protocol_json(body):
+    url = f"{_COLLISION_ROOT}/responses"
+    with requests_mock.Mocker(real_http=False) as http:
+        # Serialize even JSON null so requests_mock does not turn it into an empty body.
+        http.post(url, text=json.dumps(body), headers={"Content-Type": "application/json"})
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible",
+            model="vendor/malformed-response",
+            api_key=_COLLISION_KEY,
+            base_url=_COLLISION_ROOT,
+            api_variant="responses",
+        )
+        with pytest.raises(LLMAPIClientError):
+            facade.chat([UserMessage(content="Hello")])
+
+    assert http.call_count == 1
+    _assert_selected_responses_request(
+        http.request_history[0], "vendor/malformed-response", stream=False
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", _RESPONSES_MALFORMED_JSON_CASES)
+async def test_compatible_responses_async_rejects_malformed_selected_protocol_json(
+    body, monkeypatch
+):
+    model = "vendor/async-malformed-response"
+    outgoing = []
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        outgoing.append(request)
+        return httpx.Response(
+            200,
+            content=json.dumps(body),
+            headers={"Content-Type": "application/json"},
+            request=request,
+        )
+
+    client = real_client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model=model,
+        api_key=_COLLISION_KEY,
+        base_url=_COLLISION_ROOT,
+        api_variant="responses",
+    )
+    try:
+        with pytest.raises(LLMAPIClientError):
+            await facade.achat([UserMessage(content="Hello")])
+    finally:
+        await client.aclose()
+
+    assert len(outgoing) == 1
+    _assert_selected_responses_request(outgoing[0], model, stream=False)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("terminal", "expected_text", "expected_content", "expected_refusal", "expected_incomplete"),
+    [
+        ("completed", ["Hello"], "Hello", None, None),
+        ("incomplete", ["Hello"], "Hello", None, "max_output_tokens"),
+        ("refusal", [], None, "Fixture refusal", None),
+        ("empty", [], None, None, None),
+    ],
+)
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+def test_compatible_responses_stream_terminal_outcomes_flush_before_done(
+    terminal, expected_text, expected_content, expected_refusal, expected_incomplete,
+    transport, monkeypatch,
+):
+    text = "Hello"
+    lines = responses_text_sse_lines(
+        text, fragments=(text[0], text[1:]) if len(text) > 1 else (text,),
+        terminal=terminal, model="vendor/terminal-stream",
+    )
+    completed = []
+    order = []
+    adapter, requests_seen, resource, client_closes, client = _counted_sync_stream_route(
+        transport, lines, monkeypatch, "vendor/terminal-stream", api_variant="responses"
+    )
+    try:
+        stream = adapter.stream_chat(
+            [UserMessage(content="Hello")], buffer_chars=64,
+            on_chunk=lambda value: order.append(("chunk", value.text)),
+            on_delta=lambda value: order.append(("delta", value)),
+            on_done=lambda response: (order.append(("done", response)), completed.append(response)),
+        )
+        visible = []
+        for text_piece in stream:
+            visible.append(text_piece)
+            order.append(("yield", text_piece))
+        assert visible == expected_text
+        expected_order = (
+            [("chunk", text), ("delta", text), ("yield", text), ("done", completed[0])]
+            if expected_text else [("done", completed[0])]
+        )
+        assert order == expected_order
+        assert completed[0].content == expected_content
+        assert completed[0].finish_reason == (
+            "incomplete" if terminal == "incomplete" else "completed"
+        )
+        assert completed[0].refusal == expected_refusal
+        assert completed[0].incomplete_reason == expected_incomplete
+        assert completed[0].parsed_json is None
+        assert completed[0].parsed_model is None
+        assert completed[0].usage is None
+        assert len(requests_seen) == 1
+        _assert_selected_responses_request(
+            requests_seen[0], "vendor/terminal-stream", stream=True
+        )
+        assert resource.close_count == 1
+        if transport == "httpx":
+            assert client_closes == [True]
+    finally:
+        if transport == "httpx" and client is not None and not client.is_closed:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+def test_compatible_responses_stream_buffer_limit_and_callback_order(transport, monkeypatch):
+    model = "vendor/bounded-responses-stream"
+    lines = responses_text_sse_lines(
+        "abcdefg", fragments=("ab", "cd", "ef", "g"), model=model,
+    )
+    adapter, requests_seen, resource, client_closes, client = _counted_sync_stream_route(
+        transport, lines, monkeypatch, model, api_variant="responses"
+    )
+    callbacks = []
+    completed = []
+    order = []
+    try:
+        stream = adapter.stream_chat(
+            [UserMessage(content="Hello")], buffer_chars=3,
+            on_chunk=lambda chunk: (callbacks.append(("chunk", chunk.text)), order.append(("chunk", chunk.text))),
+            on_delta=lambda delta: (callbacks.append(("delta", delta)), order.append(("delta", delta))),
+            on_done=lambda response: (completed.append(response), order.append(("done", response))),
+        )
+        visible = []
+        for text_piece in stream:
+            visible.append(text_piece)
+            order.append(("yield", text_piece))
+        assert visible == ["abc", "def", "g"]
+        assert callbacks == [
+            ("chunk", "abc"), ("delta", "abc"),
+            ("chunk", "def"), ("delta", "def"),
+            ("chunk", "g"), ("delta", "g"),
+        ]
+        assert order == [
+            ("chunk", "abc"), ("delta", "abc"), ("yield", "abc"),
+            ("chunk", "def"), ("delta", "def"), ("yield", "def"),
+            ("chunk", "g"), ("delta", "g"), ("yield", "g"),
+            ("done", completed[0]),
+        ]
+        assert completed[0].content == "abcdefg"
+        assert len(requests_seen) == 1
+        _assert_selected_responses_request(requests_seen[0], model, stream=True)
+        assert resource.close_count == 1
+        if transport == "httpx":
+            assert client_closes == [True]
+    finally:
+        if transport == "httpx" and client is not None and not client.is_closed:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+def test_compatible_responses_sync_early_close_preserves_only_emitted_prefix(
+    transport, monkeypatch
+):
+    model = "vendor/responses-early-close"
+    lines = responses_text_sse_lines(
+        "Hello!", fragments=("Hello!",), model=model,
+    )
+    adapter, requests_seen, resource, client_closes, client = _counted_sync_stream_route(
+        transport, lines, monkeypatch, model, api_variant="responses"
+    )
+    visible = []
+    callbacks = []
+    completed = []
+    stream = adapter.stream_chat(
+        [UserMessage(content="Hello")], buffer_chars=4,
+        on_chunk=lambda chunk: callbacks.append(("chunk", chunk.text)),
+        on_delta=lambda delta: callbacks.append(("delta", delta)),
+        on_done=completed.append,
+    )
+    try:
+        emitted = next(stream)
+        visible.append(emitted)
+        stream.close()
+        assert visible == ["Hell"]
+        assert callbacks == [("chunk", "Hell"), ("delta", "Hell")]
+        assert completed == []
+        assert len(requests_seen) == 1
+        _assert_selected_responses_request(requests_seen[0], model, stream=True)
+        assert resource.close_count == 1
+        if transport == "httpx":
+            assert client_closes == [True]
+    finally:
+        stream.close()
+        if resource.close_count == 0:
+            resource.close()
+        if transport == "httpx" and client is not None and not client.is_closed:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("buffer_chars", (0, -1))
+def test_compatible_responses_rejects_invalid_buffer_limit_before_send(buffer_chars, monkeypatch):
+    adapter, requests_seen, resource, client_closes, client = _counted_sync_stream_route(
+        "requests", responses_text_sse_lines("x"), monkeypatch,
+        "vendor/invalid-buffer", api_variant="responses",
+    )
+    with pytest.raises(ValueError):
+        list(adapter.stream_chat(
+            [UserMessage(content="Hello")], buffer_chars=buffer_chars
+        ))
+    assert requests_seen == []
+    assert resource.close_count == 0
+    assert client_closes == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("buffer_chars", (0, -1))
+async def test_compatible_responses_async_rejects_invalid_buffer_before_send(
+    buffer_chars, monkeypatch
+):
+    adapter, requests_seen, resource, client_closes, client = _counted_async_stream_route(
+        responses_text_sse_lines("x"), monkeypatch,
+        "vendor/async-invalid-buffer", api_variant="responses",
+    )
+    try:
+        with pytest.raises(ValueError):
+            async for _text in adapter.astream_chat(
+                [UserMessage(content="Hello")], buffer_chars=buffer_chars
+            ):
+                pass
+        assert requests_seen == []
+        assert resource.close_count == 0
+        assert client_closes == []
+    finally:
+        if not client.is_closed:
+            await client.aclose()
+
+
+_RESPONSES_BAD_STREAM_CASES = (
+    pytest.param(
+        event_lines({"choices": [{"delta": {"content": "chat frame"}}]}),
+        LLMAPIClientError, True, id="chat-frame",
+    ),
+    pytest.param(
+        event_lines({"type": "response.output_text.delta", "delta": 4}),
+        LLMAPIClientError, True, id="wrong-delta-type",
+    ),
+    pytest.param(["data: null", ""], LLMAPIClientError, True, id="null-frame"),
+    pytest.param(["data: []", ""], LLMAPIClientError, True, id="list-frame"),
+    pytest.param(
+        event_lines({
+            "type": "response.completed",
+            "response": {"status": "queued", "output": []},
+        }),
+        LLMAPIClientError, True, id="invalid-terminal-status",
+    ),
+    pytest.param(
+        event_lines({
+            "type": "response.completed",
+            "response": {"status": "completed", "output": {}},
+        }),
+        LLMAPIClientError, True, id="invalid-terminal-output",
+    ),
+    pytest.param(
+        [
+            "event: response.completed",
+            *event_lines({
+                "type": "response.incomplete",
+                "response": responses_incomplete_response("x", model="vendor/bad-stream"),
+            }),
+        ],
+        LLMAPIClientError, True, id="named-data-type-contradiction",
+    ),
+    pytest.param(
+        event_lines({
+            "type": "response.failed",
+            "response": responses_response(
+                status="failed",
+                error={"code": "server_error", "message": "failed"},
+            ),
+        }),
+        LLMAPIServerError, False, id="failed-terminal",
+    ),
+    pytest.param(
+        event_lines({"type": "error", "error": {"message": "stream error"}}),
+        LLMAPIClientError, False, id="generic-error-event",
+    ),
+    pytest.param(["data: {broken", ""], LLMAPIClientError, True, id="bad-json"),
+    pytest.param(["data: [DONE]", ""], LLMAPIClientError, False, id="done-without-terminal"),
+    pytest.param([], LLMAPIClientError, False, id="eof-without-terminal"),
+)
+
+
+def _valid_responses_terminal_lines(model):
+    return event_lines({
+        "type": "response.completed",
+        "response": responses_text_response("x", model=model),
+        "sequence_number": 1,
+    })
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("bad_lines", "error_type", "append_terminal"),
+    _RESPONSES_BAD_STREAM_CASES,
+)
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+def test_compatible_responses_stream_rejects_bad_terminal_or_protocol_without_flush(
+    bad_lines, error_type, append_terminal, transport, monkeypatch,
+):
+    model = "vendor/bad-stream"
+    pending = event_lines({
+        "type": "response.output_text.delta",
+        "delta": "x",
+    })
+    lines = pending + bad_lines
+    if append_terminal:
+        lines += _valid_responses_terminal_lines(model)
+    completed = []
+    adapter, requests_seen, resource, client_closes, client = _counted_sync_stream_route(
+        transport, lines, monkeypatch, model, api_variant="responses"
+    )
+    chunks = []
+    deltas = []
+    visible = []
+    try:
+        with pytest.raises(error_type):
+            for text in adapter.stream_chat(
+                [UserMessage(content="Hello")], buffer_chars=64,
+                on_chunk=lambda chunk: chunks.append(chunk.text),
+                on_delta=deltas.append,
+                on_done=completed.append,
+            ):
+                visible.append(text)
+        assert len(requests_seen) == 1
+        _assert_selected_responses_request(requests_seen[0], model, stream=True)
+        assert resource.close_count == 1
+        assert visible == chunks == deltas == []
+        assert completed == []
+        if transport == "httpx":
+            assert client_closes == [True]
+    finally:
+        if transport == "httpx" and client is not None and not client.is_closed:
+            client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("bad_lines", "error_type", "append_terminal"),
+    _RESPONSES_BAD_STREAM_CASES,
+)
+async def test_compatible_responses_async_stream_rejects_bad_protocol_without_flush(
+    bad_lines, error_type, append_terminal, monkeypatch
+):
+    model = "vendor/async-bad-stream"
+    lines = event_lines({"type": "response.output_text.delta", "delta": "x"}) + bad_lines
+    if append_terminal:
+        lines += _valid_responses_terminal_lines(model)
+    adapter, requests_seen, resource, client_closes, client = _counted_async_stream_route(
+        lines, monkeypatch, model, api_variant="responses"
+    )
+    visible = []
+    chunks = []
+    deltas = []
+    completed = []
+    try:
+        with pytest.raises(error_type):
+            async for text in adapter.astream_chat(
+                [UserMessage(content="Hello")], buffer_chars=64,
+                on_chunk=lambda chunk: chunks.append(chunk.text),
+                on_delta=deltas.append,
+                on_done=completed.append,
+            ):
+                visible.append(text)
+        assert len(requests_seen) == 1
+        _assert_selected_responses_request(requests_seen[0], model, stream=True)
+        assert resource.close_count == 1
+        assert client_closes == [True]
+        assert visible == chunks == deltas == []
+        assert completed == []
+    finally:
+        if resource.close_count == 0:
+            await resource.aclose()
+        if not client_closes:
+            await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ("completed", "incomplete", "refusal", "empty"))
+async def test_compatible_responses_async_stream_supports_sync_and_awaitable_callbacks(
+    terminal, monkeypatch
+):
+    text = "Hello"
+    lines = responses_text_sse_lines(
+        text, fragments=("He", "llo"), terminal=terminal,
+        model="vendor/async-terminal",
+    )
+    adapter, requests_seen, resource, client_closes, client = _counted_async_stream_route(
+        lines, monkeypatch, "vendor/async-terminal", api_variant="responses"
+    )
+    visible = []
+    order = []
+    completed = []
+
+    async def on_chunk(chunk):
+        order.append(("chunk", chunk.text))
+
+    def on_delta(delta):
+        order.append(("delta", delta))
+
+    async def on_done(response):
+        order.append(("done", response))
+        completed.append(response)
+
+    try:
+        async for delta in adapter.astream_chat(
+            [UserMessage(content="Hello")], buffer_chars=3,
+            on_chunk=on_chunk, on_delta=on_delta, on_done=on_done,
+        ):
+            visible.append(delta)
+            order.append(("yield", delta))
+
+        expected_visible = ["Hel", "lo"] if terminal in ("completed", "incomplete") else []
+        assert visible == expected_visible
+        assert len(completed) == 1
+        if expected_visible:
+            assert order == [
+                ("chunk", "Hel"), ("delta", "Hel"), ("yield", "Hel"),
+                ("chunk", "lo"), ("delta", "lo"), ("yield", "lo"),
+                ("done", completed[0]),
+            ]
+        else:
+            assert order == [("done", completed[0])]
+        assert completed[0].finish_reason == (
+            "incomplete" if terminal == "incomplete" else "completed"
+        )
+        assert completed[0].refusal == (
+            "Fixture refusal" if terminal == "refusal" else None
+        )
+        assert completed[0].incomplete_reason == (
+            "max_output_tokens" if terminal == "incomplete" else None
+        )
+        assert completed[0].parsed_json is None
+        assert completed[0].parsed_model is None
+        assert completed[0].usage is None
+        assert len(requests_seen) == 1
+        _assert_selected_responses_request(requests_seen[0], "vendor/async-terminal", stream=True)
+        assert resource.close_count == 1
+        assert client_closes == [True]
+    finally:
+        if resource.close_count == 0:
+            await resource.aclose()
+        if not client_closes:
+            await client.aclose()
+
+
+def _inject_async_event_source_close_error(adapter, error, *, producer_error=None):
+    """Raise from the facade-owned event source close boundary after closing it."""
+    client = adapter.adapter._create_async_client()
+    original_stream = client.stream
+    sources = []
+
+    def stream(*args, **kwargs):
+        source = original_stream(*args, **kwargs)
+
+        class CloseFailingSource:
+            exhausted = False
+            close_count = 0
+
+            async def __aiter__(self):
+                async for event in source:
+                    yield event
+                    if producer_error is not None:
+                        raise producer_error
+                self.exhausted = True
+
+            async def aclose(self):
+                self.close_count += 1
+                if not self.exhausted:
+                    await source.aclose()
+                raise error
+
+        wrapped_source = CloseFailingSource()
+        sources.append(wrapped_source)
+        return wrapped_source
+
+    client.stream = stream
+    adapter.adapter._create_async_client = lambda: client
+    return sources
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_variant", ("chat_completions", "responses"))
+@pytest.mark.parametrize(
+    ("failure", "callback_style"),
+    (
+        ("chunk-callback", "sync"),
+        ("chunk-callback", "awaitable"),
+        ("done-callback", "sync"),
+        ("done-callback", "awaitable"),
+        ("provider", "sync"),
+    ),
+)
+async def test_compatible_async_stream_primary_failure_survives_secondary_close_error(
+    api_variant, failure, callback_style, monkeypatch
+):
+    model = "vendor/close-error"
+    if failure == "provider":
+        if api_variant == "responses":
+            lines = event_lines({"type": "response.output_text.delta", "delta": "x"})
+        else:
+            lines = event_lines({"choices": [{"delta": {"content": "x"}}]})
+    elif api_variant == "responses":
+        lines = responses_text_sse_lines("x", terminal="completed", model=model)
+    else:
+        lines = text_sse_lines("x", fragments=("x",))
+
+    adapter, requests_seen, resource, client_closes, client = _counted_async_stream_route(
+        lines, monkeypatch, model,
+        api_variant=api_variant,
+    )
+    primary = (
+        LLMAPIRateLimitError(detail="pre-created provider error")
+        if failure == "provider"
+        else RuntimeError(f"primary {failure} {callback_style}")
+    )
+    secondary = RuntimeError("source close failed")
+    owned_sources = _inject_async_event_source_close_error(
+        adapter,
+        secondary,
+        producer_error=primary if failure == "provider" else None,
+    )
+    visible = []
+    completed = []
+
+    def broken_chunk_sync(_chunk):
+        raise primary
+
+    async def broken_chunk_awaitable(_chunk):
+        raise primary
+
+    def broken_done_sync(_response):
+        raise primary
+
+    async def broken_done_awaitable(_response):
+        raise primary
+
+    try:
+        kwargs = {"buffer_chars": 64, "on_done": completed.append}
+        if failure == "chunk-callback":
+            kwargs["on_chunk"] = (
+                broken_chunk_awaitable if callback_style == "awaitable"
+                else broken_chunk_sync
+            )
+        elif failure == "done-callback":
+            kwargs["on_done"] = (
+                broken_done_awaitable if callback_style == "awaitable"
+                else broken_done_sync
+            )
+
+        expected_error = (
+            LLMAPIRateLimitError if failure == "provider" else type(primary)
+        )
+        with pytest.raises(expected_error) as caught:
+            async for delta in adapter.astream_chat(
+                [UserMessage(content="Hello")], **kwargs
+            ):
+                visible.append(delta)
+
+        assert caught.value is primary
+        assert len(requests_seen) == 1
+        _assert_selected_responses_request(
+            requests_seen[0], model, stream=True, api_variant=api_variant
+        )
+        assert resource.close_count == 1
+        assert client_closes == [True]
+        assert len(owned_sources) == 1
+        assert owned_sources[0].close_count == 1
+        if failure in ("chunk-callback", "provider"):
+            assert visible == []
+            assert completed == []
+        else:
+            assert visible == ["x"]
+            assert completed == []
+    finally:
+        if resource.close_count == 0:
+            try:
+                await resource.aclose()
+            except RuntimeError:
+                pass
+        if not client_closes:
+            await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_variant", ("chat_completions", "responses"))
+async def test_compatible_async_stream_standalone_close_failure_propagates_after_completion(
+    api_variant, monkeypatch
+):
+    model = "vendor/standalone-close-error"
+    lines = (
+        responses_text_sse_lines("x", model=model)
+        if api_variant == "responses"
+        else text_sse_lines("x", fragments=("x",))
+    )
+    adapter, requests_seen, resource, client_closes, client = _counted_async_stream_route(
+        lines, monkeypatch, model, api_variant=api_variant,
+    )
+    secondary = RuntimeError("standalone source close failed")
+    owned_sources = _inject_async_event_source_close_error(adapter, secondary)
+    completed = []
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            [delta async for delta in adapter.astream_chat(
+                [UserMessage(content="Hello")], on_done=completed.append
+            )]
+        assert caught.value is secondary
+        assert len(requests_seen) == 1
+        _assert_selected_responses_request(
+            requests_seen[0], model, stream=True, api_variant=api_variant
+        )
+        assert completed and completed[0].content == "x"
+        assert resource.close_count == 1
+        assert client_closes == [True]
+        assert len(owned_sources) == 1
+        assert owned_sources[0].close_count == 1
+    finally:
+        if resource.close_count == 0:
+            try:
+                await resource.aclose()
+            except RuntimeError:
+                pass
+        if not client_closes:
+            await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_variant", ("chat_completions", "responses"))
+async def test_compatible_async_close_failure_is_not_hidden_in_caller_except(
+    api_variant, monkeypatch
+):
+    model = "vendor/unrelated-caller-error"
+    lines = (
+        responses_text_sse_lines("x", model=model)
+        if api_variant == "responses"
+        else text_sse_lines("x", fragments=("x",))
+    )
+    adapter, requests_seen, resource, client_closes, client = _counted_async_stream_route(
+        lines, monkeypatch, model, api_variant=api_variant,
+    )
+    secondary = RuntimeError("source close failed")
+    owned_sources = _inject_async_event_source_close_error(adapter, secondary)
+    completed = []
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            try:
+                raise LookupError("unrelated caller exception")
+            except LookupError:
+                async for _text in adapter.astream_chat(
+                    [UserMessage(content="Hello")],
+                    on_done=completed.append,
+                ):
+                    pass
+        assert caught.value is secondary
+        assert len(completed) == 1
+        assert completed[0].content == "x"
+        assert len(requests_seen) == 1
+        _assert_selected_responses_request(
+            requests_seen[0], model, stream=True, api_variant=api_variant
+        )
+        assert resource.close_count == 1
+        assert client_closes == [True]
+        assert len(owned_sources) == 1
+        assert owned_sources[0].close_count == 1
+    finally:
+        if resource.close_count == 0:
+            await resource.aclose()
+        if not client_closes:
+            await client.aclose()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_variant", ("chat_completions", "responses"))
+@pytest.mark.parametrize("termination", ("cancel", "early-close"))
+async def test_compatible_async_stream_early_termination_never_flushes_pending_text(
+    api_variant, termination, monkeypatch
+):
+    model = "vendor/early-termination"
+    lines = (
+        event_lines({"type": "response.output_text.delta", "delta": "He!"})
+        if api_variant == "responses"
+        else event_lines({"choices": [{"delta": {"content": "He!"}}]})
+    )
+    suspended = asyncio.Event()
+    release = asyncio.Event()
+    first_chunk = asyncio.Event()
+    adapter, requests_seen, resource, client_closes, client = _counted_async_stream_route(
+        lines, monkeypatch, model,
+        suspended=suspended, release=release,
+        api_variant=api_variant,
+    )
+    completed = []
+    visible = []
+    callbacks = []
+    secondary = RuntimeError("close after early termination")
+    owned_sources = _inject_async_event_source_close_error(adapter, secondary)
+
+    async def consume():
+        async for delta in adapter.astream_chat(
+            [UserMessage(content="Hello")], buffer_chars=2,
+            on_chunk=lambda chunk: callbacks.append(("chunk", chunk.text)),
+            on_delta=lambda text: callbacks.append(("delta", text)),
+            on_done=completed.append,
+        ):
+            visible.append(delta)
+            first_chunk.set()
+
+    task = None
+    stream = None
+    try:
+        if termination == "cancel":
+            task = asyncio.create_task(consume())
+            await asyncio.wait_for(first_chunk.wait(), timeout=2)
+            await asyncio.wait_for(suspended.wait(), timeout=2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=2)
+        else:
+            # Closing after the first yield must leave the one-character tail buffered.
+            stream = adapter.astream_chat(
+                [UserMessage(content="Hello")], buffer_chars=2,
+                on_chunk=lambda chunk: callbacks.append(("chunk", chunk.text)),
+                on_delta=lambda text: callbacks.append(("delta", text)),
+                on_done=completed.append,
+            )
+            first = await asyncio.wait_for(anext(stream), timeout=2)
+            visible.append(first)
+            assert first == "He"
+            await asyncio.wait_for(stream.aclose(), timeout=2)
+
+        assert len(requests_seen) == 1
+        _assert_selected_responses_request(
+            requests_seen[0], model, stream=True, api_variant=api_variant
+        )
+        assert resource.close_count == 1
+        assert client_closes == [True]
+        assert len(owned_sources) == 1
+        assert owned_sources[0].close_count == 1
+        assert completed == []
+        assert visible == ["He"]
+        assert callbacks == [("chunk", "He"), ("delta", "He")]
+    finally:
+        release.set()
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=2)
+            except asyncio.CancelledError:
+                pass
+        if stream is not None:
+            await stream.aclose()
+        if resource.close_count == 0:
+            try:
+                await resource.aclose()
+            except RuntimeError:
+                pass
+        if not client_closes:
+            await client.aclose()
+
+
 def _compatible_responses_text_stream_lines(model, content):
     return event_lines(
         {
@@ -5339,3 +6302,167 @@ def test_compatible_responses_preparation_preserves_normalized_output_bound(
         assert "max_output_tokens" not in payload
     else:
         assert payload["max_output_tokens"] == expected_bound
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+@pytest.mark.parametrize("callback_name", ("on_delta", "on_done"))
+def test_compatible_responses_sync_callback_failure_remains_caller_exception(
+    transport, callback_name, monkeypatch,
+):
+    model = "vendor/callback-error"
+    lines = responses_text_sse_lines("x", fragments=("x",), model=model)
+    adapter, requests_seen, resource, client_closes, client = _counted_sync_stream_route(
+        transport, lines, monkeypatch, model, api_variant="responses"
+    )
+    callback_error = RuntimeError("caller callback marker")
+    completed = []
+
+    def fail(_value):
+        raise callback_error
+
+    kwargs = {"on_done": completed.append}
+    kwargs[callback_name] = fail
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            list(adapter.stream_chat(
+                [UserMessage(content="Hello")], buffer_chars=64, **kwargs,
+            ))
+        assert caught.value is callback_error
+        assert len(requests_seen) == 1
+        _assert_selected_responses_request(requests_seen[0], model, stream=True)
+        assert resource.close_count == 1
+        assert completed == []
+        if transport == "httpx":
+            assert client_closes == [True]
+    finally:
+        if transport == "httpx" and client is not None and not client.is_closed:
+            client.close()
+
+
+_RESPONSES_TRANSPORT_ERROR_CASES = (
+    pytest.param("timeout", LLMAPITimeoutError, id="timeout"),
+    pytest.param("rate-limit", LLMAPIRateLimitError, id="rate-limit"),
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("failure, error_type", _RESPONSES_TRANSPORT_ERROR_CASES)
+@pytest.mark.parametrize("mode", ("chat", "stream_chat"))
+@pytest.mark.parametrize("transport", ("requests", "httpx"))
+def test_compatible_responses_sync_transport_errors_do_not_fallback(
+    failure, error_type, mode, transport, monkeypatch
+):
+    model = "vendor/sync-transport-error"
+    url = f"{_COLLISION_ROOT}/responses"
+    done = []
+    if transport == "requests":
+        with requests_mock.Mocker(real_http=False) as http:
+            if failure == "timeout":
+                http.post(url, exc=requests.Timeout("synthetic timeout"))
+            else:
+                http.post(
+                    url, status_code=429,
+                    json={"error": {"code": "rate_limit_exceeded", "message": "slow down"}},
+                )
+            facade = UniversalLLMAPIAdapter(
+                organization="openai_compatible", model=model,
+                api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT,
+                api_variant="responses", transport=transport,
+            )
+            with pytest.raises(error_type):
+                if mode == "chat":
+                    facade.chat([UserMessage(content="Hello")])
+                else:
+                    list(facade.stream_chat(
+                        [UserMessage(content="Hello")], on_done=done.append
+                    ))
+        assert http.call_count == 1
+        _assert_selected_responses_request(
+            http.request_history[0], model, stream=mode == "stream_chat"
+        )
+    else:
+        outgoing = []
+        real_client = httpx.Client
+
+        def handler(request):
+            outgoing.append(request)
+            if failure == "timeout":
+                raise httpx.ReadTimeout("synthetic timeout", request=request)
+            return httpx.Response(
+                429,
+                json={"error": {"code": "rate_limit_exceeded", "message": "slow down"}},
+                request=request,
+            )
+
+        client = real_client(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr(httpx, "Client", lambda: client)
+        facade = UniversalLLMAPIAdapter(
+            organization="openai_compatible", model=model,
+            api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT,
+            api_variant="responses", transport=transport,
+        )
+        try:
+            with pytest.raises(error_type):
+                if mode == "chat":
+                    facade.chat([UserMessage(content="Hello")])
+                else:
+                    list(facade.stream_chat(
+                        [UserMessage(content="Hello")], on_done=done.append
+                    ))
+            assert len(outgoing) == 1
+            _assert_selected_responses_request(
+                outgoing[0], model, stream=mode == "stream_chat"
+            )
+        finally:
+            client.close()
+    assert done == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure, error_type", _RESPONSES_TRANSPORT_ERROR_CASES)
+@pytest.mark.parametrize("mode", ("achat", "astream_chat"))
+async def test_compatible_responses_async_transport_errors_do_not_fallback(
+    failure, error_type, mode, monkeypatch
+):
+    model = "vendor/async-transport-error"
+    url = f"{_COLLISION_ROOT}/responses"
+    done = []
+    outgoing = []
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        outgoing.append(request)
+        if failure == "timeout":
+            raise httpx.ReadTimeout("synthetic timeout", request=request)
+        return httpx.Response(
+            429,
+            json={"error": {"code": "rate_limit_exceeded", "message": "slow down"}},
+            request=request,
+        )
+
+    client = real_client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible", model=model,
+        api_key=_COLLISION_KEY, base_url=_COLLISION_ROOT,
+        api_variant="responses",
+    )
+    try:
+        with pytest.raises(error_type):
+            if mode == "achat":
+                await facade.achat([UserMessage(content="Hello")])
+            else:
+                async for _text in facade.astream_chat(
+                    [UserMessage(content="Hello")], on_done=done.append
+                ):
+                    pass
+    finally:
+        await client.aclose()
+
+    assert len(outgoing) == 1
+    _assert_selected_responses_request(
+        outgoing[0], model, stream=mode == "astream_chat"
+    )
+    assert done == []

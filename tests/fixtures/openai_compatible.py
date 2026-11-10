@@ -1,4 +1,4 @@
-"""Credential-free Chat Completions and Responses JSON, plus Chat-only SSE fixtures.
+"""Credential-free Chat Completions and Responses JSON/SSE fixtures.
 
 These deterministic factories describe protocol data only. They make no
 network requests and do not imply support by any particular server or model.
@@ -130,6 +130,65 @@ def responses_text_response(
     }
 
 
+def responses_response(
+    output: list[Any] | None = None,
+    *,
+    status: str = "completed",
+    response_id: str = "resp-fixture-001",
+    model: str = FIXTURE_MODEL,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Build a fresh, minimal Responses envelope with usage omitted by default."""
+    result: dict[str, Any] = {
+        "id": response_id,
+        "object": "response",
+        "status": status,
+        "model": model,
+        "output": deepcopy(output) if output is not None else [],
+    }
+    result.update(deepcopy(fields))
+    return result
+
+
+def responses_empty_response(**kwargs: Any) -> dict[str, Any]:
+    """Build a valid empty completed Responses result."""
+    return responses_response(output=[], status="completed", **kwargs)
+
+
+def responses_refusal_response(refusal: str = "Fixture refusal", **kwargs: Any) -> dict[str, Any]:
+    """Build a completed Responses result containing an assistant refusal."""
+    output = [{
+        "id": "msg-fixture-001",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{"type": "refusal", "refusal": refusal}],
+    }]
+    return responses_response(output=output, status="completed", **kwargs)
+
+
+def responses_incomplete_response(
+    content: str = "Partial fixture answer",
+    *,
+    reason: str = "max_output_tokens",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Build an incomplete Responses result with a visible partial answer."""
+    output = [{
+        "id": "msg-fixture-001",
+        "type": "message",
+        "status": "incomplete",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": content, "annotations": []}],
+    }]
+    return responses_response(
+        output=output,
+        status="incomplete",
+        incomplete_details={"reason": reason},
+        **kwargs,
+    )
+
+
 def tool_call_response(
     name: str = "lookup",
     arguments_json: str = '{"query":"fixture"}',
@@ -191,6 +250,47 @@ def model_invalid_structured_result_response(**kwargs: Any) -> dict[str, Any]:
 def event_lines(payload: Any) -> list[str]:
     """Encode one JSON SSE event as lines accepted by the repository decoder."""
     return [f"data: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}", ""]
+
+
+def responses_text_sse_lines(
+    content: str = "Fixture reply",
+    *,
+    fragments: list[str] | tuple[str, ...] | None = None,
+    terminal: str = "completed",
+    model: str = FIXTURE_MODEL,
+) -> list[str]:
+    """Build Responses text deltas and one terminal event with valid delimiters."""
+    pieces = [] if terminal in ("empty", "refusal") else _fragments(content, fragments)
+    lines: list[str] = []
+    for index, piece in enumerate(pieces):
+        lines.extend(event_lines({
+            "type": "response.output_text.delta",
+            "delta": piece,
+            "item_id": "msg-fixture-001",
+            "output_index": 0,
+            "content_index": 0,
+            "sequence_number": index,
+        }))
+    if terminal == "completed":
+        response = responses_text_response(content, model=model)
+        event_type = "response.completed"
+    elif terminal == "incomplete":
+        response = responses_incomplete_response(content, model=model)
+        event_type = "response.incomplete"
+    elif terminal == "empty":
+        response = responses_empty_response(model=model)
+        event_type = "response.completed"
+    elif terminal == "refusal":
+        response = responses_refusal_response(model=model)
+        event_type = "response.completed"
+    else:
+        raise ValueError("terminal must be completed, incomplete, empty, or refusal")
+    lines.extend(event_lines({
+        "type": event_type,
+        "response": response,
+        "sequence_number": len(pieces),
+    }))
+    return lines
 
 
 def _chunk(delta: dict[str, Any], finish_reason: str | None = None) -> dict[str, Any]:
@@ -321,7 +421,9 @@ __all__ = [
     "invalid_usage_payload", "model_invalid_structured_result_response",
     "partial_usage_payload", "portable_schema", "premature_eof_sse_lines", "refusal_response",
     "refusal_sse_lines",
-    "responses_text_response", "structured_result_response", "structured_result_sse_lines",
+    "responses_empty_response", "responses_incomplete_response", "responses_refusal_response",
+    "responses_response", "responses_text_response", "responses_text_sse_lines",
+    "structured_result_response", "structured_result_sse_lines",
     "text_response",
     "text_sse_lines", "tool_call_response", "tool_call_sse_lines", "usage_payload",
     "zero_usage_payload",
