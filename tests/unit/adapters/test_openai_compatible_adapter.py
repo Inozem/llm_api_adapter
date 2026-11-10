@@ -7155,3 +7155,183 @@ async def test_compatible_malformed_nonobject_arguments_fail_async(
     _assert_selected_responses_request(
         request, model, stream=mode == "astream_chat", api_variant=api_variant,
     )
+
+
+@pytest.mark.unit
+def test_compatible_legacy_chat_function_call_remains_supported():
+    adapter = _new_adapter(
+        api_key="test-key", model="vendor/legacy-tool",
+        base_url="https://example.invalid/v1",
+    )
+    result = adapter._normalize_chat_completions_response({
+        "choices": [{
+            "message": {
+                "content": None,
+                "function_call": {
+                    "name": "lookup",
+                    "arguments": '{"city":"Paris"}',
+                },
+            },
+            "finish_reason": "function_call",
+        }],
+    })
+    assert result.tool_calls[0].name == "lookup"
+    assert result.tool_calls[0].arguments == {"city": "Paris"}
+    assert result.tool_calls[0].call_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("legacy_call", [
+    {"name": "lookup", "arguments": " "},
+    {"name": "lookup"},
+])
+def test_compatible_malformed_legacy_chat_function_call_is_rejected(legacy_call):
+    adapter = _new_adapter(
+        api_key=_COLLISION_KEY, model="vendor/legacy-tool",
+        base_url=_COLLISION_ROOT,
+    )
+    marker = "PRIVATE_LEGACY_ARGUMENT_MARKER"
+    response = {"choices": [{
+        "message": {
+            "function_call": {**legacy_call, "name": marker},
+        },
+        "finish_reason": "function_call",
+    }]}
+    with pytest.raises(InvalidToolArgumentsError) as caught:
+        adapter._normalize_chat_completions_response(response)
+    assert marker not in str(caught.value)
+    assert _COLLISION_KEY not in str(caught.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("arguments", "malformed"),
+    [
+        ({"city": "Paris"}, False),
+        (None, True),
+        ("null", True),
+    ],
+    ids=("object", "raw-null", "json-null"),
+)
+def test_compatible_responses_tool_call_alias_uses_argument_validation(
+    arguments, malformed,
+):
+    adapter = _new_adapter(
+        api_key="test-key", model="vendor/responses-tool-alias",
+        base_url="https://example.invalid/v1",
+    )
+    response = responses_tool_call_response(
+        name="lookup", arguments_json='{"city":"Paris"}',
+        call_id="call_alias", model="vendor/responses-tool-alias",
+    )
+    response["output"][0]["type"] = "tool_call"
+    response["output"][0]["arguments"] = arguments
+    response_before = deepcopy(response)
+    if malformed:
+        with pytest.raises(InvalidToolArgumentsError) as caught:
+            adapter._normalize_responses_response(
+                response, capture_reasoning=False
+            )
+        assert "openai_compatible" in caught.value.detail
+        assert "lookup" not in caught.value.detail
+        assert response == response_before
+        return
+
+    result = adapter._normalize_responses_response(
+        response, capture_reasoning=False
+    )
+    assert result.tool_calls[0].name == "lookup"
+    assert result.tool_calls[0].arguments == {"city": "Paris"}
+    assert result.tool_calls[0].call_id == "call_alias"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("tool_calls", [
+    [None],
+    [{"function": None}],
+], ids=("null-call", "null-function"))
+def test_compatible_malformed_chat_tool_containers_raise_safe_argument_error(
+    tool_calls,
+):
+    adapter = _new_adapter(
+        api_key=_COLLISION_KEY, model="vendor/malformed-tool-container",
+        base_url=_COLLISION_ROOT,
+    )
+    response = {"choices": [{
+        "message": {"tool_calls": deepcopy(tool_calls)},
+        "finish_reason": "tool_calls",
+    }]}
+    response_before = deepcopy(response)
+    with pytest.raises(InvalidToolArgumentsError) as caught:
+        adapter._normalize_chat_completions_response(response)
+    assert "openai_compatible" in caught.value.detail
+    assert _COLLISION_KEY not in str(caught.value)
+    assert response == response_before
+
+
+@pytest.mark.unit
+def test_compatible_standard_chat_tool_calls_take_precedence_over_legacy():
+    adapter = _new_adapter(
+        api_key="test-key", model="vendor/tool-precedence",
+        base_url="https://example.invalid/v1",
+    )
+    result = adapter._normalize_chat_completions_response({
+        "choices": [{
+            "message": {
+                "tool_calls": [{
+                    "id": "call_standard",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": '{"city":"Paris"}',
+                    },
+                }],
+                "function_call": {
+                    "name": "ignored",
+                    "arguments": "PRIVATE_IGNORED_LEGACY_MARKER",
+                },
+            },
+            "finish_reason": "tool_calls",
+        }],
+    })
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "lookup"
+    assert result.tool_calls[0].call_id == "call_standard"
+
+
+@pytest.mark.unit
+def test_compatible_responses_tool_diagnostic_preserves_sdk_error_identity_and_attributes(
+    monkeypatch,
+):
+    compatible = _new_adapter(
+        api_key=_COLLISION_KEY, model="vendor/responses-tool-validation",
+        base_url=_COLLISION_ROOT,
+    )
+    original_error = InvalidToolArgumentsError(
+        detail="OpenAI responses tool arguments JSON parse failed: PRIVATE_RESPONSE_ARGUMENT_MARKER"
+    )
+    original_error.custom_marker = object()
+    marker = original_error.custom_marker
+
+    def raise_original(cls, response, *, capture_reasoning=False):
+        raise original_error
+
+    monkeypatch.setattr(
+        ChatResponse,
+        "from_openai_responses_response",
+        classmethod(raise_original),
+    )
+    with pytest.raises(InvalidToolArgumentsError) as caught:
+        compatible._normalize_responses_response(
+            {"status": "completed", "output": []},
+            capture_reasoning=False,
+        )
+
+    assert caught.value is original_error
+    assert caught.value.custom_marker is marker
+    assert "openai_compatible" in caught.value.detail
+    assert "PRIVATE_RESPONSE_ARGUMENT_MARKER" not in caught.value.detail
+    assert _COLLISION_KEY not in str(caught.value)
+    assert caught.value.args == (
+        f"{caught.value.message} Detail: {caught.value.detail}",
+    )

@@ -34,6 +34,10 @@ from ...models.tools import ToolSpec
 logger = logging.getLogger(__name__)
 
 _COMPATIBLE_API_VARIANTS = ("chat_completions", "responses")
+_COMPATIBLE_TOOL_ARGUMENTS_DETAIL = (
+    "openai_compatible returned malformed tool arguments; "
+    "ensure the server returns valid JSON arguments for each tool call."
+)
 
 
 _URI_RE = re.compile(r"(?i)\bhttps?://[^\s<>]+")
@@ -375,6 +379,51 @@ class OpenAICompatibleAdapter(
         ):
             raise OpenAICompatibleAdapter._malformed_response()
 
+    @staticmethod
+    def _invalid_compatible_tool_arguments() -> InvalidToolArgumentsError:
+        return InvalidToolArgumentsError(detail=_COMPATIBLE_TOOL_ARGUMENTS_DETAIL)
+
+    @staticmethod
+    def _validate_raw_tool_arguments(call: object) -> None:
+        """Reject shapes the shared response factory would silently coerce."""
+        if not isinstance(call, Mapping) or "arguments" not in call:
+            raise OpenAICompatibleAdapter._invalid_compatible_tool_arguments()
+        arguments = call["arguments"]
+        if isinstance(arguments, str):
+            if not arguments.strip():
+                raise OpenAICompatibleAdapter._invalid_compatible_tool_arguments()
+        elif not isinstance(arguments, dict):
+            raise OpenAICompatibleAdapter._invalid_compatible_tool_arguments()
+
+    @classmethod
+    def _validate_chat_tool_arguments(cls, message: Mapping[str, object]) -> None:
+        """Validate the consumed Chat call form; standard calls take precedence
+        over the legacy function_call field in the shared factory.
+        """
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            for call in tool_calls:
+                if not isinstance(call, Mapping):
+                    raise cls._invalid_compatible_tool_arguments()
+                function = call.get("function")
+                if not isinstance(function, Mapping):
+                    raise cls._invalid_compatible_tool_arguments()
+                cls._validate_raw_tool_arguments(function)
+            return
+
+        legacy_call = message.get("function_call")
+        if isinstance(legacy_call, Mapping) and legacy_call:
+            cls._validate_raw_tool_arguments(legacy_call)
+
+    @classmethod
+    def _validate_normalized_tool_arguments(
+        cls, chat_response: ChatResponse
+    ) -> None:
+        """Check decoded output without adding another JSON parser."""
+        for tool_call in chat_response.tool_calls or ():
+            if not isinstance(getattr(tool_call, "arguments", None), dict):
+                raise cls._invalid_compatible_tool_arguments()
+
     def _normalize_chat_completions_response(self, response: dict):
         """Validate the compatible envelope, then use OpenAI's shared normalizer."""
         if not isinstance(response, Mapping):
@@ -394,16 +443,14 @@ class OpenAICompatibleAdapter(
         ):
             raise self._malformed_response()
         self._validate_message_fields(message)
+        self._validate_chat_tool_arguments(message)
         try:
             chat_response = super()._normalize_chat_completions_response(response)
+            self._validate_normalized_tool_arguments(chat_response)
             chat_response.usage = _normalize_compatible_usage(response.get("usage"))
             return chat_response
         except InvalidToolArgumentsError as error:
-            error.detail = (
-                "openai_compatible returned malformed tool arguments; "
-                "ensure the server returns valid JSON arguments for each tool call."
-            )
-            error.args = (f"{error.message} Detail: {error.detail}",)
+            self._sanitize_tool_arguments_error(error)
             raise error from None
 
     @staticmethod
@@ -511,6 +558,8 @@ class OpenAICompatibleAdapter(
         ):
             raise malformed()
         if item_type != "message":
+            if item_type in ("function_call", "tool_call"):
+                self._validate_raw_tool_arguments(item)
             return
         content = item.get("content")
         if not isinstance(content, list):
@@ -540,10 +589,22 @@ class OpenAICompatibleAdapter(
         capture_reasoning: bool,
     ) -> ChatResponse:
         self._validate_responses_response(response)
-        return super()._normalize_responses_response(
-            response,
-            capture_reasoning=capture_reasoning,
-        )
+        try:
+            chat_response = super()._normalize_responses_response(
+                response,
+                capture_reasoning=capture_reasoning,
+            )
+            self._validate_normalized_tool_arguments(chat_response)
+            return chat_response
+        except InvalidToolArgumentsError as error:
+            self._sanitize_tool_arguments_error(error)
+            raise error from None
+
+    @staticmethod
+    def _sanitize_tool_arguments_error(error: InvalidToolArgumentsError) -> None:
+        """Keep the original public error while removing provider details."""
+        error.detail = _COMPATIBLE_TOOL_ARGUMENTS_DETAIL
+        error.args = (f"{error.message} Detail: {error.detail}",)
 
     def _validate_responses_stream_event(self, event: object) -> None:
         """Validate SSE structure before mutation.
