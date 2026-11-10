@@ -183,9 +183,12 @@ class _OpenAIPayloadMixin(_ChatCompletionsPayloadMixin, _ResponsesPayloadMixin):
         self,
         reasoning_level: str | int | None,
     ) -> str | None:
-        # A missing value retains the Responses API default used before the
-        # model-aware resolver. OpenAI's client normalizes the older GPT-5
-        # family from ``none`` to ``minimal`` where necessary.
+        """Resolve reasoning effort for OpenAI requests.
+
+        An omitted ``reasoning_level`` retains the historical Responses API
+        default. OpenAI's client maps older GPT-5 ``none`` to ``minimal`` where
+        necessary.
+        """
         if reasoning_level is None:
             return "none" if self.is_reasoning else None
 
