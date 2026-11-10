@@ -36,7 +36,7 @@ from src.llm_api_adapter.adapters.openai.adapter import OpenAIAdapter
 from src.llm_api_adapter.llm_registry.llm_registry import Pricing, PricingTier
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
-from src.llm_api_adapter.llms.transports import SSEFrameDecoder
+from src.llm_api_adapter.llms.transports import SSEEvent, SSEFrameDecoder
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.models.responses.chat_response import ChatResponse
 from src.llm_api_adapter.models.tools import ToolSpec
@@ -2801,6 +2801,605 @@ async def test_caller_pricing_public_modes_preserve_partial_and_cache_usage(
             ) == expected_usage
 
 
+def _responses_usage_payload_from_chat(usage):
+    """Translate raw matrix fields; absent usage remains absent."""
+    if usage is _METADATA_ABSENT:
+        return usage
+    if not isinstance(usage, dict):
+        return deepcopy(usage)
+    names = {
+        "prompt_tokens": "input_tokens",
+        "completion_tokens": "output_tokens",
+        "prompt_tokens_details": "input_tokens_details",
+    }
+    return {names.get(key, key): deepcopy(value) for key, value in usage.items()}
+
+
+def _responses_result_body(usage, *, model):
+    response = responses_text_response(model=model)
+    if usage is not _METADATA_ABSENT:
+        response["usage"] = deepcopy(usage)
+    return response
+
+
+def _responses_usage_stream_lines(usage, *, model):
+    """Replace the fixture's terminal event with the supplied usage envelope."""
+    lines = responses_text_sse_lines("Fixture reply", model=model)
+    if usage is _METADATA_ABSENT:
+        return lines
+    terminal = _responses_result_body(usage, model=model)
+    return lines[:-2] + event_lines({
+        "type": "response.completed", "response": terminal, "sequence_number": 1,
+    })
+
+
+def _assert_responses_usage_result(response, expected_usage):
+    assert isinstance(response, ChatResponse)
+    assert response.content == "Fixture reply"
+    assert response.model == "gpt-5"
+    assert response.response_id == "resp-fixture-001"
+    if expected_usage is None:
+        assert response.usage is None
+    else:
+        actual = (
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            response.usage.total_tokens,
+            response.usage.cached_tokens,
+            response.usage.cache_write_tokens,
+        )
+        assert actual == expected_usage
+        for value, expected in zip(actual, expected_usage):
+            if expected == 0:
+                assert type(value) is int
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
+    assert response.currency is None
+    assert response.cost_breakdown is None
+
+
+_RESPONSES_MODE_CASES = (
+    ("chat", "requests"),
+    ("chat", "httpx"),
+    ("stream_chat", "requests"),
+    ("stream_chat", "httpx"),
+    ("achat", "httpx"),
+    ("astream_chat", "httpx"),
+)
+
+
+async def _run_responses_case(
+    adapter, mode, transport, body, lines, monkeypatch, *,
+    buffer_chars=64, visible_text="Fixture reply",
+):
+    """Run one lane through its mocked public transport and capture completion snapshots."""
+    streaming = mode in ("stream_chat", "astream_chat")
+    chunks, completed, order = [], [], []
+
+    def on_chunk(chunk):
+        chunks.append(chunk)
+        order.append("chunk")
+
+    def on_done(response):
+        completed.append(response)
+        order.append("done")
+
+    def run_sync():
+        if mode == "chat":
+            return adapter.chat([UserMessage("hello")])
+        visible = list(adapter.stream_chat(
+            [UserMessage("hello")], buffer_chars=buffer_chars,
+            on_chunk=on_chunk, on_done=on_done,
+        ))
+        assert "".join(visible) == visible_text
+        return completed[0]
+
+    def handler(request):
+        if streaming:
+            return httpx.Response(
+                200, headers={"Content-Type": "text/event-stream"}, content="\n".join(lines)
+            )
+        return httpx.Response(200, json=body)
+
+    url = f"{_COLLISION_ROOT}/responses"
+    if mode in ("chat", "stream_chat") and transport == "requests":
+        with requests_mock.Mocker(real_http=False) as http:
+            if streaming:
+                http.post(url, text="\n".join(lines), headers={"Content-Type": "text/event-stream"})
+            else:
+                http.post(url, json=body)
+            response = run_sync()
+            assert http.call_count == 1
+            request = http.request_history[0]
+            assert request.url == url
+            payload = request.json()
+    else:
+        outgoing = []
+
+        def capture(request):
+            outgoing.append(request)
+            return handler(request)
+
+        async_lane = mode in ("achat", "astream_chat")
+        client = (
+            httpx.AsyncClient(transport=httpx.MockTransport(capture))
+            if async_lane else httpx.Client(transport=httpx.MockTransport(capture))
+        )
+        constructions = _install_counted_httpx_client(
+            monkeypatch, client, asynchronous=async_lane
+        )
+        try:
+            if mode == "chat":
+                response = run_sync()
+            elif mode == "stream_chat":
+                response = run_sync()
+            elif mode == "achat":
+                response = await adapter.achat([UserMessage("hello")])
+            else:
+                visible = [part async for part in adapter.astream_chat(
+                    [UserMessage("hello")], buffer_chars=buffer_chars,
+                    on_chunk=on_chunk, on_done=on_done,
+                )]
+                assert "".join(visible) == visible_text
+                response = completed[0]
+            assert len(outgoing) == len(constructions) == 1
+            request = outgoing[0]
+            assert str(request.url) == url
+            payload = json.loads(request.content)
+        finally:
+            if async_lane:
+                await client.aclose()
+            else:
+                client.close()
+
+    assert payload["model"] == adapter.model
+    assert payload["store"] is False
+    return response, chunks, completed, order
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pricing", _INVALID_CALLER_PRICING_CASES)
+def test_responses_invalid_direct_pricing_fails_before_io(pricing, monkeypatch):
+    def blocked(*args, **kwargs):
+        raise AssertionError("invalid Responses pricing attempted I/O")
+
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)
+    monkeypatch.setattr(requests.sessions.Session, "request", blocked)
+    monkeypatch.setattr(httpx.Client, "send", blocked)
+    monkeypatch.setattr(httpx.AsyncClient, "send", blocked)
+
+    with pytest.raises(LLMConfigError):
+        OpenAICompatibleAdapter(
+            api_key="synthetic-test-key-not-a-credential",
+            model="vendor/responses-invalid-pricing",
+            base_url=_COLLISION_ROOT,
+            api_variant="responses",
+            pricing=pricing,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,transport", _RESPONSES_MODE_CASES)
+@pytest.mark.parametrize("chat_usage, expected_usage", _METADATA_CASES)
+async def test_responses_reported_usage_contract_across_public_modes(
+    mode, transport, chat_usage, expected_usage, monkeypatch
+):
+    """Absent/nonmapping remains absent; present counters independently validated as nonnegative integers excluding bool.
+
+    Preserve reported zero; missing/invalid remains None; never derive a missing count.
+    Retain valid reported components; contradictory known-input splits are untrusted, not repaired.
+    """
+    usage = _responses_usage_payload_from_chat(chat_usage)
+    snapshot = usage if usage is _METADATA_ABSENT else deepcopy(usage)
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model="gpt-5",
+        base_url=_COLLISION_ROOT,
+        api_variant="responses",
+        transport=transport,
+    )
+    body = _responses_result_body(usage, model=adapter.model)
+    lines = _responses_usage_stream_lines(usage, model=adapter.model)
+    response, chunks, completed, callback_order = await _run_responses_case(
+        adapter, mode, transport, body, lines, monkeypatch
+    )
+    _assert_responses_usage_result(response, expected_usage)
+    assert adapter.model_spec is None
+    assert adapter.pricing is None
+    streaming = mode in ("stream_chat", "astream_chat")
+    if streaming:
+        assert len(completed) == len(chunks) == 1
+        assert callback_order == ["chunk", "done"]
+        assert chunks[0].text == "Fixture reply"
+        if expected_usage is None or not any(value is not None for value in expected_usage):
+            assert chunks[0].usage is None
+        else:
+            assert (
+                chunks[0].usage.input_tokens,
+                chunks[0].usage.output_tokens,
+                chunks[0].usage.total_tokens,
+                chunks[0].usage.cached_tokens,
+                chunks[0].usage.cache_write_tokens,
+            ) == expected_usage
+            for value, expected in zip((
+                chunks[0].usage.input_tokens, chunks[0].usage.output_tokens,
+                chunks[0].usage.total_tokens, chunks[0].usage.cached_tokens,
+                chunks[0].usage.cache_write_tokens,
+            ), expected_usage):
+                if expected == 0:
+                    assert type(value) is int
+    if snapshot is _METADATA_ABSENT:
+        assert usage is _METADATA_ABSENT
+    else:
+        assert usage == snapshot
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,transport", _RESPONSES_MODE_CASES)
+@pytest.mark.parametrize(
+    "chat_usage,cache_rate,expected_usage,expected_input,expected_output,expected_total,currency",
+    _CALLER_PRICING_USAGE_CASES,
+)
+async def test_responses_caller_pricing_partial_and_cache_matrix(
+    mode, transport, chat_usage, cache_rate, expected_usage,
+    expected_input, expected_output, expected_total, currency, monkeypatch,
+):
+    """Both APIs select tiers from trusted full input. Unknown input/uncovered tier leaves costs/currency absent; known tiers retain independent components.
+
+    Missing output or unpriceable/contradictory cache evidence prevents a complete total; missing token total alone does not.
+    """
+    usage = _responses_usage_payload_from_chat(chat_usage)
+    usage_snapshot = usage if usage is _METADATA_ABSENT else deepcopy(usage)
+    tier = {"up_to_prompt_tokens": None, "input_per_1m": 10, "output_per_1m": 20}
+    if cache_rate:
+        tier["cache_read_input_per_1m"] = 5
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model="vendor/responses-caller-pricing",
+        base_url=_COLLISION_ROOT,
+        api_variant="responses",
+        transport=transport,
+        pricing=Pricing.from_dict([tier], currency="EUR"),
+    )
+    body = _responses_result_body(usage, model=adapter.model)
+    lines = _responses_usage_stream_lines(usage, model=adapter.model)
+    response, chunks, completed, callback_order = await _run_responses_case(
+        adapter, mode, transport, body, lines, monkeypatch
+    )
+
+    if expected_usage is None:
+        assert response.usage is None
+    else:
+        assert (
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            response.usage.total_tokens,
+            response.usage.cached_tokens,
+            response.usage.cache_write_tokens,
+        ) == expected_usage
+    for actual, expected in (
+        (response.cost_input, expected_input),
+        (response.cost_output, expected_output),
+        (response.cost_total, expected_total),
+    ):
+        if expected is None:
+            assert actual is None
+        elif expected == 0:
+            assert actual == 0
+        else:
+            assert actual == pytest.approx(expected)
+    assert response.currency == currency
+    assert response.cost_breakdown is None
+    assert adapter.model_spec is None
+    if mode in ("stream_chat", "astream_chat"):
+        assert len(completed) == len(chunks) == 1
+        assert callback_order == ["chunk", "done"]
+        assert chunks[0].text == "Fixture reply"
+        if expected_usage is None or not any(value is not None for value in expected_usage):
+            assert chunks[0].usage is None
+        else:
+            assert (
+                chunks[0].usage.input_tokens,
+                chunks[0].usage.output_tokens,
+                chunks[0].usage.total_tokens,
+                chunks[0].usage.cached_tokens,
+                chunks[0].usage.cache_write_tokens,
+            ) == expected_usage
+    if usage_snapshot is _METADATA_ABSENT:
+        assert usage is _METADATA_ABSENT
+    else:
+        assert usage == usage_snapshot
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_responses_caller_pricing_concurrent_results_keep_cache_evidence_local(
+    monkeypatch,
+):
+    pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": None, "input_per_1m": 10, "output_per_1m": 20}],
+        currency="USD",
+    )
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model="vendor/concurrent-responses-pricing",
+        base_url=_COLLISION_ROOT,
+        api_variant="responses",
+        transport="httpx",
+        pricing=pricing,
+    )
+    valid_started = asyncio.Event()
+    invalid_finished = asyncio.Event()
+    sent = []
+
+    async def send_request(self, url, payload, timeout=None):
+        sent.append((url, deepcopy(payload)))
+        prompt = payload["input"][-1]["content"]
+        if prompt == "invalid-cache":
+            await valid_started.wait()
+            invalid_finished.set()
+            usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+                     "input_tokens_details": {"cached_tokens": 11}}
+        else:
+            valid_started.set()
+            await invalid_finished.wait()
+            usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+        response = responses_text_response(model=adapter.model)
+        response["usage"] = usage
+        return response
+
+    monkeypatch.setattr(OpenAIAsyncClient, "_send_request", send_request)
+    valid_task = asyncio.create_task(adapter.achat([UserMessage("valid")]))
+    invalid_task = asyncio.create_task(adapter.achat([UserMessage("invalid-cache")]))
+    try:
+        valid_response, invalid_response = await asyncio.wait_for(
+            asyncio.gather(valid_task, invalid_task), timeout=2
+        )
+    finally:
+        for task in (valid_task, invalid_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(valid_task, invalid_task, return_exceptions=True), timeout=2
+        )
+
+    assert len(sent) == 2
+    assert all(url == f"{_COLLISION_ROOT}/responses" for url, _ in sent)
+    assert all(payload["model"] == adapter.model and payload["store"] is False for _, payload in sent)
+    assert {payload["input"][-1]["content"] for _, payload in sent} == {"valid", "invalid-cache"}
+    assert valid_response.usage.input_tokens == 10
+    assert valid_response.usage.cached_tokens is None
+    assert valid_response.cost_input == pytest.approx(100 / 1_000_000)
+    assert valid_response.cost_output == pytest.approx(100 / 1_000_000)
+    assert valid_response.cost_total == pytest.approx(200 / 1_000_000)
+    assert invalid_response.usage.input_tokens == 10
+    assert invalid_response.usage.cached_tokens is None
+    assert invalid_response.cost_input is None
+    assert invalid_response.cost_output == pytest.approx(100 / 1_000_000)
+    assert invalid_response.cost_total is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_responses_caller_pricing_interleaved_streams_keep_cache_evidence_local(
+    monkeypatch,
+):
+    pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": None, "input_per_1m": 10, "output_per_1m": 20}],
+        currency="USD",
+    )
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY,
+        model="vendor/interleaved-responses-pricing",
+        base_url=_COLLISION_ROOT,
+        api_variant="responses",
+        transport="httpx",
+        pricing=pricing,
+    )
+    valid_usage_seen = asyncio.Event()
+    invalid_usage_seen = asyncio.Event()
+    allow_valid_finish = asyncio.Event()
+    allow_invalid_finish = asyncio.Event()
+    valid_done = asyncio.Event()
+    sent = []
+
+    async def stream_request(self, url, payload, timeout=None):
+        sent.append((url, deepcopy(payload)))
+        prompt = payload["input"][-1]["content"]
+        is_valid = prompt == "valid-stream"
+        usage = (
+            {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+            if is_valid
+            else {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+                  "input_tokens_details": {"cached_tokens": 11}}
+        )
+        if not is_valid:
+            await valid_usage_seen.wait()
+        in_progress = responses_response(
+            output=[], status="in_progress", model=adapter.model, usage=usage,
+        )
+        yield SSEEvent("response.in_progress", {
+            "type": "response.in_progress", "response": in_progress,
+        })
+        seen = valid_usage_seen if is_valid else invalid_usage_seen
+        gate = allow_valid_finish if is_valid else allow_invalid_finish
+        seen.set()
+        await gate.wait()
+        yield SSEEvent("response.output_text.delta", {
+            "type": "response.output_text.delta", "delta": "Fixture reply",
+            "item_id": "msg-fixture-001", "output_index": 0, "content_index": 0,
+        })
+        response = responses_text_response(model=adapter.model)
+        response["usage"] = usage
+        yield SSEEvent("response.completed", {
+            "type": "response.completed", "response": response,
+        })
+
+    monkeypatch.setattr(OpenAIAsyncClient, "_stream_request", stream_request)
+    valid_completed = []
+    invalid_completed = []
+
+    def mark_valid_done(response):
+        valid_completed.append(response)
+        valid_done.set()
+
+    async def consume(prompt, completed, *, on_done=None):
+        return [
+            chunk async for chunk in adapter.astream_chat(
+                [UserMessage(prompt)], buffer_chars=64,
+                on_done=on_done or completed.append,
+            )
+        ]
+
+    valid_task = asyncio.create_task(
+        consume("valid-stream", valid_completed, on_done=mark_valid_done)
+    )
+    invalid_task = asyncio.create_task(consume("invalid-cache-stream", invalid_completed))
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(valid_usage_seen.wait(), invalid_usage_seen.wait()), timeout=2
+        )
+        allow_valid_finish.set()
+        await asyncio.wait_for(valid_done.wait(), timeout=2)
+        allow_invalid_finish.set()
+        valid_visible, invalid_visible = await asyncio.wait_for(
+            asyncio.gather(valid_task, invalid_task), timeout=2
+        )
+    finally:
+        allow_valid_finish.set()
+        allow_invalid_finish.set()
+        for task in (valid_task, invalid_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(valid_task, invalid_task, return_exceptions=True), timeout=2
+        )
+
+    assert valid_visible == invalid_visible == ["Fixture reply"]
+    assert len(valid_completed) == len(invalid_completed) == 1
+    valid_response = valid_completed[0]
+    invalid_response = invalid_completed[0]
+    assert len(sent) == 2
+    assert all(url == f"{_COLLISION_ROOT}/responses" for url, _ in sent)
+    assert all(payload["model"] == adapter.model and payload["store"] is False for _, payload in sent)
+    assert {payload["input"][-1]["content"] for _, payload in sent} == {
+        "valid-stream", "invalid-cache-stream",
+    }
+    assert valid_response.cost_input == pytest.approx(100 / 1_000_000)
+    assert valid_response.cost_output == pytest.approx(100 / 1_000_000)
+    assert valid_response.cost_total == pytest.approx(200 / 1_000_000)
+    assert invalid_response.cost_input is None
+    assert invalid_response.cost_output == pytest.approx(100 / 1_000_000)
+    assert invalid_response.cost_total is None
+    assert invalid_response.usage.input_tokens == 10
+    assert invalid_response.usage.cached_tokens is None
+
+
+_RESPONSES_PRICING_EDGE_CASES = [
+    pytest.param(
+        {"input_tokens": 99, "output_tokens": 5, "total_tokens": 104,
+         "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0}},
+        _caller_boundary_pricing(), (99, 5, 104, 0, 0), 9_900 / 1_000_000,
+        1_000 / 1_000_000, 10_900 / 1_000_000, "CAD", id="below-boundary-99",
+    ),
+    pytest.param(
+        {"input_tokens": 100, "output_tokens": 5, "total_tokens": 105,
+         "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0}},
+        _caller_boundary_pricing(), (100, 5, 105, 0, 0), 10_000 / 1_000_000,
+        1_000 / 1_000_000, 11_000 / 1_000_000, "CAD", id="at-boundary-100",
+    ),
+    pytest.param(
+        {"input_tokens": 101, "output_tokens": 5, "total_tokens": 106,
+         "input_tokens_details": {"cached_tokens": 60, "cache_write_tokens": 30}},
+        _caller_boundary_pricing(), (101, 5, 106, 60, 30), 6_300 / 1_000_000,
+        2_000 / 1_000_000, 8_300 / 1_000_000, "CAD", id="above-boundary-with-disjoint-cache",
+    ),
+    pytest.param(
+        {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+         "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0}},
+        Pricing(tiers=(PricingTier(None, 1e-6, 2e-6),), currency="EUR"),
+        (10, 5, 15, 0, 0), 10 / 1_000_000, 10 / 1_000_000,
+        20 / 1_000_000, "EUR", id="direct-per-token-rates",
+    ),
+    pytest.param(
+        {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+         "input_tokens_details": {"cached_tokens": 2, "cache_write_tokens": 1}},
+        Pricing(tiers=(PricingTier(None, 0, 0, 0, 0),), currency="USD"),
+        (10, 5, 15, 2, 1), 0, 0, 0, "USD", id="zero-rates-positive-counts",
+    ),
+    pytest.param(
+        {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+         "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0}},
+        Pricing(tiers=(PricingTier(None, 0, 0, 0, 0),), currency="USD"),
+        (0, 0, 0, 0, 0), 0, 0, 0, "USD", id="zero-rates-zero-counts",
+    ),
+    pytest.param(
+        {"input_tokens": 101, "output_tokens": 5, "total_tokens": 106},
+        Pricing.from_dict(
+            [{"up_to_prompt_tokens": 100, "input_per_1m": 1, "output_per_1m": 2}],
+            currency="CAD",
+        ),
+        (101, 5, 106, None, None), None, None, None, None,
+        id="uncovered-finite-tier",
+    ),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,transport", _RESPONSES_MODE_CASES)
+@pytest.mark.parametrize(
+    "usage,pricing,expected_usage,expected_input,expected_output,expected_total,currency",
+    _RESPONSES_PRICING_EDGE_CASES,
+)
+async def test_responses_caller_pricing_tiers_units_zero_and_completeness(
+    mode, transport, usage, pricing, expected_usage, expected_input, expected_output,
+    expected_total, currency, monkeypatch,
+):
+    """Both APIs select tiers from trusted full input; known cache components remain disjoint."""
+    snapshot = deepcopy(usage)
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY, model="vendor/responses-pricing-edges",
+        base_url=_COLLISION_ROOT, api_variant="responses", transport=transport,
+        pricing=pricing,
+    )
+    body = _responses_result_body(usage, model=adapter.model)
+    lines = _responses_usage_stream_lines(usage, model=adapter.model)
+    response, chunks, completed, order = await _run_responses_case(
+        adapter, mode, transport, body, lines, monkeypatch
+    )
+
+    actual_usage = response.usage
+    assert actual_usage is not None
+    assert (
+        actual_usage.input_tokens, actual_usage.output_tokens, actual_usage.total_tokens,
+        actual_usage.cached_tokens, actual_usage.cache_write_tokens,
+    ) == expected_usage
+    for actual, expected in (
+        (response.cost_input, expected_input),
+        (response.cost_output, expected_output),
+        (response.cost_total, expected_total),
+    ):
+        if expected is None:
+            assert actual is None
+        elif expected == 0:
+            assert actual == 0
+        else:
+            assert actual == pytest.approx(expected)
+    assert response.currency == currency
+    assert usage == snapshot
+    if expected_usage[:3] == (0, 0, 0):
+        assert all(type(value) is int for value in (
+            actual_usage.input_tokens, actual_usage.output_tokens, actual_usage.total_tokens,
+        ))
+    if mode in ("stream_chat", "astream_chat"):
+        assert len(chunks) == len(completed) == 1 and order == ["chunk", "done"]
+        assert chunks[0].usage.input_tokens == expected_usage[0]
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("transport", ("requests", "httpx"))
 @pytest.mark.parametrize("mode", ("chat", "stream_chat"))
@@ -4703,6 +5302,85 @@ async def test_compatible_async_buffered_metadata_snapshot(usage, expected_usage
         assert forbidden == []
     finally:
         await client.aclose()
+
+
+_RESPONSES_SNAPSHOT_TRANSPORTS = ("requests", "httpx", "async-httpx")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", _RESPONSES_SNAPSHOT_TRANSPORTS)
+@pytest.mark.parametrize("chat_usage, intermediate_usage", _BUFFERED_METADATA_SNAPSHOT_CASES)
+async def test_responses_intermediate_usage_snapshot_precedes_distinct_final_usage(
+    transport, chat_usage, intermediate_usage, monkeypatch
+):
+    """An in-progress usage event tags buffered text before completion supplies fresh usage and costs."""
+    intermediate = _responses_usage_payload_from_chat(chat_usage)
+    snapshot = deepcopy(intermediate)
+    final_usage = {
+        "input_tokens": 6, "output_tokens": 2, "total_tokens": 8,
+        "input_tokens_details": {"cached_tokens": 1},
+    }
+    model = "vendor/responses-snapshot-pricing"
+    adapter = OpenAICompatibleAdapter(
+        api_key=_COLLISION_KEY, model=model, base_url=_COLLISION_ROOT,
+        api_variant="responses", transport="requests" if transport == "requests" else "httpx",
+        pricing=_caller_pricing_fixture(),
+    )
+    body = responses_text_response("Hello world!!!", model=model)
+    body["usage"] = final_usage
+    fixture_lines = responses_text_sse_lines(
+        "Hello world!!!", fragments=["Hello", " world!!!"], model=model,
+    )
+    in_progress = responses_response(status="in_progress", model=model, usage=intermediate)
+    lines = (
+        fixture_lines[:2]
+        + event_lines({"type": "response.in_progress", "response": in_progress})
+        + fixture_lines[2:4]
+        + event_lines({"type": "response.completed", "response": body})
+    )
+    lane = "astream_chat" if transport == "async-httpx" else "stream_chat"
+    response, chunks, completed, order = await _run_responses_case(
+        adapter, lane, "httpx" if transport != "requests" else "requests",
+        body, lines, monkeypatch, buffer_chars=8, visible_text="Hello world!!!",
+    )
+
+    assert len(chunks) == 2 and len(completed) == 1
+    assert [chunk.text for chunk in chunks] == ["Hello wo", "rld!!!"]
+    assert order == ["chunk", "chunk", "done"]
+    if intermediate_usage == _METADATA_ALL_UNKNOWN:
+        assert chunks[0].usage is None
+    else:
+        assert chunks[0].usage is not None
+        assert (
+            chunks[0].usage.input_tokens, chunks[0].usage.output_tokens,
+            chunks[0].usage.total_tokens, chunks[0].usage.cached_tokens,
+            chunks[0].usage.cache_write_tokens,
+        ) == intermediate_usage
+        for value, expected in zip((
+            chunks[0].usage.input_tokens, chunks[0].usage.output_tokens,
+            chunks[0].usage.total_tokens, chunks[0].usage.cached_tokens,
+            chunks[0].usage.cache_write_tokens,
+        ), intermediate_usage):
+            if expected == 0:
+                assert type(value) is int
+    for chunk in chunks[1:]:
+        assert (
+            chunk.usage.input_tokens, chunk.usage.output_tokens, chunk.usage.total_tokens,
+            chunk.usage.cached_tokens, chunk.usage.cache_write_tokens,
+        ) == (6, 2, 8, 1, None)
+    assert response is completed[0]
+    assert response.usage is not None
+    assert (
+        response.usage.input_tokens, response.usage.output_tokens,
+        response.usage.total_tokens, response.usage.cached_tokens,
+        response.usage.cache_write_tokens,
+    ) == (6, 2, 8, 1, None)
+    assert response.cost_input == pytest.approx(1_530 / 1_000_000)
+    assert response.cost_output == pytest.approx(800 / 1_000_000)
+    assert response.cost_total == pytest.approx(2_330 / 1_000_000)
+    assert response.currency == "EUR"
+    assert intermediate == snapshot
 
 
 @pytest.mark.unit

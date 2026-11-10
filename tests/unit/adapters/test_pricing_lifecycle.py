@@ -6,6 +6,7 @@ from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
 from src.llm_api_adapter.adapters.openai_compatible_adapter import OpenAICompatibleAdapter
 from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
 from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
+from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from src.llm_api_adapter.llm_registry.llm_registry import Pricing, PricingTier
 from src.llm_api_adapter.llm_registry.llm_registry import (
     OrganizationModelMetadata,
@@ -891,6 +892,84 @@ def test_caller_pricing_is_copied_and_setters_are_instance_local():
     assert registered_adapter.pricing.tiers == registered_snapshot
     assert registered_adapter.model_spec.pricing_tiers is registered_model_pricing
     assert registered_adapter.model_spec.pricing_tiers.tiers == registered_model_snapshot
+
+
+@pytest.mark.unit
+def test_compatible_ordinary_pricing_assignment_keeps_reference_and_existing_units():
+    """from_dict and setters use per-million units; direct PricingTier fields use per-token units."""
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="vendor/ordinary-pricing-assignment",
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        api_variant="responses",
+    )
+    per_million = Pricing.from_dict(
+        [{
+            "up_to_prompt_tokens": None,
+            "input_per_1m": 12.0,
+            "output_per_1m": 34.0,
+        }],
+        currency="CAD",
+    )
+
+    facade.adapter.pricing = per_million
+
+    assert facade.pricing is per_million
+    assert facade.adapter.pricing is per_million
+    assert per_million.tiers[0].in_per_token == pytest.approx(12 / 1_000_000)
+    assert per_million.tiers[0].out_per_token == pytest.approx(34 / 1_000_000)
+    per_million.set_in_per_1m(56.0)
+    per_million.set_out_per_1m(78.0)
+    per_million.set_currency("JPY")
+    assert facade.pricing.tiers[0].in_per_token == pytest.approx(56 / 1_000_000)
+    assert facade.pricing.tiers[0].out_per_token == pytest.approx(78 / 1_000_000)
+    assert facade.pricing.currency == "JPY"
+
+    direct_per_token = Pricing(
+        tiers=(PricingTier(None, 12.0, 34.0),),
+        currency="EUR",
+    )
+    facade.adapter.pricing = direct_per_token
+
+    assert facade.pricing is direct_per_token
+    assert facade.pricing.tiers[0].in_per_token == 12.0
+    assert facade.pricing.tiers[0].out_per_token == 34.0
+
+
+@pytest.mark.unit
+def test_responses_constructor_pricing_copies_and_setters_stay_instance_local():
+    caller = _tiered_pricing()
+    native = OpenAIAdapter(api_key="test-key", model="gpt-5")
+    native_pricing = native.pricing
+    native_tiers = native.pricing.tiers
+    first = OpenAICompatibleAdapter(
+        api_key="test-key", model="gpt-5", base_url="https://example.invalid/v1",
+        api_variant="responses", pricing=caller,
+    )
+    second = OpenAICompatibleAdapter(
+        api_key="test-key", model="gpt-5", base_url="https://example.invalid/v1",
+        api_variant="responses", pricing=caller,
+    )
+
+    assert first.pricing is not caller and second.pricing is not caller
+    assert first.pricing is not second.pricing
+    assert first.pricing.tiers is not caller.tiers
+    assert second.pricing.tiers is not caller.tiers
+    assert first.pricing.tiers is not second.pricing.tiers
+    first.pricing.set_in_per_1m(23.0)
+    first.pricing.set_out_per_1m(29.0)
+    first.pricing.set_currency("JPY")
+
+    assert first.pricing.currency == "JPY"
+    assert first.pricing.tiers[0].in_per_token == pytest.approx(23 / 1_000_000)
+    assert first.pricing.tiers[0].out_per_token == pytest.approx(29 / 1_000_000)
+    assert caller.currency == second.pricing.currency == "USD"
+    assert caller.tiers[0].in_per_token == pytest.approx(1 / 1_000_000)
+    assert caller.tiers[0].out_per_token == pytest.approx(2 / 1_000_000)
+    assert second.pricing.tiers[0].in_per_token == pytest.approx(1 / 1_000_000)
+    assert second.pricing.tiers[0].out_per_token == pytest.approx(2 / 1_000_000)
+    assert native.pricing is native_pricing and native.pricing.tiers == native_tiers
 
 
 @pytest.mark.unit
