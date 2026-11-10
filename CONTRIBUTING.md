@@ -141,10 +141,11 @@ claiming arbitrary-endpoint certification. The existing native/provider
 exact-candidate gates and authorization rules below remain in force.
 
 Source-tree tests and import-blocking controls do not prove an installed
-dependency boundary. Verify non-editable candidate artifacts outside the
-checkout in genuine requests-only and separate async-extra environments,
-with installed module/version provenance and mocked HTTP. Local artifact
-checks do not replace the designated TestPyPI candidate gates.
+dependency boundary. Use the existing TestPyPI candidate installation and
+provider lanes described below, recording exact installed versions and the
+scenarios actually exercised. These lanes install test dependencies; their
+results do not establish a separately isolated requests-only or async-extra
+environment that was not exercised.
 
 ## Coverage baseline
 
