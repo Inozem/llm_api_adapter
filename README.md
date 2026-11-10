@@ -10,6 +10,11 @@
 
 **Note:** Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai are installed separately with their optional extras.
 
+Core also provides `organization="openai_compatible"` for a caller-selected
+Chat Completions or Responses endpoint and an arbitrary model ID. This mode
+uses the same public methods without registering or certifying that server's
+models. See [OpenAI-compatible endpoints](#openai-compatible-endpoints).
+
 Supports Python 3.10–3.14.
 
 ## Contents
@@ -21,6 +26,7 @@ Supports Python 3.10–3.14.
 - [Getting Started](#getting-started)
 - [Model-specific request compatibility](#model-specific-request-compatibility)
 - [Built-in model exceptions](#built-in-model-exceptions)
+- [OpenAI-compatible endpoints](#openai-compatible-endpoints)
 - [Streaming](#streaming)
 - [Async API](#async-api)
 - [Optional HTTPX Sync Transport](#optional-httpx-sync-transport)
@@ -66,6 +72,7 @@ Supports Python 3.10–3.14.
 - **Request Timeouts**: Per-request timeout control via `timeout_s`; raises `LLMAPITimeoutError` on expiry.
 - **Flexible Configuration**: `temperature`, `max_tokens`, `top_p`, and other parameters are translated to a verified provider payload; known unsupported fields are omitted predictably.
 - **Pricing Registry**: Bundled model tiers contain ordinary input/output rates and verified automatic cache rates; ordinary rates are overridable per instance.
+- **OpenAI-Compatible Endpoints**: Select a server root and either Chat Completions (the default) or Responses; optionally supply local token tariffs through the existing pricing API.
 
 ## Installation
 
@@ -74,6 +81,11 @@ To install the SDK, you can use pip:
 ```bash
 pip install llm-api-adapter
 ```
+
+The base installation includes synchronous OpenAI-compatible mode with
+`requests`. Use `[httpx]` for explicit synchronous HTTPX or `[async]` for
+`achat()` and `astream_chat()`; no organization package or provider SDK is
+required for compatible mode.
 
 To use Mistral, install its optional organization package:
 
@@ -213,6 +225,10 @@ keep the same arguments across providers. For a verified model, the adapter
 applies its registered payload compatibility rules before making the request;
 sync and async calls use the same rules.
 
+`openai_compatible` never applies these native registry rules, even for a
+matching model name; its [explicit protocol policy](OPENAI_COMPATIBLE.md#common-operations-and-wire-forms)
+is independent of model metadata.
+
 If a rule omits a parameter, its documented default is removed silently. A
 different supplied value is also removed, but emits one `UserWarning` and one
 `WARNING` log record per ignored parameter. Treat that warning as a prompt to
@@ -275,6 +291,31 @@ print(response.content)
 ```
 > **Note**  
 > The adapter automatically normalizes message input — you can mix custom message classes and OpenAI-style dicts in one list.
+
+## OpenAI-compatible endpoints
+
+Use `organization="openai_compatible"` with an explicit API root and any
+nonempty model ID. Chat Completions is the default; select Responses with
+`api_variant="responses"`.
+
+```python
+import os
+
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+adapter = UniversalLLMAPIAdapter(
+    organization="openai_compatible",
+    model=os.environ["COMPATIBLE_MODEL"],
+    api_key=os.environ["COMPATIBLE_API_KEY"],
+    base_url=os.environ["COMPATIBLE_BASE_URL"],
+    api_variant="responses",  # Omit to use Chat Completions.
+)
+```
+
+See the [OpenAI-compatible guide](OPENAI_COMPATIBLE.md) for both APIs, all
+four methods, root validation, tools/schemas, stateless history, server
+limitations and caller tariffs. Compatible mode has no verified model profile
+or default prices.
 
 ## Streaming
 
@@ -781,6 +822,11 @@ For OpenAI models that use the Responses API (o-series and newer GPT models), th
 
 For Anthropic, Google, and xAI, the parameter is accepted but ignored — context is carried entirely through the `messages` list regardless. The xAI package also does not expose its provider-specific `store` option; see its README for data-retention details.
 
+`openai_compatible` also carries the complete caller history. Its Responses
+mode sends `store=false` and never sends `previous_response_id` or opaque
+replay state, even when `previous_response` is supplied. See
+[stateless history](OPENAI_COMPATIBLE.md#stateless-history-and-server-dependent-support).
+
 DeepSeek is also stateless and does not send `previous_response_id`. Its
 package uses `previous_response` only to carry matching opaque reasoning replay
 metadata while the caller continues to send the complete `messages` history.
@@ -935,6 +981,7 @@ and `parsed_model` remains `None` in those cases as well.
 | **Mistral** | Native `response_format.type=json_schema` with `strict=true` (optional organization package) |
 | **xAI** | Responses `text.format.type=json_schema` with `strict=true` plus xAI's additive local overlay (optional organization package) |
 | **Qwen** | Messages `output_config.format.type=json_schema` (optional organization package) |
+| **OpenAI-compatible** | Selected Chat `response_format` or Responses `text.format`; server support is required, with the same local portable-profile and original-model validation |
 
 The same **portable** schema can be reused across these organizations without
 provider-specific request code. Google sends the portable JSON Schema through
@@ -1054,7 +1101,7 @@ response = adapter.chat(messages=messages, max_tokens=200)
 Kimi accepts image bytes and data URIs for its supported models, but
 does not fetch public image URLs. `ImagePart(url=...)` is rejected before HTTP;
 use `ImagePart(data=..., media_type="image/...")` instead. See the
-[Kimi package README](packages/organizations/kimi/README.md#history-images-files-and-data-handling).
+[Kimi package README](packages/organizations/kimi/README.md#history-and-files).
 
 DeepSeek `deepseek-flash` accepts user-message image URLs, bytes, and base64
 data URIs for JPEG, PNG, GIF, and WebP images. Its adapter rejects unsupported
@@ -1121,7 +1168,7 @@ Kimi also rejects every `DocumentPart` URL or byte before HTTP. Kimi's
 Files API exposes extracted text rather than a Chat Completions attachment, so
 it cannot meet the same bytes-and-URL contract without hidden URL retrieval.
 The adapter does not upload or delete files for Kimi. See the
-[Kimi package README](packages/organizations/kimi/README.md#history-images-files-and-data-handling).
+[Kimi package README](packages/organizations/kimi/README.md#history-and-files).
 
 DeepSeek rejects every `DocumentPart`, generic non-image `FilePart`,
 OCR/upload/conversion route, and unsupported image form before either client
@@ -1163,8 +1210,8 @@ priced at the output rate; there is no separate output-cache component.
 Costs are a standard-rate estimate, not a provider invoice. When a provider
 reports a valid input count, the adapter selects the first pricing tier whose
 `up_to_prompt_tokens` is greater than or equal to `usage.input_tokens`. The
-boundary is inclusive; the final tier has no boundary. Total input, including
-cache subsets, selects the tier. The selected rates apply to the entire
+boundary is inclusive; bundled schedules end with an unbounded tier. Total
+input, including cache subsets, selects the tier. The selected rates apply to the entire
 request, rather than pricing successive portions in different bands.
 
 - `context_window_tokens` is the combined input and generated-output capacity.
@@ -1311,6 +1358,13 @@ Reading `google.pricing` and calling its setters delegates to that same object.
 Whole-object replacement uses `google.adapter.pricing`; ordinary assignment to
 the facade's own `google.pricing` attribute is not forwarded. Provider-specific
 billing rules and separately metered-operation rates remain unchanged.
+
+### Compatible usage and caller tariffs
+
+Compatible mode defaults to unavailable calculated costs. Supply local rates
+through the existing `Pricing`/`PricingTier` types and `adapter.adapter.pricing`;
+see the [caller tariff guide](OPENAI_COMPATIBLE.md#compatible-usage-and-caller-tariffs)
+for dictionary, JSON-file and parameter examples, units and completeness rules.
 
 ## Logging
 
