@@ -100,7 +100,7 @@ def test_mistral_model_organization_is_test_context_only(
         metadata_repository / "packages/organizations/mistral/pyproject.toml"
     )
     assert core_project["optional-dependencies"]["mistral"] == [
-        "llm-api-adapter-mistral>=0.1.5,<0.2.0"
+        "llm-api-adapter-mistral>=0.1.6,<0.2.0"
     ]
     assert mistral_project["dependencies"] == ["llm-api-adapter>=0.9.10,<1.0.0"]
     assert mistral_project["optional-dependencies"] == {

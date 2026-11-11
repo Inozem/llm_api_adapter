@@ -59,8 +59,8 @@ def _assert_installed_mistral_artifacts(*, require_zai_absent: bool) -> None:
     mistral_origin = _distribution_module_origin(
         "llm-api-adapter-mistral", llm_api_adapter_mistral
     )
-    assert metadata.version("llm-api-adapter") == "0.9.10"
-    assert metadata.version("llm-api-adapter-mistral") == "0.1.5"
+    assert metadata.version("llm-api-adapter") == "0.10.0"
+    assert metadata.version("llm-api-adapter-mistral") == "0.1.6"
     assert "site-packages" in str(core_origin).lower()
     assert "site-packages" in str(mistral_origin).lower()
 
