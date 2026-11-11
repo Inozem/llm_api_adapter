@@ -221,32 +221,6 @@ This credential-free command checks test selection and imports only; it does
 not exercise Mistral behavior. Other providers with package-local E2E tests
 should include their package path as described above.
 
-### Isolated provider-package wheel checks
-
-When a provider package has artifact-specific installation checks, build its
-wheel and the required Core or provider-package wheels. Install the exact wheel
-files into fresh environments outside the checkout, without editable installs.
-Test provider-only installation, and test joint installation when coexistence
-with another optional provider package is relevant. The checks should verify
-that imports resolve to the installed distributions and that required packages
-are present or absent as expected.
-
-Keep artifact-check modules outside pytest's default `test_*.py` and `*_test.py`
-discovery. Run each environment's dedicated checks from outside the checkout
-with the fresh environment's Python, isolated mode, importlib collection, and
-external pytest roots. For example, from the external check directory:
-
-```bash
-<fresh-env-python> -I -m pytest --import-mode=importlib \
-  --rootdir=<check-dir> --confcutdir=<check-dir> \
-  <check-dir>/<artifact-check-module.py>
-```
-
-Collection-only commands verify test selection and imports; they do not verify
-installed origins or package-presence boundaries. The current Mistral artifact
-check covers Mistral-only installation and coexistence with Z.ai, and its
-hosted route is verified with the Z.ai distribution absent.
-
 ### Authorized live runs
 
 The required environment variables are:
