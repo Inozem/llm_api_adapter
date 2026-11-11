@@ -334,7 +334,7 @@ def test_anthropic_warns_once_when_omitting_non_default_top_p_for_claude_4_5(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
-@pytest.mark.parametrize("model", ("claude-haiku-5-5",))
+@pytest.mark.parametrize("model", ("claude-haiku-5-5", "claude-fable-5-2"))
 def test_anthropic_new_models_drop_sampling_and_low_level_top_k(client_class, model):
     client = client_class(api_key="test_api_key")
     with _captured_warnings() as caught:
@@ -350,7 +350,7 @@ def test_anthropic_new_models_drop_sampling_and_low_level_top_k(client_class, mo
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
-@pytest.mark.parametrize("model", ("claude-haiku-5-5",))
+@pytest.mark.parametrize("model", ("claude-haiku-5-5", "claude-fable-5-2"))
 def test_anthropic_new_models_warn_when_dropping_non_default_sampling_and_top_k(
     client_class, model
 ):
@@ -413,14 +413,35 @@ def test_anthropic_adaptive_effort_disabled_reasoning_and_capture(client_class):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
-def test_anthropic_adaptive_models_keep_default_thinking_omitted(client_class):
+@pytest.mark.parametrize("model", ("claude-opus-4-8", "claude-fable-5-2"))
+def test_anthropic_adaptive_models_keep_default_thinking_omitted(client_class, model):
     client = client_class(api_key="test_api_key")
     payload = client._prepare_chat_payload_for_model(
-        "claude-opus-4-8",
+        model,
         {"messages": [], "is_adaptive_thinking": True},
     )
-    assert payload["model"] == "claude-opus-4-8"
+    assert payload["model"] == model
     assert "thinking" not in payload
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
+@pytest.mark.parametrize("effort", ("low", "medium", "high", "xhigh", "max"))
+def test_claude_fable_5_2_preserves_explicit_adaptive_effort(client_class, effort):
+    client = client_class(api_key="test_api_key")
+
+    payload = client._prepare_chat_payload_for_model(
+        "claude-fable-5-2",
+        {
+            "messages": [],
+            "is_adaptive_thinking": True,
+            "effort": effort,
+            "output_config": {"format": {"type": "json_schema", "schema": {}}},
+        },
+    )
+
+    assert payload["thinking"] == {"type": "adaptive"}
+    assert payload["output_config"]["effort"] == effort
 
 
 @pytest.mark.unit

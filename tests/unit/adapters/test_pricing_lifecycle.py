@@ -5,6 +5,8 @@ import pytest
 from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
 from src.llm_api_adapter.adapters.openai_compatible_adapter import OpenAICompatibleAdapter
 from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
+from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter, ClaudeSyncClient
+from src.llm_api_adapter.llms.anthropic.async_client import ClaudeAsyncClient
 from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
 from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from src.llm_api_adapter.llm_registry.llm_registry import Pricing, PricingTier
@@ -725,6 +727,49 @@ def test_google_registered_pricing_applies_to_completed_chat_usage(
     assert response.usage.output_tokens == expected_output
     assert response.usage.cached_tokens == expected_cached
     assert response.usage.total_tokens == usage_metadata["totalTokenCount"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_mode", (False, True), ids=("sync", "async"))
+async def test_anthropic_fable_5_2_registered_pricing_applies_to_reported_usage(
+    async_mode,
+):
+    model = "claude-fable-5-2"
+    adapter = AnthropicAdapter(api_key="test_api_key", model=model)
+    provider_response = {
+        "id": "msg_test",
+        "model": model,
+        "content": [{"type": "text", "text": "OK"}],
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 20,
+        },
+    }
+
+    if async_mode:
+        with patch.object(
+            ClaudeAsyncClient,
+            "chat_completion",
+            new=AsyncMock(return_value=provider_response),
+        ):
+            response = await adapter.achat([UserMessage("hi")], max_tokens=64)
+    else:
+        with patch.object(
+            ClaudeSyncClient,
+            "chat_completion",
+            return_value=provider_response,
+        ):
+            response = adapter.chat([UserMessage("hi")], max_tokens=64)
+
+    assert response.usage.input_tokens == 10
+    assert response.usage.output_tokens == 20
+    assert response.usage.cached_tokens is None
+    assert response.usage.cache_write_tokens is None
+    assert response.cost_input == pytest.approx(0.00008)
+    assert response.cost_output == pytest.approx(0.0008)
+    assert response.cost_total == pytest.approx(0.00088)
+    assert response.currency == "USD"
 
 
 @pytest.mark.unit

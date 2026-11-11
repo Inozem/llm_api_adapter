@@ -909,6 +909,7 @@ def test_sampling_rule_schema_is_shared_by_openai_and_anthropic():
 @pytest.mark.parametrize(
     ("model_name", "expected_rates"),
     (
+        ("claude-fable-5-2", ((None, 8.0, 40.0),)),
         ("claude-haiku-5-5", ((100000, 0.1, 0.5), (None, 0.5, 2.5))),
     ),
 )
@@ -918,6 +919,25 @@ def test_anthropic_new_model_registry_profiles(model_name, expected_rates):
     assert model.limits.context_window_tokens == 1_000_000
     assert model.limits.max_output_tokens == 128_000
     assert model.is_adaptive_thinking is True
+    if model_name == "claude-fable-5-2":
+        assert model.reasoning_capability.allowed_values == (
+            "low", "medium", "high", "xhigh", "max"
+        )
+        assert model.request_rules.allowed_tool_choice_modes == frozenset(
+            {"auto", "none"}
+        )
+        assert {
+            (item.capability_id, item.behavior_id)
+            for item in model.capability_exceptions
+        } == {
+            ("tool_choice_any", "rejected_before_transport"),
+            ("tool_choice_named", "rejected_before_transport"),
+            ("reasoning_control", "none_falls_back_to_minimum"),
+            ("provider_continuation", "ignored"),
+        }
+        tier = model.pricing_tiers.tiers[0]
+        assert tier.cache_read_in_per_token is None
+        assert tier.cache_write_in_per_token is None
     assert tuple(
         (
             tier.up_to_prompt_tokens,
