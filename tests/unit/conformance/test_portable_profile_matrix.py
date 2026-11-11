@@ -107,7 +107,7 @@ def _anthropic_response(content: str) -> dict[str, Any]:
 
 def _google_response(content: str) -> dict[str, Any]:
     return {
-        "modelVersion": "gemini-2.5-flash",
+        "modelVersion": "gemini-3.8-flash",
         "candidates": [{
             "content": {"parts": [{"text": content}]},
             "finishReason": "STOP",
@@ -164,7 +164,7 @@ CASES: Final = (
     ),
     pytest.param(
         PortableProfileCase(
-            "google", "gemini-2.5-flash", None,
+            "google", "gemini-3.8-flash", None,
             GeminiSyncClient, GeminiAsyncClient,
         ),
         id="google",

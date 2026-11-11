@@ -252,7 +252,7 @@ def _google_response(
             },
         })
     return {
-        "modelVersion": "gemini-2.5-flash",
+        "modelVersion": "gemini-3.8-flash",
         "candidates": [{
             "content": {"parts": parts},
             "finishReason": "STOP",
@@ -419,7 +419,7 @@ CASES = (
     pytest.param(
         OrganizationConformanceCase(
             organization="google",
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             max_tokens=None,
             connection_kwargs=(),
             wire_format="google_generate_content",

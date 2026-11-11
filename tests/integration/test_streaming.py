@@ -169,10 +169,10 @@ _STRUCTURED_STREAM_CASES = [
     ),
     pytest.param(
         "google",
-        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview",
         (
             "https://generativelanguage.googleapis.com/v1beta/"
-            "models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+            "models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse"
         ),
         {},
         id="google",
@@ -403,10 +403,10 @@ _FAILURE_STREAM_CASES = [
     ),
     pytest.param(
         "google",
-        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview",
         (
             "https://generativelanguage.googleapis.com/v1beta/"
-            "models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+            "models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse"
         ),
         LLMAPIRateLimitError,
         {},
@@ -574,7 +574,7 @@ def test_google_streams_through_universal_adapter():
     )
     url = (
         "https://generativelanguage.googleapis.com/v1beta/"
-        "models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+        "models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse"
     )
     with (
         requests_mock.Mocker() as mock,
@@ -586,7 +586,7 @@ def test_google_streams_through_universal_adapter():
         mock.post(url, text=body, headers={"Content-Type": "text/event-stream"})
         adapter = UniversalLLMAPIAdapter(
             organization="google",
-            model="gemini-2.5-pro",
+            model="gemini-3.1-pro-preview",
             api_key="dummy_key",
         )
         done = []
@@ -701,10 +701,10 @@ _BUFFERED_STREAM_SCENARIOS = [
     ),
     pytest.param(
         "google",
-        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview",
         (
             "https://generativelanguage.googleapis.com/v1beta/"
-            "models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+            "models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse"
         ),
         [
             (

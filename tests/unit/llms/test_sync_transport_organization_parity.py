@@ -222,32 +222,32 @@ ORGANIZATION_CASES = (
         name="google",
         client_class=GeminiSyncClient,
         organization="google",
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         client_kwargs={"contents": _GOOGLE_CONTENTS},
         public_stream_kwargs={},
         expected_json_request=RequestTrace(
             url=(
                 "https://generativelanguage.googleapis.com/v1beta/"
-                "models/gemini-2.5-flash:generateContent"
+                "models/gemini-3.8-flash:generateContent"
             ),
             headers={
                 "x-goog-api-key": "test-key",
                 "Content-Type": "application/json",
             },
-            payload={"model": "gemini-2.5-flash", "contents": _GOOGLE_CONTENTS},
+            payload={"model": "gemini-3.8-flash", "contents": _GOOGLE_CONTENTS},
             timeout=None,
             stream=False,
         ),
         expected_stream_request=RequestTrace(
             url=(
                 "https://generativelanguage.googleapis.com/v1beta/"
-                "models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+                "models/gemini-3.8-flash:streamGenerateContent?alt=sse"
             ),
             headers={
                 "x-goog-api-key": "test-key",
                 "Content-Type": "application/json",
             },
-            payload={"model": "gemini-2.5-flash", "contents": _GOOGLE_CONTENTS},
+            payload={"model": "gemini-3.8-flash", "contents": _GOOGLE_CONTENTS},
             timeout=None,
             stream=True,
         ),
@@ -778,7 +778,7 @@ def test_google_public_chat_usage_and_cost_match_across_transports():
         def invoke() -> Any:
             adapter = GoogleAdapter(
                 api_key="test-key",
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
                 transport=transport,
             )
             adapter.pricing = Pricing.from_dict(
@@ -823,7 +823,7 @@ def test_google_public_stream_usage_and_cost_match_across_transports():
         def invoke() -> tuple[list[str], Any]:
             adapter = GoogleAdapter(
                 api_key="test-key",
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
                 transport=transport,
             )
             adapter.pricing = Pricing.from_dict(
@@ -872,7 +872,7 @@ def test_google_interrupted_public_stream_closes_both_transport_responses():
         def invoke() -> tuple[list[str], list[Any]]:
             adapter = GoogleAdapter(
                 api_key="test-key",
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
                 transport=transport,
             )
             done = []

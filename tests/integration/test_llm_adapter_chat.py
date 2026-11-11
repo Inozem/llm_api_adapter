@@ -76,7 +76,7 @@ def google_client_mock():
     with requests_mock.Mocker() as mock:
         mock_endpoint = "https://generativelanguage.googleapis.com/v1beta"
         mock.post(
-            f"{mock_endpoint}/models/gemini-2.5-pro:generateContent",
+            f"{mock_endpoint}/models/gemini-3.1-pro-preview:generateContent",
             json={
                 "candidates": [
                     {
@@ -200,7 +200,7 @@ def test_openai_chat_legacy_chat_completions(openai_chat_completions_mock):
 def test_google_chat(google_client_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="google",
-        model="gemini-2.5-pro",
+        model="gemini-3.1-pro-preview",
         api_key="dummy_key",
     )
     messages = [
@@ -228,7 +228,7 @@ def test_google_chat_with_raw_dict_messages(google_client_mock):
     ]
     adapter = UniversalLLMAPIAdapter(
         organization="google",
-        model="gemini-2.5-pro",
+        model="gemini-3.1-pro-preview",
         api_key="dummy_key",
     )
 
@@ -304,7 +304,7 @@ def test_anthropic_chat_with_raw_dict_messages(anthropic_client_mock):
 def test_google_usage_and_pricing(google_client_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="google",
-        model="gemini-2.5-pro",
+        model="gemini-3.1-pro-preview",
         api_key="dummy_key",
     )
     adapter.pricing.set_in_per_1m(0)

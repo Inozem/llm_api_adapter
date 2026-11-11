@@ -446,41 +446,21 @@ def test_claude_fable_5_2_preserves_explicit_adaptive_effort(client_class, effor
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", GOOGLE_CLIENTS, ids=("sync", "async"))
-def test_google_silently_omits_default_max_output_tokens_for_gemini_2_5(
-    client_class,
+@pytest.mark.parametrize("max_output_tokens", (None, 256))
+def test_google_preserves_supported_max_output_tokens_for_current_model(
+    client_class, max_output_tokens
 ):
     client = client_class(api_key="test_api_key")
 
     with _captured_warnings() as caught:
         warnings.simplefilter("always")
         payload = client._prepare_chat_payload_for_model(
-            "gemini-2.5-flash",
-            {"generationConfig": {"maxOutputTokens": None}},
+            "gemini-3.8-flash",
+            {"generationConfig": {"maxOutputTokens": max_output_tokens}},
         )
 
-    assert "maxOutputTokens" not in payload["generationConfig"]
+    assert payload["generationConfig"]["maxOutputTokens"] == max_output_tokens
     assert caught == []
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("client_class", GOOGLE_CLIENTS, ids=("sync", "async"))
-def test_google_warns_once_when_omitting_non_default_max_output_tokens_for_gemini_2_5(
-    client_class,
-):
-    client = client_class(api_key="test_api_key")
-
-    with _captured_warnings() as caught:
-        warnings.simplefilter("always")
-        payload = client._prepare_chat_payload_for_model(
-            "gemini-2.5-flash",
-            {"generationConfig": {"maxOutputTokens": 256}},
-        )
-
-    assert "maxOutputTokens" not in payload["generationConfig"]
-    assert len(caught) == 1
-    assert caught[0].category is UserWarning
-    assert "maxOutputTokens" in str(caught[0].message)
-    assert "gemini-2.5-flash" in str(caught[0].message)
 
 
 @pytest.mark.unit

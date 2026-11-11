@@ -186,6 +186,13 @@ def test_mistral_large_4_registered_metadata_and_standard_pricing(mistral_runtim
     assert tier.cache_read_in_per_token == pytest.approx(0.14 / 1_000_000)
     assert tier.cache_write_in_per_token is None
     assert model_spec.request_rules.rules == ()
+    assert model_spec.reasoning_capability is not None
+    assert model_spec.reasoning_capability.allowed_values == ("low", "medium", "high")
+    assert any(
+        item.capability_id == "reasoning_control"
+        and item.behavior_id == "none_falls_back_to_minimum"
+        for item in model_spec.capability_exceptions
+    )
 
 
 @pytest.mark.unit
@@ -855,13 +862,15 @@ def test_mistral_large_4_sync_chat_recognition_and_transport(
 @pytest.mark.parametrize(
     ("request_kwargs", "public_reasoning_level"),
     [
-        ({}, "none"),
+        ({}, None),
         ({"reasoning_level": "none"}, "none"),
+        ({"reasoning_level": "low"}, "low"),
+        ({"reasoning_level": "medium"}, "medium"),
         ({"reasoning_level": "high"}, "high"),
         ({"reasoning_level": "minimal"}, "minimal"),
         ({"reasoning_level": 1234}, 1234),
     ],
-    ids=["omitted", "none", "high", "other-string", "integer"],
+    ids=["omitted", "none", "low", "medium", "high", "other-string", "integer"],
 )
 def test_mistral_large_4_sync_async_reasoning_effort_matches_shared_resolver(
     mistral_runtime,
@@ -895,10 +904,16 @@ def test_mistral_large_4_sync_async_reasoning_effort_matches_shared_resolver(
         api_key="mistral-test-key",
     )
     sync_adapter.adapter._sync_transport = sync_transport
-    expected = resolve_reasoning_level(
-        sync_adapter.adapter.model_spec,
-        public_reasoning_level,
-    )
+    if public_reasoning_level is None:
+        expected_effort = "low"
+        expected_warnings = []
+    else:
+        expected = resolve_reasoning_level(
+            sync_adapter.adapter.model_spec,
+            public_reasoning_level,
+        )
+        expected_effort = expected.provider_value
+        expected_warnings = [expected.warning] if expected.warning else []
 
     with warnings.catch_warnings(record=True) as sync_warnings:
         warnings.simplefilter("always")
@@ -915,13 +930,12 @@ def test_mistral_large_4_sync_async_reasoning_effort_matches_shared_resolver(
             async_adapter.achat(_mistral_large_4_messages(), **request_kwargs)
         )
 
-    expected_warnings = [expected.warning] if expected.warning else []
     assert [str(item.message) for item in sync_warnings] == expected_warnings
     assert [str(item.message) for item in async_warnings] == expected_warnings
     _assert_large_4_reasoning_payload_parity(
         sync_transport,
         async_calls,
-        expected.provider_value,
+        expected_effort,
     )
     assert sync_adapter.adapter.model_spec is not None
     assert sync_adapter.adapter.model_spec.name == "mistral-large-4"
@@ -935,7 +949,7 @@ def test_mistral_large_4_sync_async_reasoning_effort_matches_shared_resolver(
 
 
 @pytest.mark.integration
-def test_mistral_large_4_sync_async_capture_reasoning_alone_keeps_effort_at_none(
+def test_mistral_large_4_sync_async_capture_reasoning_alone_defaults_effort_silently(
     mistral_runtime,
     monkeypatch,
 ):
@@ -969,18 +983,24 @@ def test_mistral_large_4_sync_async_capture_reasoning_alone_keeps_effort_at_none
         api_key="mistral-test-key",
     )
 
-    sync_adapter.chat(
-        _mistral_large_4_messages(),
-        capture_reasoning=True,
-    )
-    asyncio.run(
-        async_adapter.achat(
+    with warnings.catch_warnings(record=True) as sync_warnings:
+        warnings.simplefilter("always")
+        sync_adapter.chat(
             _mistral_large_4_messages(),
             capture_reasoning=True,
         )
-    )
+    with warnings.catch_warnings(record=True) as async_warnings:
+        warnings.simplefilter("always")
+        asyncio.run(
+            async_adapter.achat(
+                _mistral_large_4_messages(),
+                capture_reasoning=True,
+            )
+        )
 
-    _assert_large_4_reasoning_payload_parity(sync_transport, async_calls, "none")
+    assert not sync_warnings
+    assert not async_warnings
+    _assert_large_4_reasoning_payload_parity(sync_transport, async_calls, "low")
 
 
 @pytest.mark.integration
@@ -1145,12 +1165,15 @@ def test_mistral_large_4_stream_keeps_reasoning_out_of_visible_text(
         model="mistral-large-4",
         api_key="mistral-test-key",
     )
+    async_stream_request = {}
     if api_kind == "sync":
         adapter.adapter._sync_transport = FakeSyncTransport(
             {}, events=_mistral_large_4_reasoning_stream_events()
         )
     else:
         def fake_async_stream_request(url, **kwargs):
+            async_stream_request.update(kwargs)
+
             async def events():
                 for event in _mistral_large_4_reasoning_stream_events():
                     yield event
@@ -1222,6 +1245,14 @@ def test_mistral_large_4_stream_keeps_reasoning_out_of_visible_text(
     assert [event.text for event in completed[0].reasoning_events] == (
         expected_reasoning
     )
+    if api_kind == "sync":
+        assert adapter.adapter._sync_transport.stream_requests[0].payload[
+            "reasoning_effort"
+        ] == "low"
+    else:
+        assert async_stream_request["payload"][
+            "reasoning_effort"
+        ] == "low"
     for visible_fragments in (streamed, deltas, [chunk.text for chunk in chunks]):
         assert all(
             reasoning_text not in fragment
