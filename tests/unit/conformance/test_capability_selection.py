@@ -191,6 +191,35 @@ def test_hosted_flash_uses_shared_reasoning_route_and_keeps_shared_routes():
 
 
 @pytest.mark.unit
+def test_hosted_and_direct_deepseek_flash_use_provider_owned_pdf_evidence():
+    profiles = first_party_model_profiles()
+    hosted_model = next(
+        model for owner, model in profiles
+        if owner == "mistral" and model.name == "deepseek-flash"
+    )
+    direct_model = next(
+        model for owner, model in profiles
+        if owner == "deepseek" and model.name == "deepseek-flash"
+    )
+    hosted = select_model_scenarios(
+        organization="deepseek",
+        service_provider="mistral",
+        model=hosted_model,
+        capabilities=(ModelCapability("pdf_bytes", "model-dependent"),),
+    )
+    direct = select_model_scenarios(
+        organization="deepseek",
+        model=direct_model,
+        capabilities=(ModelCapability("pdf_bytes", "model-dependent"),),
+    )
+
+    assert hosted == (BASELINE_SCENARIOS["pdf_bytes"],)
+    assert direct == (
+        EXCEPTION_SCENARIOS[("pdf_bytes", "rejected_before_transport", "deepseek")],
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("model", "baselines", "replacements", "message"),
     [

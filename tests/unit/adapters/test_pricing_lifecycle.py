@@ -3,9 +3,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.llm_api_adapter.adapters.openai_adapter import OpenAIAdapter
+from src.llm_api_adapter.adapters.openai_compatible_adapter import OpenAICompatibleAdapter
 from src.llm_api_adapter.adapters.google_adapter import GoogleAdapter
+from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter, ClaudeSyncClient
+from src.llm_api_adapter.llms.anthropic.async_client import ClaudeAsyncClient
 from src.llm_api_adapter.adapters.base_adapter import LLMAdapterBase
-from src.llm_api_adapter.llm_registry.llm_registry import Pricing
+from src.llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from src.llm_api_adapter.llm_registry.llm_registry import Pricing, PricingTier
 from src.llm_api_adapter.llm_registry.llm_registry import (
     OrganizationModelMetadata,
     RegistrySpec,
@@ -13,6 +17,7 @@ from src.llm_api_adapter.llm_registry.llm_registry import (
 from src.llm_api_adapter.adapters import base_adapter as base_adapter_module
 from src.llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from src.llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
+from src.llm_api_adapter.llms.google.async_client import GeminiAsyncClient
 from src.llm_api_adapter.llms.google.sync_client import GeminiSyncClient
 from src.llm_api_adapter.llms.streaming import SSEEvent
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
@@ -692,15 +697,36 @@ def test_cache_read_tier_selection_uses_inclusive_total_input():
             3, 4, 0.0000324, 0.00003,
             id="gemini-4-argon-positive-thoughts-and-cache",
         ),
+        pytest.param(
+            "gemini-4-carbon",
+            {"promptTokenCount": 20, "candidatesTokenCount": 1, "totalTokenCount": 21},
+            1, 0, 0.00004, 0.00001,
+            id="gemini-4-carbon-omitted-thoughts-and-cache-are-zero",
+        ),
+        pytest.param(
+            "gemini-4-carbon",
+            {
+                "promptTokenCount": 20,
+                "candidatesTokenCount": 1,
+                "thoughtsTokenCount": 2,
+                "cachedContentTokenCount": 4,
+                "totalTokenCount": 23,
+            },
+            3, 4, 0.0000324, 0.00003,
+            id="gemini-4-carbon-positive-thoughts-and-cache",
+        ),
     ],
 )
-def test_google_registered_pricing_applies_to_completed_chat_usage(
+@pytest.mark.parametrize("async_mode", (False, True), ids=("sync", "async"))
+@pytest.mark.asyncio
+async def test_google_registered_pricing_applies_to_completed_chat_usage(
     model_name,
     usage_metadata,
     expected_output,
     expected_cached,
     expected_input_cost,
     expected_output_cost,
+    async_mode,
 ):
     adapter = GoogleAdapter(api_key="test_api_key", model=model_name)
     provider_response = {
@@ -712,8 +738,16 @@ def test_google_registered_pricing_applies_to_completed_chat_usage(
         "usageMetadata": usage_metadata,
     }
 
-    with patch.object(GeminiSyncClient, "chat_completion", return_value=provider_response):
-        response = adapter.chat([UserMessage("hi")])
+    if async_mode:
+        with patch.object(
+            GeminiAsyncClient,
+            "chat_completion",
+            new=AsyncMock(return_value=provider_response),
+        ):
+            response = await adapter.achat([UserMessage("hi")])
+    else:
+        with patch.object(GeminiSyncClient, "chat_completion", return_value=provider_response):
+            response = adapter.chat([UserMessage("hi")])
 
     assert response.cost_input == pytest.approx(expected_input_cost)
     assert response.cost_output == pytest.approx(expected_output_cost)
@@ -723,6 +757,49 @@ def test_google_registered_pricing_applies_to_completed_chat_usage(
     assert response.usage.output_tokens == expected_output
     assert response.usage.cached_tokens == expected_cached
     assert response.usage.total_tokens == usage_metadata["totalTokenCount"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_mode", (False, True), ids=("sync", "async"))
+async def test_anthropic_fable_5_2_registered_pricing_applies_to_reported_usage(
+    async_mode,
+):
+    model = "claude-fable-5-2"
+    adapter = AnthropicAdapter(api_key="test_api_key", model=model)
+    provider_response = {
+        "id": "msg_test",
+        "model": model,
+        "content": [{"type": "text", "text": "OK"}],
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 20,
+        },
+    }
+
+    if async_mode:
+        with patch.object(
+            ClaudeAsyncClient,
+            "chat_completion",
+            new=AsyncMock(return_value=provider_response),
+        ):
+            response = await adapter.achat([UserMessage("hi")], max_tokens=64)
+    else:
+        with patch.object(
+            ClaudeSyncClient,
+            "chat_completion",
+            return_value=provider_response,
+        ):
+            response = adapter.chat([UserMessage("hi")], max_tokens=64)
+
+    assert response.usage.input_tokens == 10
+    assert response.usage.output_tokens == 20
+    assert response.usage.cached_tokens is None
+    assert response.usage.cache_write_tokens is None
+    assert response.cost_input == pytest.approx(0.00008)
+    assert response.cost_output == pytest.approx(0.0008)
+    assert response.cost_total == pytest.approx(0.00088)
+    assert response.currency == "USD"
 
 
 @pytest.mark.unit
@@ -844,3 +921,277 @@ def test_explicit_provider_pricing_is_selected_and_deep_copied(monkeypatch):
         2 / 1_000_000
     )
     assert provider_spec.pricing_tiers.currency == "CAD"
+
+
+def _caller_pricing_compatible_adapter(pricing):
+    return OpenAICompatibleAdapter(
+        api_key="test-key",
+        model="gpt-5",
+        base_url="https://example.invalid/v1",
+        pricing=pricing,
+    )
+
+
+@pytest.mark.unit
+def test_caller_pricing_is_copied_and_setters_are_instance_local():
+    caller_pricing = _tiered_pricing()
+    registered_adapter = OpenAIAdapter(api_key="test-key", model="gpt-5")
+    registered_pricing = registered_adapter.pricing
+    registered_model_pricing = registered_adapter.model_spec.pricing_tiers
+    registered_snapshot = registered_pricing.tiers
+    registered_model_snapshot = registered_model_pricing.tiers
+    first = _caller_pricing_compatible_adapter(caller_pricing)
+    second = _caller_pricing_compatible_adapter(caller_pricing)
+    original_tiers = caller_pricing.tiers
+
+    assert first.pricing is not caller_pricing
+    assert second.pricing is not caller_pricing
+    assert first.pricing is not second.pricing
+    assert first.pricing.tiers is not caller_pricing.tiers
+
+    first.pricing.set_in_per_1m(23.0)
+    first.pricing.set_out_per_1m(29.0)
+    first.pricing.set_currency("JPY")
+
+    assert first.pricing.currency == "JPY"
+    assert first.pricing.tiers[0].in_per_token == pytest.approx(23 / 1_000_000)
+    assert first.pricing.tiers[0].out_per_token == pytest.approx(29 / 1_000_000)
+    assert caller_pricing.tiers is original_tiers
+    assert caller_pricing.currency == "USD"
+    assert caller_pricing.tiers[0].in_per_token == pytest.approx(1 / 1_000_000)
+    assert caller_pricing.tiers[0].out_per_token == pytest.approx(2 / 1_000_000)
+    assert second.pricing.currency == "USD"
+    assert second.pricing.tiers[0].in_per_token == pytest.approx(1 / 1_000_000)
+    assert second.pricing.tiers[0].out_per_token == pytest.approx(2 / 1_000_000)
+    assert registered_adapter.pricing is registered_pricing
+    assert registered_adapter.pricing.tiers == registered_snapshot
+    assert registered_adapter.model_spec.pricing_tiers is registered_model_pricing
+    assert registered_adapter.model_spec.pricing_tiers.tiers == registered_model_snapshot
+
+
+@pytest.mark.unit
+def test_compatible_ordinary_pricing_assignment_keeps_reference_and_existing_units():
+    """from_dict and setters use per-million units; direct PricingTier fields use per-token units."""
+    facade = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="vendor/ordinary-pricing-assignment",
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        api_variant="responses",
+    )
+    per_million = Pricing.from_dict(
+        [{
+            "up_to_prompt_tokens": None,
+            "input_per_1m": 12.0,
+            "output_per_1m": 34.0,
+        }],
+        currency="CAD",
+    )
+
+    facade.adapter.pricing = per_million
+
+    assert facade.pricing is per_million
+    assert facade.adapter.pricing is per_million
+    assert per_million.tiers[0].in_per_token == pytest.approx(12 / 1_000_000)
+    assert per_million.tiers[0].out_per_token == pytest.approx(34 / 1_000_000)
+    per_million.set_in_per_1m(56.0)
+    per_million.set_out_per_1m(78.0)
+    per_million.set_currency("JPY")
+    assert facade.pricing.tiers[0].in_per_token == pytest.approx(56 / 1_000_000)
+    assert facade.pricing.tiers[0].out_per_token == pytest.approx(78 / 1_000_000)
+    assert facade.pricing.currency == "JPY"
+
+    direct_per_token = Pricing(
+        tiers=(PricingTier(None, 12.0, 34.0),),
+        currency="EUR",
+    )
+    facade.adapter.pricing = direct_per_token
+
+    assert facade.pricing is direct_per_token
+    assert facade.pricing.tiers[0].in_per_token == 12.0
+    assert facade.pricing.tiers[0].out_per_token == 34.0
+
+
+@pytest.mark.unit
+def test_responses_constructor_pricing_copies_and_setters_stay_instance_local():
+    caller = _tiered_pricing()
+    native = OpenAIAdapter(api_key="test-key", model="gpt-5")
+    native_pricing = native.pricing
+    native_tiers = native.pricing.tiers
+    first = OpenAICompatibleAdapter(
+        api_key="test-key", model="gpt-5", base_url="https://example.invalid/v1",
+        api_variant="responses", pricing=caller,
+    )
+    second = OpenAICompatibleAdapter(
+        api_key="test-key", model="gpt-5", base_url="https://example.invalid/v1",
+        api_variant="responses", pricing=caller,
+    )
+
+    assert first.pricing is not caller and second.pricing is not caller
+    assert first.pricing is not second.pricing
+    assert first.pricing.tiers is not caller.tiers
+    assert second.pricing.tiers is not caller.tiers
+    assert first.pricing.tiers is not second.pricing.tiers
+    first.pricing.set_in_per_1m(23.0)
+    first.pricing.set_out_per_1m(29.0)
+    first.pricing.set_currency("JPY")
+
+    assert first.pricing.currency == "JPY"
+    assert first.pricing.tiers[0].in_per_token == pytest.approx(23 / 1_000_000)
+    assert first.pricing.tiers[0].out_per_token == pytest.approx(29 / 1_000_000)
+    assert caller.currency == second.pricing.currency == "USD"
+    assert caller.tiers[0].in_per_token == pytest.approx(1 / 1_000_000)
+    assert caller.tiers[0].out_per_token == pytest.approx(2 / 1_000_000)
+    assert second.pricing.tiers[0].in_per_token == pytest.approx(1 / 1_000_000)
+    assert second.pricing.tiers[0].out_per_token == pytest.approx(2 / 1_000_000)
+    assert native.pricing is native_pricing and native.pricing.tiers == native_tiers
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("usage", "expected_input", "expected_output", "expected_total", "currency"),
+    [
+        pytest.param(None, None, None, None, None, id="no-usage"),
+        pytest.param(
+            Usage(input_tokens=None, output_tokens=5, total_tokens=5),
+            None, None, None, None, id="missing-input-cannot-select-tier",
+        ),
+        pytest.param(
+            Usage(input_tokens=100, output_tokens=None, total_tokens=100),
+            0.0001, None, None, "USD", id="missing-output-keeps-input-only",
+        ),
+        pytest.param(
+            Usage(input_tokens=100, output_tokens=5, total_tokens=None),
+            0.0001, 0.00001, 0.00011, "USD", id="total-count-not-required",
+        ),
+        pytest.param(
+            Usage(input_tokens=0, output_tokens=0, total_tokens=0),
+            0.0, 0.0, 0.0, "USD", id="reported-zero-counts",
+        ),
+    ],
+)
+def test_caller_pricing_usage_completeness(
+    usage, expected_input, expected_output, expected_total, currency
+):
+    adapter = _caller_pricing_compatible_adapter(_tiered_pricing())
+    assert adapter.pricing is not None
+    response = ChatResponse(usage=usage)
+    adapter._apply_response_pricing(response)
+
+    for actual, expected in (
+        (response.cost_input, expected_input),
+        (response.cost_output, expected_output),
+        (response.cost_total, expected_total),
+    ):
+        if expected is None:
+            assert actual is None
+        elif expected == 0:
+            assert actual == 0
+        else:
+            assert actual == pytest.approx(expected)
+    assert response.currency == currency
+
+
+@pytest.mark.unit
+def test_caller_pricing_uncovered_finite_tiers_do_not_extrapolate():
+    pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": 100, "input_per_1m": 1, "output_per_1m": 2}],
+        currency="CAD",
+    )
+    adapter = _caller_pricing_compatible_adapter(pricing)
+    assert adapter.pricing is not None
+    response = ChatResponse(
+        usage=Usage(input_tokens=101, output_tokens=5, total_tokens=106)
+    )
+
+    adapter._apply_response_pricing(response)
+
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
+    assert response.currency is None
+
+
+@pytest.mark.unit
+def test_caller_pricing_direct_zero_rates_produce_reported_zero_costs():
+    pricing = Pricing(
+        tiers=(PricingTier(None, 0.0, 0.0, 0.0, 0.0),),
+        currency="USD",
+    )
+    adapter = _caller_pricing_compatible_adapter(pricing)
+    assert adapter.pricing is not None
+    response = ChatResponse(
+        usage=Usage(
+            input_tokens=100,
+            output_tokens=5,
+            total_tokens=105,
+            cached_tokens=20,
+            cache_write_tokens=10,
+        )
+    )
+
+    adapter._apply_response_pricing(response)
+
+    assert response.usage.input_tokens == 100
+    assert response.usage.output_tokens == 5
+    assert response.usage.cached_tokens == 20
+    assert response.usage.cache_write_tokens == 10
+    assert response.cost_input == 0
+    assert response.cost_output == 0
+    assert response.cost_total == 0
+    assert response.currency == "USD"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("pricing", "cached_tokens", "expected_input", "expected_output", "expected_total"),
+    [
+        pytest.param(
+            _tiered_pricing(), 5, None, 0.00002, None,
+            id="positive-cache-without-cache-rate",
+        ),
+        pytest.param(
+            Pricing.from_dict(
+                [{
+                    "up_to_prompt_tokens": None,
+                    "input_per_1m": 1,
+                    "output_per_1m": 2,
+                    "cache_read_input_per_1m": 0.5,
+                }],
+                currency="USD",
+            ),
+            None, None, 0.00002, None,
+            id="configured-cache-rate-without-reported-count",
+        ),
+        pytest.param(
+            _tiered_pricing(), None, 0.0001, 0.00002, 0.00012,
+            id="no-cache-detail-and-no-cache-rate",
+        ),
+    ],
+)
+def test_caller_pricing_cache_component_completeness(
+    pricing, cached_tokens, expected_input, expected_output, expected_total
+):
+    adapter = _caller_pricing_compatible_adapter(pricing)
+    assert adapter.pricing is not None
+    response = ChatResponse(
+        usage=Usage(
+            input_tokens=100,
+            output_tokens=10,
+            total_tokens=110,
+            cached_tokens=cached_tokens,
+            cache_write_tokens=0,
+        )
+    )
+
+    adapter._apply_response_pricing(response)
+
+    for actual, expected in (
+        (response.cost_input, expected_input),
+        (response.cost_output, expected_output),
+        (response.cost_total, expected_total),
+    ):
+        if expected is None:
+            assert actual is None
+        else:
+            assert actual == pytest.approx(expected)

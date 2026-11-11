@@ -37,6 +37,13 @@ Organization API
 first-party service provider to the organization name, resolves a registered adapter, and delegates
 the public request methods. It does not own organization payload rules or protocol behavior.
 
+The additive `api_variant` field follows the existing six-field constructor prefix. Together with
+`base_url`, it is accepted only for `organization="openai_compatible"`; non-`None` values for native
+organizations fail configuration before I/O. Compatible mode requires an explicit valid API root
+and uses `service_provider="openai_compatible"`, without plugin discovery to select another API.
+The explicit variants are `chat_completions` and `responses`; omission or `None` selects Chat
+Completions. Native factory arguments and registry-based API selection remain unchanged.
+
 ### Shared adapter contract
 
 `LLMAdapterBase` owns cross-organization validation and lifecycle behavior: message
@@ -52,6 +59,29 @@ organization's supported behavior. Organization clients and transports own endpo
 HTTP/SSE resource handling, raw event consumption, and translation of raw failures to public error
 categories. They must not leak raw provider events or payload objects through the common API.
 
+`OpenAIAdapter` directly inherits the concrete `OpenAICompatibleAdapter`. Its five request/stream
+execution methods and shared payload assembly are inherited from that protocol parent. Small
+native policy overrides retain registry initialization, verified model behavior, reasoning,
+continuation, usage, pricing, errors and historical stream completion. The native constructor
+keeps its existing fields; compatible-only connection settings remain class-level defaults in
+the native subclass and do not enter its constructor or dataclass comparison.
+
+OpenAI-style adapters share request assembly and response dispatch in
+`adapters/openai_compatible/common/payloads.py`, composing the existing Chat Completions and
+Responses protocol components. Native payload wrappers retain reasoning, continuation and schema
+policy. The compatible adapter imports neutral protocol components and usage helpers directly,
+without initializing native OpenAI adapter/client modules. Policy hooks preserve the distinct
+native and generic behavior while execution, validation and lifecycle keep their existing owners.
+
+Native OpenAI and compatible mode share the low-level sync/async HTTP and SSE execution in
+`llms/openai_compatible/`. These generic clients require an explicit endpoint and use the
+configured API, defaulting to Chat Completions, without native registry or model-rule imports.
+Concrete clients in `llms/openai/` retain native route, request-rule and reasoning policy, the
+official endpoint default, and existing constructor, import and module-patch contracts. Native
+async remains a native-sync subclass and shares the common async execution mixin. The compatible
+adapter constructs generic clients directly; its clients have no native-policy switch. Existing
+transports, cleanup and public errors remain the shared authorities.
+
 ### Shared models
 
 Messages, file parts, tool definitions and calls, response/usage/cost values, stream chunks, and
@@ -64,9 +94,11 @@ An **organization** identifies the model developer. A **service provider** owns 
 adapter, credentials, protocol, and verified capabilities, limits, request rules and prices for
 the model as offered through that API.
 
-When omitted, `service_provider` defaults to `organization`. All integrations select both the
+When omitted, `service_provider` defaults to `organization`. Native integrations select both the
 adapter and the exact-model profile by the resulting provider. A developer's profile must not
-substitute for missing metadata from the selected provider.
+substitute for missing metadata from the selected provider. The `openai_compatible` identifier is
+the documented connection-mode exception: it selects a generic protocol adapter, not a model
+developer or verified provider profile. The caller owns the endpoint and exact model selection.
 
 Public model identity stays separate from API-specific naming; provider adapters own wire
 translation. Native and hosted models reuse the same catalogue and integration mechanisms.
@@ -101,13 +133,21 @@ Unknown models remain selectable through the chosen adapter but receive no infer
 reasoning capability, or request transformation. Only documented direct organization snapshot
 forms inherit registered base metadata.
 
+Compatible mode does not resolve a model profile, even for identifiers matching a native model or
+snapshot. It imports no native limits, aliases, rules, capability exceptions, accounting defaults
+or tariffs, and requires no API-specific capability profile or compatible model catalogue. The
+existing registry tariff types are reusable local data structures; using them does not verify a
+server or import the other fields of a registry entry. API selection comes only from connection
+configuration, with no name inference, discovery request, protocol probe or fallback.
+
 ## Request and Response Flow
 
 1. The facade selects the service provider and its adapter.
-2. The adapter resolves the selected provider's model profile.
-3. The adapter normalizes and validates the request, applying the profile's compatibility rules
-   before provider I/O.
-4. The organization adapter serializes a permitted common request to its native request.
+2. A native adapter resolves the selected provider's model profile; compatible mode uses its
+   validated root and explicit/default API without a model-profile lookup.
+3. The adapter normalizes and validates the request before provider I/O. Native compatibility
+   rules apply only through native policy; generic policy retains the common validators.
+4. The adapter serializes a permitted common request to its selected wire protocol.
 5. The client or transport exchanges the native request and maps raw failures to public errors.
 6. The adapter normalizes the response, usage, tool calls, optional reasoning, structured result,
    and applicable cost data into the shared response model.
@@ -116,6 +156,11 @@ For streaming, raw organization events are consumed within the organization boun
 stream lifecycle emits normalized visible text, collects optional reasoning separately, finalizes
 the response, delivers completed tool calls, and then invokes completion. No background producer,
 partial tool-call API, or universal raw-event API is part of the common contract.
+
+Generic Responses uses full caller-supplied history and `store=false`, without native continuation
+IDs, conversation state, opaque replay or an automatic reasoning-summary request. Both generic
+protocols require valid completion evidence; EOF or a stream terminator alone cannot establish
+success. These generic policies do not change native continuation or historical stream behavior.
 
 ## Structured Output, Tools, and Files
 
@@ -140,8 +185,21 @@ automatic cache-read/cache-hit input; separately reported automatic cache writes
 `cache_write_tokens`. Disjoint components normalize to inclusive input only when provider semantics
 establish exact counts, without double counting; reads and separately counted writes are disjoint
 subsets of inclusive input and their sum cannot exceed it. Organization-owned normalization supplies common
-`Usage`/`ChatResponse`; `ChatResponse` owns arithmetic, and `LLMAdapterBase` selects the verified
-pricing tier by full input and forwards its rates.
+`Usage`/`ChatResponse`; `ChatResponse` owns arithmetic, and `LLMAdapterBase` selects the applicable
+pricing tier by full input and forwards its rates. Verified native standard prices remain
+registry-owned, while existing caller-local assignment/setter overrides retain their provenance.
+
+Compatible mode defaults to no tariff: calculated costs, currency and calculated breakdowns remain
+unavailable. Callers may explicitly load a registry-format JSON file, supply numeric parameters or
+use dictionaries in the existing `pricing_tiers` format. Each form normalizes to existing
+`Pricing`/`PricingTier` objects and uses existing assignment/setter and calculation paths, without
+a new facade pricing option or implicit registry lookup. File loading and tariff selection belong
+to caller configuration. Local rates are accounting inputs, not verified prices or capabilities;
+units, currency, constructor-copy and ordinary-assignment reference semantics remain unchanged.
+Reported zero is distinct from unknown usage. Missing or contradictory required usage, invalid
+cache evidence, an uncovered tier or an unpriceable incurred component cannot yield an invented
+complete total, even with a caller tariff. Native accounting defaults do not apply to generic mode.
+
 Google has one narrow normalization default: after a successful, completed GenerateContent response,
 a non-null `usageMetadata` mapping with valid nonnegative integer `promptTokenCount`,
 `candidatesTokenCount`, and provider-reported `totalTokenCount` establishes the accounting context.
@@ -186,6 +244,19 @@ not a second product contract or an inventory of every test. Exact-model registr
 the applicable shared or package-local route. Provider E2E validation is deliberately bounded,
 organization-specific, and performed only through explicit manual verification or designated
 post-publish CI lanes. Core and organization packages are independently versioned and released.
+
+Compatible behavior is evidenced by controlled both-API/default, four-method and transport tests,
+including its distinct history, terminal, usage and caller-pricing policies. Shared native execution
+provides evidence only for the branches reached by unchanged native scenarios and registered
+model/API selection. It does not certify arbitrary endpoints or unobserved generic branches. This
+addition preserves all existing E2E tests, fixtures, scenario maps, selectors, model selection,
+markers and execution configuration; it creates no separate compatible live case or lane. Local
+source/mock checks do not establish clean installed-artifact behavior or satisfy a release gate.
+
+The native/provider final release gate remains the designated post-publish lane after staging
+merge to `dev`, using exact TestPyPI candidate artifacts installed in a clean environment, only
+that provider's credential, and every applicable shared Core and package-local scenario before
+promotion to `main`. An authorized manual preflight or a local wheel check cannot replace it.
 
 That test-only map assigns `BASELINE`, `EXCEPTION`, and `ALWAYS_ON` roles to existing shared
 scenarios through `BASELINE_SCENARIOS`, `EXCEPTION_SCENARIOS`, and `ALWAYS_ON_SCENARIOS`. It is

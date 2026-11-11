@@ -34,6 +34,23 @@ def test_openai_selects_the_api_variant_for_each_model_family(client_class):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
+def test_openai_custom_endpoint_keeps_official_model_selection_and_request_rules(
+    client_class,
+):
+    client = client_class(api_key="test_api_key", endpoint="http://localhost:8000/v1")
+
+    assert client._should_use_responses_api("gpt-5") is True
+    assert client._prepare_chat_payload_for_model(
+        "gpt-4.1-mini", {"messages": [], "max_tokens": 256}
+    ) == {
+        "model": "gpt-4.1-mini",
+        "messages": [],
+        "max_completion_tokens": 256,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
 def test_openai_snapshot_uses_its_registered_base_api_variant(client_class):
     client = client_class(api_key="test_api_key")
 
@@ -317,7 +334,7 @@ def test_anthropic_warns_once_when_omitting_non_default_top_p_for_claude_4_5(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
-@pytest.mark.parametrize("model", ("claude-haiku-5-5",))
+@pytest.mark.parametrize("model", ("claude-haiku-5-5", "claude-fable-5-2"))
 def test_anthropic_new_models_drop_sampling_and_low_level_top_k(client_class, model):
     client = client_class(api_key="test_api_key")
     with _captured_warnings() as caught:
@@ -333,7 +350,7 @@ def test_anthropic_new_models_drop_sampling_and_low_level_top_k(client_class, mo
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
-@pytest.mark.parametrize("model", ("claude-haiku-5-5",))
+@pytest.mark.parametrize("model", ("claude-haiku-5-5", "claude-fable-5-2"))
 def test_anthropic_new_models_warn_when_dropping_non_default_sampling_and_top_k(
     client_class, model
 ):
@@ -396,14 +413,35 @@ def test_anthropic_adaptive_effort_disabled_reasoning_and_capture(client_class):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
-def test_anthropic_adaptive_models_keep_default_thinking_omitted(client_class):
+@pytest.mark.parametrize("model", ("claude-opus-4-8", "claude-fable-5-2"))
+def test_anthropic_adaptive_models_keep_default_thinking_omitted(client_class, model):
     client = client_class(api_key="test_api_key")
     payload = client._prepare_chat_payload_for_model(
-        "claude-opus-4-8",
+        model,
         {"messages": [], "is_adaptive_thinking": True},
     )
-    assert payload["model"] == "claude-opus-4-8"
+    assert payload["model"] == model
     assert "thinking" not in payload
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", ANTHROPIC_CLIENTS, ids=("sync", "async"))
+@pytest.mark.parametrize("effort", ("low", "medium", "high", "xhigh", "max"))
+def test_claude_fable_5_2_preserves_explicit_adaptive_effort(client_class, effort):
+    client = client_class(api_key="test_api_key")
+
+    payload = client._prepare_chat_payload_for_model(
+        "claude-fable-5-2",
+        {
+            "messages": [],
+            "is_adaptive_thinking": True,
+            "effort": effort,
+            "output_config": {"format": {"type": "json_schema", "schema": {}}},
+        },
+    )
+
+    assert payload["thinking"] == {"type": "adaptive"}
+    assert payload["output_config"]["effort"] == effort
 
 
 @pytest.mark.unit
@@ -447,6 +485,7 @@ def test_google_warns_once_when_omitting_non_default_max_output_tokens_for_gemin
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", GOOGLE_CLIENTS, ids=("sync", "async"))
+@pytest.mark.parametrize("model_name", ("gemini-4-argon", "gemini-4-carbon"))
 @pytest.mark.parametrize(
     ("sampling", "expected_warnings"),
     [
@@ -455,8 +494,9 @@ def test_google_warns_once_when_omitting_non_default_max_output_tokens_for_gemin
     ],
     ids=("provider-defaults", "non-default-values"),
 )
-def test_google_argon_omits_unsupported_sampling_for_both_clients(
+def test_google_reasoning_models_omit_unsupported_sampling_for_both_clients(
     client_class,
+    model_name,
     sampling,
     expected_warnings,
 ):
@@ -465,7 +505,7 @@ def test_google_argon_omits_unsupported_sampling_for_both_clients(
     with _captured_warnings() as caught:
         warnings.simplefilter("always")
         payload = client._prepare_chat_payload_for_model(
-            "gemini-4-argon",
+            model_name,
             {
                 "messages": [],
                 "generationConfig": {
@@ -480,4 +520,33 @@ def test_google_argon_omits_unsupported_sampling_for_both_clients(
     assert len(caught) == expected_warnings
     if expected_warnings:
         assert all(warning.category is UserWarning for warning in caught)
-        assert all("gemini-4-argon" in str(warning.message) for warning in caught)
+        assert all(model_name in str(warning.message) for warning in caught)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
+def test_official_openai_collision_models_keep_registered_native_behavior(client_class):
+    client = client_class(api_key="test_api_key")
+
+    assert client.endpoint == "https://api.openai.com/v1"
+    assert client._official_behavior_enabled is True
+    assert client._should_use_responses_api("gpt-5") is True
+    assert client._should_use_responses_api("gpt-5-2025-08-07") is True
+    assert client._should_use_responses_api("gpt-4.1-mini") is False
+    assert client._prepare_chat_payload_for_model(
+        "gpt-4.1-mini",
+        {"messages": [], "max_tokens": 256},
+    ) == {
+        "model": "gpt-4.1-mini",
+        "messages": [],
+        "max_completion_tokens": 256,
+    }
+
+    with _captured_warnings() as caught:
+        warnings.simplefilter("always")
+        reasoning_payload = client._prepare_responses_payload_for_model(
+            "gpt-5",
+            {"reasoning_effort": "none"},
+        )
+    assert reasoning_payload["reasoning"] == {"effort": "minimal"}
+    assert caught == []

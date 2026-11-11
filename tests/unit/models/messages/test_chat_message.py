@@ -81,6 +81,40 @@ def test_ai_message_to_openai_responses_input_without_content():
 
 
 @pytest.mark.unit
+def test_ai_message_to_openai_responses_input_preserves_tool_calls_and_order():
+    original_arguments = {"city": "Tel \u05d0\u05d1\u05d9\u05d1", "units": ["C", "\u00b0F"]}
+    msg = AIMessage(
+        content="Checking the weather",
+        tool_calls=[
+            ToolCall(name="weather", arguments=original_arguments, call_id="call_1"),
+            ToolCall(name="forecast", arguments={"days": 2}, call_id="call_2"),
+        ],
+    )
+
+    assert msg.to_openai_responses_input() == [
+        {"role": "assistant", "content": "Checking the weather"},
+        {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "weather",
+            "arguments": json.dumps(original_arguments, ensure_ascii=False),
+        },
+        {
+            "type": "function_call",
+            "call_id": "call_2",
+            "name": "forecast",
+            "arguments": json.dumps({"days": 2}, ensure_ascii=False),
+        },
+    ]
+    assert msg.tool_calls[0].arguments == {
+        "city": "Tel \u05d0\u05d1\u05d9\u05d1", "units": ["C", "\u00b0F"]
+    }
+    assert original_arguments == {
+        "city": "Tel \u05d0\u05d1\u05d9\u05d1", "units": ["C", "\u00b0F"]
+    }
+
+
+@pytest.mark.unit
 def test_ai_message_to_anthropic_without_tool_calls():
     msg = AIMessage(content="hello")
     assert msg.to_anthropic() == {"role": "assistant", "content": "hello"}

@@ -75,7 +75,7 @@ _MISTRAL_E2E_PROFILE = E2EOrganizationProfile(
     organization_names=("mistral",),
     distribution=KNOWN_ORGANIZATION_PACKAGES["mistral"].distribution,
     api_key_is_required=True,
-    model_organizations=(("glm-5.3-flash", "zai"),),
+    model_organizations=(("glm-5.3-flash", "zai"), ("deepseek-flash", "deepseek")),
 )
 _XAI_E2E_PROFILE = E2EOrganizationProfile(
     name="xai",

@@ -131,6 +131,15 @@ StreamErrorHandler = Callable[[SSEEvent], Any]
 SYNC_TRANSPORTS = ("requests", "httpx")
 
 
+def _format_transport_diagnostic(
+    http_error_handler: Optional[HTTPErrorHandler], value: Any
+) -> Any:
+    """Format a diagnostic through the bound provider client when configured."""
+    client = getattr(http_error_handler, "__self__", None)
+    formatter = getattr(client, "_format_diagnostic", None)
+    return formatter(value) if formatter is not None else value
+
+
 def validate_sync_transport(transport: object) -> str:
     """Validate a public synchronous transport selection."""
     if not isinstance(transport, str) or transport not in SYNC_TRANSPORTS:

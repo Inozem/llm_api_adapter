@@ -17,6 +17,7 @@ from .transports import (
     StreamErrorHandler,
     SyncTransport,
     TransportRequest,
+    _format_transport_diagnostic as format_transport_diagnostic,
     is_generic_stream_error,
     multipart_headers,
     raise_default_http_error,
@@ -55,13 +56,13 @@ class RequestsSyncTransport(SyncTransport):
         except LLMAPIError:
             raise
         except requests.exceptions.Timeout as exc:
-            logger.error("Synchronous request timed out: %s", exc)
+            logger.error("Synchronous request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
             raise LLMAPITimeoutError(detail=str(exc)) from exc
         except requests.exceptions.HTTPError as exc:
-            logger.error("Synchronous HTTP error: %s", exc)
+            logger.error("Synchronous HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
             self._handle_http_error(exc, http_error_handler)
         except requests.exceptions.RequestException as exc:
-            logger.error("Synchronous request exception: %s", exc)
+            logger.error("Synchronous request exception: %s", format_transport_diagnostic(http_error_handler, exc))
             raise LLMAPIClientError(detail=str(exc)) from exc
         finally:
             if response is not None:
@@ -99,13 +100,13 @@ class RequestsSyncTransport(SyncTransport):
         except LLMAPIError:
             raise
         except requests.exceptions.Timeout as exc:
-            logger.error("Synchronous streaming request timed out: %s", exc)
+            logger.error("Synchronous streaming request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
             raise LLMAPITimeoutError(detail=str(exc)) from exc
         except requests.exceptions.HTTPError as exc:
-            logger.error("Synchronous streaming HTTP error: %s", exc)
+            logger.error("Synchronous streaming HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
             self._handle_http_error(exc, http_error_handler)
         except requests.exceptions.RequestException as exc:
-            logger.error("Synchronous streaming request exception: %s", exc)
+            logger.error("Synchronous streaming request exception: %s", format_transport_diagnostic(http_error_handler, exc))
             raise LLMAPIClientError(detail=str(exc)) from exc
         finally:
             if response is not None and not parser_owns_response:

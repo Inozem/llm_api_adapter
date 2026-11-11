@@ -15,6 +15,7 @@ from .transports import (
     StreamErrorHandler,
     SyncTransport,
     TransportRequest,
+    _format_transport_diagnostic as format_transport_diagnostic,
     is_generic_stream_error,
     multipart_headers,
     raise_default_http_error,
@@ -65,13 +66,13 @@ class HttpxSyncTransport(SyncTransport):
         except LLMAPIError:
             raise
         except self._httpx.TimeoutException as exc:
-            logger.error("Synchronous HTTPX request timed out: %s", exc)
+            logger.error("Synchronous HTTPX request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
             raise LLMAPITimeoutError(detail=str(exc)) from exc
         except self._httpx.HTTPStatusError as exc:
-            logger.error("Synchronous HTTPX HTTP error: %s", exc)
+            logger.error("Synchronous HTTPX HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
             self._handle_http_error(exc, http_error_handler)
         except self._httpx.RequestError as exc:
-            logger.error("Synchronous HTTPX request exception: %s", exc)
+            logger.error("Synchronous HTTPX request exception: %s", format_transport_diagnostic(http_error_handler, exc))
             raise LLMAPIClientError(detail=str(exc)) from exc
         finally:
             try:
@@ -114,13 +115,13 @@ class HttpxSyncTransport(SyncTransport):
         except LLMAPIError:
             raise
         except self._httpx.TimeoutException as exc:
-            logger.error("Synchronous HTTPX streaming request timed out: %s", exc)
+            logger.error("Synchronous HTTPX streaming request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
             raise LLMAPITimeoutError(detail=str(exc)) from exc
         except self._httpx.HTTPStatusError as exc:
-            logger.error("Synchronous HTTPX streaming HTTP error: %s", exc)
+            logger.error("Synchronous HTTPX streaming HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
             self._handle_http_error(exc, http_error_handler)
         except self._httpx.RequestError as exc:
-            logger.error("Synchronous HTTPX streaming request exception: %s", exc)
+            logger.error("Synchronous HTTPX streaming request exception: %s", format_transport_diagnostic(http_error_handler, exc))
             raise LLMAPIClientError(detail=str(exc)) from exc
         finally:
             try:

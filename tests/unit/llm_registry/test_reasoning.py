@@ -114,6 +114,7 @@ def test_categorical_projection_without_none_uses_the_working_scale(
 @pytest.mark.parametrize(
     ("organization", "model_name"),
     [
+        ("anthropic", "claude-fable-5-2"),
         ("google", "gemini-3.1-pro-preview"),
         ("openai", "gpt-6-astra"),
         ("openai", "gpt-6.1-sol"),

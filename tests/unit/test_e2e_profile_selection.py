@@ -237,6 +237,7 @@ def test_model_case_collection_rejects_missing_or_duplicate_capability_markers(
 def test_hosted_flash_uses_mistral_lane_and_developer_mapping(e2e_collection, monkeypatch):
     module, package_lookup, _ = e2e_collection
     profile = module.get_e2e_organization_profile("mistral")
+    profile = replace(profile, model_organizations=(("glm-5.3-flash", "zai"),))
     flash = _model("glm-5.3-flash")
     package_lookup.side_effect = None
     package_lookup.return_value = "1.0"
@@ -292,6 +293,47 @@ def test_hosted_flash_uses_mistral_lane_and_developer_mapping(e2e_collection, mo
     assert package_lookup.call_args_list[-1].args == (profile.distribution,)
     monkeypatch.setattr(module, "resolve_e2e_organizations", lambda _: organizations)
     assert module.e2e_model_organization.__wrapped__(hosted) is organizations[0]
+
+
+@pytest.mark.unit
+def test_hosted_deepseek_flash_uses_mistral_lane_and_developer_mapping(
+    e2e_collection, monkeypatch
+):
+    module, package_lookup, _ = e2e_collection
+    profile = module.get_e2e_organization_profile("mistral")
+    model = _model("deepseek-flash")
+    glm = _model("glm-5.3-flash")
+    package_lookup.side_effect = None
+    package_lookup.return_value = "1.0"
+    monkeypatch.setattr(module, "_E2E_PROFILES", (profile,))
+    monkeypatch.setattr(module.ORGANIZATION_PLUGIN_DISCOVERY, "discover", Mock())
+    module.e2e_model_case_parameters.cache_clear()
+    monkeypatch.setattr(
+        module,
+        "LLM_REGISTRY",
+        SimpleNamespace(
+            organizations={
+                "mistral": SimpleNamespace(
+                    models={model.name: model, glm.name: glm}
+                )
+            }
+        ),
+    )
+
+    parameters = module.e2e_model_case_parameters(service_provider="mistral")
+    hosted = next(
+        parameter.values[0]
+        for parameter in parameters
+        if "deepseek-flash" in parameter.id
+    )
+    assert hosted.organization == "deepseek"
+    assert hosted.service_provider == "mistral"
+    assert hosted.profile is profile
+    assert ("deepseek-flash", "deepseek") in profile.model_organizations
+    assert "mistral-deepseek-flash" in {parameter.id for parameter in parameters}
+    assert not any(parameter.id.startswith("deepseek-") for parameter in parameters)
+    assert package_lookup.call_count == 1
+    package_lookup.assert_called_once_with(profile.distribution)
 
 
 @pytest.mark.unit

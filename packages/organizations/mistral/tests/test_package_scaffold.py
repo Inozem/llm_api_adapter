@@ -92,6 +92,8 @@ def test_mistral_registry_contains_native_and_hosted_model_specs():
     )
     hosted_glm = model_specs["glm-5.3-flash"]
     assert hosted_glm.provider_model == "zai-glm-5-3-flash"
+    hosted_deepseek = model_specs["deepseek-flash"]
+    assert hosted_deepseek.provider_model == "deepseek-v4-1-flash-1017"
 
 
 @pytest.mark.unit

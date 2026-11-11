@@ -198,6 +198,19 @@ class AIMessage(Message):
         items: List[Dict[str, Any]] = []
         if self.content:
             items.append({"role": "assistant", "content": self.content})
+        if self.tool_calls:
+            items.extend(
+                {
+                    "type": "function_call",
+                    "call_id": tool_call.call_id,
+                    "name": tool_call.name,
+                    "arguments": json.dumps(
+                        tool_call.arguments,
+                        ensure_ascii=False,
+                    ),
+                }
+                for tool_call in self.tool_calls
+            )
         return items
 
     def to_anthropic(self) -> Dict[str, Any]:
