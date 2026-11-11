@@ -50,6 +50,7 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 MODEL = "glm-5.3-flash"
 FLASHX_MODEL = "glm-5.3-flashx"
+FLASHX_LEGAL_MODEL = "glm-5.3-flashx-legal"
 WEATHER_TOOL = ToolSpec(
     name="get_weather",
     description="Return the weather for a city.",
@@ -295,10 +296,11 @@ def test_zai_rejects_structured_output_before_http(
 
 
 @pytest.mark.unit
-def test_zai_rejects_non_auto_tool_choice_before_http(zai_runtime):
+@pytest.mark.parametrize("model", [MODEL, FLASHX_MODEL, FLASHX_LEGAL_MODEL])
+def test_zai_rejects_non_auto_tool_choice_before_http(zai_runtime, model):
     adapter = UniversalLLMAPIAdapter(
         organization="zai",
-        model=MODEL,
+        model=model,
         api_key="zai-test-key",
     )
     transport = FakeSyncTransport(zai_response())
@@ -334,10 +336,11 @@ def test_core_e2e_selects_auto_tool_choice_from_zai_registry(
 
 
 @pytest.mark.unit
-def test_zai_maps_canonical_reasoning_level_before_http(zai_runtime):
+@pytest.mark.parametrize("model", [MODEL, FLASHX_MODEL, FLASHX_LEGAL_MODEL])
+def test_zai_maps_canonical_reasoning_level_before_http(zai_runtime, model):
     adapter = UniversalLLMAPIAdapter(
         organization="zai",
-        model=MODEL,
+        model=model,
         api_key="zai-test-key",
     )
     transport = FakeSyncTransport(zai_response())
@@ -372,11 +375,32 @@ def test_zai_rejects_unknown_reasoning_level_before_http(zai_runtime):
 
 
 @pytest.mark.unit
-def test_zai_registers_flashx_profile_and_sends_selected_model(zai_runtime):
-    model_spec = zai_runtime.organizations["zai"].models[FLASHX_MODEL]
+@pytest.mark.parametrize("model", [FLASHX_MODEL, FLASHX_LEGAL_MODEL])
+def test_zai_registers_flashx_profile_and_sends_selected_model(zai_runtime, model):
+    model_spec = zai_runtime.organizations["zai"].models[model]
     assert model_spec.limits.context_window_tokens == 1_000_000
     assert model_spec.limits.max_output_tokens == 131_072
     assert model_spec.reasoning_capability.allowed_values == ("low", "high", "max")
+    assert [rule.handler for rule in model_spec.request_rules.rules] == [
+        "restrict_tool_choice",
+    ]
+    assert model_spec.request_rules.rules[0].arguments == {
+        "allowed_values": ["auto"],
+    }
+    assert {
+        (exception.capability_id, exception.behavior_id)
+        for exception in model_spec.capability_exceptions
+    } == {
+        ("tool_choice_none", "rejected_before_transport"),
+        ("tool_choice_any", "rejected_before_transport"),
+        ("tool_choice_named", "rejected_before_transport"),
+        ("structured_output_schema", "rejected_before_transport"),
+        ("structured_output_model", "rejected_before_transport"),
+        ("pdf_url", "rejected_before_transport"),
+        ("pdf_bytes", "rejected_before_transport"),
+        ("reasoning_control", "none_falls_back_to_minimum"),
+        ("provider_continuation", "ignored"),
+    }
     tier = model_spec.pricing_tiers.tiers[0]
     assert tier.in_per_token == pytest.approx(0.37 / 1_000_000)
     assert tier.out_per_token == pytest.approx(1.25 / 1_000_000)
@@ -384,7 +408,7 @@ def test_zai_registers_flashx_profile_and_sends_selected_model(zai_runtime):
 
     adapter = UniversalLLMAPIAdapter(
         organization="zai",
-        model=FLASHX_MODEL,
+        model=model,
         api_key="zai-test-key",
     )
     transport = FakeSyncTransport(
@@ -392,9 +416,9 @@ def test_zai_registers_flashx_profile_and_sends_selected_model(zai_runtime):
     )
     adapter.adapter._sync_transport = transport
 
-    response = adapter.chat([UserMessage("Price this FlashX request")])
+    response = adapter.chat([UserMessage("Price this FlashX-family request")])
 
-    assert transport.requests[0].payload["model"] == FLASHX_MODEL
+    assert transport.requests[0].payload["model"] == model
     assert response.cost_input == pytest.approx((25 * 0.075 + 75 * 0.37) / 1_000_000)
     assert response.cost_output == pytest.approx(40 * 1.25 / 1_000_000)
 
@@ -602,14 +626,16 @@ def test_zai_preserves_tool_result_history_in_openai_payload(zai_runtime):
     ],
     ids=["url", "data-url", "bytes-as-data-url"],
 )
+@pytest.mark.parametrize("model", [MODEL, FLASHX_MODEL, FLASHX_LEGAL_MODEL])
 def test_zai_serializes_image_url_and_data_url_parts(
     zai_runtime,
     image,
     expected_url,
+    model,
 ):
     adapter = UniversalLLMAPIAdapter(
         organization="zai",
-        model=MODEL,
+        model=model,
         api_key="zai-test-key",
     )
     transport = FakeSyncTransport(zai_response())
