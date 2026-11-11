@@ -485,6 +485,7 @@ def test_google_warns_once_when_omitting_non_default_max_output_tokens_for_gemin
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", GOOGLE_CLIENTS, ids=("sync", "async"))
+@pytest.mark.parametrize("model_name", ("gemini-4-argon", "gemini-4-carbon"))
 @pytest.mark.parametrize(
     ("sampling", "expected_warnings"),
     [
@@ -493,8 +494,9 @@ def test_google_warns_once_when_omitting_non_default_max_output_tokens_for_gemin
     ],
     ids=("provider-defaults", "non-default-values"),
 )
-def test_google_argon_omits_unsupported_sampling_for_both_clients(
+def test_google_reasoning_models_omit_unsupported_sampling_for_both_clients(
     client_class,
+    model_name,
     sampling,
     expected_warnings,
 ):
@@ -503,7 +505,7 @@ def test_google_argon_omits_unsupported_sampling_for_both_clients(
     with _captured_warnings() as caught:
         warnings.simplefilter("always")
         payload = client._prepare_chat_payload_for_model(
-            "gemini-4-argon",
+            model_name,
             {
                 "messages": [],
                 "generationConfig": {
@@ -518,7 +520,7 @@ def test_google_argon_omits_unsupported_sampling_for_both_clients(
     assert len(caught) == expected_warnings
     if expected_warnings:
         assert all(warning.category is UserWarning for warning in caught)
-        assert all("gemini-4-argon" in str(warning.message) for warning in caught)
+        assert all(model_name in str(warning.message) for warning in caught)
 
 
 @pytest.mark.unit

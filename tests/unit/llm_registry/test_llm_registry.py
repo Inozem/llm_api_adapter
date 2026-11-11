@@ -963,15 +963,22 @@ def test_anthropic_new_model_registry_profiles(model_name, expected_rates):
 
 
 @pytest.mark.unit
-def test_google_gemini_4_argon_registry_profile():
-    model = LLM_REGISTRY.organizations["google"].models["gemini-4-argon"]
+@pytest.mark.parametrize(
+    ("model_name", "expected_max_output_tokens"),
+    [("gemini-4-argon", 32_768), ("gemini-4-carbon", 65_536)],
+)
+def test_google_gemini_4_reasoning_model_registry_profile(
+    model_name,
+    expected_max_output_tokens,
+):
+    model = LLM_REGISTRY.organizations["google"].models[model_name]
 
     assert (
-        resolve_model_spec(LLM_REGISTRY, "google", "gemini-4-argon").name
-        == "gemini-4-argon"
+        resolve_model_spec(LLM_REGISTRY, "google", model_name).name
+        == model_name
     )
     assert model.limits.context_window_tokens == 1_048_576
-    assert model.limits.max_output_tokens == 32_768
+    assert model.limits.max_output_tokens == expected_max_output_tokens
     assert model.reasoning_capability.allowed_values == ("low", "medium", "high")
     assert {
         rule.arguments["path"]: rule.arguments["default"]
@@ -995,6 +1002,11 @@ def test_google_gemini_4_argon_registry_profile():
         ("reasoning_control", "none_falls_back_to_minimum"),
         ("provider_continuation", "ignored"),
     }
+
+
+@pytest.mark.unit
+def test_google_gemini_4_carbon_is_first_registered_model():
+    assert next(iter(LLM_REGISTRY.organizations["google"].models)) == "gemini-4-carbon"
 
 
 @pytest.mark.unit

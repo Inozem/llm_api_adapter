@@ -245,10 +245,19 @@ unknown OpenAI model uses Chat Completions rather than the Responses API. Use a
 listed model or request a verified registry addition when a provider adds a new
 alias or model.
 
-For `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`,
-and `gemini-3.5-flash-lite`, Google does not support sampling controls. The
-adapter omits `temperature` and `top_p` from these model requests; non-default
-values produce the compatibility warning described above.
+For `gemini-4-carbon`, `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`,
+`gemini-3.6-flash`, and `gemini-3.5-flash-lite`, Google does not support sampling
+controls. The adapter omits `temperature` and `top_p` from these model requests;
+non-default values produce the compatibility warning described above.
+
+[`gemini-4-carbon`](https://aistudio.google.com/docs/models/gemini-4-carbon) has a
+unified 1,048,576-token context. Ordinary responses have a combined thinking
+and output limit of 65,536 tokens.
+Its registered standard rates per million tokens are USD 2 for input, USD 10
+for output including thinking, and USD 0.10 for automatic implicit cache reads.
+These introductory rates apply through November 30, 2026; Google announces
+USD 4 / 20 / 0.20 from December 1 in its [pricing documentation](https://aistudio.google.com/docs/pricing#gemini-4-carbon).
+Registry tariffs record prices as of the manifest's `effective_date`.
 
 `gpt-6-astra` and `gpt-6.1-sol` use the OpenAI Responses API and do not support
 `temperature` or `top_p`; the adapter omits both according to the same warning
@@ -456,7 +465,7 @@ The SDK allows you to easily switch between LLM providers and specify the model 
 
 - **OpenAI**: You can use models like `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o`, `gpt-4o-mini`.
 - **Anthropic**: Available models include `claude-fable-5-2`, `claude-haiku-5-5`, `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
-- **Google**: Models such as `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite` can be used.
+- **Google**: Models such as `gemini-4-carbon`, `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite` can be used.
 - **Mistral**: Install with `pip install "llm-api-adapter[mistral]"`. Native model IDs are `mistral-large-4`, `mistral-small-2603`, `mistral-medium-3-5`, and `mistral-large-2512`. `glm-5.3-flash` can also be routed through Mistral with `organization="zai"` and `service_provider="mistral"`, using the Mistral package and key without installing Z.ai. See the [Mistral package README](packages/organizations/mistral/README.md) for the full example and details.
 - **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.7`, `grok-4.6`, and `grok-4.5`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
 - **Qwen**: Install with `pip install "llm-api-adapter[qwen]"`. Fixed model IDs are `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`; every operation requires an explicit Frankfurt `workspace_id`. See the [Qwen package README](packages/organizations/qwen/README.md) for its capability boundary, including unsupported PDF input.
