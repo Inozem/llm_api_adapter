@@ -178,7 +178,7 @@ async def main():
 
     google = UniversalLLMAPIAdapter(
         organization="google",
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         api_key=os.environ["GOOGLE_API_KEY"],
     )
     print((await google.achat(messages=messages)).content)
@@ -698,7 +698,7 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 async def main():
     google = UniversalLLMAPIAdapter(
         organization="google",
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         api_key=os.environ["GOOGLE_API_KEY"],
     )
     response = await google.achat(
@@ -730,7 +730,7 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 async def main():
     google = UniversalLLMAPIAdapter(
         organization="google",
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         api_key=os.environ["GOOGLE_API_KEY"],
     )
     google.pricing.set_in_per_1m(1.5)

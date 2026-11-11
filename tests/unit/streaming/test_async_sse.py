@@ -275,7 +275,7 @@ async def test_async_stream_request_closes_resources_on_cancellation():
 async def test_google_achat_uses_httpx_async_request_and_normalizes_final_usage():
     response = FakeResponse(
         json_data={
-            "modelVersion": "gemini-2.5-pro",
+            "modelVersion": "gemini-3.1-pro-preview",
             "candidates": [{
                 "content": {"parts": [{"text": "Hello"}]},
                 "finishReason": "STOP",
@@ -293,18 +293,18 @@ async def test_google_achat_uses_httpx_async_request_and_normalizes_final_usage(
     with patch.object(httpx, "AsyncClient", return_value=client):
         result = await GoogleAdapter(
             api_key="test_api_key",
-            model="gemini-2.5-pro",
+            model="gemini-3.1-pro-preview",
         ).achat([UserMessage("hi")])
 
     assert result.content == "Hello"
     assert result.usage.input_tokens == 11
     assert result.usage.output_tokens == 5
     assert result.usage.total_tokens == 25
-    assert result.cost_input == pytest.approx(13.75e-6)
-    assert result.cost_output == pytest.approx(50e-6)
-    assert result.cost_total == pytest.approx(63.75e-6)
+    assert result.cost_input == pytest.approx(22e-6)
+    assert result.cost_output == pytest.approx(60e-6)
+    assert result.cost_total == pytest.approx(82e-6)
     assert len(client.post_calls) == 1
-    assert client.post_calls[0][0].endswith("/models/gemini-2.5-pro:generateContent")
+    assert client.post_calls[0][0].endswith("/models/gemini-3.1-pro-preview:generateContent")
     assert response.closed is True
     assert client.closed is True
 
@@ -347,7 +347,7 @@ async def test_google_astream_chat_uses_httpx_and_retains_usage_until_completion
             text
             async for text in GoogleAdapter(
                 api_key="test_api_key",
-                model="gemini-2.5-pro",
+                model="gemini-3.1-pro-preview",
             ).astream_chat(
                 [UserMessage("hi")],
                 buffer_chars=2,
@@ -362,11 +362,11 @@ async def test_google_astream_chat_uses_httpx_and_retains_usage_until_completion
     assert done[0].usage.total_tokens == 30
     assert done[0].usage.cached_tokens is None
     assert done[0].cost_input is None
-    assert done[0].cost_output == pytest.approx(60e-6)
+    assert done[0].cost_output == pytest.approx(72e-6)
     assert done[0].cost_total is None
     assert client.send_calls[0][1] is True
     assert client.send_calls[0][0].url.path.endswith(
-        "/models/gemini-2.5-pro:streamGenerateContent"
+        "/models/gemini-3.1-pro-preview:streamGenerateContent"
     )
     assert response.closed is True
     assert client.closed is True
@@ -377,7 +377,7 @@ async def test_google_astream_chat_uses_httpx_and_retains_usage_until_completion
 async def test_google_astream_chat_cancellation_skips_on_done_and_closes_resources():
     response = BlockingResponse()
     client = FakeAsyncClient(response=response)
-    adapter = GoogleAdapter(api_key="test_api_key", model="gemini-2.5-pro")
+    adapter = GoogleAdapter(api_key="test_api_key", model="gemini-3.1-pro-preview")
     done = []
 
     async def consume():
@@ -404,7 +404,7 @@ async def test_google_astream_chat_cancellation_skips_on_done_and_closes_resourc
 async def test_google_astream_chat_http_failure_skips_on_done_and_closes_resources():
     response = FakeResponse(status_code=500)
     client = FakeAsyncClient(response=response)
-    adapter = GoogleAdapter(api_key="test_api_key", model="gemini-2.5-pro")
+    adapter = GoogleAdapter(api_key="test_api_key", model="gemini-3.1-pro-preview")
     done = []
 
     with patch.object(httpx, "AsyncClient", return_value=client):

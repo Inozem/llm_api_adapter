@@ -153,10 +153,10 @@ def test_anthropic_vision_bytes():
 def test_google_vision_url_camel_case():
     with req_mock.Mocker() as m:
         m.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
             json=_GOOGLE_RESPONSE,
         )
-        adapter = UniversalLLMAPIAdapter(organization="google", model="gemini-2.5-flash", api_key="dummy")
+        adapter = UniversalLLMAPIAdapter(organization="google", model="gemini-3.8-flash", api_key="dummy")
         adapter.chat(messages=[UserMessage("look", files=[ImagePart(url=IMAGE_URL)])])
 
         parts = m.last_request.json()["contents"][0]["parts"]
@@ -168,10 +168,10 @@ def test_google_vision_url_camel_case():
 def test_google_vision_bytes_camel_case():
     with req_mock.Mocker() as m:
         m.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
             json=_GOOGLE_RESPONSE,
         )
-        adapter = UniversalLLMAPIAdapter(organization="google", model="gemini-2.5-flash", api_key="dummy")
+        adapter = UniversalLLMAPIAdapter(organization="google", model="gemini-3.8-flash", api_key="dummy")
         adapter.chat(messages=[UserMessage("look", files=[ImagePart(data=IMAGE_BYTES, media_type=IMAGE_MEDIA_TYPE)])])
 
         parts = m.last_request.json()["contents"][0]["parts"]

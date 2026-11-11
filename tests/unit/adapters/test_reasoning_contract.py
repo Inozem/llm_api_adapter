@@ -160,7 +160,7 @@ ORGANIZATION_CASES = [
         id="anthropic-messages",
     ),
     pytest.param(
-        lambda: GoogleAdapter(api_key="test_api_key", model="gemini-2.5-pro"),
+        lambda: GoogleAdapter(api_key="test_api_key", model="gemini-3.1-pro-preview"),
         GeminiSyncClient,
         _google_events,
         {},

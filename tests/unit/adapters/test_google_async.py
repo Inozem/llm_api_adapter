@@ -12,7 +12,7 @@ from src.llm_api_adapter.models.messages.chat_message import UserMessage
 def adapter():
     return GoogleAdapter(
         api_key="test_api_key",
-        model="gemini-2.5-pro",
+        model="gemini-3.1-pro-preview",
     )
 
 
@@ -20,7 +20,7 @@ def adapter():
 @pytest.mark.unit
 async def test_achat_uses_async_client_and_preserves_response_contract(adapter):
     response = {
-        "modelVersion": "gemini-2.5-pro",
+        "modelVersion": "gemini-3.1-pro-preview",
         "candidates": [{
             "content": {"parts": [{"text": "Hello"}]},
             "finishReason": "STOP",
@@ -39,7 +39,7 @@ async def test_achat_uses_async_client_and_preserves_response_contract(adapter):
     assert result.content == "Hello"
     assert result.usage.input_tokens == 2
     chat_completion.assert_awaited_once()
-    assert chat_completion.await_args.kwargs["model"] == "gemini-2.5-pro"
+    assert chat_completion.await_args.kwargs["model"] == "gemini-3.1-pro-preview"
     assert chat_completion.await_args.kwargs["contents"] == [
         {"role": "user", "parts": [{"text": "hi"}]}
     ]
@@ -49,7 +49,7 @@ async def test_achat_uses_async_client_and_preserves_response_contract(adapter):
 @pytest.mark.unit
 async def test_achat_extracts_provider_reported_automatic_cache_read_usage(adapter):
     response = {
-        "modelVersion": "gemini-2.5-pro",
+        "modelVersion": "gemini-3.1-pro-preview",
         "candidates": [{
             "content": {"parts": [{"text": "cached"}]},
             "finishReason": "STOP",
@@ -75,7 +75,7 @@ async def test_achat_extracts_provider_reported_automatic_cache_read_usage(adapt
 @pytest.mark.unit
 async def test_achat_preserves_corrected_completed_usage_and_prices_it(adapter):
     response = {
-        "modelVersion": "gemini-2.5-pro",
+        "modelVersion": "gemini-3.1-pro-preview",
         "candidates": [{
             "content": {"parts": [{"text": "completed"}]},
             "finishReason": "STOP",
@@ -98,9 +98,9 @@ async def test_achat_preserves_corrected_completed_usage_and_prices_it(adapter):
     assert result.usage.input_tokens == 11
     assert result.usage.output_tokens == 5
     assert result.usage.total_tokens == 25
-    assert result.cost_input == pytest.approx(13.75e-6)
-    assert result.cost_output == pytest.approx(50e-6)
-    assert result.cost_total == pytest.approx(63.75e-6)
+    assert result.cost_input == pytest.approx(22e-6)
+    assert result.cost_output == pytest.approx(60e-6)
+    assert result.cost_total == pytest.approx(82e-6)
 
 
 @pytest.mark.asyncio
@@ -253,5 +253,5 @@ async def test_astream_chat_retains_usage_updates_and_completes_without_visible_
     assert done[0].usage.total_tokens == 30
     assert done[0].usage.cached_tokens is None
     assert done[0].cost_input is None
-    assert done[0].cost_output == pytest.approx(60e-6)
+    assert done[0].cost_output == pytest.approx(72e-6)
     assert done[0].cost_total is None

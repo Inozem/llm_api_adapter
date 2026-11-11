@@ -96,7 +96,7 @@ def _anthropic_response() -> Dict[str, Any]:
 
 def _google_response() -> Dict[str, Any]:
     return {
-        "modelVersion": "gemini-2.5-pro",
+        "modelVersion": "gemini-3.1-pro-preview",
         "candidates": [{
             "content": {
                 "parts": [
@@ -306,13 +306,13 @@ PROVIDERS = (
     ),
     pytest.param(
         OrganizationCase(
-            name="google-numeric",
+            name="google-categorical-medium",
             organization="google",
             adapter_cls=GoogleAdapter,
             sync_client_cls=GeminiSyncClient,
             async_client_cls=GeminiAsyncClient,
             completion_method="chat_completion",
-            model="gemini-2.5-pro",
+            model="gemini-3.1-pro-preview",
             max_tokens=64,
             message_key="contents",
             tools_key="tools",
@@ -320,11 +320,11 @@ PROVIDERS = (
             stream_factory=_google_stream,
             reasoning_level="medium",
             expected_reasoning_payload={
-                "thinkingBudget": 16_448,
+                "thinkingLevel": "medium",
                 "includeThoughts": True,
             },
         ),
-        id="google-numeric",
+        id="google-categorical-medium",
     ),
     pytest.param(
         OrganizationCase(

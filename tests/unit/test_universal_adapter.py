@@ -153,7 +153,7 @@ def test_invalid_inputs_raise_value_error():
     [
         ("anthropic", "claude-sonnet-4-5", AnthropicAdapter),
         ("openai", "gpt-5", OpenAIAdapter),
-        ("google", "gemini-2.5-flash", GoogleAdapter),
+        ("google", "gemini-3.8-flash", GoogleAdapter),
     ],
 )
 def test_builtin_organization_registry_selects_each_adapter(

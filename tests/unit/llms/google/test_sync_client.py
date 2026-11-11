@@ -52,7 +52,7 @@ def mock_post_success():
 def test_chat_completion_success(client, mock_post_success):
     mock_post, _ = mock_post_success
     result = client.chat_completion(
-        "gemini-2.5-flash", prompt={"messages":[{"author":"user","content":"Hi"}]}
+        "gemini-3.8-flash", prompt={"messages":[{"author":"user","content":"Hi"}]}
     )
     assert isinstance(result, dict)
     assert "candidates" in result
@@ -60,7 +60,7 @@ def test_chat_completion_success(client, mock_post_success):
     assert candidate_content == "Hello"
     mock_post.assert_called_once()
     assert mock_post.call_args.args[0] == (
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
     )
     headers = mock_post.call_args[1]["headers"]
     assert headers["x-goog-api-key"] == "test_api_key"
@@ -113,7 +113,7 @@ def test_send_request_fallback_error_parsing(mock_post, client):
 
 @pytest.mark.unit
 @patch("src.llm_api_adapter.llms.streaming.requests.post")
-def test_stream_uses_stream_generate_content_and_yields_raw_chunks(mock_post, client):
+def test_stream_preserves_supported_max_output_and_yields_raw_chunks(mock_post, client):
     response = StreamingResponse([
         'data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}',
         "",
@@ -122,15 +122,11 @@ def test_stream_uses_stream_generate_content_and_yields_raw_chunks(mock_post, cl
     ])
     mock_post.return_value = response
 
-    with pytest.warns(
-        UserWarning,
-        match="Parameter 'generationConfig.maxOutputTokens' is not supported",
-    ):
-        events = list(client.stream(
-            "gemini-2.5-flash",
-            contents=[{"role": "user", "parts": [{"text": "Hi"}]}],
-            generationConfig={"maxOutputTokens": 64},
-        ))
+    events = list(client.stream(
+        "gemini-3.8-flash",
+        contents=[{"role": "user", "parts": [{"text": "Hi"}]}],
+        generationConfig={"maxOutputTokens": 64},
+    ))
 
     assert events == [
         SSEEvent(
@@ -152,12 +148,12 @@ def test_stream_uses_stream_generate_content_and_yields_raw_chunks(mock_post, cl
     ]
     assert mock_post.call_args.args[0] == (
         "https://generativelanguage.googleapis.com/v1beta/"
-        "models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+        "models/gemini-3.8-flash:streamGenerateContent?alt=sse"
     )
     assert mock_post.call_args.kwargs["json"] == {
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.8-flash",
         "contents": [{"role": "user", "parts": [{"text": "Hi"}]}],
-        "generationConfig": {},
+        "generationConfig": {"maxOutputTokens": 64},
     }
     assert mock_post.call_args.kwargs["stream"] is True
     response.close.assert_called_once()
@@ -170,22 +166,22 @@ def test_stream_preserves_adapter_resolved_thinking_payload(mock_post, client):
     mock_post.return_value = response
 
     assert list(client.stream(
-        "gemini-2.5-flash",
+        "gemini-3.8-flash",
         contents=[],
-        generationConfig={"thinkingConfig": {"thinkingBudget": 1}},
+        generationConfig={"thinkingConfig": {"thinkingLevel": "low"}},
     )) == []
 
     assert mock_post.call_args.kwargs["json"] == {
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.8-flash",
         "contents": [],
-        "generationConfig": {"thinkingConfig": {"thinkingBudget": 1}},
+        "generationConfig": {"thinkingConfig": {"thinkingLevel": "low"}},
     }
 
 
 @pytest.mark.unit
 def test_prepare_payload_allows_thought_summaries_without_budget(client):
     payload = client._prepare_chat_payload_for_model(
-        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview",
         {"generationConfig": {"thinkingConfig": {"includeThoughts": True}}},
     )
 
@@ -205,7 +201,7 @@ def test_stream_closes_response_when_consumer_stops_early(mock_post, client):
     ])
     mock_post.return_value = response
 
-    events = client.stream("gemini-2.5-flash", contents=[])
+    events = client.stream("gemini-3.8-flash", contents=[])
     next(events)
     events.close()
 
@@ -223,7 +219,7 @@ def test_stream_maps_http_errors_through_google_error_handler(mock_post, client)
     mock_post.return_value = response
 
     with pytest.raises(LLMAPIRateLimitError, match="Slow down"):
-        list(client.stream("gemini-2.5-flash", contents=[]))
+        list(client.stream("gemini-3.8-flash", contents=[]))
 
     response.close.assert_called_once()
 
@@ -238,6 +234,6 @@ def test_stream_maps_error_chunks_through_google_error_handler(mock_post, client
     mock_post.return_value = response
 
     with pytest.raises(LLMAPIServerError, match="Temporarily unavailable"):
-        list(client.stream("gemini-2.5-flash", contents=[]))
+        list(client.stream("gemini-3.8-flash", contents=[]))
 
     response.close.assert_called_once()

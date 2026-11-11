@@ -16,7 +16,7 @@ from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 def adapter():
     return GoogleAdapter(
         api_key="test_api_key",
-        model="gemini-2.5-pro"
+        model="gemini-3.1-pro-preview"
     )
 
 @pytest.mark.parametrize("temperature,max_tokens,top_p,valid", [
@@ -100,7 +100,7 @@ def test_pricing_is_applied_when_present(adapter):
 @pytest.mark.unit
 def test_chat_extracts_provider_reported_automatic_cache_read_usage(adapter):
     response = {
-        "modelVersion": "gemini-2.5-pro",
+        "modelVersion": "gemini-3.1-pro-preview",
         "candidates": [{
             "content": {"parts": [{"text": "cached"}]},
             "finishReason": "STOP",
@@ -308,20 +308,20 @@ def test_chat_adds_thinking_config_when_reasoning_level_set(adapter):
     fake_response = {"some": "google response"}
     with patch.object(GeminiSyncClient, "chat_completion", return_value=fake_response) as mock_client, \
          patch.object(ChatResponse, "from_google_response", return_value=ChatResponse()):
-        adapter.chat([UserMessage("hi")], reasoning_level=128)
+        adapter.chat([UserMessage("hi")], reasoning_level="medium")
     kwargs = mock_client.call_args[1]
     assert "generationConfig" in kwargs
     gen_cfg = kwargs["generationConfig"]
     assert "thinkingConfig" in gen_cfg
     assert isinstance(gen_cfg["thinkingConfig"], dict)
-    assert gen_cfg["thinkingConfig"]["thinkingBudget"] == 128
+    assert gen_cfg["thinkingConfig"]["thinkingLevel"] == "medium"
     assert gen_cfg["thinkingConfig"]["includeThoughts"] is False
 
 
 @pytest.mark.unit
 def test_chat_captures_google_thought_summaries_when_opted_in(adapter):
     fake_response = {
-        "modelVersion": "gemini-2.5-pro",
+        "modelVersion": "gemini-3.1-pro-preview",
         "candidates": [{
             "content": {
                 "parts": [

@@ -173,7 +173,7 @@ def anthropic_tools_mock():
 def google_tools_mock():
     with requests_mock.Mocker() as mock:
         mock.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent",
             [
                 {
                     "json": {
@@ -329,7 +329,7 @@ def anthropic_multi_tools_mock():
 def google_multi_tools_mock():
     with requests_mock.Mocker() as mock:
         mock.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent",
             [
                 {
                     "json": {
@@ -615,7 +615,7 @@ def test_anthropic_tool_loop_message_protocol(anthropic_tools_mock):
 def test_google_tool_call_and_tool_result_protocol(google_tools_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="google",
-        model="gemini-2.5-pro",
+        model="gemini-3.1-pro-preview",
         api_key="dummy_key",
     )
     messages = [
@@ -851,7 +851,7 @@ def test_anthropic_multi_tool_round_trip(anthropic_multi_tools_mock):
 def test_google_multi_tool_round_trip(google_multi_tools_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="google",
-        model="gemini-2.5-pro",
+        model="gemini-3.1-pro-preview",
         api_key="dummy_key",
     )
     messages = _multi_tool_messages()
@@ -1118,13 +1118,13 @@ async def test_google_async_multi_tool_round_trip():
     ]
     with respx.mock(assert_all_called=False) as router:
         route = router.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
         )
         route.side_effect = lambda request: httpx.Response(200, json=responses.pop(0))
 
         adapter = UniversalLLMAPIAdapter(
             organization="google",
-            model="gemini-2.5-pro",
+            model="gemini-3.1-pro-preview",
             api_key="dummy_key",
         )
         messages = _multi_tool_messages()
