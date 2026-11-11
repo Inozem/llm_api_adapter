@@ -332,9 +332,9 @@ For the current Mistral lane, the post-publish exact-candidate gate runs only
 after the staging PR merges to protected `dev`. It uses the changed TestPyPI
 artifacts, provides only `MISTRAL_API_KEY`, asserts the Z.ai distribution is
 absent, and runs all applicable shared and package-local E2E scenarios for
-native Mistral models and hosted Flash. The existing workflow handles TestPyPI
-propagation and rejects older candidates. Do not add a Z.ai lane or run paid
-Mistral calls in PR matrices.
+native Mistral models, hosted GLM Flash, and hosted DeepSeek Flash. The existing
+workflow handles TestPyPI propagation and rejects older candidates. Do not add
+a Z.ai lane or run paid Mistral calls in PR matrices.
 
 ## Provider-key safety
 

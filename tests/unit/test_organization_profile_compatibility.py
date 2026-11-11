@@ -16,6 +16,7 @@ for source in (
     REPOSITORY_ROOT / "src",
     REPOSITORY_ROOT / "packages" / "organizations" / "mistral" / "src",
     REPOSITORY_ROOT / "packages" / "organizations" / "zai" / "src",
+    REPOSITORY_ROOT / "packages" / "organizations" / "deepseek" / "src",
     REPOSITORY_ROOT / "packages" / "organizations" / "xai" / "src",
 ):
     source_path = str(source)
@@ -38,6 +39,8 @@ from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from llm_api_adapter_mistral.adapter import MistralAdapter
 from llm_api_adapter_mistral.plugin import PLUGIN as MISTRAL_PLUGIN
+from llm_api_adapter_deepseek.adapter import DeepSeekAdapter
+from llm_api_adapter_deepseek.plugin import PLUGIN as DEEPSEEK_PLUGIN
 from llm_api_adapter_zai.adapter import ZaiAdapter
 from llm_api_adapter_zai.plugin import PLUGIN as ZAI_PLUGIN
 from llm_api_adapter_xai.adapter import XAIAdapter
@@ -326,6 +329,59 @@ def test_mistral_and_zai_same_named_profiles_are_isolated_across_discovery_order
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("order", (("mistral", "deepseek"), ("deepseek", "mistral")))
+def test_mistral_and_deepseek_same_named_profiles_are_isolated_across_discovery_orders(
+    monkeypatch, order
+):
+    registry = RegistrySpec()
+    providers = ServiceProviderRegistry({"openai": universal_adapter_module.OpenAIAdapter})
+    discovery = OrganizationPluginDiscovery()
+    plugins = {"mistral": MISTRAL_PLUGIN, "deepseek": DEEPSEEK_PLUGIN}
+    entries = {
+        name: _PluginEntryPoint(name, f"llm_api_adapter_{name}.plugin:PLUGIN", plugins[name])
+        for name in plugins
+    }
+    active_order = list(order)
+    monkeypatch.setattr(
+        organization_registry_module,
+        "entry_points",
+        lambda *, group: tuple(entries[name] for name in active_order),
+    )
+    monkeypatch.setattr(universal_adapter_module, "SERVICE_PROVIDER_REGISTRY", providers)
+    monkeypatch.setattr(universal_adapter_module, "ORGANIZATION_PLUGIN_DISCOVERY", discovery)
+    monkeypatch.setattr(universal_adapter_module, "LLM_REGISTRY", registry)
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", registry)
+
+    discovery.discover(providers, model_registry=registry)
+    active_order.reverse()
+    discovery.discover(providers, model_registry=registry)
+
+    hosted = resolve_model_spec(registry, "mistral", "deepseek-flash")
+    direct = resolve_model_spec(registry, "deepseek", "deepseek-flash")
+    assert hosted is registry.organizations["mistral"].models["deepseek-flash"]
+    assert direct is registry.organizations["deepseek"].models["deepseek-flash"]
+    assert hosted is not direct
+    assert hosted.provider_model == "deepseek-v4-1-flash-1017"
+    assert direct.provider_model is None
+    assert hosted.limits != direct.limits
+    assert hosted.pricing_tiers.tiers[0].in_per_token != direct.pricing_tiers.tiers[0].in_per_token
+    assert hosted.capability_exceptions != direct.capability_exceptions
+
+    mistral_facade = UniversalLLMAPIAdapter(
+        organization="deepseek", model="deepseek-flash", api_key="mistral-test-key",
+        service_provider="mistral",
+    )
+    direct_facade = UniversalLLMAPIAdapter(
+        organization="deepseek", model="deepseek-flash", api_key="deepseek-test-key",
+    )
+    assert isinstance(mistral_facade.adapter, MistralAdapter)
+    assert isinstance(direct_facade.adapter, DeepSeekAdapter)
+    assert mistral_facade.adapter.model_spec is hosted
+    assert direct_facade.adapter.model_spec is direct
+    assert all(entry.load_calls == 1 for entry in entries.values())
+
+
+@pytest.mark.unit
 def test_direct_zai_provider_defaults_and_explicit_selection_preserve_request_contract(
     monkeypatch,
 ):
@@ -423,6 +479,22 @@ def test_mistral_only_discovery_keeps_native_catalogue_request_independent_of_za
     facade.adapter._sync_transport = transport
     assert facade.chat(messages=[UserMessage("test")]).content == "native ok"
     assert transport.requests[0].payload["model"] == "mistral-large-4"
+
+    hosted = UniversalLLMAPIAdapter(
+        organization="deepseek",
+        service_provider="mistral",
+        model="deepseek-flash",
+        api_key="mistral-test-key",
+    )
+    assert isinstance(hosted.adapter, MistralAdapter)
+    assert "deepseek" not in registry.organizations
+    assert hosted.adapter.model_spec is registry.organizations["mistral"].models[
+        "deepseek-flash"
+    ]
+    hosted_transport = _RecordedTransport(_mistral_response("hosted DeepSeek"))
+    hosted.adapter._sync_transport = hosted_transport
+    assert hosted.chat(messages=[UserMessage("test")]).content == "hosted DeepSeek"
+    assert hosted_transport.requests[0].payload["model"] == "deepseek-v4-1-flash-1017"
     assert mistral_entry.load_calls == 1
 
 

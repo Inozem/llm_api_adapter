@@ -52,6 +52,10 @@ print(response.content)
 See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
 for the shared API contract and examples.
 
+Sync uses `requests` by default; install `[httpx]` and set `transport="httpx"`
+to select HTTPX. Install `[async]` for async methods, or combine extras with
+`pip install "llm-api-adapter[mistral,async,httpx]"`.
+
 ## Structured-output portability
 
 The package uses the Core portable profile for `json_schema` and Pydantic
@@ -64,7 +68,8 @@ for schema validation, parsed results, refusal, and incomplete responses.
 - `mistral-small-2603`
 - `mistral-medium-3-5`
 - `mistral-large-2512`
-- `glm-5.3-flash` through Mistral (`zai-glm-5-3-flash` on the wire)
+- `glm-5.3-flash` through Mistral
+- `deepseek-flash` through Mistral (Public Preview)
 
 For Mistral's native models listed above, the output limit is an upper bound
 under the shared context budget; Mistral publishes no independent generation
@@ -73,16 +78,23 @@ maximum.
 `mistral-large-2512` has no reasoning control: a supplied `reasoning_level`
 emits a warning and is not sent to Mistral.
 
-The [canonical Mistral registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/mistral/src/llm_api_adapter_mistral/registry/organizations/mistral.json)
-records capabilities, request rules, limits, and exceptions.
+The [Mistral registry](src/llm_api_adapter_mistral/registry/organizations/mistral.json)
+records capabilities, reasoning levels, request rules, limits, tariffs, and exceptions.
 
-## GLM 5.3 Flash through Mistral
+## Models from other developers
 
-Install `llm-api-adapter[mistral]`; this route needs only `MISTRAL_API_KEY`:
+Both routes use the Mistral package and `MISTRAL_API_KEY`. Set
+`service_provider="mistral"` and choose `organization` and `model` from the table:
+
+| `organization` | `model` | Mistral API model ID |
+| --- | --- | --- |
+| `zai` | `glm-5.3-flash` | `zai-glm-5-3-flash` |
+| `deepseek` | `deepseek-flash` | `deepseek-v4-1-flash-1017` |
 
 ```python
 import os
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
 adapter = UniversalLLMAPIAdapter(
     organization="zai",
     service_provider="mistral",
@@ -91,27 +103,12 @@ adapter = UniversalLLMAPIAdapter(
 )
 ```
 
-Canonical ID `glm-5.3-flash` maps to Mistral wire ID `zai-glm-5-3-flash`; no
-fallback occurs. Without the provider override, `organization="zai"` selects
-the independent direct Z.ai route, which still requires the Z.ai package and
-key.
-Supports `chat()`, `stream_chat()`, `achat()`, and `astream_chat()`. Sync uses
-`requests` by default; `[httpx]` with `transport="httpx"` selects the other
-sync transport. Install `[async]` for async; combine extras with
-`pip install "llm-api-adapter[mistral,async,httpx]"`.
+The mappings above use fixed Mistral IDs and Mistral-owned profiles. Omitting
+`service_provider` selects the developer's direct integration and its package and key.
 
-See [Capabilities](#capabilities), [Structured-output portability](#structured-output-portability),
-and [PDF input](#pdf-input) for tool calling, images, schemas, and OCR.
-
-`max_output_tokens=128000` conservatively interprets Mistral's published “128k”; it
-is not a measured server maximum. Reasoning accepts `low`, `high`, or `max`
-(default `low`); `reasoning_level="none"` warns and resolves to `low`.
-`capture_reasoning=True` opts in to capture, separate from visible text; missing
-provider reasoning is not synthesized.
-
-Hosted Flash uses the selected Mistral profile's standard-rate estimates, not
-direct Z.ai rates; see [Automatic cache usage and pricing](#automatic-cache-usage-and-pricing)
-and [PDF input](#pdf-input) for cost details and boundaries.
+GLM Flash cannot disable reasoning: `reasoning_level="none"` warns and uses
+its registered minimum effort. Hosted output profiles conservatively interpret
+Mistral's published 128k label. Other model values are recorded in the registry above.
 
 ## PDF input
 
