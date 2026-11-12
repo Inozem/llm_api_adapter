@@ -169,6 +169,7 @@ cython_debug/
 
 # Local project docs and Claude configuration
 docs/
+/AGENTS.md
 CLAUDE.md
 graphify-out/
 .claude/settings.json

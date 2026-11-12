@@ -6,6 +6,7 @@ from src.llm_api_adapter.errors.config_errors import LLMReasoningLevelError
 from src.llm_api_adapter.llm_registry.llm_registry import (
     CategoricalReasoningCapability,
     DEFAULT_REGISTRY_PATH,
+    NumericReasoningCapability,
     RegistrySpec,
 )
 from src.llm_api_adapter.llm_registry.reasoning import (
@@ -22,6 +23,24 @@ def registry():
 
 def _model(registry, organization, model_name):
     return registry.organizations[organization].models[model_name]
+
+
+def _numeric_model(
+    registry,
+    *,
+    min_budget_tokens,
+    max_budget_tokens,
+    can_disable_thinking=False,
+):
+    return replace(
+        _model(registry, "google", "gemini-3.1-pro-preview"),
+        name="synthetic-google-numeric-model",
+        reasoning_capability=NumericReasoningCapability(
+            min_budget_tokens=min_budget_tokens,
+            max_budget_tokens=max_budget_tokens,
+            can_disable_thinking=can_disable_thinking,
+        ),
+    )
 
 
 @pytest.mark.unit
@@ -114,6 +133,7 @@ def test_categorical_projection_without_none_uses_the_working_scale(
 @pytest.mark.parametrize(
     ("organization", "model_name"),
     [
+        ("anthropic", "claude-fable-5-2"),
         ("google", "gemini-3.1-pro-preview"),
         ("openai", "gpt-6-astra"),
         ("openai", "gpt-6.1-sol"),
@@ -354,7 +374,11 @@ def test_numeric_string_interpolates_actual_budget(
     expected_budget,
 ):
     resolution = resolve_reasoning_level(
-        _model(registry, "google", "gemini-2.5-pro"),
+        _numeric_model(
+            registry,
+            min_budget_tokens=128,
+            max_budget_tokens=32_768,
+        ),
         reasoning_level,
     )
 
@@ -367,11 +391,20 @@ def test_numeric_string_interpolates_actual_budget(
 @pytest.mark.unit
 def test_numeric_none_disables_only_when_zero_is_supported(registry):
     disabled = resolve_reasoning_level(
-        _model(registry, "google", "gemini-2.5-flash"),
+        _numeric_model(
+            registry,
+            min_budget_tokens=0,
+            max_budget_tokens=24_576,
+            can_disable_thinking=True,
+        ),
         "none",
     )
     fallback = resolve_reasoning_level(
-        _model(registry, "google", "gemini-2.5-pro"),
+        _numeric_model(
+            registry,
+            min_budget_tokens=128,
+            max_budget_tokens=32_768,
+        ),
         "none",
     )
 
@@ -387,11 +420,21 @@ def test_numeric_none_disables_only_when_zero_is_supported(registry):
 @pytest.mark.unit
 def test_numeric_thinking_capabilities_preserve_disable_values(registry):
     disabled = resolve_reasoning_level(
-        _model(registry, "google", "gemini-2.5-flash-lite"),
+        _numeric_model(
+            registry,
+            min_budget_tokens=512,
+            max_budget_tokens=24_576,
+            can_disable_thinking=True,
+        ),
         "none",
     )
     explicit_disabled = resolve_reasoning_level(
-        _model(registry, "google", "gemini-2.5-flash-lite"),
+        _numeric_model(
+            registry,
+            min_budget_tokens=512,
+            max_budget_tokens=24_576,
+            can_disable_thinking=True,
+        ),
         0,
     )
 
@@ -409,7 +452,7 @@ def test_numeric_thinking_capabilities_preserve_disable_values(registry):
 @pytest.mark.parametrize(
     ("provider", "model_name"),
     [
-        ("google", "gemini-2.5-pro"),
+        ("google", "gemini-3.1-pro-preview"),
         ("openai", "gpt-5.6-sol"),
     ],
 )
@@ -421,11 +464,19 @@ def test_negative_reasoning_budget_is_rejected(registry, provider, model_name):
 @pytest.mark.unit
 def test_numeric_integer_preserves_budget_and_clamps_only_below_minimum(registry):
     minimum_fallback = resolve_reasoning_level(
-        _model(registry, "google", "gemini-2.5-pro"),
+        _numeric_model(
+            registry,
+            min_budget_tokens=128,
+            max_budget_tokens=32_768,
+        ),
         127,
     )
     provider_native_maximum_error = resolve_reasoning_level(
-        _model(registry, "google", "gemini-2.5-pro"),
+        _numeric_model(
+            registry,
+            min_budget_tokens=128,
+            max_budget_tokens=32_768,
+        ),
         32_769,
     )
 
@@ -441,15 +492,28 @@ def test_numeric_integer_preserves_budget_and_clamps_only_below_minimum(registry
 @pytest.mark.unit
 def test_numeric_integer_preserves_declared_budget_boundaries(registry):
     minimum = resolve_reasoning_level(
-        _model(registry, "google", "gemini-2.5-pro"),
+        _numeric_model(
+            registry,
+            min_budget_tokens=128,
+            max_budget_tokens=32_768,
+        ),
         128,
     )
     maximum = resolve_reasoning_level(
-        _model(registry, "google", "gemini-2.5-pro"),
+        _numeric_model(
+            registry,
+            min_budget_tokens=128,
+            max_budget_tokens=32_768,
+        ),
         32_768,
     )
     zero = resolve_reasoning_level(
-        _model(registry, "google", "gemini-2.5-flash"),
+        _numeric_model(
+            registry,
+            min_budget_tokens=0,
+            max_budget_tokens=24_576,
+            can_disable_thinking=True,
+        ),
         0,
     )
 

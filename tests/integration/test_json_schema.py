@@ -89,7 +89,7 @@ def anthropic_json_mock():
 def google_json_mock():
     with requests_mock_module.Mocker() as mock:
         mock.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent",
             json={
                 "candidates": [
                     {
@@ -241,7 +241,7 @@ def test_anthropic_sends_schema_and_returns_parsed_model(anthropic_json_mock):
 @pytest.mark.integration
 def test_google_sends_response_mime_type_and_schema(google_json_mock):
     adapter = UniversalLLMAPIAdapter(
-        organization="google", model="gemini-2.5-pro", api_key="dummy_key"
+        organization="google", model="gemini-3.1-pro-preview", api_key="dummy_key"
     )
 
     resp = adapter.chat(messages=[UserMessage("hi")], json_schema=SCHEMA)
@@ -263,7 +263,7 @@ def test_google_sends_response_mime_type_and_schema(google_json_mock):
 @pytest.mark.integration
 def test_google_sends_schema_and_returns_parsed_model_for_response_model(google_json_mock):
     adapter = UniversalLLMAPIAdapter(
-        organization="google", model="gemini-2.5-pro", api_key="dummy_key"
+        organization="google", model="gemini-3.1-pro-preview", api_key="dummy_key"
     )
 
     resp = adapter.chat(messages=[UserMessage("hi")], response_model=Person)

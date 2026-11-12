@@ -74,6 +74,79 @@ The `dev` and `main` CI workflows run this deterministic coverage across Python 
 
 Keep deterministic tests free of network access, provider credentials, and model-specific prompt tuning. New provider behavior should use sanitized fixtures or mocked transports.
 
+### OpenAI-compatible mode
+
+Core's `openai_compatible` mode accepts an explicit root, exact arbitrary
+model ID and Chat Completions (default) or Responses selector. Follow the
+[connection and wire contract](OPENAI_COMPATIBLE.md) and
+[async guide](ASYNC_API.md#openai-compatible-endpoints). Root/selector/provider
+conflicts must fail before discovery or I/O; neither model names nor a server
+failure may select another API or endpoint. Unknown models have no verified
+capabilities, native reasoning defaults, limits or registered prices.
+
+`OpenAIAdapter` directly inherits `OpenAICompatibleAdapter`, using the same
+five execution methods and sibling protocol components under
+`adapters/openai_compatible/`. Native registry rules, continuation and
+pricing stay in native policy; generic
+Responses uses `store=false` and full caller history without continuation
+IDs or opaque replay. Preserve native constructor/import/module-patch
+contracts when changing this shared code. Reuse existing validators,
+factories, lifecycle and pricing arithmetic. Low-level sync/async HTTP and SSE
+execution lives in `llms/openai_compatible/`; concrete `llms/openai/` clients
+retain native routing, request rules, reasoning and existing patch points.
+Compatible factories use generic clients with an explicit endpoint and no
+native-policy switch. Shared request assembly and response dispatch live in
+`adapters/openai_compatible/common/payloads.py`. Keep generic imports
+independent of native OpenAI policy modules, and preserve native policy hooks
+when changing shared assembly. Preserve the native eight-parameter and
+compatible ten-parameter dataclass constructors, real keyword acceptance,
+repr/equality and module-bound/subclass hooks. Native overrides retain
+integration policy; exact-model differences remain registry data.
+
+Exercise both compatible APIs and the omitted-selector Chat default in the
+existing unit/mocked-integration and shared conformance suites. Reuse scenario
+bodies, fixtures and API/case dimensions. Cover four methods, requests and
+sync HTTPX, optional async boundaries, exact destinations/payloads, tools and
+portable schemas, terminal failures, callbacks/cleanup, credential redaction,
+unknown/zero/cache usage and caller-priced/unpriced results. Focused examples:
+
+```bash
+python -m pytest -q --import-mode=importlib -m unit tests/unit/test_universal_adapter.py tests/unit/adapters/test_openai_compatible_adapter.py tests/unit/adapters/test_pricing_lifecycle.py tests/unit/conformance/test_facade_contract.py
+python -m pytest -q --import-mode=importlib -m unit tests/unit/adapters/test_openai_client_construction.py tests/unit/adapters/test_openai_adapter_inheritance.py tests/unit/adapters/test_openai_response_normalization.py tests/unit/llms/openai tests/unit/llms/openai_compatible
+```
+
+Run affected complete Core and installed organization-package deterministic
+regressions after shared-code changes, retaining the canonical coverage gate.
+For documentation-only edits, check content, examples, links and diffs.
+On Windows, use a fresh verified-unused `--basetemp` outside the workspace
+when generated configuration fixtures trigger editor watchers; keep editor
+and test configuration unchanged.
+
+Caller tariffs reuse `Pricing`/`PricingTier`, existing setters and assignment
+to `facade.adapter.pricing`. They remain local inputs, never registry facts.
+Check units, direct-constructor copies versus assignment references,
+inclusive full-input tiers, cache completeness, currency and partial costs
+against the [public pricing contract](OPENAI_COMPATIBLE.md#compatible-usage-and-caller-tariffs).
+Do not borrow native count defaults or tariffs for generic mode.
+
+Every existing E2E test/assertion, fixture, harness, scenario/selection map,
+model/profile choice, marker, retry/threshold, workflow and execution
+configuration remains unchanged for this feature. Compatible-specific API
+selection, full stateless history and pricing differences belong in
+credential-free deterministic tests. Add no separate compatible live case,
+smoke, model target or marker, and force no native model/API. Existing native
+OpenAI E2E checks the shared foundation only through its normal scenarios and
+registered selection; report the protocols actually observed, without
+claiming arbitrary-endpoint certification. The existing native/provider
+exact-candidate gates and authorization rules below remain in force.
+
+Source-tree tests and import-blocking controls do not prove an installed
+dependency boundary. Use the existing TestPyPI candidate installation and
+provider lanes described below, recording exact installed versions and the
+scenarios actually exercised. These lanes install test dependencies; their
+results do not establish a separately isolated requests-only or async-extra
+environment that was not exercised.
+
 ## Coverage baseline
 
 The recorded deterministic baseline (2026-08-03) is **93.29% line coverage** (`2,946 / 3,158` lines), measured on Python 3.10 across the unit and mocked-integration suites. The measured scope is `src/llm_api_adapter`; E2E tests, provider calls, and credentials are excluded. Python 3.10 is the canonical coverage lane, while the other matrix versions verify compatibility. CI now enforces a **90% non-regression threshold** on this canonical report. Do not update the baseline for ordinary releases; refresh it only when intentionally approving a new baseline and threshold.
@@ -147,32 +220,6 @@ python -m pytest --collect-only -q --import-mode=importlib -m e2e_mistral --root
 This credential-free command checks test selection and imports only; it does
 not exercise Mistral behavior. Other providers with package-local E2E tests
 should include their package path as described above.
-
-### Isolated provider-package wheel checks
-
-When a provider package has artifact-specific installation checks, build its
-wheel and the required Core or provider-package wheels. Install the exact wheel
-files into fresh environments outside the checkout, without editable installs.
-Test provider-only installation, and test joint installation when coexistence
-with another optional provider package is relevant. The checks should verify
-that imports resolve to the installed distributions and that required packages
-are present or absent as expected.
-
-Keep artifact-check modules outside pytest's default `test_*.py` and `*_test.py`
-discovery. Run each environment's dedicated checks from outside the checkout
-with the fresh environment's Python, isolated mode, importlib collection, and
-external pytest roots. For example, from the external check directory:
-
-```bash
-<fresh-env-python> -I -m pytest --import-mode=importlib \
-  --rootdir=<check-dir> --confcutdir=<check-dir> \
-  <check-dir>/<artifact-check-module.py>
-```
-
-Collection-only commands verify test selection and imports; they do not verify
-installed origins or package-presence boundaries. The current Mistral artifact
-check covers Mistral-only installation and coexistence with Z.ai, and its
-hosted route is verified with the Z.ai distribution absent.
 
 ### Authorized live runs
 
@@ -259,9 +306,9 @@ For the current Mistral lane, the post-publish exact-candidate gate runs only
 after the staging PR merges to protected `dev`. It uses the changed TestPyPI
 artifacts, provides only `MISTRAL_API_KEY`, asserts the Z.ai distribution is
 absent, and runs all applicable shared and package-local E2E scenarios for
-native Mistral models and hosted Flash. The existing workflow handles TestPyPI
-propagation and rejects older candidates. Do not add a Z.ai lane or run paid
-Mistral calls in PR matrices.
+native Mistral models, hosted GLM Flash, and hosted DeepSeek Flash. The existing
+workflow handles TestPyPI propagation and rejects older candidates. Do not add
+a Z.ai lane or run paid Mistral calls in PR matrices.
 
 ## Provider-key safety
 
@@ -404,7 +451,6 @@ Use `--prompt` to test another task. The script prints reasoning summaries and v
 - When public behavior, provider mappings or test workflows change, update the relevant README, package guides and contributor instructions alongside the tests.
 - When structured-output behavior changes, update the README's portable-profile contract, the organization-package READMEs, and deterministic conformance tests together. Do not claim arbitrary JSON Schema compatibility.
 - Examples must not require credentials merely to import. Live calls should be explicit and documented.
-- When code or project artifacts change, run `graphify update .` and review the resulting diff.
 
 ## Release flow
 

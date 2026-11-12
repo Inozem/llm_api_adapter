@@ -181,7 +181,7 @@ class _AnthropicPayloadMixin:
                 )
             )
         if tool_choice == "none":
-            return None
+            return {"type": "none"}
         if tool_choice in ("auto", "any"):
             return {"type": tool_choice}
         return {"type": "tool", "name": tool_choice}

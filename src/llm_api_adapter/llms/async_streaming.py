@@ -17,6 +17,7 @@ from .transports import (
     SSEEvent,
     SSEFrameDecoder,
     StreamErrorHandler,
+    _format_transport_diagnostic as format_transport_diagnostic,
     is_generic_stream_error as _is_generic_stream_error,
     multipart_headers,
     raise_default_http_error,
@@ -80,16 +81,16 @@ async def async_request(
     except LLMAPIError:
         raise
     except httpx.TimeoutException as exc:
-        logger.error("Async request timed out: %s", exc)
+        logger.error("Async request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
         raise LLMAPITimeoutError(detail=str(exc)) from exc
     except httpx.HTTPStatusError as exc:
-        logger.error("Async HTTP error: %s", exc)
+        logger.error("Async HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
         await _read_http_error_body(response)
         handler = http_error_handler or _default_http_error_handler
         handler(exc)
         _default_http_error_handler(exc)
     except httpx.RequestError as exc:
-        logger.error("Async request exception: %s", exc)
+        logger.error("Async request exception: %s", format_transport_diagnostic(http_error_handler, exc))
         raise LLMAPIClientError(detail=str(exc)) from exc
     finally:
         try:
@@ -229,16 +230,16 @@ async def async_stream_request(
     except LLMAPIError:
         raise
     except httpx.TimeoutException as exc:
-        logger.error("Async streaming request timed out: %s", exc)
+        logger.error("Async streaming request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
         raise LLMAPITimeoutError(detail=str(exc)) from exc
     except httpx.HTTPStatusError as exc:
-        logger.error("Async streaming HTTP error: %s", exc)
+        logger.error("Async streaming HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
         await _read_http_error_body(response)
         handler = http_error_handler or _default_http_error_handler
         handler(exc)
         _default_http_error_handler(exc)
     except httpx.RequestError as exc:
-        logger.error("Async streaming request exception: %s", exc)
+        logger.error("Async streaming request exception: %s", format_transport_diagnostic(http_error_handler, exc))
         raise LLMAPIClientError(detail=str(exc)) from exc
     finally:
         try:

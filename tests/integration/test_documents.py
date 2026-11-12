@@ -107,12 +107,12 @@ def test_anthropic_document_bytes():
 def test_google_document_url():
     with req_mock.Mocker() as m:
         m.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
             json=_GOOGLE_RESPONSE,
         )
         adapter = UniversalLLMAPIAdapter(
             organization="google",
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             api_key="dummy",
         )
         adapter.chat(
@@ -129,12 +129,12 @@ def test_google_document_url():
 def test_google_document_bytes():
     with req_mock.Mocker() as m:
         m.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
             json=_GOOGLE_RESPONSE,
         )
         adapter = UniversalLLMAPIAdapter(
             organization="google",
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             api_key="dummy",
         )
         adapter.chat(

@@ -186,6 +186,13 @@ def test_mistral_large_4_registered_metadata_and_standard_pricing(mistral_runtim
     assert tier.cache_read_in_per_token == pytest.approx(0.14 / 1_000_000)
     assert tier.cache_write_in_per_token is None
     assert model_spec.request_rules.rules == ()
+    assert model_spec.reasoning_capability is not None
+    assert model_spec.reasoning_capability.allowed_values == ("low", "medium", "high")
+    assert any(
+        item.capability_id == "reasoning_control"
+        and item.behavior_id == "none_falls_back_to_minimum"
+        for item in model_spec.capability_exceptions
+    )
 
 
 @pytest.mark.unit
@@ -225,6 +232,293 @@ def test_hosted_glm_5_3_flash_adapter_uses_mistral_profile_and_pricing(
     )
 
     _assert_hosted_glm_5_3_flash_uses_mistral_profile(adapter, mistral_runtime)
+
+
+@pytest.mark.unit
+def test_mistral_catalogue_owns_hosted_deepseek_flash_profile(mistral_runtime):
+    model_spec = resolve_model_spec(mistral_runtime, "mistral", "deepseek-flash")
+
+    assert model_spec is not None
+    assert model_spec.provider_model == "deepseek-v4-1-flash-1017"
+    assert model_spec.limits.context_window_tokens == 1_048_576
+    assert model_spec.limits.max_output_tokens == 128_000
+    assert model_spec.pricing_tiers.currency == "USD"
+    assert len(model_spec.pricing_tiers.tiers) == 1
+    tier = model_spec.pricing_tiers.tiers[0]
+    assert tier.up_to_prompt_tokens is None
+    assert tier.in_per_token == pytest.approx(0.3 / 1_000_000)
+    assert tier.out_per_token == pytest.approx(1.2 / 1_000_000)
+    assert tier.cache_read_in_per_token == pytest.approx(0.007 / 1_000_000)
+    assert tier.cache_write_in_per_token is None
+    assert model_spec.reasoning_capability.allowed_values == (
+        "none",
+        "low",
+        "high",
+        "max",
+    )
+    assert resolve_reasoning_level(model_spec, "none").provider_value == "none"
+    for level in ("low", "high", "max"):
+        assert resolve_reasoning_level(model_spec, level).provider_value == level
+
+
+def _assert_hosted_deepseek_flash_usage_and_cost(response):
+    assert response.currency == "USD"
+    assert response.usage is not None
+    assert response.usage.input_tokens == 100
+    assert response.usage.output_tokens == 10
+    assert response.usage.total_tokens == 110
+    assert response.usage.cached_tokens == 20
+    assert response.usage.cache_write_tokens is None
+    assert response.cost_input == pytest.approx(0.00002414)
+    assert response.cost_output == pytest.approx(0.000012)
+    assert response.cost_total == pytest.approx(0.00003614)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("transport", "transport_class", "streaming"),
+    [
+        (transport, transport_class, streaming)
+        for transport, transport_class in (
+            ("requests", RequestsSyncTransport),
+            ("httpx", HttpxSyncTransport),
+        )
+        for streaming in (False, True)
+    ],
+    ids=["requests-chat", "requests-stream", "httpx-chat", "httpx-stream"],
+)
+def test_hosted_deepseek_flash_uses_mistral_sync_route(
+    mistral_runtime, transport, transport_class, streaming
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="deepseek",
+        service_provider="mistral",
+        model="deepseek-flash",
+        api_key="mistral-test-key",
+        transport=transport,
+    )
+    assert isinstance(adapter.adapter._sync_transport, transport_class)
+    wire_model = "deepseek-v4-1-flash-1017"
+    fake_transport = FakeSyncTransport(
+        {
+            "id": "cmpl-hosted-deepseek-sync",
+            "model": wire_model,
+            "choices": [{"message": {"content": "Hosted response."}}],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "total_tokens": 110,
+                "prompt_tokens_details": {"cached_tokens": 20},
+            },
+        },
+        events=[
+            SSEEvent(
+                event=None,
+                data={
+                    "id": "cmpl-hosted-deepseek-stream",
+                    "model": wire_model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "Hosted stream."},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            ),
+            SSEEvent(
+                event=None,
+                data={
+                    "id": "cmpl-hosted-deepseek-stream",
+                    "model": wire_model,
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 10,
+                        "total_tokens": 110,
+                        "prompt_tokens_details": {"cached_tokens": 20},
+                    },
+                },
+            ),
+        ],
+    )
+    adapter.adapter._sync_transport = fake_transport
+
+    if streaming:
+        completed = []
+        assert list(
+            adapter.stream_chat(
+                [{"role": "user", "content": "Say hello."}],
+                on_done=completed.append,
+            )
+        ) == ["Hosted stream."]
+        request = fake_transport.stream_requests[0]
+        assert request.payload["reasoning_effort"] == "none"
+        assert completed[0].response_id == "cmpl-hosted-deepseek-stream"
+        _assert_hosted_deepseek_flash_usage_and_cost(completed[0])
+    else:
+        response = adapter.chat([{"role": "user", "content": "Say hello."}])
+        request = fake_transport.requests[0]
+        assert response.response_id == "cmpl-hosted-deepseek-sync"
+        assert request.payload["reasoning_effort"] == "none"
+        _assert_hosted_deepseek_flash_usage_and_cost(response)
+
+    assert adapter.organization == "deepseek"
+    assert adapter.service_provider == adapter.adapter.service_provider == "mistral"
+    assert adapter.model == adapter.adapter.model == "deepseek-flash"
+    assert request.url == "https://api.mistral.ai/v1/chat/completions"
+    assert request.headers_dict()["Authorization"] == "Bearer mistral-test-key"
+    assert request.payload["model"] == wire_model
+    assert adapter.adapter.model_spec is resolve_model_spec(
+        mistral_runtime, "mistral", "deepseek-flash"
+    )
+
+
+@pytest.mark.integration
+def test_hosted_deepseek_flash_uses_mistral_async_routes(mistral_runtime, monkeypatch):
+    adapter = UniversalLLMAPIAdapter(
+        organization="deepseek",
+        service_provider="mistral",
+        model="deepseek-flash",
+        api_key="mistral-test-key",
+    )
+    request_calls, stream_calls = [], []
+
+    async def fake_async_request(url, **kwargs):
+        request_calls.append((url, kwargs))
+        return {
+            "id": "deepseek-async",
+            "model": "deepseek-v4-1-flash-1017",
+            "choices": [{"message": {"content": "Hosted async."}}],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "total_tokens": 110,
+                "prompt_tokens_details": {"cached_tokens": 20},
+            },
+        }
+
+    def fake_async_stream_request(url, **kwargs):
+        stream_calls.append((url, kwargs))
+
+        async def events():
+            yield SSEEvent(
+                event=None,
+                data={
+                    "id": "deepseek-async-stream",
+                    "model": "deepseek-v4-1-flash-1017",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "Hosted async stream."},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+            yield SSEEvent(
+                event=None,
+                data={
+                    "id": "deepseek-async-stream",
+                    "model": "deepseek-v4-1-flash-1017",
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 10,
+                        "total_tokens": 110,
+                        "prompt_tokens_details": {"cached_tokens": 20},
+                    },
+                },
+            )
+        return events()
+
+
+    monkeypatch.setattr(
+        mistral_async_client_module, "async_request", fake_async_request
+    )
+    monkeypatch.setattr(
+        mistral_async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+
+    async def run_calls():
+        response = await adapter.achat(
+            [{"role": "user", "content": "Hello."}]
+        )
+        completed = []
+        streamed = [
+            text
+            async for text in adapter.astream_chat(
+                [{"role": "user", "content": "Hello."}],
+                on_done=completed.append,
+            )
+        ]
+        return response, streamed, completed
+
+    response, streamed, completed = asyncio.run(run_calls())
+    assert response.response_id == "deepseek-async"
+    assert streamed == ["Hosted async stream."]
+    assert completed[0].response_id == "deepseek-async-stream"
+    _assert_hosted_deepseek_flash_usage_and_cost(response)
+    _assert_hosted_deepseek_flash_usage_and_cost(completed[0])
+    for url, kwargs in (request_calls[0], stream_calls[0]):
+        assert url == "https://api.mistral.ai/v1/chat/completions"
+        assert kwargs["headers"]["Authorization"] == "Bearer mistral-test-key"
+        assert kwargs["payload"]["model"] == "deepseek-v4-1-flash-1017"
+        assert kwargs["payload"]["reasoning_effort"] == "none"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("reasoning_level", ("none", "low", "high", "max"))
+def test_hosted_deepseek_flash_reasoning_values_use_mistral_metadata(
+    mistral_runtime, reasoning_level
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="deepseek",
+        service_provider="mistral",
+        model="deepseek-flash",
+        api_key="mistral-test-key",
+    )
+    transport = FakeSyncTransport(
+        {
+            "choices": [
+                {"message": {"content": "Reasoning metadata accepted."}}
+            ],
+        }
+    )
+    adapter.adapter._sync_transport = transport
+
+    adapter.chat(
+        [{"role": "user", "content": "Continue."}],
+        reasoning_level=reasoning_level,
+    )
+
+    assert transport.requests[0].payload["reasoning_effort"] == reasoning_level
+    assert adapter.adapter.model_spec.reasoning_capability.allowed_values == (
+        "none", "low", "high", "max"
+    )
+
+
+@pytest.mark.integration
+def test_hosted_deepseek_flash_keeps_missing_usage_and_cost_unset(mistral_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="deepseek",
+        service_provider="mistral",
+        model="deepseek-flash",
+        api_key="mistral-test-key",
+    )
+    transport = FakeSyncTransport(
+        {"choices": [{"message": {"content": "No usage reported."}}]}
+    )
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat([{"role": "user", "content": "Continue."}])
+
+    assert response.usage is None
+    assert response.cost_input is None
+    assert response.cost_output is None
+    assert response.cost_total is None
 
 
 @pytest.mark.integration
@@ -568,13 +862,15 @@ def test_mistral_large_4_sync_chat_recognition_and_transport(
 @pytest.mark.parametrize(
     ("request_kwargs", "public_reasoning_level"),
     [
-        ({}, "none"),
+        ({}, None),
         ({"reasoning_level": "none"}, "none"),
+        ({"reasoning_level": "low"}, "low"),
+        ({"reasoning_level": "medium"}, "medium"),
         ({"reasoning_level": "high"}, "high"),
         ({"reasoning_level": "minimal"}, "minimal"),
         ({"reasoning_level": 1234}, 1234),
     ],
-    ids=["omitted", "none", "high", "other-string", "integer"],
+    ids=["omitted", "none", "low", "medium", "high", "other-string", "integer"],
 )
 def test_mistral_large_4_sync_async_reasoning_effort_matches_shared_resolver(
     mistral_runtime,
@@ -608,10 +904,16 @@ def test_mistral_large_4_sync_async_reasoning_effort_matches_shared_resolver(
         api_key="mistral-test-key",
     )
     sync_adapter.adapter._sync_transport = sync_transport
-    expected = resolve_reasoning_level(
-        sync_adapter.adapter.model_spec,
-        public_reasoning_level,
-    )
+    if public_reasoning_level is None:
+        expected_effort = "low"
+        expected_warnings = []
+    else:
+        expected = resolve_reasoning_level(
+            sync_adapter.adapter.model_spec,
+            public_reasoning_level,
+        )
+        expected_effort = expected.provider_value
+        expected_warnings = [expected.warning] if expected.warning else []
 
     with warnings.catch_warnings(record=True) as sync_warnings:
         warnings.simplefilter("always")
@@ -628,13 +930,12 @@ def test_mistral_large_4_sync_async_reasoning_effort_matches_shared_resolver(
             async_adapter.achat(_mistral_large_4_messages(), **request_kwargs)
         )
 
-    expected_warnings = [expected.warning] if expected.warning else []
     assert [str(item.message) for item in sync_warnings] == expected_warnings
     assert [str(item.message) for item in async_warnings] == expected_warnings
     _assert_large_4_reasoning_payload_parity(
         sync_transport,
         async_calls,
-        expected.provider_value,
+        expected_effort,
     )
     assert sync_adapter.adapter.model_spec is not None
     assert sync_adapter.adapter.model_spec.name == "mistral-large-4"
@@ -648,7 +949,7 @@ def test_mistral_large_4_sync_async_reasoning_effort_matches_shared_resolver(
 
 
 @pytest.mark.integration
-def test_mistral_large_4_sync_async_capture_reasoning_alone_keeps_effort_at_none(
+def test_mistral_large_4_sync_async_capture_reasoning_alone_defaults_effort_silently(
     mistral_runtime,
     monkeypatch,
 ):
@@ -682,18 +983,24 @@ def test_mistral_large_4_sync_async_capture_reasoning_alone_keeps_effort_at_none
         api_key="mistral-test-key",
     )
 
-    sync_adapter.chat(
-        _mistral_large_4_messages(),
-        capture_reasoning=True,
-    )
-    asyncio.run(
-        async_adapter.achat(
+    with warnings.catch_warnings(record=True) as sync_warnings:
+        warnings.simplefilter("always")
+        sync_adapter.chat(
             _mistral_large_4_messages(),
             capture_reasoning=True,
         )
-    )
+    with warnings.catch_warnings(record=True) as async_warnings:
+        warnings.simplefilter("always")
+        asyncio.run(
+            async_adapter.achat(
+                _mistral_large_4_messages(),
+                capture_reasoning=True,
+            )
+        )
 
-    _assert_large_4_reasoning_payload_parity(sync_transport, async_calls, "none")
+    assert not sync_warnings
+    assert not async_warnings
+    _assert_large_4_reasoning_payload_parity(sync_transport, async_calls, "low")
 
 
 @pytest.mark.integration
@@ -858,12 +1165,15 @@ def test_mistral_large_4_stream_keeps_reasoning_out_of_visible_text(
         model="mistral-large-4",
         api_key="mistral-test-key",
     )
+    async_stream_request = {}
     if api_kind == "sync":
         adapter.adapter._sync_transport = FakeSyncTransport(
             {}, events=_mistral_large_4_reasoning_stream_events()
         )
     else:
         def fake_async_stream_request(url, **kwargs):
+            async_stream_request.update(kwargs)
+
             async def events():
                 for event in _mistral_large_4_reasoning_stream_events():
                     yield event
@@ -935,6 +1245,14 @@ def test_mistral_large_4_stream_keeps_reasoning_out_of_visible_text(
     assert [event.text for event in completed[0].reasoning_events] == (
         expected_reasoning
     )
+    if api_kind == "sync":
+        assert adapter.adapter._sync_transport.stream_requests[0].payload[
+            "reasoning_effort"
+        ] == "low"
+    else:
+        assert async_stream_request["payload"][
+            "reasoning_effort"
+        ] == "low"
     for visible_fragments in (streamed, deltas, [chunk.text for chunk in chunks]):
         assert all(
             reasoning_text not in fragment

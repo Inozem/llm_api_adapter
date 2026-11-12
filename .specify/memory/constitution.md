@@ -35,6 +35,12 @@ helpers, registries, and plugin discovery before creating an abstraction. They M
 model-name prefixes, ad-hoc model lists, or one-off provider conditionals when registry metadata
 or a generic handler can express the behavior.
 
+Verified organization/provider model profiles MUST keep their standard tariffs in their owning
+organization registries. The `openai_compatible` connection mode is exempt from requiring an
+organization tariff catalogue: its only tariff source is explicit caller-supplied data, governed
+by the canonical pricing policy below. Existing caller-local organization pricing overrides MUST
+remain supported without turning caller rates into verified registry facts.
+
 Values with shared meaning MUST use existing configuration, constants, mappings, registry data,
 or a narrowly scoped new abstraction rather than hardcoded duplicates. Registry data changes MUST
 be checked against official organization documentation; unsupported or missing provider data MUST
@@ -133,6 +139,31 @@ work before the corrected behavior may be used for a release decision.
   organization packages MUST remain optional installations unless an approved breaking change
   explicitly revises that boundary.
 
+### Compatible connections and native policy
+
+- `organization="openai_compatible"` is a connection mode within the same public contract. It MUST
+  require an explicit valid HTTP(S) API root in `base_url` and preserve the caller's nonempty model
+  identifier without registration. Its optional `api_variant` MUST accept `chat_completions` or
+  `responses`; omission or `None` MUST select Chat Completions. Both APIs MUST retain the four
+  common execution methods and applicable validation, normalization and lifecycle requirements.
+- Non-`None` `base_url` and `api_variant` inputs MUST be accepted only in compatible mode; supplying
+  them for another organization MUST fail configuration before provider I/O. Omitting them MUST
+  preserve native endpoint and API selection. Compatible selection MUST NOT infer an API from a
+  model name, probe for support, or fall back to another API, endpoint, model or official service.
+- Generic connections MUST NOT require a registered model or API-specific capability profile and
+  MUST NOT acquire verified model facts, aliases, rules, limits, reasoning defaults, continuation
+  assumptions or tariffs from a matching native model name. They remain unverified connections;
+  choosing a wire protocol is not evidence that a server implements every common capability.
+- Reusing protocol components MUST preserve isolation between native model policy and generic
+  connection policy. Native integrations MUST retain their registry-owned facts and existing
+  request, reasoning, continuation, usage and pricing behavior. Compatible mode MUST retain common
+  SDK invariants, reported-data honesty and the caller-tariff policy below without importing
+  provider-specific accounting defaults or disabling an always-on capability.
+- Deterministic protocol evidence and shared implementation MUST NOT be treated as certification
+  of an arbitrary endpoint or as a replacement for an existing native/provider release gate.
+  Exact-model native profiles, scenario selection and candidate validation remain authoritative
+  for their existing native scope.
+
 ### Requests, responses, and streaming
 
 - Typed messages and supported OpenAI-style dictionaries, including mixed input, MUST normalize
@@ -181,11 +212,13 @@ work before the corrected behavior may be used for a release decision.
   identifier or opaque replay material MAY be sent only when the exact model and adapter declare
   that behavior; otherwise the adapter MUST use caller-provided history and serialize no unsupported
   continuation field.
-- Usage and costs MUST use provider-reported data and verified rates. Unknown, invalid, or
-  contradictory usage MUST NOT be estimated or treated as zero. A missing counter MAY use a default
-  only when the applicable provider contract unambiguously establishes its value for that response
-  context; such defaults MUST NOT be inferred or generalized beyond the verified contract. Parsed
-  counts with neither a provider value nor an applicable documented default MUST remain `None`; an
+- Usage MUST use provider-reported data. Calculated costs MUST use the applicable verified
+  organization tariff or explicit caller-supplied tariff under the pricing policy below.
+  Unknown, invalid, or contradictory usage MUST NOT be estimated or treated as zero. A missing
+  counter MAY use a default only when the applicable provider contract unambiguously establishes
+  its value for that response context; such defaults MUST NOT be inferred or generalized beyond
+  the verified contract. Parsed counts with neither a provider value nor an applicable documented
+  default MUST remain `None`; an
   explicitly reported zero remains `0`. Reported cache reads and writes MUST be confirmed input
   components, remain distinct, and never be double-counted. Cache rates apply only to components that
   may occur automatically during ordinary requests and whose quantities providers report. A
@@ -197,6 +230,35 @@ work before the corrected behavior may be used for a release decision.
   tool-argument, tool-choice, structured-output, and configuration failures MUST map to the public
   error hierarchy. Common validation failures and declared unsupported inputs MUST fail before an
   outbound provider request.
+
+### Organization tariffs and compatible-mode pricing
+
+- Verified standard tariffs are required for registered organization/provider model profiles and
+  MUST remain owned by their organization registries. Native integrations MUST retain their
+  registry-based default pricing and existing caller-local assignment/setter overrides. An
+  unknown model MUST receive no inferred tariff.
+- `organization="openai_compatible"` is an explicit exception to the organization tariff-catalogue
+  requirement. It MUST default to no tariff and MUST use only explicit external caller tariffs
+  for calculated costs. It MUST NOT automatically borrow bundled rates from any organization,
+  including when a model identifier matches a registered model. No model registration or bundled
+  compatible tariff catalogue is required.
+- External caller tariffs MUST be configurable from an explicitly loaded registry-format JSON
+  file, explicit numeric parameters, or dictionary entries in the existing `pricing_tiers`
+  structure. File/dictionary input MUST reuse the existing tariff schema; all forms MUST normalize
+  to the existing `Pricing`/`PricingTier` objects and use the established pricing assignment/setter
+  and calculation paths. Explicit file loading and tariff selection belong to caller configuration,
+  without requiring another facade constructor pricing option or implicit registry lookup.
+- Caller tariffs are local accounting inputs, not verified provider prices or evidence of model
+  capabilities. Selecting a tariff from a file MUST NOT import model limits, aliases, request
+  rules or capability claims into compatible mode. Local configuration MUST preserve bundled
+  registry data, existing constructor-copy and ordinary-assignment reference semantics, units,
+  currency, tier/cache rules, and provider-specific billing behavior.
+- Without an explicit caller tariff, compatible calculated costs, currency and calculated cost
+  breakdowns MUST remain unavailable. With a caller tariff, all applicable execution modes MUST
+  reuse the existing calculator and sufficiently reported usage. Finite nonnegative rates,
+  including zero, MUST remain valid; missing or contradictory required usage, an uncovered tier,
+  or an unpriceable incurred component MUST NOT produce an invented complete total. Supplying a
+  tariff MUST NOT relax usage, validation, security, lifecycle, or release requirements.
 
 ### Capability and E2E evidence catalogue
 
@@ -274,4 +336,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.6.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-10-18
+**Version**: 0.8.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-10

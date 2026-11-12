@@ -122,24 +122,24 @@ CASES = (
         name="google",
         client_factory=lambda: GeminiSyncClient(api_key="test-key"),
         patch_target="src.llm_api_adapter.llms.google.sync_client.requests.post",
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         request_kwargs={
             "contents": [{"role": "user", "parts": [{"text": "Hello"}]}]
         },
         json_url=(
             "https://generativelanguage.googleapis.com/v1beta/"
-            "models/gemini-2.5-flash:generateContent"
+            "models/gemini-3.8-flash:generateContent"
         ),
         stream_url=(
             "https://generativelanguage.googleapis.com/v1beta/"
-            "models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+            "models/gemini-3.8-flash:streamGenerateContent?alt=sse"
         ),
         headers={
             "x-goog-api-key": "test-key",
             "Content-Type": "application/json",
         },
         stream_payload={
-            "model": "gemini-2.5-flash",
+            "model": "gemini-3.8-flash",
             "contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
         },
         rate_limit_payload={

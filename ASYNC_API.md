@@ -2,8 +2,9 @@
 
 [← Back to the main README](README.md)
 
-`llm-api-adapter` provides an optional asynchronous API for OpenAI, Anthropic,
-and Google. It uses `httpx` and keeps the same provider-neutral messages,
+`llm-api-adapter` provides an optional asynchronous API for native OpenAI,
+Anthropic, Google and caller-selected OpenAI-compatible endpoints in Core.
+It uses `httpx` and keeps the same provider-neutral messages,
 tools, structured output, file inputs, pricing, usage, and reasoning options
 as the synchronous API.
 
@@ -11,6 +12,7 @@ as the synchronous API.
 
 - [Installation and compatibility](#installation-and-compatibility)
 - [Async request](#async-request)
+- [OpenAI-compatible endpoints](#openai-compatible-endpoints)
 - [Messages and providers](#messages-and-providers)
 - [Async streaming](#async-streaming)
 - [Tool calling](#tool-calling)
@@ -37,7 +39,8 @@ is made. The synchronous API continues to use `requests` and does not require
 `httpx`.
 
 `achat()` and `astream_chat()` are available through the same
-`UniversalLLMAPIAdapter` facade for OpenAI, Anthropic, and Google. They accept
+`UniversalLLMAPIAdapter` facade for native OpenAI, Anthropic, Google and
+`openai_compatible`. They accept
 the same provider-neutral messages, tools, structured-output, file, pricing,
 usage, and reasoning options as their synchronous counterparts.
 
@@ -51,8 +54,9 @@ accepts `on_delta`, `on_tool_call`, `on_done`, `buffer_chars`, `on_chunk`, and
 `ImagePart` and `DocumentPart` are supported by both async methods. File bytes
 are encoded locally and sent in the async HTTPX request; file URLs are passed
 to the provider and are not downloaded by the adapter. As with the synchronous
-API, `DocumentPart` URLs require OpenAI Responses API models; OpenAI Chat
-Completions supports PDF bytes but not PDF URLs.
+API, native OpenAI `DocumentPart` URLs require Responses API models; native
+OpenAI Chat Completions supports PDF bytes but not PDF URLs. For compatible
+media support, see the [compatible guide](OPENAI_COMPATIBLE.md#stateless-history-and-server-dependent-support).
 
 ## Async request
 
@@ -78,6 +82,36 @@ async def main():
 
 asyncio.run(main())
 ```
+
+## OpenAI-compatible endpoints
+
+Install `[async]` and reuse the `connection` dictionary from the
+[OpenAI-compatible guide](OPENAI_COMPATIBLE.md). Select the API when creating
+the adapter; both variants use the same async methods:
+
+```python
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+adapter = UniversalLLMAPIAdapter(**connection, api_variant="responses")
+
+
+async def chat_and_stream(adapter):
+    messages = [{"role": "user", "content": "Explain SSE briefly."}]
+    response = await adapter.achat(messages=messages, max_tokens=256)
+    print(response.content)
+
+    async for text in adapter.astream_chat(
+        messages=messages,
+        max_tokens=256,
+        on_done=lambda result: print(result.usage),
+    ):
+        print(text, end="", flush=True)
+```
+
+Await `chat_and_stream(adapter)` with your configured compatible facade.
+Omit `api_variant` to use the default Chat Completions API.
+Connection, protocol, history and caller-tariff details live in the guide;
+the common async callback and lifecycle rules below still apply.
 
 ## Messages and providers
 
@@ -144,7 +178,7 @@ async def main():
 
     google = UniversalLLMAPIAdapter(
         organization="google",
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         api_key=os.environ["GOOGLE_API_KEY"],
     )
     print((await google.achat(messages=messages)).content)
@@ -352,9 +386,11 @@ async def main():
 asyncio.run(main())
 ```
 
-For OpenAI Responses API models, `previous_response=first` preserves the
+For native OpenAI Responses API models, `previous_response=first` preserves the
 provider-side conversation state. Anthropic and Google accept the parameter
 but carry context entirely through `messages`.
+
+For compatible tool-history rules, see [stateless Responses history](OPENAI_COMPATIBLE.md#stateless-history-and-server-dependent-support).
 
 ## Structured output
 
@@ -611,8 +647,9 @@ asyncio.run(main())
 ```
 
 The adapter encodes bytes locally and does not download file URLs. Anthropic,
-Google, and OpenAI Responses API models accept PDF URLs; OpenAI Chat
-Completions models below `gpt-5` require PDF bytes instead.
+Google, and native OpenAI Responses API models accept PDF URLs; native OpenAI
+Chat Completions requires PDF bytes instead. Compatible media boundaries are
+documented in the [compatible guide](OPENAI_COMPATIBLE.md#stateless-history-and-server-dependent-support).
 
 ## Usage and pricing
 
@@ -626,7 +663,9 @@ during streaming.
 Async pricing has the same semantics as `chat()`: when the provider reports
 `usage.input_tokens`, one tier is selected using its inclusive
 `up_to_prompt_tokens` boundary, and that tier's input and output rates price
-the entire request. The final tier is unbounded.
+the entire request. Bundled schedules end with an unbounded
+`up_to_prompt_tokens=None` tier. Caller-tariff boundaries are described in the
+[compatible guide](OPENAI_COMPATIBLE.md#compatible-usage-and-caller-tariffs).
 
 `context_window_tokens` is the combined input/output capacity. A registered
 `max_output_tokens` usually describes an independent generated-output limit;
@@ -641,9 +680,13 @@ it does not establish context or generation capacity. If the provider omits
 usage, the adapter does not estimate it locally and leaves `usage`, `currency`,
 and `cost_*` as `None`.
 
-These values are standard text-rate estimates, not provider invoices. They
-exclude cached input, cache write/storage, batch, flex, priority,
-modality-specific, provider-hosted tool, and negotiated-volume charges.
+These values are token-rate estimates, not provider invoices. Reported
+automatic cache reads/writes use applicable rates and trustworthy count
+splits under the same [usage and pricing rules](README.md#token-usage-and-pricing)
+as sync calls. Missing required cache data or rates prevents a complete
+input/total estimate. Opt-in cache/storage, batch, flex, priority,
+modality-specific, provider-hosted tool and negotiated-volume charges remain
+outside the bundled token estimate.
 
 ```python
 import asyncio
@@ -655,7 +698,7 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 async def main():
     google = UniversalLLMAPIAdapter(
         organization="google",
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         api_key=os.environ["GOOGLE_API_KEY"],
     )
     response = await google.achat(
@@ -687,7 +730,7 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 async def main():
     google = UniversalLLMAPIAdapter(
         organization="google",
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         api_key=os.environ["GOOGLE_API_KEY"],
     )
     google.pricing.set_in_per_1m(1.5)
@@ -705,12 +748,20 @@ async def main():
 asyncio.run(main())
 ```
 
+### Compatible caller prices
+
+Supply pricing as shown in the [caller tariff guide](OPENAI_COMPATIBLE.md#compatible-usage-and-caller-tariffs).
+Both async methods use it; finalized stream costs are available in `on_done`.
+
 ## Lifecycle and errors
 
 Async requests do not add automatic retries, provider fallback, or idempotency
 behavior. If a task is cancelled, the HTTP response and client are closed;
 pending text is not flushed and `on_done` is not called. The same cleanup
 applies when an async stream is closed before normal completion.
+
+See the [compatible guide](OPENAI_COMPATIBLE.md#stateless-history-and-server-dependent-support)
+for compatible terminal and cleanup requirements.
 
 Async HTTPX requests use the same `LLMAPIError` hierarchy as synchronous
 requests. Authentication, rate-limit, client, server, and timeout failures are
@@ -758,6 +809,8 @@ asyncio.run(main())
 levels: `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, and
 `"very_high"`. Verified model capabilities resolve the value to the native
 provider setting.
+
+Compatible-mode reasoning follows its [unverified-model contract](OPENAI_COMPATIBLE.md#stateless-history-and-server-dependent-support).
 
 For categorical models, a native value listed for that model is preserved;
 other canonical strings are projected upward through the ordered native values.

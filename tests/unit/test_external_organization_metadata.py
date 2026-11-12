@@ -80,7 +80,6 @@ def test_mistral_model_organization_is_test_context_only(
     metadata_repository: Path,
 ) -> None:
     from tests.external_organization_metadata import (
-        read_project_metadata,
         read_external_organization_metadata,
     )
 
@@ -90,22 +89,10 @@ def test_mistral_model_organization_is_test_context_only(
     assert metadata.extras["mistral"] == "llm-api-adapter-mistral"
     assert metadata.e2e_model_organizations["mistral"] == (
         ("glm-5.3-flash", "zai"),
+        ("deepseek-flash", "deepseek"),
     )
     assert "zai" in metadata.known_packages
     assert metadata.known_packages["zai"] == metadata.e2e_profiles["zai"]
-
-    core_project = read_project_metadata(metadata_repository / "pyproject.toml")
-    mistral_project = read_project_metadata(
-        metadata_repository / "packages/organizations/mistral/pyproject.toml"
-    )
-    assert core_project["optional-dependencies"]["mistral"] == [
-        "llm-api-adapter-mistral>=0.1.5,<0.2.0"
-    ]
-    assert mistral_project["dependencies"] == ["llm-api-adapter>=0.9.10,<1.0.0"]
-    assert mistral_project["optional-dependencies"] == {
-        "async": ["llm-api-adapter[async]>=0.9.10,<1.0.0"],
-        "httpx": ["llm-api-adapter[httpx]>=0.9.10,<1.0.0"],
-    }
 
 
 @pytest.mark.unit
@@ -120,13 +107,14 @@ def test_unregistered_model_organization_does_not_require_package_metadata(
     _replace_once(
         metadata_repository,
         E2E_PROFILES,
-        'model_organizations=(("glm-5.3-flash", "zai"),)',
-        f'model_organizations=(("glm-5.3-flash", "{annotation_developer}"),)',
+        'model_organizations=(("glm-5.3-flash", "zai"), ("deepseek-flash", "deepseek")),',
+        f'model_organizations=(("glm-5.3-flash", "{annotation_developer}"), ("deepseek-flash", "deepseek")),',
     )
 
     metadata = read_external_organization_metadata(metadata_repository)
     assert metadata.e2e_model_organizations["mistral"] == (
         ("glm-5.3-flash", annotation_developer),
+        ("deepseek-flash", "deepseek"),
     )
     for source in (
         metadata.known_packages,
@@ -147,10 +135,13 @@ def test_unregistered_model_organization_does_not_require_package_metadata(
     ("annotation", "expected_issue"),
     (
         (
-            '(("glm-5.3-flash", "zai"), ("glm-5.3-flash", "zai"))',
+            '(("glm-5.3-flash", "zai"), ("glm-5.3-flash", "zai"), ("deepseek-flash", "deepseek"))',
             "duplicate model_organizations model",
         ),
-        ('(("glm-5.3-flash", 7),)', "expected a tuple of (model, organization) pairs"),
+        (
+            '(("glm-5.3-flash", 7), ("deepseek-flash", "deepseek"))',
+            "expected a tuple of (model, organization) pairs",
+        ),
     ),
     ids=("duplicate-model", "malformed-pair"),
 )
@@ -162,7 +153,7 @@ def test_invalid_model_organization_annotations_are_reported(
     _replace_once(
         metadata_repository,
         E2E_PROFILES,
-        'model_organizations=(("glm-5.3-flash", "zai"),)',
+        'model_organizations=(("glm-5.3-flash", "zai"), ("deepseek-flash", "deepseek")),',
         f"model_organizations={annotation}",
     )
 

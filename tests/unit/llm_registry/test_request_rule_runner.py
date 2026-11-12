@@ -205,7 +205,7 @@ def test_runner_uses_a_deep_copy_for_nested_parameter_paths():
     transformed, diagnostics = apply_request_rules(
         payload,
         request_rules,
-        model="gemini-2.5-flash",
+        model="synthetic-google-model",
     )
 
     assert transformed == {"generationConfig": {"temperature": 1.0}}

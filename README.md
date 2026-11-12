@@ -10,6 +10,11 @@
 
 **Note:** Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai are installed separately with their optional extras.
 
+Core also provides `organization="openai_compatible"` for a caller-selected
+Chat Completions or Responses endpoint and an arbitrary model ID. This mode
+uses the same public methods without registering or certifying that server's
+models. See [OpenAI-compatible endpoints](#openai-compatible-endpoints).
+
 Supports Python 3.10–3.14.
 
 ## Contents
@@ -21,6 +26,7 @@ Supports Python 3.10–3.14.
 - [Getting Started](#getting-started)
 - [Model-specific request compatibility](#model-specific-request-compatibility)
 - [Built-in model exceptions](#built-in-model-exceptions)
+- [OpenAI-compatible endpoints](#openai-compatible-endpoints)
 - [Streaming](#streaming)
 - [Async API](#async-api)
 - [Optional HTTPX Sync Transport](#optional-httpx-sync-transport)
@@ -66,6 +72,7 @@ Supports Python 3.10–3.14.
 - **Request Timeouts**: Per-request timeout control via `timeout_s`; raises `LLMAPITimeoutError` on expiry.
 - **Flexible Configuration**: `temperature`, `max_tokens`, `top_p`, and other parameters are translated to a verified provider payload; known unsupported fields are omitted predictably.
 - **Pricing Registry**: Bundled model tiers contain ordinary input/output rates and verified automatic cache rates; ordinary rates are overridable per instance.
+- **OpenAI-Compatible Endpoints**: Select a server root and either Chat Completions (the default) or Responses; optionally supply local token tariffs through the existing pricing API.
 
 ## Installation
 
@@ -74,6 +81,11 @@ To install the SDK, you can use pip:
 ```bash
 pip install llm-api-adapter
 ```
+
+The base installation includes synchronous OpenAI-compatible mode with
+`requests`. Use `[httpx]` for explicit synchronous HTTPX or `[async]` for
+`achat()` and `astream_chat()`; no organization package or provider SDK is
+required for compatible mode.
 
 To use Mistral, install its optional organization package:
 
@@ -213,6 +225,10 @@ keep the same arguments across providers. For a verified model, the adapter
 applies its registered payload compatibility rules before making the request;
 sync and async calls use the same rules.
 
+`openai_compatible` never applies these native registry rules, even for a
+matching model name; its [explicit protocol policy](OPENAI_COMPATIBLE.md#common-operations-and-wire-forms)
+is independent of model metadata.
+
 If a rule omits a parameter, its documented default is removed silently. A
 different supplied value is also removed, but emits one `UserWarning` and one
 `WARNING` log record per ignored parameter. Treat that warning as a prompt to
@@ -229,10 +245,19 @@ unknown OpenAI model uses Chat Completions rather than the Responses API. Use a
 listed model or request a verified registry addition when a provider adds a new
 alias or model.
 
-For `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`,
-and `gemini-3.5-flash-lite`, Google does not support sampling controls. The
-adapter omits `temperature` and `top_p` from these model requests; non-default
-values produce the compatibility warning described above.
+For `gemini-4-carbon`, `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`,
+`gemini-3.6-flash`, and `gemini-3.5-flash-lite`, Google does not support sampling
+controls. The adapter omits `temperature` and `top_p` from these model requests;
+non-default values produce the compatibility warning described above.
+
+[`gemini-4-carbon`](https://aistudio.google.com/docs/models/gemini-4-carbon) has a
+unified 1,048,576-token context. Ordinary responses have a combined thinking
+and output limit of 65,536 tokens.
+Its registered standard rates per million tokens are USD 2 for input, USD 10
+for output including thinking, and USD 0.10 for automatic implicit cache reads.
+These introductory rates apply through November 30, 2026; Google announces
+USD 4 / 20 / 0.20 from December 1 in its [pricing documentation](https://aistudio.google.com/docs/pricing#gemini-4-carbon).
+Registry tariffs record prices as of the manifest's `effective_date`.
 
 `gpt-6-astra` and `gpt-6.1-sol` use the OpenAI Responses API and do not support
 `temperature` or `top_p`; the adapter omits both according to the same warning
@@ -275,6 +300,31 @@ print(response.content)
 ```
 > **Note**  
 > The adapter automatically normalizes message input — you can mix custom message classes and OpenAI-style dicts in one list.
+
+## OpenAI-compatible endpoints
+
+Use `organization="openai_compatible"` with an explicit API root and any
+nonempty model ID. Chat Completions is the default; select Responses with
+`api_variant="responses"`.
+
+```python
+import os
+
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+
+adapter = UniversalLLMAPIAdapter(
+    organization="openai_compatible",
+    model=os.environ["COMPATIBLE_MODEL"],
+    api_key=os.environ["COMPATIBLE_API_KEY"],
+    base_url=os.environ["COMPATIBLE_BASE_URL"],
+    api_variant="responses",  # Omit to use Chat Completions.
+)
+```
+
+See the [OpenAI-compatible guide](OPENAI_COMPATIBLE.md) for both APIs, all
+four methods, root validation, tools/schemas, stateless history, server
+limitations and caller tariffs. Compatible mode has no verified model profile
+or default prices.
 
 ## Streaming
 
@@ -414,14 +464,14 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai. Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai require their corresponding optional extras.
 
 - **OpenAI**: You can use models like `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o`, `gpt-4o-mini`.
-- **Anthropic**: Available models include `claude-haiku-5-5`, `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
-- **Google**: Models such as `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite` can be used.
-- **Mistral**: Install with `pip install "llm-api-adapter[mistral]"`. Native model IDs are `mistral-large-4`, `mistral-small-2603`, `mistral-medium-3-5`, and `mistral-large-2512`. `glm-5.3-flash` can also be routed through Mistral with `organization="zai"` and `service_provider="mistral"`, using the Mistral package and key without installing Z.ai. See the [Mistral package README](packages/organizations/mistral/README.md) for the full example and details.
+- **Anthropic**: Available models include `claude-fable-5-2`, `claude-haiku-5-5`, `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
+- **Google**: Models such as `gemini-4-carbon`, `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, and `gemini-3-flash-preview` can be used. Gemini 2.5 profiles are no longer bundled; update existing configurations to a supported model such as `gemini-3.8-flash`.
+- **Mistral**: Install with `pip install "llm-api-adapter[mistral]"`. Native model IDs are `mistral-large-4`, `mistral-small-2603`, `mistral-medium-3-5`, and `mistral-large-2512`. Hosted `glm-5.3-flash` (`organization="zai"`) and `deepseek-flash` (`organization="deepseek"`) use `service_provider="mistral"` and the Mistral package and key. Their direct-provider packages are optional for these routes. See the [Mistral package README](packages/organizations/mistral/README.md) for examples, fixed wire IDs, and provider-specific limits and prices.
 - **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.7`, `grok-4.6`, and `grok-4.5`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
 - **Qwen**: Install with `pip install "llm-api-adapter[qwen]"`. Fixed model IDs are `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`; every operation requires an explicit Frankfurt `workspace_id`. See the [Qwen package README](packages/organizations/qwen/README.md) for its capability boundary, including unsupported PDF input.
 - **Kimi**: Install with `pip install "llm-api-adapter[kimi]"`. Fixed model IDs are `kimi-k3`, `kimi-k3.1-pro`, `kimi-k3.1-pro-highspeed`, and `kimi-k2.6`; image bytes/data URIs are supported, while public image URLs and all PDF `DocumentPart` forms are rejected before HTTP. See the [Kimi package README](packages/organizations/kimi/README.md) for reasoning, cache-pricing, and data-handling details.
 - **DeepSeek**: Install with `pip install "llm-api-adapter[deepseek]"`, or install `llm-api-adapter-deepseek` directly. The package exposes only the verified `deepseek-flash` model through the official Responses API, with text, tools, portable structured output, reasoning, streaming, and image URL/bytes/data-URI input. Documents, generic files, OCR, upload, and conversion are rejected before HTTP. See the [DeepSeek package README](packages/organizations/deepseek/README.md) for its compatibility matrix, continuation privacy, usage/cost boundary, and official references.
-- **Z.ai**: Install with `pip install "llm-api-adapter[zai]"`, or install `llm-api-adapter-zai` directly. The package exposes only verified `glm-5.3-flash`, with text, tools, reasoning, streaming, and image URL/bytes/data-URI input. Portable structured output and documents are rejected before HTTP. See the [Z.ai package README](packages/organizations/zai/README.md) for its capability matrix and request boundaries.
+- **Z.ai**: Install with `pip install "llm-api-adapter[zai]"`, or install `llm-api-adapter-zai` directly. Supported models are `glm-5.3-flash`, `glm-5.3-flashx`, and `glm-5.3-flashx-legal`, with text, tools, reasoning, streaming, and image URL/bytes/data-URI input. Portable structured output and documents are rejected before HTTP. See the [Z.ai package README](packages/organizations/zai/README.md) for its capability matrix and request boundaries.
 
 Example:
 
@@ -460,7 +510,7 @@ print(claude_response.content)
 
 google = UniversalLLMAPIAdapter(
     organization="google",
-    model="gemini-2.5-flash",
+    model="gemini-3.8-flash",
     api_key=google_api_key
 )
 google_response = google.chat(messages=messages)
@@ -781,6 +831,11 @@ For OpenAI models that use the Responses API (o-series and newer GPT models), th
 
 For Anthropic, Google, and xAI, the parameter is accepted but ignored — context is carried entirely through the `messages` list regardless. The xAI package also does not expose its provider-specific `store` option; see its README for data-retention details.
 
+`openai_compatible` also carries the complete caller history. Its Responses
+mode sends `store=false` and never sends `previous_response_id` or opaque
+replay state, even when `previous_response` is supplied. See
+[stateless history](OPENAI_COMPATIBLE.md#stateless-history-and-server-dependent-support).
+
 DeepSeek is also stateless and does not send `previous_response_id`. Its
 package uses `previous_response` only to carry matching opaque reasoning replay
 metadata while the caller continues to send the complete `messages` history.
@@ -935,6 +990,7 @@ and `parsed_model` remains `None` in those cases as well.
 | **Mistral** | Native `response_format.type=json_schema` with `strict=true` (optional organization package) |
 | **xAI** | Responses `text.format.type=json_schema` with `strict=true` plus xAI's additive local overlay (optional organization package) |
 | **Qwen** | Messages `output_config.format.type=json_schema` (optional organization package) |
+| **OpenAI-compatible** | Selected Chat `response_format` or Responses `text.format`; server support is required, with the same local portable-profile and original-model validation |
 
 The same **portable** schema can be reused across these organizations without
 provider-specific request code. Google sends the portable JSON Schema through
@@ -1054,7 +1110,7 @@ response = adapter.chat(messages=messages, max_tokens=200)
 Kimi accepts image bytes and data URIs for its supported models, but
 does not fetch public image URLs. `ImagePart(url=...)` is rejected before HTTP;
 use `ImagePart(data=..., media_type="image/...")` instead. See the
-[Kimi package README](packages/organizations/kimi/README.md#history-images-files-and-data-handling).
+[Kimi package README](packages/organizations/kimi/README.md#history-and-files).
 
 DeepSeek `deepseek-flash` accepts user-message image URLs, bytes, and base64
 data URIs for JPEG, PNG, GIF, and WebP images. Its adapter rejects unsupported
@@ -1121,7 +1177,7 @@ Kimi also rejects every `DocumentPart` URL or byte before HTTP. Kimi's
 Files API exposes extracted text rather than a Chat Completions attachment, so
 it cannot meet the same bytes-and-URL contract without hidden URL retrieval.
 The adapter does not upload or delete files for Kimi. See the
-[Kimi package README](packages/organizations/kimi/README.md#history-images-files-and-data-handling).
+[Kimi package README](packages/organizations/kimi/README.md#history-and-files).
 
 DeepSeek rejects every `DocumentPart`, generic non-image `FilePart`,
 OCR/upload/conversion route, and unsupported image form before either client
@@ -1163,8 +1219,8 @@ priced at the output rate; there is no separate output-cache component.
 Costs are a standard-rate estimate, not a provider invoice. When a provider
 reports a valid input count, the adapter selects the first pricing tier whose
 `up_to_prompt_tokens` is greater than or equal to `usage.input_tokens`. The
-boundary is inclusive; the final tier has no boundary. Total input, including
-cache subsets, selects the tier. The selected rates apply to the entire
+boundary is inclusive; bundled schedules end with an unbounded tier. Total
+input, including cache subsets, selects the tier. The selected rates apply to the entire
 request, rather than pricing successive portions in different bands.
 
 - `context_window_tokens` is the combined input and generated-output capacity.
@@ -1237,7 +1293,7 @@ arithmetic, and check costs before formatting or adding them to a budget:
 ```python
 google = UniversalLLMAPIAdapter(
     organization="google",
-    model="gemini-2.5-flash",
+    model="gemini-3.8-flash",
     api_key=google_api_key
 )
 
@@ -1274,7 +1330,7 @@ maintained in the registry and can become outdated as providers change prices.
 ```python
 google = UniversalLLMAPIAdapter(
     organization="google",
-    model="gemini-2.5-flash",
+    model="gemini-3.8-flash",
     api_key=google_api_key
 )
 
@@ -1289,6 +1345,35 @@ if response.usage is not None:
     print(response.usage.output_tokens, "tokens", f"({response.cost_output} {response.currency})")
     print(response.usage.total_tokens, "tokens", f"({response.cost_total} {response.currency})")
 ```
+
+To replace a complete tariff, assign an existing `Pricing` object to the actual
+adapter. This also initializes pricing when it is currently `None`:
+
+```python
+from llm_api_adapter.llm_registry.llm_registry import Pricing
+
+# Illustrative caller-defined rates per million tokens.
+google.adapter.pricing = Pricing.from_dict(
+    [{
+        "up_to_prompt_tokens": None,
+        "input_per_1m": 1.5,
+        "output_per_1m": 3.0,
+    }],
+    currency="EUR",
+)
+```
+
+Reading `google.pricing` and calling its setters delegates to that same object.
+Whole-object replacement uses `google.adapter.pricing`; ordinary assignment to
+the facade's own `google.pricing` attribute is not forwarded. Provider-specific
+billing rules and separately metered-operation rates remain unchanged.
+
+### Compatible usage and caller tariffs
+
+Compatible mode defaults to unavailable calculated costs. Supply local rates
+through the existing `Pricing`/`PricingTier` types and `adapter.adapter.pricing`;
+see the [caller tariff guide](OPENAI_COMPATIBLE.md#compatible-usage-and-caller-tariffs)
+for dictionary, JSON-file and parameter examples, units and completeness rules.
 
 ## Logging
 
