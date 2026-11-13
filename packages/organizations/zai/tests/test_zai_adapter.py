@@ -47,6 +47,7 @@ from llm_api_adapter.models.tools.tool_call import ToolCall
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter_zai.adapter import ZaiAdapter
 from llm_api_adapter_zai.plugin import PLUGIN
 
 
@@ -1205,3 +1206,70 @@ def test_zai_does_not_apply_cache_discount_for_invalid_cache_tokens(
     assert response.cost_input is None
     assert response.cost_output == pytest.approx(40 * 0.50 / 1_000_000)
     assert response.cost_total is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw_usage", "expected"),
+    [
+        ({"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}, (4, 3, 7, None)),
+        ({"prompt_tokens": 4, "completion_tokens": 3}, (4, 3, 7, None)),
+        ({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, (0, 0, 0, None)),
+        ({"prompt_tokens": 4}, (4, None, None, None)),
+        ({"completion_tokens": 3}, (None, 3, None, None)),
+        ({"total_tokens": 7}, (None, None, 7, None)),
+        ({"prompt_tokens": 4, "completion_tokens": None}, (4, None, None, None)),
+        ({"prompt_tokens": None, "completion_tokens": 3}, (None, 3, None, None)),
+        ({"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}, None),
+        ({}, None),
+        (None, None),
+        ([], None),
+        ({"prompt_tokens": True, "completion_tokens": 3, "total_tokens": 4}, None),
+        ({"prompt_tokens": 4, "completion_tokens": False, "total_tokens": 4}, None),
+        ({"prompt_tokens": 4, "total_tokens": True}, None),
+        ({"prompt_tokens": -1, "completion_tokens": 3, "total_tokens": 2}, None),
+        ({"prompt_tokens": 4, "completion_tokens": -1, "total_tokens": 3}, None),
+        ({"prompt_tokens": 4, "total_tokens": -1}, None),
+        ({"prompt_tokens": 4.0, "completion_tokens": 3, "total_tokens": 7}, None),
+        ({"prompt_tokens": 4, "completion_tokens": "3", "total_tokens": 7}, None),
+        ({"prompt_tokens": 4, "total_tokens": "7"}, None),
+        ({"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 8}, None),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": None}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 0}}, (8, 3, 11, 0)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 4}}, (8, 3, 11, 4)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 8}}, (8, 3, 11, 8)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": True}}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": "4"}}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": -1}}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 9}}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": []}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "cached_tokens": 4}, (8, 3, 11, None)),
+        ({"completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 2}}, (None, 3, None, None)),
+    ],
+    ids=[
+        "complete", "sum-from-components", "reported-zero", "input-only", "output-only", "total-only",
+        "null-output", "null-input", "all-null", "empty", "null-object", "non-object",
+        "boolean-input", "boolean-output", "boolean-total", "negative-input", "negative-output",
+        "negative-total", "float-input", "string-output", "string-total", "contradictory-total",
+        "null-total-uses-sum", "cache-zero", "cache-partial", "cache-full", "cache-boolean",
+        "cache-string", "cache-negative", "cache-above-input", "non-object-cache-details",
+        "top-level-cache-is-ignored", "cache-without-input",
+    ],
+)
+def test_zai_native_usage_parser_preserves_reported_counts_and_cache_subset(raw_usage, expected):
+    """Keep native usage parsing exact for present, absent, invalid, and cache counts."""
+    from llm_api_adapter_zai.adapter import ZaiUsage
+
+    parsed = ZaiAdapter._parse_usage(raw_usage)
+    if expected is None:
+        assert parsed is None
+        return
+
+    assert isinstance(parsed, ZaiUsage)
+    assert (
+        parsed.input_tokens,
+        parsed.output_tokens,
+        parsed.total_tokens,
+        parsed.cached_tokens,
+    ) == expected
+    assert parsed.cache_write_tokens is None

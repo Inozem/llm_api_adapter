@@ -62,6 +62,7 @@ from llm_api_adapter_zai import clients as clients_package
 from llm_api_adapter_zai.clients import async_client as async_client_module
 from llm_api_adapter_zai.clients import sync_client as sync_client_module
 from llm_api_adapter_zai.adapter import ZaiAdapter
+from llm_api_adapter_zai.adapter import ZaiUsage
 from llm_api_adapter_zai.plugin import PLUGIN
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
@@ -4042,3 +4043,354 @@ def test_zai_native_transport_faults_keep_public_errors_and_safe_logs(
     assert records
     assert "Z.ai transport failure (details omitted)" in " ".join(r.getMessage() for r in records)
     _assert_sdk_records_omit_markers(caplog, (api_key, marker))
+
+
+_NO_USAGE = object()
+
+
+_ACCOUNTING_USAGE_CASES = [
+    pytest.param(_NO_USAGE, None, id="usage-omitted"),
+    pytest.param(None, None, id="usage-null"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": 3}}, (10, 4, 14, 3, None), id="full-with-cache"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4}, (10, 4, 14, None, None), id="components-infer-only-exact-sum"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": None}, (10, 4, 14, None, None), id="null-total-sums-components"),
+    pytest.param({"total_tokens": 14}, (None, None, 14, None, None), id="total-only-no-inference"),
+    pytest.param({"prompt_tokens": 10}, (10, None, None, None, None), id="partial-input-only"),
+    pytest.param({"completion_tokens": 4}, (None, 4, None, None, None), id="partial-output-only"),
+    pytest.param({"prompt_tokens": 10, "total_tokens": 14}, (10, None, 14, None, None), id="input-and-total-output-omitted"),
+    pytest.param({"completion_tokens": 4, "total_tokens": 14}, (None, 4, 14, None, None), id="output-and-total-input-omitted"),
+    pytest.param({"prompt_tokens": 0, "completion_tokens": 4, "total_tokens": 4}, (0, 4, 4, None, None), id="zero-input"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10}, (10, 0, 10, None, None), id="zero-output"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": None, "total_tokens": 10}, (10, None, 10, None, None), id="null-output-count"),
+    pytest.param({"prompt_tokens": None, "completion_tokens": 4, "total_tokens": 4}, (None, 4, 4, None, None), id="null-input-count"),
+    pytest.param({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "prompt_tokens_details": {"cached_tokens": 0}}, (0, 0, 0, 0, None), id="explicit-zero"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": None, "total_tokens": None}, (10, None, None, None, None), id="null-counts-remain-unknown"),
+    pytest.param({"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}, None, id="all-null-counts"),
+    pytest.param({}, None, id="empty-usage"),
+    pytest.param("not-an-object", None, id="malformed-usage-object"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 15}, None, id="contradictory-total"),
+    pytest.param({"prompt_tokens": False, "completion_tokens": 4, "total_tokens": 4}, None, id="false-input-is-not-zero"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": False, "total_tokens": 10}, None, id="false-output-is-not-zero"),
+    pytest.param({"prompt_tokens": 10, "total_tokens": False}, None, id="false-total-is-not-zero"),
+    *[
+        pytest.param(
+            (
+                {"prompt_tokens": value, "completion_tokens": 4}
+                if field == "prompt_tokens"
+                else {"prompt_tokens": 10, "completion_tokens": value}
+                if field == "completion_tokens"
+                else {"prompt_tokens": 10, "total_tokens": value}
+            ),
+            None,
+            id=f"invalid-{field}-{label}",
+        )
+        for field in ("prompt_tokens", "completion_tokens", "total_tokens")
+        for value, label in ((True, "boolean"), (-1, "negative"), (1.5, "noninteger"), ("10", "string"))
+    ],
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": 0}}, (10, 4, 14, 0, None), id="cache-zero"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": 5}}, (10, 4, 14, 5, None), id="cache-partial"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": 10}}, (10, 4, 14, 10, None), id="cache-full"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {}}, (10, 4, 14, None, None), id="cache-omitted"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": None}}, (10, 4, 14, None, None), id="cache-null"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": True}}, (10, 4, 14, None, None), id="cache-boolean"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": "5"}}, (10, 4, 14, None, None), id="cache-string"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": -1}}, (10, 4, 14, None, None), id="cache-negative"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": 11}}, (10, 4, 14, None, None), id="cache-above-input"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": []}, (10, 4, 14, None, None), id="cache-nonobject-details"),
+    pytest.param({"completion_tokens": 4, "prompt_tokens_details": {"cached_tokens": 2}}, (None, 4, None, None, None), id="cache-without-known-input"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": False}}, (10, 4, 14, None, None), id="cache-false-is-not-zero"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": 2.5}}, (10, 4, 14, None, None), id="cache-noninteger"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "cache_write_tokens": 2}, (10, 4, 14, None, None), id="top-level-cache-write-ignored"),
+    pytest.param({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": 3, "cache_write_tokens": 2}}, (10, 4, 14, 3, None), id="nested-cache-write-ignored"),
+]
+
+
+def _accounting_reply(model, usage, *, streaming=False):
+    payload = {
+        "id": "accounting-response-id",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "accounted"},
+            "finish_reason": "stop",
+        }],
+    }
+    if usage is not _NO_USAGE:
+        payload["usage"] = usage
+    if not streaming:
+        return payload
+    first = {
+        "id": "accounting-stream-id",
+        "model": model,
+        "choices": [{"index": 0, "delta": {"content": "accounted"}, "finish_reason": "stop"}],
+    }
+    terminal = {"id": "accounting-stream-id", "model": model, "choices": []}
+    if usage is not _NO_USAGE:
+        terminal["usage"] = usage
+    return [first, terminal]
+
+
+def _usage_tuple(usage):
+    if usage is None:
+        return None
+    assert isinstance(usage, ZaiUsage)
+    return (
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.total_tokens,
+        usage.cached_tokens,
+        usage.cache_write_tokens,
+    )
+
+
+class _AccountingHTTPResponse:
+    status_code = 200
+
+    def __init__(self, payload, *, streaming, events):
+        self.payload = payload
+        self.streaming = streaming
+        self.events = events
+        self.closed = False
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+    def iter_lines(self, **kwargs):
+        del kwargs
+        import json
+        for event in self.events:
+            yield ("data: " + json.dumps(event)).encode()
+            yield b""
+        yield b"data: [DONE]"
+        yield b""
+
+    async def aiter_lines(self):
+        for line in self.iter_lines():
+            yield line.decode()
+
+    def close(self):
+        self.closed = True
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("lane", ["chat-requests", "chat-httpx", "achat", "stream-requests", "stream-httpx", "astream"])
+@pytest.mark.parametrize(("raw_usage", "expected"), _ACCOUNTING_USAGE_CASES)
+def test_zai_native_public_accounting_across_transports_and_execution_methods(
+    zai_adapter_runtime, monkeypatch, model, lane, raw_usage, expected,
+):
+    """Exercise native accounting through the real JSON/SSE and selected transport paths."""
+    import httpx
+    from llm_api_adapter.llms import requests_transport
+
+    is_stream = lane.startswith("stream") or lane == "astream"
+    is_async = lane in {"achat", "astream"}
+    transport_name = "httpx" if lane.endswith("httpx") else "requests"
+    calls = []
+
+    def response_for(payload, streaming):
+        events = _accounting_reply(model, raw_usage, streaming=True) if streaming else []
+        return _AccountingHTTPResponse(_accounting_reply(model, raw_usage), streaming=streaming, events=events)
+
+    def sync_post(url, *, headers, json, timeout=None, stream=False):
+        payload = json
+        calls.append(("requests", url, headers, payload, timeout, stream))
+        return response_for(payload, stream)
+
+    if not is_async and transport_name == "requests":
+        monkeypatch.setattr(requests_transport.requests, "post", sync_post)
+    elif not is_async:
+        class SyncHTTPXClient:
+            def post(self, url, *, headers, json, timeout):
+                calls.append(("httpx-json", url, headers, json, timeout, False))
+                return response_for(json, False)
+            def build_request(self, method, url, *, headers, json, timeout):
+                calls.append(("httpx-build", method, url, headers, json, timeout, True))
+                return (method, url, headers, json, timeout)
+            def send(self, request, *, stream):
+                method, url, headers, payload, timeout = request
+                calls.append(("httpx-send", method, url, headers, payload, timeout, stream))
+                return response_for(payload, stream)
+            def close(self):
+                return None
+        monkeypatch.setattr(httpx, "Client", SyncHTTPXClient)
+    else:
+        class AsyncHTTPXClient:
+            async def post(self, url, *, headers, json, timeout):
+                calls.append(("async-json", url, headers, json, timeout, False))
+                return response_for(json, False)
+            def build_request(self, method, url, *, headers, json, timeout):
+                calls.append(("async-build", method, url, headers, json, timeout, True))
+                return (method, url, headers, json, timeout)
+            async def send(self, request, *, stream):
+                method, url, headers, payload, timeout = request
+                calls.append(("async-send", method, url, headers, payload, timeout, stream))
+                return response_for(payload, stream)
+            async def aclose(self):
+                return None
+        monkeypatch.setattr(httpx, "AsyncClient", AsyncHTTPXClient)
+
+    caller, _ = _native_adapter("direct", model, "httpx" if transport_name == "httpx" else "requests")
+    request_kwargs = {"timeout_s": 5.25}
+    completed = []
+    if lane == "chat-requests" or lane == "chat-httpx":
+        response = caller.chat([UserMessage("usage")], **request_kwargs)
+    elif lane == "achat":
+        response = asyncio.run(caller.achat([UserMessage("usage")], **request_kwargs))
+    elif lane in {"stream-requests", "stream-httpx"}:
+        visible = list(caller.stream_chat([UserMessage("usage")], on_done=completed.append, **request_kwargs))
+        assert visible == ["accounted"]
+        response = completed[0]
+    else:
+        async def collect():
+            visible = [item async for item in caller.astream_chat(
+                [UserMessage("usage")], on_done=completed.append, **request_kwargs,
+            )]
+            return visible
+        assert asyncio.run(collect()) == ["accounted"]
+        response = completed[0]
+
+    assert response.content == "accounted"
+    assert response.model == model
+    assert response.finish_reason == "stop"
+    assert _usage_tuple(response.usage) == expected
+    assert response.usage is None if expected is None else isinstance(response.usage, ZaiUsage)
+    if is_stream:
+        assert response.response_id == "accounting-stream-id"
+        assert len(completed) == 1
+    else:
+        assert response.response_id == "accounting-response-id"
+    expected_kinds = {
+        "chat-requests": ["requests"],
+        "chat-httpx": ["httpx-json"],
+        "achat": ["async-json"],
+        "stream-requests": ["requests"],
+        "stream-httpx": ["httpx-build", "httpx-send"],
+        "astream": ["async-build", "async-send"],
+    }[lane]
+    assert [call[0] for call in calls] == expected_kinds
+    for call in calls:
+        kind = call[0]
+        if kind in {"httpx-build", "httpx-send", "async-build", "async-send"}:
+            _, method, url, headers, payload, timeout, streaming_flag = call
+            assert method == "POST"
+            assert streaming_flag is True
+        else:
+            _, url, headers, payload, timeout, streaming_flag = call
+        assert url == ZAI_CHAT_COMPLETIONS_URL
+        assert headers == {"Authorization": "Bearer synthetic-zai-key", "Content-Type": "application/json"}
+        assert timeout == 5.25
+        assert payload["model"] == model
+        if is_stream:
+            assert payload["stream"] is True
+            assert payload["stream_options"] == {"include_usage": True}
+            if kind == "requests":
+                assert streaming_flag is True
+        else:
+            assert "stream" not in payload
+            assert streaming_flag is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("lane", ["stream-requests", "stream-httpx", "astream"])
+def test_zai_native_stream_usage_merges_cumulative_snapshots_without_doubling(
+    zai_adapter_runtime, monkeypatch, model, lane,
+):
+    """Retain terminal-only and cumulative usage snapshots as reported, without summing them."""
+    import httpx
+    from llm_api_adapter.llms import requests_transport
+
+    snapshots = [
+        {"prompt_tokens": 10},
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+        {"prompt_tokens_details": {"cached_tokens": 3}},
+    ]
+    events = [
+        {"id": "merge-stream-id", "model": model, "choices": [{"index": 0, "delta": {"content": "merged"}, "finish_reason": "stop"}], "usage": snapshots[0]},
+        {"id": "merge-stream-id", "model": model, "choices": [], "usage": snapshots[1]},
+        {"id": "merge-stream-id", "model": model, "choices": [], "usage": snapshots[2]},
+        {"id": "merge-stream-id", "model": model, "choices": [], "usage": snapshots[3]},
+    ]
+    calls = []
+
+    class Response(_AccountingHTTPResponse):
+        def __init__(self):
+            super().__init__({}, streaming=True, events=events)
+
+    if lane == "stream-requests":
+        def post(url, *, headers, json, timeout, stream=False):
+            calls.append(("requests", url, headers, json, timeout, stream))
+            return Response()
+        monkeypatch.setattr(requests_transport.requests, "post", post)
+    elif lane == "stream-httpx":
+        class Client:
+            def build_request(self, method, url, *, headers, json, timeout):
+                calls.append(("httpx-build", method, url, headers, json, timeout, True))
+                return (method, url, headers, json, timeout)
+            def send(self, request, *, stream):
+                method, url, headers, payload, timeout = request
+                calls.append(("httpx-send", method, url, headers, payload, timeout, stream))
+                return Response()
+            def close(self):
+                return None
+        monkeypatch.setattr(httpx, "Client", Client)
+    else:
+        class AsyncClient:
+            def build_request(self, method, url, *, headers, json, timeout):
+                calls.append(("async-build", method, url, headers, json, timeout, True))
+                return (method, url, headers, json, timeout)
+            async def send(self, request, *, stream):
+                method, url, headers, payload, timeout = request
+                calls.append(("async-send", method, url, headers, payload, timeout, stream))
+                return Response()
+            async def aclose(self):
+                return None
+        monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    caller, _ = _native_adapter("direct", model, "httpx" if lane == "stream-httpx" else "requests")
+    completed = []
+    timeout = 9.75
+    if lane == "astream":
+        async def consume():
+            return [item async for item in caller.astream_chat(
+                [UserMessage("merge usage")], on_done=completed.append, timeout_s=timeout,
+            )]
+        assert asyncio.run(consume()) == ["merged"]
+    else:
+        assert list(caller.stream_chat(
+            [UserMessage("merge usage")], on_done=completed.append, timeout_s=timeout,
+        )) == ["merged"]
+    assert len(completed) == 1
+    assert completed[0].content == "merged"
+    assert completed[0].response_id == "merge-stream-id"
+    assert completed[0].model == model
+    assert completed[0].finish_reason == "stop"
+    assert _usage_tuple(completed[0].usage) == (10, 4, 14, 3, None)
+    expected_kinds = {
+        "stream-requests": ["requests"],
+        "stream-httpx": ["httpx-build", "httpx-send"],
+        "astream": ["async-build", "async-send"],
+    }[lane]
+    assert [call[0] for call in calls] == expected_kinds
+    for call in calls:
+        if call[0] == "requests":
+            _, url, headers, payload, actual_timeout, stream = call
+            assert stream is True
+        else:
+            _, method, url, headers, payload, actual_timeout, stream = call
+            assert method == "POST"
+            assert stream is True
+        assert url == ZAI_CHAT_COMPLETIONS_URL
+        assert headers == {"Authorization": "Bearer synthetic-zai-key", "Content-Type": "application/json"}
+        assert payload["model"] == model
+        assert payload["stream"] is True
+        assert payload["stream_options"] == {"include_usage": True}
+        assert actual_timeout == timeout
