@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, patch
 import json
 from dataclasses import is_dataclass
@@ -100,7 +101,8 @@ class _SyncClient:
 
     def stream(self, *, timeout=None, **params):
         self.streamed_routes.append("responses" if self.responses_api else "chat")
-        return _events(self.model)
+        self.last_stream = _events(self.model)
+        return self.last_stream
 
 
 class _AsyncClient(_SyncClient):
@@ -115,7 +117,8 @@ class _AsyncClient(_SyncClient):
             for event in _events(self.model):
                 yield event
 
-        return events()
+        self.last_stream = events()
+        return self.last_stream
 
 
 class _HookedAdapter(OpenAIAdapter):
@@ -368,3 +371,311 @@ def test_native_responses_protocol_owners_keep_policy_and_eof_native():
         )
     assert usage.input_tokens == 7
     assert usage.output_tokens == 7
+
+
+class _GenericHookedAdapter(OpenAICompatibleAdapter):
+    def __init__(self, *, api_variant="chat_completions"):
+        super().__init__(
+            api_key="test-key",
+            model="unregistered-model",
+            base_url="https://example.test/v1",
+            api_variant=api_variant,
+        )
+        self.sync_client = _SyncClient(self.model)
+        self.async_client = _AsyncClient(self.model)
+        self.sync_client.responses_api = api_variant == "responses"
+        self.async_client.responses_api = api_variant == "responses"
+
+    def _create_sync_client(self):
+        return self.sync_client
+
+    def _create_async_client(self):
+        return self.async_client
+
+
+class _OldConsumerObservedAdapter(_HookedAdapter):
+    def __init__(self, *, api_key, model):
+        super().__init__(api_key=api_key, model=model)
+        self.consumer_args = []
+
+    # Deliberately preserve the legacy strict signature: no new keyword args.
+    def _consume_chat_completions_stream(
+        self, events, effective_schema, response_model, on_delta, on_tool_call,
+        on_done, buffer_chars, on_chunk,
+    ):
+        self.consumer_args.append((
+            events, effective_schema, response_model, on_delta, on_tool_call,
+            on_done, buffer_chars, on_chunk,
+        ))
+        return iter(["legacy"])
+
+    async def _consume_chat_completions_stream_async(
+        self, events, effective_schema, response_model, on_delta, on_tool_call,
+        on_done, buffer_chars, on_chunk,
+    ):
+        self.consumer_args.append((
+            events, effective_schema, response_model, on_delta, on_tool_call,
+            on_done, buffer_chars, on_chunk,
+        ))
+        yield "legacy"
+
+
+def _assert_instance_attributes_unchanged(instance, snapshot):
+    """Permit mutation inside existing trackers, but no per-call state on self."""
+    assert set(instance.__dict__) == set(snapshot)
+    for name, value in snapshot.items():
+        assert instance.__dict__[name] is value
+
+
+@pytest.mark.unit
+def test_default_sync_dispatch_preserves_exact_legacy_consumer_arguments():
+    adapter = _OldConsumerObservedAdapter(api_key="test-key", model="gpt-4o")
+    callbacks = [lambda *args: None for _ in range(4)]
+
+    result = list(adapter.stream_chat(
+        [UserMessage("hi")], on_delta=callbacks[0], on_tool_call=callbacks[1],
+        on_done=callbacks[2], buffer_chars=17, on_chunk=callbacks[3],
+        capture_reasoning=True, on_reasoning=lambda event: None,
+    ))
+
+    assert result == ["legacy"]
+    assert len(adapter.consumer_args) == 1
+    args = adapter.consumer_args[0]
+    assert len(args) == 8
+    assert args[0] is adapter.sync_client.last_stream
+    assert args[1] is None and args[2] is None
+    assert args[3] is callbacks[0] and args[4] is callbacks[1]
+    assert args[5] is callbacks[2]
+    assert args[6] == 17
+    assert args[7] is callbacks[3]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_default_async_dispatch_preserves_exact_legacy_consumer_arguments():
+    adapter = _OldConsumerObservedAdapter(api_key="test-key", model="gpt-4o")
+    callbacks = [lambda *args: None for _ in range(4)]
+    result = []
+
+    async for chunk in adapter.astream_chat(
+        [UserMessage("hi")], on_delta=callbacks[0], on_tool_call=callbacks[1],
+        on_done=callbacks[2], buffer_chars=19, on_chunk=callbacks[3],
+        capture_reasoning=True, on_reasoning=lambda event: None,
+    ):
+        result.append(chunk)
+
+    assert result == ["legacy"]
+    assert len(adapter.consumer_args) == 1
+    args = adapter.consumer_args[0]
+    assert len(args) == 8
+    assert args[0] is adapter.async_client.last_stream
+    assert args[1] is None and args[2] is None
+    assert args[3] is callbacks[0] and args[4] is callbacks[1]
+    assert args[5] is callbacks[2]
+    assert args[6] == 19
+    assert args[7] is callbacks[3]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("capture_reasoning", [False, True])
+def test_sync_chat_dispatch_is_used_by_native_and_generic_adapters(
+    native, capture_reasoning,
+):
+    adapter = (
+        _HookedAdapter(api_key="test-key", model="gpt-4o")
+        if native else _GenericHookedAdapter()
+    )
+    observed = []
+
+    def dispatch(
+        events, effective_schema, response_model, on_delta, on_tool_call,
+        on_done, buffer_chars, on_chunk, *, capture_reasoning, on_reasoning,
+    ):
+        observed.append((capture_reasoning, on_reasoning))
+        return iter(["routed"])
+
+    adapter._dispatch_chat_completions_stream = dispatch
+    callback = lambda event: None
+    assert list(adapter.stream_chat(
+        [UserMessage("hi")], capture_reasoning=capture_reasoning,
+        on_reasoning=callback,
+    )) == ["routed"]
+    assert observed == [(capture_reasoning, callback)]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("capture_reasoning", [False, True])
+async def test_async_chat_dispatch_is_used_by_native_and_generic_adapters(
+    native, capture_reasoning,
+):
+    adapter = (
+        _HookedAdapter(api_key="test-key", model="gpt-4o")
+        if native else _GenericHookedAdapter()
+    )
+    observed = []
+
+    async def dispatch(
+        events, effective_schema, response_model, on_delta, on_tool_call,
+        on_done, buffer_chars, on_chunk, *, capture_reasoning, on_reasoning,
+    ):
+        observed.append((capture_reasoning, on_reasoning))
+        yield "routed"
+
+    adapter._dispatch_chat_completions_stream_async = dispatch
+    callback = lambda event: None
+    result = [chunk async for chunk in adapter.astream_chat(
+        [UserMessage("hi")], capture_reasoning=capture_reasoning,
+        on_reasoning=callback,
+    )]
+    assert result == ["routed"]
+    assert observed == [(capture_reasoning, callback)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("native", [False, True])
+def test_sync_responses_stream_keeps_direct_consumer_ownership_and_context(native):
+    adapter = (
+        _HookedAdapter(api_key="test-key", model="gpt-5")
+        if native else _GenericHookedAdapter(api_variant="responses")
+    )
+    callback = lambda event: None
+    observed = []
+
+    def consume(
+        events, effective_schema, response_model, on_delta, on_tool_call,
+        on_done, buffer_chars, on_chunk, capture_reasoning, on_reasoning,
+    ):
+        observed.append((capture_reasoning, on_reasoning))
+        return iter(["responses"])
+
+    adapter._consume_responses_stream = consume
+    adapter._dispatch_chat_completions_stream = lambda *args, **kwargs: pytest.fail(
+        "Responses must not use Chat dispatch"
+    )
+    assert list(adapter.stream_chat(
+        [UserMessage("hi")], capture_reasoning=True, on_reasoning=callback,
+    )) == ["responses"]
+    assert observed == [(True, callback)]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native", [False, True])
+async def test_async_responses_stream_keeps_direct_consumer_ownership_and_context(native):
+    adapter = (
+        _HookedAdapter(api_key="test-key", model="gpt-5")
+        if native else _GenericHookedAdapter(api_variant="responses")
+    )
+    callback = lambda event: None
+    observed = []
+
+    async def consume(
+        events, effective_schema, response_model, on_delta, on_tool_call,
+        on_done, buffer_chars, on_chunk, capture_reasoning, on_reasoning,
+    ):
+        observed.append((capture_reasoning, on_reasoning))
+        yield "responses"
+
+    adapter._consume_responses_stream_async = consume
+    adapter._dispatch_chat_completions_stream_async = lambda *args, **kwargs: pytest.fail(
+        "Responses must not use Chat dispatch"
+    )
+    result = [chunk async for chunk in adapter.astream_chat(
+        [UserMessage("hi")], capture_reasoning=True, on_reasoning=callback,
+    )]
+    assert result == ["responses"]
+    assert observed == [(True, callback)]
+
+
+@pytest.mark.unit
+def test_overlapping_sync_chat_streams_keep_capture_context_after_resumption():
+    adapter = _HookedAdapter(api_key="test-key", model="gpt-4o")
+    resumed = []
+
+    def dispatch(
+        events, effective_schema, response_model, on_delta, on_tool_call,
+        on_done, buffer_chars, on_chunk, *, capture_reasoning, on_reasoning,
+    ):
+        yield "started"
+        resumed.append((capture_reasoning, on_reasoning))
+
+    adapter._dispatch_chat_completions_stream = dispatch
+    adapter_attributes = dict(adapter.__dict__)
+    first_callback = lambda event: None
+    second_callback = lambda event: None
+    first = adapter.stream_chat(
+        [UserMessage("one")], capture_reasoning=True,
+        on_reasoning=first_callback,
+    )
+    second = adapter.stream_chat(
+        [UserMessage("two")], capture_reasoning=False,
+        on_reasoning=second_callback,
+    )
+
+    assert next(first) == "started"
+    _assert_instance_attributes_unchanged(adapter, adapter_attributes)
+    assert next(second) == "started"
+    _assert_instance_attributes_unchanged(adapter, adapter_attributes)
+    with pytest.raises(StopIteration):
+        next(first)
+    _assert_instance_attributes_unchanged(adapter, adapter_attributes)
+    with pytest.raises(StopIteration):
+        next(second)
+    _assert_instance_attributes_unchanged(adapter, adapter_attributes)
+    assert resumed == [(True, first_callback), (False, second_callback)]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_overlapping_async_chat_streams_keep_capture_context_after_resumption():
+    adapter = _HookedAdapter(api_key="test-key", model="gpt-4o")
+    ready = [asyncio.Event(), asyncio.Event()]
+    release = asyncio.Event()
+    resumed = []
+
+    dispatches = iter(range(2))
+
+    async def dispatch(
+        events, effective_schema, response_model, on_delta, on_tool_call,
+        on_done, buffer_chars, on_chunk, *, capture_reasoning, on_reasoning,
+    ):
+        index = next(dispatches)
+        yield f"started-{index}"
+        ready[index].set()
+        await release.wait()
+        resumed.append((capture_reasoning, on_reasoning))
+
+    callbacks = [lambda event: None, lambda event: None]
+    adapter._dispatch_chat_completions_stream_async = dispatch
+    adapter_attributes = dict(adapter.__dict__)
+    first = adapter.astream_chat(
+        [UserMessage("one")], capture_reasoning=True,
+        on_reasoning=callbacks[0],
+    )
+    second = adapter.astream_chat(
+        [UserMessage("two")], capture_reasoning=False,
+        on_reasoning=callbacks[1],
+    )
+
+    async def collect(stream):
+        return [chunk async for chunk in stream]
+
+    tasks = [asyncio.create_task(collect(first)), asyncio.create_task(collect(second))]
+    ready_waiters = [asyncio.create_task(event.wait()) for event in ready]
+    try:
+        await asyncio.wait(ready_waiters, timeout=1.0)
+        _assert_instance_attributes_unchanged(adapter, adapter_attributes)
+    finally:
+        release.set()
+        for waiter in ready_waiters:
+            if not waiter.done():
+                waiter.cancel()
+    await asyncio.gather(*ready_waiters, return_exceptions=True)
+    results = await asyncio.wait_for(asyncio.gather(*tasks), 1.0)
+    _assert_instance_attributes_unchanged(adapter, adapter_attributes)
+    assert all(event.is_set() for event in ready)
+    assert results == [["started-0"], ["started-1"]]
+    assert resumed == [(True, callbacks[0]), (False, callbacks[1])]
