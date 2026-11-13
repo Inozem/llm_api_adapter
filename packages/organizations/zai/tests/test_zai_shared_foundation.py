@@ -4960,3 +4960,661 @@ def test_zai_native_zero_rate_caller_tariff_preserves_unknown_evidence(
         assert response.response_id == "accounting-response-id"
         assert completed == []
     _assert_pricing_lane_trace(calls, lane, model)
+
+
+_T021_GENERIC_ROOTS = {
+    "chat_completions": "https://generic-chat.example.invalid/v3",
+    "responses": "https://generic-responses.example.invalid/proxy",
+}
+_T021_GENERIC_KEYS = {
+    "chat_completions": "generic-chat-isolation-key",
+    "responses": "generic-responses-isolation-key",
+}
+_T021_LANES = (
+    "chat-requests", "chat-httpx", "achat", "stream-requests", "stream-httpx", "astream",
+)
+
+
+def _t021_chat_reply(model, label, input_tokens, output_tokens, cached_tokens=0):
+    """Make a distinct Chat Completions result with explicit usage components."""
+    return {
+        "id": f"{label}-chat-id", "model": model,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": f"{label} text"},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": input_tokens, "completion_tokens": output_tokens,
+                  "total_tokens": input_tokens + output_tokens,
+                  "prompt_tokens_details": {"cached_tokens": cached_tokens}},
+    }
+
+
+def _t021_responses_reply(model, label, input_tokens, output_tokens):
+    """Make a completed Responses result with distinct identity and usage."""
+    return {
+        "id": f"{label}-responses-id", "object": "response", "model": model,
+        "status": "completed", "output": [{
+            "id": f"{label}-message-id", "type": "message", "role": "assistant",
+            "status": "completed", "content": [{"type": "output_text", "text": f"{label} text"}],
+        }],
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens,
+                  "total_tokens": input_tokens + output_tokens},
+    }
+
+
+class _T021HTTPResponse:
+    """Minimal Requests/HTTPX reply supporting their real JSON and SSE decoders."""
+
+    status_code = 200
+
+    def __init__(self, body):
+        self.body = body
+        self.closed = False
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.body
+
+    def iter_lines(self):
+        import json
+        for event in self._events():
+            yield ("data: " + json.dumps(event)).encode()
+            yield b""
+        yield b"data: [DONE]"
+        yield b""
+
+    async def aiter_lines(self):
+        for line in self.iter_lines():
+            yield line.decode()
+
+    def _events(self):
+        body = self.body
+        if body.get("object") == "response":
+            content = body["output"][0]["content"][0]["text"]
+            yield {"type": "response.output_text.delta", "delta": content,
+                   "item_id": body["output"][0]["id"], "output_index": 0,
+                   "content_index": 0, "sequence_number": 0}
+            yield {"type": "response.completed", "response": copy.deepcopy(body),
+                   "sequence_number": 1}
+            return
+        event = {
+            "id": body["id"], "model": body["model"],
+            "choices": [{"index": 0, "delta": {"content": body["choices"][0]["message"]["content"]},
+                         "finish_reason": None}],
+        }
+        yield event
+        yield {"id": body["id"], "model": body["model"], "choices": [{"index": 0,
+                "delta": {}, "finish_reason": "stop"}]}
+        yield {"id": body["id"], "model": body["model"], "choices": [], "usage": body["usage"]}
+
+    async def aclose(self):
+        self.closed = True
+
+    def close(self):
+        self.closed = True
+
+
+def _t021_routes(model, generic_api, *, include_native=True):
+    """Return immutable route expectations and separate provider reply envelopes."""
+    native_usage = (12, 4, 3)
+    generic_usage = (23, 5, 0)
+    native_url = ZAI_CHAT_COMPLETIONS_URL
+    generic_url = f"{_T021_GENERIC_ROOTS[generic_api]}/{'responses' if generic_api == 'responses' else 'chat/completions'}"
+    routes = {}
+    if include_native:
+        routes[(native_url, "Bearer synthetic-zai-key")] = {
+            "label": "native-zai", "timeout": 2.25,
+            "body": _t021_chat_reply(model, "native-zai", *native_usage),
+        }
+    routes[(generic_url, f"Bearer {_T021_GENERIC_KEYS[generic_api]}")] = {
+        "label": f"generic-{generic_api}", "timeout": 3.75,
+        "body": (_t021_responses_reply(model, f"generic-{generic_api}", 23, 5)
+                 if generic_api == "responses" else
+                 _t021_chat_reply(model, f"generic-{generic_api}", *generic_usage)),
+    }
+    return routes
+
+
+def _t021_install_io(monkeypatch, lane, routes, *, async_barrier=None):
+    """Mock only the backend client while leaving shared transports and decoders active."""
+    import httpx
+    import requests
+    from llm_api_adapter.llms import requests_transport
+
+    calls = []
+
+    def routed(url, headers, payload, timeout, streaming):
+        snapshot = copy.deepcopy(payload)
+        calls.append(("send", "POST", url, dict(headers), snapshot, timeout, streaming))
+        route = routes[(url, headers["Authorization"])]
+        assert timeout == route["timeout"]
+        if route.get("error_status"):
+            response = requests.Response()
+            response.status_code = route["error_status"]
+            response._content = b'{"error":{"message":"synthetic unavailable"}}'
+            request = requests.Request("POST", url).prepare()
+            response.request = request
+            error = requests.HTTPError("synthetic unavailable", response=response, request=request)
+            raise error
+        return _T021HTTPResponse(copy.deepcopy(route["body"]))
+
+    def requests_post(url, *, headers, json, timeout=None, stream=False):
+        return routed(url, headers, json, timeout, stream)
+
+    if lane.endswith("requests"):
+        monkeypatch.setattr(requests_transport.requests, "post", requests_post)
+        return calls
+
+    if lane in {"chat-httpx", "stream-httpx"}:
+        class SyncClient:
+            def post(self, url, *, headers, json, timeout):
+                return routed(url, headers, json, timeout, False)
+
+            def build_request(self, method, url, *, headers, json, timeout):
+                calls.append(("build", method, url, dict(headers), copy.deepcopy(json), timeout, True))
+                return (method, url, headers, json, timeout)
+
+            def send(self, request, *, stream):
+                method, url, headers, payload, timeout = request
+                assert method == "POST"
+                return routed(url, headers, payload, timeout, stream)
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(httpx, "Client", SyncClient)
+        return calls
+
+    class AsyncClient:
+        async def post(self, url, *, headers, json, timeout):
+            if async_barrier is not None:
+                await async_barrier(url, headers, json, timeout, False)
+            return routed(url, headers, json, timeout, False)
+
+        def build_request(self, method, url, *, headers, json, timeout):
+            calls.append(("build", method, url, dict(headers), copy.deepcopy(json), timeout, True))
+            return (method, url, headers, json, timeout)
+
+        async def send(self, request, *, stream):
+            method, url, headers, payload, timeout = request
+            assert method == "POST"
+            if async_barrier is not None:
+                await async_barrier(url, headers, payload, timeout, True)
+            return routed(url, headers, payload, timeout, stream)
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+    return calls
+
+
+def _t021_generic_adapter(model, generic_api, *, pricing=None):
+    return OpenAICompatibleAdapter(
+        company="openai_compatible", api_key=_T021_GENERIC_KEYS[generic_api], model=model,
+        base_url=_T021_GENERIC_ROOTS[generic_api], api_variant=generic_api, pricing=pricing,
+    )
+
+
+def _t021_expected_history(user_text, assistant_text):
+    """Return exact ordered generic/native-compatible history for either wire protocol."""
+    return [
+        {"role": "user", "content": user_text},
+        {"role": "assistant", "content": assistant_text},
+    ]
+
+
+def _t021_call(adapter, lane, label, *, callbacks=None, previous_response=None):
+    callbacks = callbacks if callbacks is not None else []
+    messages = [UserMessage(f"{label} user history"), AIMessage(f"{label} assistant history")]
+    timeout = 2.25 if label in {"native-zai", "native-control"} else 3.75
+    if lane.startswith("chat-"):
+        return adapter.chat(messages, timeout_s=timeout, previous_response=previous_response)
+    if lane == "achat":
+        return asyncio.run(adapter.achat(messages, timeout_s=timeout, previous_response=previous_response))
+    if lane.startswith("stream-"):
+        chunks = list(adapter.stream_chat(
+            messages, timeout_s=timeout, previous_response=previous_response,
+            on_done=callbacks.append,
+        ))
+    else:
+        async def collect():
+            return [item async for item in adapter.astream_chat(
+                messages, timeout_s=timeout, previous_response=previous_response,
+                on_done=callbacks.append,
+            )]
+        chunks = asyncio.run(collect())
+    assert chunks == [f"{label} text"]
+    assert len(callbacks) == 1
+    return callbacks[0]
+
+
+def _t021_expected_native_cost(model, input_tokens, output_tokens, cached_tokens):
+    """Calculate exact metadata-derived native cost independently of production code."""
+    tier = _zai_raw_model_metadata(model)["pricing_tiers"][0]
+    input_cost = ((input_tokens - cached_tokens) * tier["input_per_1m"]
+                  + cached_tokens * tier["cache_read_input_per_1m"]) / 1_000_000
+    output_cost = output_tokens * tier["output_per_1m"] / 1_000_000
+    return input_cost, output_cost, input_cost + output_cost
+
+
+def _t021_assert_native_result(response, model, label, *, pricing=None):
+    input_tokens, output_tokens, cached_tokens = (12, 4, 3)
+    expected_costs = (
+        _t021_expected_native_cost(model, input_tokens, output_tokens, cached_tokens)
+        if pricing is None else (
+            (input_tokens - cached_tokens) * pricing[0] + cached_tokens * pricing[2],
+            output_tokens * pricing[1],
+            (input_tokens - cached_tokens) * pricing[0] + cached_tokens * pricing[2]
+            + output_tokens * pricing[1],
+        )
+    )
+    assert (response.content, response.response_id, response.model, response.finish_reason) == (
+        f"{label} text", f"{label}-chat-id", model, "stop",
+    )
+    assert isinstance(response.usage, ZaiUsage)
+    assert _usage_tuple(response.usage) == (12, 4, 16, 3, None)
+    assert response.currency == ("OWN" if pricing is not None else PLUGIN.model_metadata.organization_data["currency"])
+    assert (response.cost_input, response.cost_output, response.cost_total) == pytest.approx(expected_costs)
+
+
+def _t021_assert_generic_result(response, model, generic_api, label, *, pricing=None):
+    assert (response.content, response.response_id, response.model, response.finish_reason) == (
+        f"{label} text",
+        f"{label}-responses-id" if generic_api == "responses" else f"{label}-chat-id",
+        model,
+        "completed" if generic_api == "responses" else "stop",
+    )
+    assert type(response.usage) is not ZaiUsage
+    counts = (23, 5, 28) if generic_api == "chat_completions" else (23, 5, 28)
+    assert (response.usage.input_tokens, response.usage.output_tokens, response.usage.total_tokens) == counts
+    if pricing is None:
+        assert response.currency is None
+        assert (response.cost_input, response.cost_output, response.cost_total) == (None, None, None)
+    else:
+        input_cost, output_cost = 23 * pricing[0], 5 * pricing[1]
+        assert response.currency == "CALL"
+        assert (response.cost_input, response.cost_output, response.cost_total) == pytest.approx(
+            (input_cost, output_cost, input_cost + output_cost)
+        )
+
+
+def _t021_assert_trace(calls, lane, records):
+    """Verify every build/send observation, request route, identity and timeout."""
+    expected_kinds = {
+        "chat-requests": ["send"], "chat-httpx": ["send"], "achat": ["send"],
+        "stream-requests": ["send"], "stream-httpx": ["build", "send"],
+        "astream": ["build", "send"],
+    }[lane]
+    expected = {(record["url"], f"Bearer {record['key']}", kind): 0
+                for record in records for kind in expected_kinds}
+    assert len(calls) == len(records) * len(expected_kinds)
+    seen = []
+    for call in calls:
+        _, method, url, headers, payload, timeout, streaming = call
+        key = headers["Authorization"]
+        record = next(item for item in records if item["url"] == url and f"Bearer {item['key']}" == key)
+        kind = call[0]
+        assert (url, key, kind) in expected and method == "POST"
+        assert headers == {"Authorization": key, "Content-Type": "application/json"}
+        expected[(url, key, kind)] += 1
+        seen.append((url, key, kind))
+        assert timeout == record["timeout"] and streaming is record["stream"]
+        assert payload["model"] == record["model"]
+        assert payload.get("stream") is (True if record["stream"] else None)
+        history_key = "input" if url.endswith("/responses") else "messages"
+        assert payload[history_key] == _t021_expected_history(
+            record["user_history"], record["assistant_history"],
+        )
+        assert "previous_response_id" not in payload
+        assert "foreign-opaque-id" not in repr(payload)
+        assert "foreign-secret" not in repr(payload)
+        assert "opaque-foreign-data" not in repr(payload)
+        if url.endswith("/responses"):
+            assert payload["store"] is False
+            assert not ({"stream_options", "max_tokens", "max_completion_tokens", "reasoning_effort"}
+                        & payload.keys())
+        elif record["stream"]:
+            assert payload["stream_options"] == {"include_usage": True}
+    assert set(expected.values()) == {1}
+    if lane in {"stream-httpx", "astream"}:
+        for record in records:
+            identity = (record["url"], f"Bearer {record['key']}")
+            assert seen.index((*identity, "build")) < seen.index((*identity, "send"))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+def test_zai_native_profile_tariff_and_generic_caller_pricing_remain_isolated(
+    zai_adapter_runtime, monkeypatch, model,
+):
+    """Real native sends retain registry/override rates while generic caller rates stay local."""
+    from llm_api_adapter.llms import requests_transport
+
+    native, _ = _native_adapter("direct", model)
+    control, _ = _native_adapter("direct", model)
+    control.api_key = "native-control-key"
+    generic_chat = _t021_generic_adapter(model, "chat_completions")
+    generic_responses = _t021_generic_adapter(model, "responses")
+    raw_model = copy.deepcopy(_zai_raw_model_metadata(model))
+    raw_org = copy.deepcopy(PLUGIN.model_metadata.organization_data)
+    registry_snapshot = copy.deepcopy(zai_adapter_runtime.organizations["zai"].models[model].pricing_tiers)
+    native_profile = native.model_spec
+    native_override = Pricing((PricingTier(None, 3e-6, 5e-6, 1e-6),), currency="OWN")
+    caller_rates = (7e-6, 11e-6)
+    caller_pricing = Pricing((PricingTier(None, *caller_rates),), currency="CALL")
+    generic_responses.pricing = caller_pricing
+    foreign_previous = ChatResponse(
+        content="foreign response", model="foreign-model", response_id="foreign-opaque-id",
+        provider_data={"credential": "foreign-secret", "opaque": "opaque-foreign-data"},
+    )
+    native_usage = {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16,
+                    "prompt_tokens_details": {"cached_tokens": 3}}
+    routes = {}
+    records = []
+
+    def route(url, key, label, body, timeout, user, assistant):
+        routes[(url, f"Bearer {key}")] = {"label": label, "body": body, "timeout": timeout}
+        records.append({"url": url, "key": key, "label": label, "model": model,
+                        "timeout": timeout, "stream": False,
+                        "user_history": user, "assistant_history": assistant})
+
+    route(ZAI_CHAT_COMPLETIONS_URL, "synthetic-zai-key", "native-zai",
+          _t021_chat_reply(model, "native-zai", 12, 4, 3), 2.25,
+          "native-zai user history", "native-zai assistant history")
+    route(ZAI_CHAT_COMPLETIONS_URL, "native-control-key", "native-zai",
+          _t021_chat_reply(model, "native-zai", 12, 4, 3), 2.25,
+          "native-zai user history", "native-zai assistant history")
+    route(f"{_T021_GENERIC_ROOTS['chat_completions']}/chat/completions",
+          _T021_GENERIC_KEYS["chat_completions"],
+          "generic-chat_completions", _t021_chat_reply(model, "generic-chat_completions", 23, 5),
+          3.75, "generic-chat_completions user history", "generic-chat_completions assistant history")
+    route(f"{_T021_GENERIC_ROOTS['responses']}/responses",
+          _T021_GENERIC_KEYS["responses"],
+          "generic-responses", _t021_responses_reply(model, "generic-responses", 23, 5),
+          3.75, "generic-responses user history", "generic-responses assistant history")
+    calls = []
+
+    def send(url, headers, payload, timeout, stream):
+        calls.append(("send", "POST", url, copy.deepcopy(headers), copy.deepcopy(payload), timeout, stream))
+        route_spec = routes[(url, headers["Authorization"])]
+        assert timeout == route_spec["timeout"]
+        return _T021HTTPResponse(copy.deepcopy(route_spec["body"]))
+
+    monkeypatch.setattr(requests_transport.requests, "post", lambda url, *, headers, json, timeout=None, stream=False:
+                        send(url, headers, json, timeout, stream))
+    native.pricing = native_override
+    r_native_1 = native.chat([UserMessage("native-zai user history"), AIMessage("native-zai assistant history")],
+                             timeout_s=2.25, previous_response=foreign_previous)
+    r_control_1 = control.chat([UserMessage("native-zai user history"), AIMessage("native-zai assistant history")],
+                               timeout_s=2.25, previous_response=foreign_previous)
+    r_generic_chat_1 = generic_chat.chat([UserMessage("generic-chat_completions user history"),
+                                          AIMessage("generic-chat_completions assistant history")],
+                                        timeout_s=3.75, previous_response=foreign_previous)
+    r_generic_response_1 = generic_responses.chat([UserMessage("generic-responses user history"),
+                                                    AIMessage("generic-responses assistant history")],
+                                                  timeout_s=3.75, previous_response=foreign_previous)
+    _t021_assert_native_result(r_native_1, model, "native-zai",
+                               pricing=(3e-6, 5e-6, 1e-6))
+    _t021_assert_native_result(r_control_1, model, "native-zai")
+    _t021_assert_generic_result(r_generic_chat_1, model, "chat_completions", "generic-chat_completions")
+    _t021_assert_generic_result(r_generic_response_1, model, "responses", "generic-responses",
+                                pricing=caller_rates)
+
+    caller_pricing.set_in_per_1m(14.0)
+    caller_pricing.set_out_per_1m(22.0)
+    r_generic_response_2 = generic_responses.chat([UserMessage("generic-responses user history"),
+                                                    AIMessage("generic-responses assistant history")],
+                                                  timeout_s=3.75, previous_response=foreign_previous)
+    r_native_2 = native.chat([UserMessage("native-zai user history"), AIMessage("native-zai assistant history")],
+                             timeout_s=2.25, previous_response=foreign_previous)
+    r_control_2 = control.chat([UserMessage("native-zai user history"), AIMessage("native-zai assistant history")],
+                               timeout_s=2.25, previous_response=foreign_previous)
+    r_generic_chat_2 = generic_chat.chat([UserMessage("generic-chat_completions user history"),
+                                          AIMessage("generic-chat_completions assistant history")],
+                                        timeout_s=3.75, previous_response=foreign_previous)
+    mutated_rates = (14e-6, 22e-6)
+    _t021_assert_generic_result(r_generic_response_2, model, "responses", "generic-responses",
+                                pricing=mutated_rates)
+    _t021_assert_native_result(r_native_2, model, "native-zai", pricing=(3e-6, 5e-6, 1e-6))
+    _t021_assert_native_result(r_control_2, model, "native-zai")
+    _t021_assert_generic_result(r_generic_chat_2, model, "chat_completions", "generic-chat_completions")
+
+    assert native.model_spec is native_profile
+    assert native.model_spec.limits.context_window_tokens == raw_model["limits"]["context_window_tokens"]
+    assert native.model_spec.limits.max_output_tokens == raw_model["limits"]["max_output_tokens"]
+    native_profile_tier = native.model_spec.pricing_tiers.tiers[0]
+    assert native_profile_tier.in_per_token == pytest.approx(
+        raw_model["pricing_tiers"][0]["input_per_1m"] / 1_000_000
+    )
+    assert native_profile_tier.out_per_token == pytest.approx(
+        raw_model["pricing_tiers"][0]["output_per_1m"] / 1_000_000
+    )
+    assert native_profile_tier.cache_read_in_per_token == pytest.approx(
+        raw_model["pricing_tiers"][0]["cache_read_input_per_1m"] / 1_000_000
+    )
+    assert generic_chat.model_spec is None and generic_chat.pricing is None
+    assert generic_responses.model_spec is None and generic_responses.pricing is caller_pricing
+    assert control.pricing.currency == raw_org["currency"]
+    assert zai_adapter_runtime.organizations["zai"].models[model].pricing_tiers == registry_snapshot
+    assert len(calls) == 8
+    labels = ["native-zai", "native-zai", "generic-chat_completions", "generic-responses",
+              "generic-responses", "native-zai", "native-zai", "generic-chat_completions"]
+    expected_keys = ["synthetic-zai-key", "native-control-key",
+                     _T021_GENERIC_KEYS["chat_completions"],
+                     _T021_GENERIC_KEYS["responses"], _T021_GENERIC_KEYS["responses"],
+                     "synthetic-zai-key", "native-control-key",
+                     _T021_GENERIC_KEYS["chat_completions"]]
+    for call, label, key in zip(calls, labels, expected_keys):
+        _, method, url, headers, payload, timeout, stream = call
+        assert method == "POST" and stream is False
+        assert headers["Authorization"] == f"Bearer {key}"
+        expected_url = {
+            "native-zai": ZAI_CHAT_COMPLETIONS_URL,
+            "generic-chat_completions": f"{_T021_GENERIC_ROOTS['chat_completions']}/chat/completions",
+            "generic-responses": f"{_T021_GENERIC_ROOTS['responses']}/responses",
+        }[label]
+        assert url == expected_url
+        assert timeout == (2.25 if key in {"synthetic-zai-key", "native-control-key"} else 3.75)
+        assert payload["model"] == model
+        assert "foreign-opaque-id" not in repr(payload)
+        assert "foreign-secret" not in repr(payload)
+        assert "opaque-foreign-data" not in repr(payload)
+        assert "previous_response_id" not in payload
+        record = next(record for record in records if record["url"] == url and record["key"] == key)
+        history_key = "input" if url.endswith("/responses") else "messages"
+        assert payload[history_key] == _t021_expected_history(
+            record["user_history"], record["assistant_history"],
+        )
+        if url.endswith("/responses"):
+            assert payload["store"] is False and "previous_response_id" not in payload
+            assert not ({"stream_options", "max_tokens", "max_completion_tokens", "reasoning_effort"}
+                        & payload.keys())
+        elif stream:
+            assert payload["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("lane", _T021_LANES)
+@pytest.mark.parametrize("generic_api", ["chat_completions", "responses"])
+@pytest.mark.parametrize("pricing_mode", ["unpriced", "caller-priced"])
+def test_zai_native_and_generic_profiles_are_isolated_across_execution_lanes(
+    zai_adapter_runtime, monkeypatch, model, lane, generic_api, pricing_mode,
+):
+    """Distinct native and generic results stay isolated across all methods/transports."""
+    native, _ = _native_adapter("direct", model, "httpx" if lane.endswith("httpx") else "requests")
+    caller_rates = (13e-6, 17e-6)
+    generic = OpenAICompatibleAdapter(
+        company="openai_compatible", api_key=_T021_GENERIC_KEYS[generic_api], model=model,
+        base_url=_T021_GENERIC_ROOTS[generic_api], api_variant=generic_api,
+        pricing=(Pricing((PricingTier(None, *caller_rates),), currency="CALL")
+                 if pricing_mode == "caller-priced" else None),
+        transport="httpx" if lane.endswith("httpx") else "requests",
+    )
+    native_profile = native.model_spec
+    native_records = [{"url": ZAI_CHAT_COMPLETIONS_URL, "key": "synthetic-zai-key", "model": model,
+                       "timeout": 2.25, "stream": lane.startswith("stream") or lane == "astream",
+                       "user_history": "native-zai user history",
+                       "assistant_history": "native-zai assistant history"}]
+    generic_url = f"{_T021_GENERIC_ROOTS[generic_api]}/{'responses' if generic_api == 'responses' else 'chat/completions'}"
+    generic_records = [{"url": generic_url, "key": _T021_GENERIC_KEYS[generic_api], "model": model,
+                        "timeout": 3.75, "stream": lane.startswith("stream") or lane == "astream",
+                        "user_history": f"generic-{generic_api} user history",
+                        "assistant_history": f"generic-{generic_api} assistant history"}]
+    routes = _t021_routes(model, generic_api)
+    barrier_state = {"arrivals": [], "event": None, "release": None}
+
+    async def overlap_barrier(url, headers, payload, timeout, streaming):
+        barrier_state["arrivals"].append((url, headers["Authorization"], copy.deepcopy(payload), timeout, streaming))
+        if len(barrier_state["arrivals"]) == 2:
+            barrier_state["event"].set()
+        await asyncio.wait_for(barrier_state["release"].wait(), timeout=2)
+
+    barrier = overlap_barrier if lane in {"achat", "astream"} else None
+    barrier_state["event"] = asyncio.Event()
+    barrier_state["release"] = asyncio.Event()
+    calls = _t021_install_io(monkeypatch, lane, routes, async_barrier=barrier)
+    native_callbacks, generic_callbacks = [], []
+    previous = ChatResponse(
+        content="foreign", model="foreign-model", response_id="foreign-opaque-id",
+        provider_data={"key": "foreign-secret", "sentinel": "opaque-foreign-data"},
+    )
+
+    if barrier is None:
+        native_result = _t021_call(native, lane, "native-zai", callbacks=native_callbacks,
+                                   previous_response=previous)
+        generic_result = _t021_call(generic, lane, f"generic-{generic_api}", callbacks=generic_callbacks,
+                                    previous_response=previous)
+    else:
+        async def overlapping_calls():
+            if lane == "astream":
+                async def collect(adapter, label, callbacks, timeout):
+                    messages = [UserMessage(f"{label} user history"), AIMessage(f"{label} assistant history")]
+                    return [item async for item in adapter.astream_chat(
+                        messages, timeout_s=timeout, previous_response=previous, on_done=callbacks.append,
+                    )]
+                native_task = asyncio.create_task(collect(native, "native-zai", native_callbacks, 2.25))
+                generic_task = asyncio.create_task(collect(generic, f"generic-{generic_api}", generic_callbacks, 3.75))
+            else:
+                native_task = asyncio.create_task(native.achat(
+                    [UserMessage("native-zai user history"), AIMessage("native-zai assistant history")],
+                    timeout_s=2.25, previous_response=previous,
+                ))
+                generic_task = asyncio.create_task(generic.achat(
+                    [UserMessage(f"generic-{generic_api} user history"),
+                     AIMessage(f"generic-{generic_api} assistant history")],
+                    timeout_s=3.75, previous_response=previous,
+                ))
+            await asyncio.wait_for(barrier_state["event"].wait(), timeout=2)
+            assert len(barrier_state["arrivals"]) == 2
+            assert not native_task.done() and not generic_task.done()
+            assert native_callbacks == generic_callbacks == []
+            arrivals = {(entry[0], entry[1]): entry for entry in barrier_state["arrivals"]}
+            expected_arrivals = {
+                (native_records[0]["url"], "Bearer synthetic-zai-key"): (
+                    native_records[0], "native-zai", 2.25,
+                ),
+                (generic_records[0]["url"], f"Bearer {_T021_GENERIC_KEYS[generic_api]}"): (
+                    generic_records[0], f"generic-{generic_api}", 3.75,
+                ),
+            }
+            assert set(arrivals) == set(expected_arrivals)
+            for identity, (record, label, expected_timeout) in expected_arrivals.items():
+                url, key, payload, actual_timeout, streaming = arrivals[identity]
+                assert url == record["url"] and key == f"Bearer {record['key']}"
+                assert actual_timeout == expected_timeout
+                assert streaming is (lane == "astream")
+                assert payload["model"] == model
+                history_key = "input" if url.endswith("/responses") else "messages"
+                assert payload[history_key] == _t021_expected_history(
+                    f"{label} user history", f"{label} assistant history",
+                )
+                assert "previous_response_id" not in payload
+                assert "foreign-opaque-id" not in repr(payload)
+                assert "foreign-secret" not in repr(payload)
+                assert "opaque-foreign-data" not in repr(payload)
+                assert payload.get("stream") is (True if lane == "astream" else None)
+                if url.endswith("/responses"):
+                    assert payload["store"] is False
+                elif lane == "astream":
+                    assert payload["stream_options"] == {"include_usage": True}
+            barrier_state["release"].set()
+            if lane == "astream":
+                native_chunks, generic_chunks = await asyncio.gather(native_task, generic_task)
+                assert native_chunks == ["native-zai text"] and generic_chunks == [f"generic-{generic_api} text"]
+                return native_callbacks[0], generic_callbacks[0]
+            return await asyncio.gather(native_task, generic_task)
+        native_result, generic_result = asyncio.run(overlapping_calls())
+
+    _t021_assert_native_result(native_result, model, "native-zai")
+    _t021_assert_generic_result(
+        generic_result, model, generic_api, f"generic-{generic_api}",
+        pricing=caller_rates if pricing_mode == "caller-priced" else None,
+    )
+    assert native.model_spec is native_profile and generic.model_spec is None
+    assert generic.is_reasoning is False and generic.is_adaptive_thinking is False
+    if pricing_mode == "caller-priced":
+        assert generic.pricing is not None
+    else:
+        assert generic.pricing is None
+    if lane.startswith("stream") or lane == "astream":
+        assert native_callbacks == [native_result]
+        assert generic_callbacks == [generic_result]
+    else:
+        assert native_callbacks == generic_callbacks == []
+    _t021_assert_trace(calls, lane, native_records + generic_records)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("generic_api", ["chat_completions", "responses"])
+def test_generic_failure_recovers_without_fallback_or_native_policy_changes(
+    zai_adapter_runtime, monkeypatch, model, generic_api,
+):
+    """A mapped generic 503 is one attempt; native and same generic instance then succeed."""
+    from llm_api_adapter.errors.llm_api_error import LLMAPIServerError
+
+    generic = _t021_generic_adapter(model, generic_api)
+    native, _ = _native_adapter("direct", model)
+    native_profile = native.model_spec
+    routes = _t021_routes(model, generic_api)
+    generic_key = (f"{_T021_GENERIC_ROOTS[generic_api]}/"
+                   f"{'responses' if generic_api == 'responses' else 'chat/completions'}",
+                   f"Bearer {_T021_GENERIC_KEYS[generic_api]}")
+    routes[generic_key]["error_status"] = 503
+    calls = _t021_install_io(monkeypatch, "chat-requests", routes)
+    messages = [UserMessage("generic recovery history"), AIMessage("generic prior turn")]
+    with pytest.raises(LLMAPIServerError):
+        generic.chat(messages, timeout_s=3.75)
+    routes[generic_key].pop("error_status")
+    native_result = native.chat(
+        [UserMessage("native recovery history"), AIMessage("native prior turn")], timeout_s=2.25,
+    )
+    response = generic.chat(messages, timeout_s=3.75)
+    _t021_assert_native_result(native_result, model, "native-zai")
+    _t021_assert_generic_result(response, model, generic_api, f"generic-{generic_api}")
+    assert native.model_spec is native_profile
+    assert generic.model_spec is None and generic.pricing is None
+    assert response.currency is None
+    assert len(calls) == 3
+    expected = [
+        (generic_key[0], _T021_GENERIC_KEYS[generic_api], 3.75, "generic recovery history", "generic prior turn"),
+        (ZAI_CHAT_COMPLETIONS_URL, "synthetic-zai-key", 2.25, "native recovery history", "native prior turn"),
+        (generic_key[0], _T021_GENERIC_KEYS[generic_api], 3.75, "generic recovery history", "generic prior turn"),
+    ]
+    assert [(call[2], call[3]["Authorization"], call[5]) for call in calls] == [
+        (url, f"Bearer {key}", timeout) for url, key, timeout, _, _ in expected
+    ]
+    for call, (expected_url, expected_key, expected_timeout, expected_user, expected_assistant) in zip(calls, expected):
+        _, method, url, headers, payload, timeout, stream = call
+        assert method == "POST" and url == expected_url
+        assert headers["Authorization"] == f"Bearer {expected_key}"
+        assert payload["model"] == model and timeout == expected_timeout and stream is False
+        history_key = "input" if url.endswith("/responses") else "messages"
+        assert payload[history_key] == _t021_expected_history(expected_user, expected_assistant)
+        assert "foreign-opaque-id" not in repr(payload)
+        assert "foreign-secret" not in repr(payload)
+        assert "previous_response_id" not in payload
+        if url.endswith("/responses"):
+            assert payload["store"] is False and "previous_response_id" not in payload
