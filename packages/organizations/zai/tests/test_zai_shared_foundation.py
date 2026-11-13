@@ -12,6 +12,7 @@ from pathlib import Path
 import subprocess
 import socket
 import sys
+import urllib.request
 import warnings
 from typing import Any
 
@@ -70,10 +71,11 @@ from llm_api_adapter.models.messages.chat_message import (
     ToolMessage,
     UserMessage,
 )
-from llm_api_adapter.models.messages.file_parts import DocumentPart
+from llm_api_adapter.models.messages.file_parts import DocumentPart, FilePart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.tools.tool_call import ToolCall
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
+from pydantic import BaseModel
 from llm_api_adapter_zai.adapter import _ZaiStreamState
 from llm_api_adapter_zai.streaming import ZaiStreamAssembler
 
@@ -2326,3 +2328,259 @@ def test_zai_unsupported_tool_controls_fail_before_any_send(
         _invoke_tool_method(adapter, method_kind, [UserMessage("invalid control")], kwargs)
     assert len(adapter._sync_transport.requests) == 0
     assert len(async_calls) == 0
+
+
+class _PortableResponseModel(BaseModel):
+    answer: str
+
+
+_IMAGE_CASES = (
+    "typed_url",
+    "typed_png_bytes",
+    "typed_webp_bytes",
+    "typed_data_url",
+    "mixed_typed_and_dictionary",
+)
+
+
+def _image_case_messages(case_name):
+    """Return an image conversation and independently declared wire messages."""
+    png_data = b"png-image-fixture"
+    webp_data = b"webp-image-fixture"
+    if case_name == "typed_url":
+        return [
+            UserMessage("Describe this chart.", files=[
+                ImagePart(url="https://images.example/chart.png")
+            ])
+        ], [{"role": "user", "content": [
+            {"type": "text", "text": "Describe this chart."},
+            {"type": "image_url", "image_url": {
+                "url": "https://images.example/chart.png"
+            }},
+        ]}]
+    if case_name == "typed_png_bytes":
+        return [
+            UserMessage("Read the label.", files=[
+                ImagePart(data=png_data, media_type="image/png")
+            ])
+        ], [{"role": "user", "content": [
+            {"type": "text", "text": "Read the label."},
+            {"type": "image_url", "image_url": {
+                "url": "data:image/png;base64,cG5nLWltYWdlLWZpeHR1cmU="
+            }},
+        ]}]
+    if case_name == "typed_webp_bytes":
+        return [
+            UserMessage("Compare this image.", files=[
+                ImagePart(data=webp_data, media_type="image/webp")
+            ])
+        ], [{"role": "user", "content": [
+            {"type": "text", "text": "Compare this image."},
+            {"type": "image_url", "image_url": {
+                "url": "data:image/webp;base64,d2VicC1pbWFnZS1maXh0dXJl"
+            }},
+        ]}]
+    if case_name == "typed_data_url":
+        data_url = "data:image/jpeg;base64,/9j/2Q=="
+        return [UserMessage("Identify this photo.", files=[
+            ImagePart(url=data_url)
+        ])], [{"role": "user", "content": [
+            {"type": "text", "text": "Identify this photo."},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]}]
+    if case_name == "mixed_typed_and_dictionary":
+        data_url = "data:image/webp;base64,bWl4ZWQtZGF0YQ=="
+        return [
+            {"role": "system", "content": "Use visual evidence."},
+            UserMessage("First image: ", files=[ImagePart(
+                url="https://images.example/first.webp", media_type="image/webp"
+            )]),
+            {"role": "user", "content": [
+                {"type": "text", "text": "Second image: "},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ]},
+            {"role": "assistant", "content": "I will compare both."},
+        ], [
+            {"role": "system", "content": "Use visual evidence."},
+            {"role": "user", "content": [
+                {"type": "text", "text": "First image: "},
+                {"type": "image_url", "image_url": {
+                    "url": "https://images.example/first.webp"
+                }},
+            ]},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Second image: "},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ]},
+            {"role": "assistant", "content": "I will compare both."},
+        ]
+    raise AssertionError(f"Unknown image case: {case_name}")
+
+
+@dataclass
+class _ImageTransferRecordingTransport(RecordingTransport):
+    transfer_attempts: list[str] = field(default_factory=list)
+
+    def post_multipart(self, request, form, *, http_error_handler=None):
+        self.transfer_attempts.append("sync multipart upload")
+        raise AssertionError("image request attempted a multipart upload")
+
+
+def _guard_image_transfers(monkeypatch, transport):
+    """Record and block HTTP-library transfers while these tests use I/O doubles."""
+    attempts = transport.transfer_attempts
+
+    def blocked(label):
+        def record_attempt(*args, **kwargs):
+            attempts.append(label)
+            raise AssertionError(f"unexpected local file transfer through {label}")
+        return record_attempt
+
+    import requests
+
+    monkeypatch.setattr(
+        requests.sessions.Session, "request", blocked("requests.Session.request")
+    )
+    monkeypatch.setattr(
+        requests.sessions.Session, "send", blocked("requests.Session.send")
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", blocked("urllib.request.urlopen"))
+    try:
+        import httpx
+    except ImportError:
+        pass
+    else:
+        monkeypatch.setattr(httpx.Client, "send", blocked("httpx.Client.send"))
+        monkeypatch.setattr(
+            httpx.AsyncClient, "send", blocked("httpx.AsyncClient.send")
+        )
+    return attempts
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+@pytest.mark.parametrize("case_name", _IMAGE_CASES)
+def test_zai_images_keep_typed_dictionary_and_mixed_wire_semantics(
+    zai_adapter_runtime, monkeypatch, model, method_kind, case_name
+):
+    """Every native execution path forwards supported images without local transfer."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    adapter._sync_transport = _ImageTransferRecordingTransport(
+        body=_response_payload(model), events=[SSEEvent(None, data=_stream_payload(model))]
+    )
+    transfer_attempts = _guard_image_transfers(monkeypatch, adapter._sync_transport)
+    async_calls = []
+
+    async def async_request(url, **kwargs):
+        async_calls.append((url, kwargs))
+        return _response_payload(model)
+
+    async def async_stream(url, **kwargs):
+        async_calls.append((url, kwargs))
+        yield SSEEvent(None, data=_stream_payload(model))
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    messages, expected_messages = _image_case_messages(case_name)
+    _invoke_tool_method(adapter, method_kind, messages, {})
+
+    if method_kind in {"chat", "stream_chat"}:
+        assert len(adapter._sync_transport.requests) == 1
+        sent_request = adapter._sync_transport.requests[0]
+        assert sent_request.url == ZAI_CHAT_COMPLETIONS_URL
+        payload = sent_request.payload
+        assert async_calls == []
+    else:
+        assert len(async_calls) == 1
+        assert async_calls[0][0] == ZAI_CHAT_COMPLETIONS_URL
+        payload = async_calls[0][1]["payload"]
+        assert adapter._sync_transport.requests == []
+    expected = {"model": model, "messages": expected_messages}
+    if method_kind in {"stream_chat", "astream_chat"}:
+        expected.update({"stream": True, "stream_options": {"include_usage": True}})
+    assert payload == expected
+    assert transfer_attempts == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+@pytest.mark.parametrize(
+    ("case_name", "expected_error", "expected_message"),
+    [
+        ("pdf_url", ValueError, "does not support DocumentPart yet"),
+        ("pdf_bytes", ValueError, "does not support DocumentPart yet"),
+        ("document_dict_url", ValueError, "does not support DocumentPart yet"),
+        ("document_dict_bytes", ValueError, "does not support DocumentPart yet"),
+        ("nonpdf_url", ValueError, "FilePart is not supported as OpenAI Chat Completions file part"),
+        ("nonpdf_bytes", ValueError, "FilePart is not supported as OpenAI Chat Completions file part"),
+        ("portable_schema", NotImplementedError, "does not support portable structured output"),
+        ("response_model", NotImplementedError, "does not support portable structured output"),
+    ],
+)
+def test_zai_unsupported_files_and_structured_output_fail_before_any_send(
+    zai_adapter_runtime, monkeypatch, model, method_kind, case_name,
+    expected_error, expected_message
+):
+    """Unsupported inputs retain their native error and are rejected before I/O."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    adapter._sync_transport = _ImageTransferRecordingTransport(
+        body=_response_payload(model), events=[SSEEvent(None, data=_stream_payload(model))]
+    )
+    transfer_attempts = _guard_image_transfers(monkeypatch, adapter._sync_transport)
+    async_calls = []
+
+    async def async_request(url, **kwargs):
+        async_calls.append((url, kwargs))
+        return _response_payload(model)
+
+    async def async_stream(url, **kwargs):
+        async_calls.append((url, kwargs))
+        yield SSEEvent(None, data=_stream_payload(model))
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    cases = {
+        "pdf_url": (UserMessage("inspect", files=[DocumentPart(
+            url="https://docs.example/report.pdf"
+        )]), {}),
+        "pdf_bytes": (UserMessage("inspect", files=[DocumentPart(
+            data=b"%PDF-1.7 synthetic", media_type="application/pdf"
+        )]), {}),
+        "document_dict_url": ({"role": "user", "content": "inspect", "files": [{
+            "type": "document", "source": {"type": "url",
+                "url": "https://docs.example/report.pdf"}
+        }]}, {}),
+        "document_dict_bytes": ({"role": "user", "content": "inspect", "files": [{
+            "type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                "data": "JVBERi0xLjcgc3ludGhldGlj"}
+        }]}, {}),
+        "nonpdf_url": (UserMessage("inspect", files=[FilePart(
+            url="https://docs.example/report.docx",
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )]), {}),
+        "nonpdf_bytes": (UserMessage("inspect", files=[FilePart(
+            data=b"synthetic document", media_type="application/msword"
+        )]), {}),
+        "portable_schema": (UserMessage("answer in JSON", files=[ImagePart(
+            url="https://images.example/valid.png"
+        )]), {"json_schema": {"type": "object", "properties": {
+            "answer": {"type": "string"}
+        }}}),
+        "response_model": (UserMessage("answer in JSON", files=[ImagePart(
+            url="https://images.example/valid.png"
+        )]), {"response_model": _PortableResponseModel}),
+    }
+    message, kwargs = cases[case_name]
+    valid_image_and_text = UserMessage("valid image context", files=[ImagePart(
+        url="https://images.example/context.png"
+    )])
+    messages = [valid_image_and_text, message]
+    with pytest.raises(expected_error) as caught:
+        _invoke_tool_method(adapter, method_kind, messages, kwargs)
+    assert type(caught.value) is expected_error
+    assert expected_message in str(caught.value)
+    assert adapter._sync_transport.requests == []
+    assert async_calls == []
+    assert transfer_attempts == []
