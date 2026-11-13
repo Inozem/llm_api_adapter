@@ -65,9 +65,14 @@ import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
-from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.models.messages.chat_message import (
+    AIMessage,
+    ToolMessage,
+    UserMessage,
+)
 from llm_api_adapter.models.messages.file_parts import DocumentPart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
+from llm_api_adapter.models.tools.tool_call import ToolCall
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter_zai.adapter import _ZaiStreamState
 from llm_api_adapter_zai.streaming import ZaiStreamAssembler
@@ -1897,3 +1902,427 @@ def test_zai_async_streams_keep_reasoning_tools_and_callbacks_request_local(
         and "capture_reasoning" not in payload
         for payload in sent_payloads
     )
+
+
+def _invoke_tool_method(adapter, method_kind, messages, kwargs):
+    """Run one public method against the configured controlled transport."""
+    method = getattr(adapter, method_kind)
+    if method_kind == "chat":
+        return method(messages, **kwargs)
+    if method_kind == "stream_chat":
+        return list(method(messages, **kwargs))
+    if method_kind == "achat":
+        return asyncio.run(method(messages, **kwargs))
+
+    async def consume():
+        return [item async for item in method(messages, **kwargs)]
+
+    return asyncio.run(consume())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+@pytest.mark.parametrize("description", [None, "Find a value."])
+@pytest.mark.parametrize("selection", ["omitted", "auto"])
+def test_zai_tools_are_declared_with_optional_description_and_auto_selection(
+    zai_adapter_runtime, monkeypatch, model, method_kind, description, selection
+):
+    """All native methods preserve declarations and automatic-only selection."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    adapter._sync_transport = RecordingTransport(
+        body=_response_payload(model),
+        events=[SSEEvent(None, data=_stream_payload(model))],
+    )
+    async_calls = []
+
+    async def async_request(url, **kwargs):
+        async_calls.append((url, kwargs))
+        return _response_payload(model)
+
+    async def async_stream(url, **kwargs):
+        async_calls.append((url, kwargs))
+        yield SSEEvent(None, data=_stream_payload(model))
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    tool = ToolSpec(
+        name="lookup_value",
+        description=description,
+        json_schema={"type": "object", "properties": {"key": {"type": "string"}}},
+    )
+    kwargs = {"tools": [tool]}
+    if selection == "auto":
+        kwargs["tool_choice"] = "auto"
+
+    _invoke_tool_method(adapter, method_kind, [UserMessage("look it up")], kwargs)
+    if method_kind in {"chat", "stream_chat"}:
+        assert len(adapter._sync_transport.requests) == 1
+        payload = adapter._sync_transport.requests[0].payload
+    else:
+        assert len(async_calls) == 1
+        payload = async_calls[0][1]["payload"]
+    expected_function = {
+        "name": "lookup_value",
+        "parameters": {"type": "object", "properties": {"key": {"type": "string"}}},
+    }
+    if description is not None:
+        expected_function["description"] = description
+    expected = {
+        "model": model,
+        "messages": [{"role": "user", "content": "look it up"}],
+        "tools": [{"type": "function", "function": expected_function}],
+    }
+    if selection == "auto":
+        expected["tool_choice"] = "auto"
+    if method_kind in {"stream_chat", "astream_chat"}:
+        expected.update({"stream": True, "stream_options": {"include_usage": True}})
+    assert payload == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+@pytest.mark.parametrize(("count", "accepted"), [(128, True), (129, False)])
+def test_zai_tool_count_boundary_applies_to_every_native_method(
+    zai_adapter_runtime, monkeypatch, model, method_kind, count, accepted
+):
+    """The existing 128 declaration limit is shared across all native entry points."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    adapter._sync_transport = RecordingTransport(
+        body=_response_payload(model),
+        events=[SSEEvent(None, data=_stream_payload(model))],
+    )
+    async_calls = []
+
+    async def async_request(url, **kwargs):
+        async_calls.append((url, kwargs))
+        return _response_payload(model)
+
+    async def async_stream(url, **kwargs):
+        async_calls.append((url, kwargs))
+        yield SSEEvent(None, data=_stream_payload(model))
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    tools = [ToolSpec(name=f"tool_{index}", json_schema={"type": "object"}) for index in range(count)]
+    kwargs = {"tools": tools}
+    if accepted:
+        _invoke_tool_method(adapter, method_kind, [UserMessage("choose")], kwargs)
+        if method_kind in {"chat", "stream_chat"}:
+            assert len(adapter._sync_transport.requests) == 1
+            payload = adapter._sync_transport.requests[0].payload
+        else:
+            assert len(async_calls) == 1
+            payload = async_calls[0][1]["payload"]
+        assert payload["tools"] == [
+            {"type": "function", "function": {
+                "name": f"tool_{index}", "parameters": {"type": "object"}
+            }}
+            for index in range(128)
+        ]
+    else:
+        with pytest.raises(ValueError, match="at most 128"):
+            _invoke_tool_method(adapter, method_kind, [UserMessage("choose")], kwargs)
+        assert adapter._sync_transport.requests == []
+        assert async_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+def test_zai_completed_tool_calls_and_full_caller_history_are_preserved(
+    zai_adapter_runtime, monkeypatch, model, method_kind
+):
+    """A caller builds the next turn from real tool results and optional response metadata."""
+    response_payload = {
+        "id": "tool-response-id", "model": model,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": None,
+            "tool_calls": [
+                {"id": "call-weather-7", "type": "function", "function": {
+                    "name": "get_weather", "arguments": '{"city":"Paris"}'
+                }},
+                {"id": "call-add-9", "type": "function", "function": {
+                    "name": "add", "arguments": '{"left":2,"right":3}'
+                }},
+            ]}, "finish_reason": "tool_calls"}],
+    }
+    second_response_payload = _response_payload(model)
+    stream_tool_events = [
+        SSEEvent(None, data={"id": "stream-tool-response", "model": model, "choices": [{
+            "index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call-weather-7", "type": "function", "function": {
+                    "name": "get_weather", "arguments": '{"city":'
+                }},
+                {"index": 1, "id": "call-add-9", "type": "function", "function": {
+                    "name": "add", "arguments": '{"left":'
+                }},
+            ]}, "finish_reason": None,
+        }]}),
+        SSEEvent(None, data={"id": "stream-tool-response", "model": model, "choices": [{
+            "index": 0, "delta": {"tool_calls": [
+                {"index": 1, "function": {"arguments": '2,"right":3}'}},
+                {"index": 0, "function": {"arguments": '"Paris"}'}},
+            ]}, "finish_reason": "tool_calls",
+        }]})
+    ]
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    adapter._sync_transport = RecordingTransport(
+        body=response_payload, events=stream_tool_events
+    )
+    async_calls = []
+    async_stream_count = 0
+
+    async def async_request(url, **kwargs):
+        async_calls.append((url, kwargs))
+        return response_payload if len(async_calls) == 1 else second_response_payload
+
+    async def async_stream(url, **kwargs):
+        nonlocal async_stream_count
+        async_calls.append((url, kwargs))
+        async_stream_count += 1
+        events = stream_tool_events if async_stream_count == 1 else [
+            SSEEvent(None, data=_stream_payload(model))
+        ]
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    tool_specs = [
+        ToolSpec(name="get_weather", description="Read the weather.",
+            json_schema={"type": "object", "properties": {"city": {"type": "string"}}}),
+        ToolSpec(name="add", json_schema={"type": "object", "properties": {
+            "left": {"type": "integer"}, "right": {"type": "integer"}
+        }}),
+    ]
+    declarations = [
+        {"type": "function", "function": {
+            "name": "get_weather", "description": "Read the weather.",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+        }},
+        {"type": "function", "function": {
+            "name": "add", "parameters": {"type": "object", "properties": {
+                "left": {"type": "integer"}, "right": {"type": "integer"}
+            }},
+        }},
+    ]
+    first_messages = [UserMessage("What is the weather in Paris and add 2 + 3?")]
+    first_kwargs = {"tools": tool_specs, "tool_choice": "auto"}
+    if method_kind in {"chat", "achat"}:
+        tool_response = _invoke_tool_method(adapter, method_kind, first_messages, first_kwargs)
+    else:
+        completed = []
+        visible = _invoke_tool_method(
+            adapter, method_kind, first_messages, {**first_kwargs, "on_done": completed.append}
+        )
+        assert visible == [] and len(completed) == 1
+        tool_response = completed[0]
+    if method_kind in {"chat", "stream_chat"}:
+        first_payload = adapter._sync_transport.requests[0].payload
+        assert len(adapter._sync_transport.requests) == 1
+    else:
+        first_payload = async_calls[0][1]["payload"]
+        assert len(async_calls) == 1
+    assert first_payload["tools"] == declarations and first_payload["tool_choice"] == "auto"
+    assert [
+        (call.name, call.arguments, call.call_id) for call in tool_response.tool_calls
+    ] == [
+        ("get_weather", {"city": "Paris"}, "call-weather-7"),
+        ("add", {"left": 2, "right": 3}, "call-add-9"),
+    ]
+    tool_response.provider_data = {"opaque": "provider-replay-sentinel"}
+    assert tool_response.response_id == (
+        "tool-response-id" if method_kind in {"chat", "achat"} else "stream-tool-response"
+    )
+    history = [
+        *first_messages,
+        AIMessage(content="", tool_calls=tool_response.tool_calls),
+        ToolMessage(content='{"temperature_c": 18}', tool_call_id="call-weather-7"),
+        ToolMessage(content="5", tool_call_id="call-add-9"),
+        UserMessage("Use the results and keep this history."),
+    ]
+    adapter._sync_transport.body = second_response_payload
+    adapter._sync_transport.events = [SSEEvent(None, data=_stream_payload(model))]
+    _invoke_tool_method(
+        adapter, method_kind, history,
+        {**first_kwargs, "previous_response": tool_response},
+    )
+    if method_kind in {"chat", "stream_chat"}:
+        assert len(adapter._sync_transport.requests) == 2
+        payload_with_previous = copy.deepcopy(adapter._sync_transport.requests[1].payload)
+    else:
+        assert len(async_calls) == 2
+        payload_with_previous = copy.deepcopy(async_calls[1][1]["payload"])
+    _invoke_tool_method(adapter, method_kind, history, first_kwargs)
+    if method_kind in {"chat", "stream_chat"}:
+        assert len(adapter._sync_transport.requests) == 3
+        payload_without_previous = adapter._sync_transport.requests[2].payload
+    else:
+        assert len(async_calls) == 3
+        payload_without_previous = async_calls[2][1]["payload"]
+    assert payload_with_previous == payload_without_previous
+    assert payload_with_previous["messages"] == [
+        {"role": "user", "content": "What is the weather in Paris and add 2 + 3?"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call-weather-7", "type": "function", "function": {
+                "name": "get_weather", "arguments": '{"city": "Paris"}'
+            }},
+            {"id": "call-add-9", "type": "function", "function": {
+                "name": "add", "arguments": '{"left": 2, "right": 3}'
+            }},
+        ]},
+        {"role": "tool", "tool_call_id": "call-weather-7", "content": '{"temperature_c": 18}'},
+        {"role": "tool", "tool_call_id": "call-add-9", "content": "5"},
+        {"role": "user", "content": "Use the results and keep this history."},
+    ]
+    assert payload_with_previous["tools"] == declarations
+    assert payload_with_previous["tool_choice"] == "auto"
+    expected_keys = {"model", "messages", "tools", "tool_choice"}
+    if method_kind in {"stream_chat", "astream_chat"}:
+        expected_keys.update({"stream", "stream_options"})
+    assert set(payload_with_previous) == expected_keys
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+def test_zai_fragmented_tool_arguments_keep_call_index_associations(
+    zai_adapter_runtime, monkeypatch, model, method_kind
+):
+    """One consumed stream delivers associated calls before its single final callback."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    sync_events = [
+        SSEEvent(None, data={"id": "fragmented-id", "model": model, "choices": [
+            {"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call-a", "type": "function", "function": {"name": "weather", "arguments": '{"city":'}},
+                {"index": 1, "id": "call-b", "type": "function", "function": {"name": "add", "arguments": '{"left":'}},
+            ]}, "finish_reason": None}]}),
+        SSEEvent(None, data={"id": "fragmented-id", "model": model, "choices": [
+            {"index": 0, "delta": {"tool_calls": [
+                {"index": 1, "function": {"arguments": "2,\"right\":3}"}},
+                {"index": 0, "function": {"arguments": "\"Paris\"}"}},
+            ]}, "finish_reason": "tool_calls"}]})]
+    adapter._sync_transport = RecordingTransport(events=sync_events)
+    async_calls = []
+
+    async def async_stream(url, **kwargs):
+        async_calls.append((url, kwargs))
+        for event in sync_events:
+            yield event
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    tools = [
+        ToolSpec(name="weather", json_schema={"type": "object", "properties": {
+            "city": {"type": "string"}
+        }}),
+        ToolSpec(name="add", json_schema={"type": "object", "properties": {
+            "left": {"type": "integer"}, "right": {"type": "integer"}
+        }}),
+    ]
+    callbacks = []
+    kwargs = {
+        "tools": tools,
+        "on_tool_call": lambda call: callbacks.append(("tool", call)),
+        "on_done": lambda response: callbacks.append(("done", response)),
+    }
+    if method_kind == "stream_chat":
+        visible = list(adapter.stream_chat([UserMessage("run both")], **kwargs))
+    else:
+        async def consume():
+            return [item async for item in adapter.astream_chat([UserMessage("run both")], **kwargs)]
+        visible = asyncio.run(consume())
+    assert visible == []
+    if method_kind == "stream_chat":
+        assert len(adapter._sync_transport.requests) == 1
+        sent_payload = adapter._sync_transport.requests[0].payload
+    else:
+        assert len(async_calls) == 1
+        sent_payload = async_calls[0][1]["payload"]
+    assert sent_payload["tools"] == [
+        {"type": "function", "function": {
+            "name": "weather", "parameters": {"type": "object", "properties": {
+                "city": {"type": "string"}
+            }}
+        }},
+        {"type": "function", "function": {
+            "name": "add", "parameters": {"type": "object", "properties": {
+                "left": {"type": "integer"}, "right": {"type": "integer"}
+            }}
+        }},
+    ]
+    assert [kind for kind, _ in callbacks] == ["tool", "tool", "done"]
+    calls = [call for kind, call in callbacks if kind == "tool"]
+    completed = [response for kind, response in callbacks if kind == "done"]
+    assert len(completed) == 1
+    expected_calls = [
+        ("weather", {"city": "Paris"}, "call-a"),
+        ("add", {"left": 2, "right": 3}, "call-b"),
+    ]
+    assert [(item.name, item.arguments, item.call_id) for item in calls] == expected_calls
+    assert [(item.name, item.arguments, item.call_id) for item in completed[0].tool_calls] == expected_calls
+    assert completed[0].response_id == "fragmented-id"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+@pytest.mark.parametrize(
+    ("case_name", "choice", "parallel", "error_type"),
+    [
+        ("none_string", "none", None, ToolChoiceError),
+        ("any_string", "any", None, ToolChoiceError),
+        ("required_string", "required", None, ToolChoiceError),
+        ("none_dict", {"type": "none"}, None, ToolChoiceError),
+        ("any_dict", {"type": "any"}, None, ToolChoiceError),
+        ("known_named_string", "known_tool", None, ToolChoiceError),
+        ("known_named_dict", {"type": "tool", "name": "known_tool"}, None, ToolChoiceError),
+        ("missing_named_string", "missing_tool", None, ToolChoiceError),
+        ("missing_named_dict", {"type": "tool", "name": "missing_tool"}, None, ToolChoiceError),
+        ("parallel_false", None, False, NotImplementedError),
+        ("parallel_true", None, True, NotImplementedError),
+    ],
+)
+def test_zai_unsupported_tool_controls_fail_before_any_send(
+    zai_adapter_runtime, monkeypatch, model, method_kind, case_name,
+    choice, parallel, error_type
+):
+    """Rule-rejected choices and either parallel value fail before each transport."""
+    model_spec = zai_adapter_runtime.organizations["zai"].models[model]
+    tool_choice_rule = next(
+        rule for rule in model_spec.request_rules.rules
+        if rule.handler == "restrict_tool_choice"
+    )
+    allowed_choices = set(tool_choice_rule.arguments["allowed_values"])
+    assert "auto" in allowed_choices
+    if case_name not in {"parallel_false", "parallel_true"}:
+        if isinstance(choice, str):
+            assert choice not in allowed_choices
+        else:
+            assert choice["type"] not in allowed_choices
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    adapter._sync_transport = RecordingTransport(
+        body=_response_payload(model),
+        events=[SSEEvent(None, data=_stream_payload(model))],
+    )
+    async_calls = []
+
+    async def async_request(url, **kwargs):
+        async_calls.append((url, kwargs))
+        return _response_payload(model)
+
+    async def async_stream(url, **kwargs):
+        async_calls.append((url, kwargs))
+        yield SSEEvent(None, data=_stream_payload(model))
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    kwargs = {"tools": [ToolSpec(name="known_tool", json_schema={"type": "object"})]}
+    if choice is not None:
+        kwargs["tool_choice"] = choice
+    if parallel is not None:
+        kwargs["parallel_tool_calls"] = parallel
+    with pytest.raises(error_type):
+        _invoke_tool_method(adapter, method_kind, [UserMessage("invalid control")], kwargs)
+    assert len(adapter._sync_transport.requests) == 0
+    assert len(async_calls) == 0

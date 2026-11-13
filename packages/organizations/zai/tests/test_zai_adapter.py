@@ -36,6 +36,7 @@ from llm_api_adapter.llms.transports import (
     SyncTransport,
     TransportRequest,
 )
+from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.messages.chat_message import (
     AIMessage,
     ToolMessage,
@@ -46,11 +47,13 @@ from llm_api_adapter.models.tools.tool_call import ToolCall
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter_zai.plugin import PLUGIN
 
 
 MODEL = "glm-5.3-flash"
 FLASHX_MODEL = "glm-5.3-flashx"
 FLASHX_LEGAL_MODEL = "glm-5.3-flashx-legal"
+ZAI_MODEL_IDS = tuple(PLUGIN.model_metadata.organization_data["models"])
 WEATHER_TOOL = ToolSpec(
     name="get_weather",
     description="Return the weather for a city.",
@@ -605,6 +608,74 @@ def test_zai_preserves_tool_result_history_in_openai_payload(zai_runtime):
         },
         {"role": "user", "content": "Now summarize it."},
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODEL_IDS)
+def test_zai_facade_dict_tool_history_uses_caller_history_with_previous_response(
+    zai_runtime, model
+):
+    """Dictionary tool turns retain associations and previous_response adds no replay field."""
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai", model=model, api_key="zai-test-key"
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+    messages = [
+        {"role": "user", "content": "Get the forecast."},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call-forecast-4",
+            "type": "function",
+            "function": {
+                "name": "get_weather", "arguments": '{"city":"Rome"}'
+            },
+        }]},
+        {"role": "tool", "tool_call_id": "call-forecast-4", "content": "sunny"},
+        {"role": "user", "content": "Summarize the forecast."},
+    ]
+
+    previous_response = ChatResponse(
+        model=model,
+        response_id="caller-response-id",
+        provider_data={"opaque": "provider-replay-sentinel"},
+    )
+    adapter.chat(
+        messages,
+        tools=[WEATHER_TOOL],
+        tool_choice="auto",
+        previous_response=previous_response,
+    )
+
+    assert len(transport.requests) == 1
+    payload = transport.requests[0].payload
+    assert payload["messages"] == [
+        {"role": "user", "content": "Get the forecast."},
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "call-forecast-4", "type": "function", "function": {
+                "name": "get_weather", "arguments": '{"city": "Rome"}'
+            }
+        }]},
+        {"role": "tool", "tool_call_id": "call-forecast-4", "content": "sunny"},
+        {"role": "user", "content": "Summarize the forecast."},
+    ]
+    assert payload["tool_choice"] == "auto"
+    assert payload["tools"] == [{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Return the weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    }]
+    assert set(payload) == {"model", "messages", "tools", "tool_choice"}
+    adapter.chat(messages, tools=[WEATHER_TOOL], tool_choice="auto")
+    assert len(transport.requests) == 2
+    assert transport.requests[1].payload == payload
+    assert "previous_response" not in payload and "previous_response_id" not in payload
 
 
 @pytest.mark.unit
