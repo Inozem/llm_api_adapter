@@ -2997,3 +2997,656 @@ def test_zai_stream_partial_visible_eof_keeps_native_outcome_without_finish(
     assert response.refusal is None and response.tool_calls is None
     assert response.usage is None
     assert response.parsed_json is None and response.parsed_model is None
+
+
+class _TrackedSyncSource:
+    """Retain the raw SSE iterator so lifecycle ownership is observed directly."""
+
+    def __init__(self, events, *, error=None, close_error=None):
+        self.events = iter(events)
+        self.error = error
+        self.close_error = close_error
+        self.close_count = 0
+        self.next_count = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.next_count += 1
+        try:
+            return next(self.events)
+        except StopIteration:
+            if self.error is not None:
+                raise self.error
+            raise
+
+    def close(self):
+        self.close_count += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+class _TrackedAsyncSource:
+    """Retain an async SSE source and expose explicit closure/cancellation."""
+
+    def __init__(self, events=(), *, error=None, close_error=None, gate=None):
+        self.events = iter(events)
+        self.error = error
+        self.close_error = close_error
+        self.gate = gate
+        self.close_count = 0
+        self.next_count = 0
+        self.cancelled = None
+        self.gate_started = asyncio.Event()
+        self.closed_event = asyncio.Event()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        self.next_count += 1
+        if self.gate is not None and self.next_count > 1:
+            self.gate_started.set()
+            try:
+                await self.gate.wait()
+            except asyncio.CancelledError as error:
+                self.cancelled = error
+                raise
+        try:
+            return next(self.events)
+        except StopIteration:
+            if self.error is not None:
+                raise self.error
+            raise StopAsyncIteration
+
+    async def aclose(self):
+        self.close_count += 1
+        self.closed_event.set()
+        if self.close_error is not None:
+            raise self.close_error
+
+
+class _TrackedSourceTransport(RecordingTransport):
+    """Provide one retained raw SSE iterator through the real native client."""
+
+    def __init__(self, source):
+        super().__init__(events=[])
+        self.source = source
+
+    def post_sse(self, request, *, http_error_handler=None, stream_error_handler=None):
+        self.requests.append(request)
+        return self.source
+
+
+def _bind_tracked_async_source(monkeypatch, source):
+    """Patch only async transport I/O and return a list of observed sends."""
+    calls = []
+
+    def stream_factory(url, **kwargs):
+        calls.append((url, kwargs))
+        return source
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", stream_factory)
+    return calls
+
+
+def _life_event(*, text="", reasoning="", tool_fragment=None, finish=None):
+    """Build one controlled Z.ai event with independent visible/reasoning/tool data."""
+    delta = {}
+    if text:
+        delta["content"] = text
+    if reasoning:
+        delta["reasoning_content"] = reasoning
+    if tool_fragment is not None:
+        delta["tool_calls"] = [tool_fragment]
+    return SSEEvent(None, data={"id": "life-id", "choices": [{
+        "index": 0, "delta": delta, "finish_reason": finish,
+    }]})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+@pytest.mark.parametrize("buffer_chars", [None, 1, 3])
+def test_zai_native_stream_success_orders_bounded_text_reasoning_and_tools(
+    zai_adapter_runtime, monkeypatch, model, method_kind, buffer_chars
+):
+    """Native streams flush bounded visible text before tools and final success."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    adapter._sync_transport = RecordingTransport()
+    tool_head = {"index": 0, "id": "call-1", "type": "function", "function": {
+        "name": "lookup", "arguments": '{"key":',
+    }}
+    tool_tail = {"index": 0, "function": {"arguments": '"v"}'}}
+    events = [
+        _life_event(text="he", reasoning="think"),
+        _life_event(text="llo ", tool_fragment=tool_head),
+        _life_event(text="world", tool_fragment=tool_tail, finish="tool_calls"),
+    ]
+    callbacks = []
+    chunks = []
+    deltas = []
+    reasoning = []
+    tools = []
+    done = []
+    async_calls = _bind_tracked_async_source(
+        monkeypatch, _TrackedAsyncSource([])
+    )
+
+    if method_kind == "stream_chat":
+        source = _TrackedSyncSource(events)
+        adapter._sync_transport = _TrackedSourceTransport(source)
+        visible = list(adapter.stream_chat(
+            [UserMessage("hello")], buffer_chars=buffer_chars, capture_reasoning=True,
+            on_chunk=lambda item: (callbacks.append("chunk"), chunks.append(item.text)),
+            on_delta=lambda item: (callbacks.append("delta"), deltas.append(item)),
+            on_reasoning=lambda item: (callbacks.append("reasoning"), reasoning.append(item.text)),
+            on_tool_call=lambda item: (callbacks.append("tool"), tools.append(item)),
+            on_done=lambda item: (callbacks.append("done"), done.append(item)),
+        ))
+        assert len(adapter._sync_transport.requests) == 1
+        assert async_calls == []
+    else:
+        source = _TrackedAsyncSource(events)
+        async_calls = _bind_tracked_async_source(monkeypatch, source)
+
+        async def consume():
+            async def chunk_callback(item):
+                callbacks.append("chunk")
+                chunks.append(item.text)
+
+            def delta_callback(item):
+                async def record():
+                    await asyncio.sleep(0)
+                    callbacks.append("delta")
+                    deltas.append(item)
+                return record()
+
+            async def reasoning_callback(item):
+                callbacks.append("reasoning")
+                reasoning.append(item.text)
+
+            def tool_callback(item):
+                callbacks.append("tool")
+                tools.append(item)
+
+            async def done_callback(item):
+                callbacks.append("done")
+                done.append(item)
+
+            stream = adapter.astream_chat(
+                [UserMessage("hello")], buffer_chars=buffer_chars, capture_reasoning=True,
+                on_chunk=chunk_callback, on_delta=delta_callback,
+                on_reasoning=reasoning_callback, on_tool_call=tool_callback,
+                on_done=done_callback,
+            )
+            visible = [item async for item in stream]
+            assert source.close_count == 1
+            assert len(async_calls) == 1
+            assert adapter._sync_transport.requests == []
+            return visible
+
+        visible = asyncio.run(consume())
+
+    expected_visible = (
+        ["he", "llo ", "world"] if buffer_chars is None
+        else list("hello world") if buffer_chars == 1
+        else ["hel", "lo ", "wor", "ld"]
+    )
+    assert visible == expected_visible
+    assert chunks == visible and deltas == visible
+    assert all(0 < len(chunk) <= (buffer_chars or 6) for chunk in visible)
+    assert reasoning == ["think"]
+    assert len(tools) == 1 and tools[0].name == "lookup"
+    assert tools[0].arguments == {"key": "v"}
+    last_text_callback = max(
+        index for index, callback in enumerate(callbacks)
+        if callback in {"chunk", "delta"}
+    )
+    assert last_text_callback < callbacks.index("tool") < callbacks.index("done")
+    assert callbacks.count("tool") == callbacks.count("done") == 1
+    assert callbacks[-1] == "done" and len(done) == 1
+    assert done[0].content == "hello world"
+    assert done[0].reasoning_events[0].text == "think"
+    assert source.close_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+def test_zai_native_stream_failure_preserves_exception_and_skips_success_flush(
+    zai_adapter_runtime, monkeypatch, model, method_kind
+):
+    """Provider failure closes the raw source without flushing a pending tail."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    adapter._sync_transport = RecordingTransport()
+    failure = RuntimeError("provider source failed")
+    events = [_life_event(text="abc"), _life_event(tool_fragment={
+        "index": 0, "id": "late", "type": "function", "function": {
+            "name": "lookup", "arguments": "{}",
+        },
+    })]
+    completed = []
+    tools = []
+    chunk_trace = []
+    delta_trace = []
+    yielded = []
+    async_calls = _bind_tracked_async_source(
+        monkeypatch, _TrackedAsyncSource([])
+    )
+    if method_kind == "stream_chat":
+        source = _TrackedSyncSource(events[:1], error=failure)
+        adapter._sync_transport = _TrackedSourceTransport(source)
+        stream = adapter.stream_chat(
+            [UserMessage("failure")], buffer_chars=2,
+            on_done=completed.append, on_tool_call=tools.append,
+            on_chunk=lambda chunk: chunk_trace.append(chunk.text),
+            on_delta=delta_trace.append,
+        )
+        yielded.append(next(stream))
+        assert yielded == ["ab"]
+        with pytest.raises(RuntimeError) as caught:
+            yielded.append(next(stream))
+        assert caught.value is failure
+        assert source.close_count == 1
+        assert len(adapter._sync_transport.requests) == 1
+        assert async_calls == []
+    else:
+        source = _TrackedAsyncSource(events[:1], error=failure)
+        async_calls = _bind_tracked_async_source(monkeypatch, source)
+
+        async def consume():
+            stream = adapter.astream_chat(
+                [UserMessage("failure")], buffer_chars=2,
+                on_done=completed.append, on_tool_call=tools.append,
+                on_chunk=lambda chunk: chunk_trace.append(chunk.text),
+                on_delta=delta_trace.append,
+            )
+            yielded.append(await anext(stream))
+            assert yielded == ["ab"]
+            with pytest.raises(RuntimeError) as caught:
+                yielded.append(await anext(stream))
+            assert caught.value is failure
+            assert source.close_count == 1
+            assert len(async_calls) == 1
+            assert adapter._sync_transport.requests == []
+
+        asyncio.run(consume())
+    assert chunk_trace == delta_trace == ["ab"]
+    assert yielded == ["ab"]
+    assert completed == [] and tools == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+@pytest.mark.parametrize("buffer_chars", [0, -1, True, 1.5, "2"])
+def test_zai_native_stream_rejects_invalid_buffer_before_io(
+    zai_adapter_runtime, monkeypatch, method_kind, buffer_chars
+):
+    """Invalid stream bounds retain the exact local ValueError before transport."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
+    sync_source = _TrackedSyncSource([])
+    adapter._sync_transport = _TrackedSourceTransport(sync_source)
+    async_calls = []
+
+    def stream_factory(*args, **kwargs):
+        async_calls.append((args, kwargs))
+        return _TrackedAsyncSource([])
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", stream_factory)
+    with pytest.raises(ValueError, match="buffer_chars must be None or a positive integer") as caught:
+        if method_kind == "stream_chat":
+            list(adapter.stream_chat([UserMessage("bad bound")], buffer_chars=buffer_chars))
+        else:
+            async def consume():
+                return [item async for item in adapter.astream_chat(
+                    [UserMessage("bad bound")], buffer_chars=buffer_chars
+                )]
+            asyncio.run(consume())
+    assert type(caught.value) is ValueError
+    assert adapter._sync_transport.requests == []
+    assert async_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+def test_zai_native_stream_caller_close_does_not_take_success_route(
+    zai_adapter_runtime, monkeypatch, model, method_kind
+):
+    """Explicit caller closure owns the raw source and suppresses pending success."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    adapter._sync_transport = RecordingTransport()
+    completed = []
+    chunk_trace = []
+    delta_trace = []
+    yielded = []
+    event = _life_event(text="abc")
+    if method_kind == "stream_chat":
+        source = _TrackedSyncSource([event, _life_event(text="never")])
+        adapter._sync_transport = _TrackedSourceTransport(source)
+        async_calls = _bind_tracked_async_source(
+            monkeypatch, _TrackedAsyncSource([])
+        )
+        stream = adapter.stream_chat(
+            [UserMessage("close")], buffer_chars=2, on_done=completed.append,
+            on_chunk=lambda chunk: chunk_trace.append(chunk.text),
+            on_delta=delta_trace.append,
+        )
+        yielded.append(next(stream))
+        assert yielded == ["ab"]
+        stream.close()
+        assert source.close_count == 1
+        assert len(adapter._sync_transport.requests) == 1
+        assert async_calls == []
+    else:
+        source = _TrackedAsyncSource([event, _life_event(text="never")])
+        async_calls = _bind_tracked_async_source(monkeypatch, source)
+
+        async def consume():
+            stream = adapter.astream_chat(
+                [UserMessage("close")], buffer_chars=2, on_done=completed.append,
+                on_chunk=lambda chunk: chunk_trace.append(chunk.text),
+                on_delta=delta_trace.append,
+            )
+            yielded.append(await anext(stream))
+            assert yielded == ["ab"]
+            await stream.aclose()
+            assert source.close_count == 1
+            assert len(async_calls) == 1
+            assert adapter._sync_transport.requests == []
+
+        asyncio.run(consume())
+    assert chunk_trace == delta_trace == yielded == ["ab"]
+    assert completed == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+def test_zai_native_async_stream_cancellation_closes_raw_source_without_success(
+    zai_adapter_runtime, monkeypatch, model
+):
+    """Real consumer cancellation closes the owned async source before loop exit."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    adapter._sync_transport = RecordingTransport()
+    gate = asyncio.Event()
+    source = _TrackedAsyncSource([_life_event(text="abc")], gate=gate)
+    monkeypatch.setattr(async_client_module, "async_stream_request", lambda *a, **k: source)
+    completed = []
+    chunk_trace = []
+    delta_trace = []
+    yielded = []
+    cancellations = []
+
+    async def consume():
+        stream = adapter.astream_chat(
+            [UserMessage("cancel")], buffer_chars=2, on_done=completed.append,
+            on_chunk=lambda chunk: chunk_trace.append(chunk.text),
+            on_delta=delta_trace.append,
+        )
+        yielded.append(await asyncio.wait_for(anext(stream), timeout=2))
+        assert yielded == ["ab"]
+        waiter = asyncio.create_task(anext(stream))
+        await asyncio.wait_for(source.gate_started.wait(), timeout=2)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await waiter
+        cancellations.append(caught.value)
+        assert source.cancelled is caught.value
+        assert source.close_count == 1
+        assert len(async_calls) == 1
+        assert adapter._sync_transport.requests == []
+        assert chunk_trace == delta_trace == yielded == ["ab"]
+        assert completed == []
+
+    async_calls = _bind_tracked_async_source(monkeypatch, source)
+    asyncio.run(asyncio.wait_for(consume(), timeout=5))
+    assert len(cancellations) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+def test_zai_native_stream_close_failure_prevents_success_completion(
+    zai_adapter_runtime, monkeypatch, method_kind
+):
+    """A raw-source close fault on normal EOF cannot flush a pending success tail."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
+    adapter._sync_transport = RecordingTransport()
+    close_failure = RuntimeError("raw source close failed")
+    completed = []
+    chunk_trace = []
+    delta_trace = []
+    yielded = []
+    if method_kind == "stream_chat":
+        source = _TrackedSyncSource([_life_event(text="tail")], close_error=close_failure)
+        adapter._sync_transport = _TrackedSourceTransport(source)
+        async_calls = _bind_tracked_async_source(
+            monkeypatch, _TrackedAsyncSource([])
+        )
+        stream = adapter.stream_chat(
+            [UserMessage("close fault")], buffer_chars=5, on_done=completed.append,
+            on_chunk=lambda chunk: chunk_trace.append(chunk.text),
+            on_delta=delta_trace.append,
+        )
+        with pytest.raises(RuntimeError) as caught:
+            yielded.extend(stream)
+        assert caught.value is close_failure
+        assert source.close_count == 1
+        assert len(adapter._sync_transport.requests) == 1
+        assert async_calls == []
+    else:
+        source = _TrackedAsyncSource([_life_event(text="tail")], close_error=close_failure)
+        async_calls = _bind_tracked_async_source(monkeypatch, source)
+
+        async def consume():
+            stream = adapter.astream_chat(
+                [UserMessage("close fault")], buffer_chars=5, on_done=completed.append,
+                on_chunk=lambda chunk: chunk_trace.append(chunk.text),
+                on_delta=delta_trace.append,
+            )
+            with pytest.raises(RuntimeError) as caught:
+                async for item in stream:
+                    yielded.append(item)
+            assert caught.value is close_failure
+            assert source.close_count == 1
+            assert len(async_calls) == 1
+            assert adapter._sync_transport.requests == []
+            assert yielded == chunk_trace == delta_trace == []
+
+        asyncio.run(consume())
+    assert yielded == chunk_trace == delta_trace == []
+    assert completed == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+def test_zai_native_callback_error_wins_over_raw_source_close_failure(
+    zai_adapter_runtime, monkeypatch, method_kind
+):
+    """Closing after a caller callback failure preserves its identity over close faults."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
+    adapter._sync_transport = RecordingTransport()
+    callback_failure = RuntimeError("caller callback failed")
+    close_failure = RuntimeError("secondary raw source close failed")
+    event = _life_event(text="abc")
+    completed = []
+    chunk_trace = []
+    delta_attempts = []
+    yielded = []
+    if method_kind == "stream_chat":
+        source = _TrackedSyncSource([event], close_error=close_failure)
+        adapter._sync_transport = _TrackedSourceTransport(source)
+        async_calls = _bind_tracked_async_source(
+            monkeypatch, _TrackedAsyncSource([])
+        )
+
+        def fail_delta(_text):
+            delta_attempts.append(_text)
+            raise callback_failure
+
+        stream = adapter.stream_chat(
+            [UserMessage("callback close")], buffer_chars=2,
+            on_delta=fail_delta, on_done=completed.append,
+            on_chunk=lambda chunk: chunk_trace.append(chunk.text),
+        )
+        with pytest.raises(RuntimeError) as caught:
+            yielded.extend(stream)
+        assert caught.value is callback_failure
+        assert source.close_count == 1
+        assert len(adapter._sync_transport.requests) == 1
+        assert async_calls == []
+    else:
+        source = _TrackedAsyncSource([event], close_error=close_failure)
+        async_calls = _bind_tracked_async_source(monkeypatch, source)
+
+        async def consume():
+            async def fail_delta(_text):
+                delta_attempts.append(_text)
+                raise callback_failure
+
+            stream = adapter.astream_chat(
+                [UserMessage("callback close")], buffer_chars=2,
+                on_delta=fail_delta, on_done=completed.append,
+                on_chunk=lambda chunk: chunk_trace.append(chunk.text),
+            )
+            with pytest.raises(RuntimeError) as caught:
+                async for item in stream:
+                    yielded.append(item)
+            assert caught.value is callback_failure
+            assert source.close_count == 1
+            assert len(async_calls) == 1
+            assert adapter._sync_transport.requests == []
+            assert yielded == [] and chunk_trace == ["ab"]
+            assert delta_attempts == ["ab"]
+            assert completed == []
+
+        asyncio.run(consume())
+    assert yielded == [] and chunk_trace == ["ab"]
+    assert delta_attempts == ["ab"]
+    assert completed == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+@pytest.mark.parametrize("callback_name", ["on_chunk", "on_delta", "on_reasoning", "on_tool_call", "on_done"])
+def test_zai_native_stream_callback_errors_keep_identity_and_close_source(
+    zai_adapter_runtime, monkeypatch, method_kind, callback_name
+):
+    """Early and completion-stage callback failures stop at their exact callback point."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
+    adapter._sync_transport = RecordingTransport()
+    failure = RuntimeError(f"{callback_name} failed")
+    events = [_life_event(text="abc"), _life_event(reasoning="reason"), _life_event(
+        tool_fragment={"index": 0, "id": "c", "type": "function", "function": {
+            "name": "lookup", "arguments": "{}",
+        }}, finish="tool_calls",
+    )]
+    order = []
+    yielded = []
+    tools = []
+    done_calls = []
+    async_calls = _bind_tracked_async_source(
+        monkeypatch, _TrackedAsyncSource([])
+    )
+
+    if method_kind == "stream_chat":
+        source = _TrackedSyncSource(events)
+        adapter._sync_transport = _TrackedSourceTransport(source)
+
+        def make_callback(name, value_getter):
+            def invoke(value):
+                value = value_getter(value)
+                order.append((name, value))
+                if callback_name == {
+                    "chunk": "on_chunk", "delta": "on_delta",
+                    "reasoning": "on_reasoning", "tool": "on_tool_call",
+                    "done": "on_done",
+                }[name]:
+                    raise failure
+                if name == "tool":
+                    tools.append(value)
+                if name == "done":
+                    done_calls.append(value)
+            return invoke
+
+        kwargs = {
+            "on_chunk": make_callback("chunk", lambda item: item.text),
+            "on_delta": make_callback("delta", lambda item: item),
+            "on_reasoning": make_callback("reasoning", lambda item: item.text),
+            "on_tool_call": make_callback("tool", lambda item: item.name),
+            "on_done": make_callback("done", lambda _item: "done"),
+        }
+        stream = adapter.stream_chat(
+            [UserMessage("callback")], buffer_chars=2, capture_reasoning=True, **kwargs
+        )
+        with pytest.raises(RuntimeError) as caught:
+            while True:
+                yielded.append(next(stream))
+        assert caught.value is failure
+        assert source.close_count == 1
+        assert len(adapter._sync_transport.requests) == 1
+        assert async_calls == []
+    else:
+        source = _TrackedAsyncSource(events)
+        async_calls = _bind_tracked_async_source(monkeypatch, source)
+
+        async def consume():
+            def make_callback(name, value_getter):
+                async def invoke(value):
+                    value = value_getter(value)
+                    order.append((name, value))
+                    if callback_name == {
+                        "chunk": "on_chunk", "delta": "on_delta",
+                        "reasoning": "on_reasoning", "tool": "on_tool_call",
+                        "done": "on_done",
+                    }[name]:
+                        raise failure
+                    if name == "tool":
+                        tools.append(value)
+                    if name == "done":
+                        done_calls.append(value)
+                return invoke
+
+            kwargs = {
+                "on_chunk": make_callback("chunk", lambda item: item.text),
+                "on_delta": make_callback("delta", lambda item: item),
+                "on_reasoning": make_callback("reasoning", lambda item: item.text),
+                "on_tool_call": make_callback("tool", lambda item: item.name),
+                "on_done": make_callback("done", lambda _item: "done"),
+            }
+            with pytest.raises(RuntimeError) as caught:
+                stream = adapter.astream_chat(
+                    [UserMessage("callback")], buffer_chars=2,
+                    capture_reasoning=True, **kwargs,
+                )
+                async for item in stream:
+                    yielded.append(item)
+            assert caught.value is failure
+            assert source.close_count == 1
+            assert len(async_calls) == 1
+            assert adapter._sync_transport.requests == []
+
+        asyncio.run(consume())
+    prefix = [("chunk", "ab"), ("delta", "ab")]
+    if callback_name == "on_chunk":
+        expected_order = [("chunk", "ab")]
+        expected_yielded = []
+    elif callback_name == "on_delta":
+        expected_order = prefix
+        expected_yielded = []
+    elif callback_name == "on_reasoning":
+        expected_order = prefix + [("reasoning", "reason")]
+        expected_yielded = ["ab"]
+    else:
+        expected_order = prefix + [
+            ("reasoning", "reason"), ("chunk", "c"), ("delta", "c"),
+            ("tool", "lookup"),
+        ]
+        expected_yielded = ["ab", "c"]
+        if callback_name == "on_done":
+            expected_order.append(("done", "done"))
+    assert order == expected_order
+    assert yielded == expected_yielded
+    assert done_calls == []
+    assert tools == ([] if callback_name in {"on_chunk", "on_delta", "on_reasoning", "on_tool_call"} else ["lookup"])
