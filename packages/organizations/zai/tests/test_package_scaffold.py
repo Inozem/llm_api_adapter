@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +27,10 @@ from tests.external_organization_metadata import (
     read_project_metadata,
     requirement_target,
 )
+
+
+CORE_REQUIREMENT_SPECIFIER = SpecifierSet(">=0.10.0,<1.0.0")
+ROOT_ZAI_REQUIREMENT_SPECIFIER = SpecifierSet(">=0.1.2,<0.2.0")
 
 
 @pytest.mark.unit
@@ -64,6 +70,66 @@ def test_zai_project_declares_core_dependency_extras_and_entry_point():
     assert project["entry-points"]["llm_api_adapter.organizations"]["zai"] == (
         "llm_api_adapter_zai.plugin:PLUGIN"
     )
+
+
+@pytest.mark.unit
+def test_zai_project_declares_migrated_package_version():
+    """The migrated Z.ai package declares its planned release version."""
+    project = read_project_metadata(PACKAGE_ROOT / "pyproject.toml")
+
+    assert project["version"] == "0.1.3"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("dependency_group", "expected_extra"),
+    [("dependencies", None), ("async", "async"), ("httpx", "httpx")],
+    ids=["base", "async", "httpx"],
+)
+def test_zai_core_dependency_groups_require_supported_release(
+    dependency_group: str, expected_extra: str | None
+):
+    """Every declared Core path covers the shared foundation's supported range."""
+    project = read_project_metadata(PACKAGE_ROOT / "pyproject.toml")
+    if dependency_group == "dependencies":
+        requirements = project["dependencies"]
+    else:
+        requirements = project["optional-dependencies"][dependency_group]
+
+    assert len(requirements) == 1
+    parsed = Requirement(requirements[0])
+    assert parsed.name.lower().replace("_", "-") == "llm-api-adapter"
+    assert parsed.extras == ({expected_extra} if expected_extra else set())
+    assert parsed.url is None
+    assert parsed.marker is None
+    assert parsed.specifier == CORE_REQUIREMENT_SPECIFIER
+    assert all(
+        parsed.specifier.contains(version)
+        for version in ("0.10.0", "0.10.1", "0.11.0", "0.99.0")
+    )
+    assert not any(
+        parsed.specifier.contains(version)
+        for version in ("0.9.8", "0.9.9", "0.9.10", "1.0.0", "1.1.0")
+    )
+
+
+@pytest.mark.unit
+def test_zai_root_metadata_keeps_core_and_extra_compatible():
+    """The root release stays fixed while its Z.ai extra admits this package."""
+    root_project = read_project_metadata(REPOSITORY_ROOT / "pyproject.toml")
+    assert root_project["version"] == "0.10.0"
+    assert root_project["dependencies"] == ["requests>=2.32"]
+
+    raw_requirement = root_project["optional-dependencies"]["zai"]
+    assert raw_requirement == ["llm-api-adapter-zai>=0.1.2,<0.2.0"]
+    parsed = Requirement(raw_requirement[0])
+    assert parsed.name.lower().replace("_", "-") == "llm-api-adapter-zai"
+    assert parsed.extras == set()
+    assert parsed.url is None
+    assert parsed.marker is None
+    assert parsed.specifier == ROOT_ZAI_REQUIREMENT_SPECIFIER
+    assert parsed.specifier.contains("0.1.2")
+    assert parsed.specifier.contains("0.1.3")
 
 
 @pytest.mark.unit
