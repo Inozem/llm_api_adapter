@@ -2807,10 +2807,15 @@ def test_zai_native_usage_parser_keeps_unknown_data_unset(raw, expected):
     "nonmapping_choice", "message", "content", "tool_arguments",
 ])
 def test_zai_completed_malformed_outputs_keep_public_error_categories(
-    zai_adapter_runtime, monkeypatch, method_kind, case_name
+    zai_adapter_runtime, monkeypatch, caplog, method_kind, case_name
 ):
     """Malformed native envelopes and JSON arguments retain existing public errors."""
-    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    api_key = "SYNTHETIC_COMPLETED_TOOL_CREDENTIAL_89"
+    tool_marker = "SYNTHETIC_COMPLETED_MALFORMED_TOOL_ARGUMENTS_94"
+    adapter = ZaiAdapter(api_key=api_key, model=ZAI_MODELS[0])
     valid = _response_payload(ZAI_MODELS[0])
     if case_name == "top_level":
         body = []
@@ -2837,7 +2842,10 @@ def test_zai_completed_malformed_outputs_keep_public_error_categories(
         else:
             body["choices"][0]["message"]["tool_calls"] = [{
                 "id": "bad-json", "type": "function",
-                "function": {"name": "lookup", "arguments": "{bad json"},
+                "function": {
+                    "name": "lookup",
+                    "arguments": f"{{bad json {api_key} {tool_marker}",
+                },
             }]
             expected_error = InvalidToolArgumentsError
     adapter._sync_transport = RecordingTransport(body=body)
@@ -2854,6 +2862,7 @@ def test_zai_completed_malformed_outputs_keep_public_error_categories(
         else:
             asyncio.run(adapter.achat([UserMessage("malformed")]))
     assert type(caught.value) is expected_error
+    _assert_sdk_records_omit_markers(caplog, (api_key, tool_marker))
     if method_kind == "chat":
         assert len(adapter._sync_transport.requests) == 1
         assert async_calls == []
@@ -2866,12 +2875,19 @@ def test_zai_completed_malformed_outputs_keep_public_error_categories(
 @pytest.mark.parametrize("model", ZAI_MODELS)
 @pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
 def test_zai_stream_bad_tool_arguments_fail_before_done_callback(
-    zai_adapter_runtime, monkeypatch, model, method_kind
+    zai_adapter_runtime, monkeypatch, caplog, model, method_kind
 ):
-    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    api_key = "SYNTHETIC_STREAM_TOOL_CREDENTIAL_42"
+    tool_marker = "SYNTHETIC_STREAM_TOOL_ARGUMENTS_57"
+    adapter = ZaiAdapter(api_key=api_key, model=model)
     payload = {"id": "bad-stream-tool", "model": model, "choices": [{
         "index": 0, "delta": {"tool_calls": [{"index": 0, "id": "bad-json",
-        "type": "function", "function": {"name": "lookup", "arguments": "{bad"}}]},
+        "type": "function", "function": {
+            "name": "lookup", "arguments": f"{{bad {api_key} {tool_marker}",
+        }}]},
         "finish_reason": "tool_calls",
     }]}
     adapter._sync_transport = RecordingTransport(events=[SSEEvent(None, data=payload)])
@@ -2898,6 +2914,9 @@ def test_zai_stream_bad_tool_arguments_fail_before_done_callback(
                 )]
             asyncio.run(consume())
     assert type(caught.value) is InvalidToolArgumentsError
+    _assert_sdk_records_omit_markers(
+        caplog, (api_key, tool_marker),
+    )
     assert completed == []
     assert tool_callbacks == []
     if method_kind == "stream_chat":
@@ -3531,12 +3550,19 @@ def test_zai_native_callback_error_wins_over_raw_source_close_failure(
 @pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
 @pytest.mark.parametrize("callback_name", ["on_chunk", "on_delta", "on_reasoning", "on_tool_call", "on_done"])
 def test_zai_native_stream_callback_errors_keep_identity_and_close_source(
-    zai_adapter_runtime, monkeypatch, method_kind, callback_name
+    zai_adapter_runtime, monkeypatch, caplog, method_kind, callback_name
 ):
     """Early and completion-stage callback failures stop at their exact callback point."""
+    import logging
+
+    caplog.set_level(logging.DEBUG)
     adapter = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
     adapter._sync_transport = RecordingTransport()
-    failure = RuntimeError(f"{callback_name} failed")
+    callback_marker = "CALLER_CALLBACK_PRIVATE_SENTINEL_68"
+    failure = RuntimeError(
+        f"{callback_name} failed {callback_marker}", "CALLER_OWNED_ARGUMENT",
+    )
+    original_args = failure.args
     events = [_life_event(text="abc"), _life_event(reasoning="reason"), _life_event(
         tool_fragment={"index": 0, "id": "c", "type": "function", "function": {
             "name": "lookup", "arguments": "{}",
@@ -3584,6 +3610,8 @@ def test_zai_native_stream_callback_errors_keep_identity_and_close_source(
             while True:
                 yielded.append(next(stream))
         assert caught.value is failure
+        assert caught.value.args == original_args
+        assert failure.args == original_args
         assert source.close_count == 1
         assert len(adapter._sync_transport.requests) == 1
         assert async_calls == []
@@ -3623,11 +3651,14 @@ def test_zai_native_stream_callback_errors_keep_identity_and_close_source(
                 async for item in stream:
                     yielded.append(item)
             assert caught.value is failure
+            assert caught.value.args == original_args
+            assert failure.args == original_args
             assert source.close_count == 1
             assert len(async_calls) == 1
             assert adapter._sync_transport.requests == []
 
         asyncio.run(consume())
+    _assert_sdk_records_omit_markers(caplog, (callback_marker,))
     prefix = [("chunk", "ab"), ("delta", "ab")]
     if callback_name == "on_chunk":
         expected_order = [("chunk", "ab")]
@@ -3650,3 +3681,364 @@ def test_zai_native_stream_callback_errors_keep_identity_and_close_source(
     assert yielded == expected_yielded
     assert done_calls == []
     assert tools == ([] if callback_name in {"on_chunk", "on_delta", "on_reasoning", "on_tool_call"} else ["lookup"])
+
+
+def _record_post_attempt(attempts, args, kwargs):
+    """Normalize a fake backend POST to the externally observable request."""
+    attempts.append({
+        "url": args[0],
+        "headers": kwargs["headers"],
+        "payload": kwargs["json"],
+        "timeout": kwargs["timeout"],
+        "stream": bool(kwargs.get("stream", False)),
+    })
+
+
+def _record_send_attempt(attempts, request, kwargs):
+    """Normalize a fake HTTPX send request and its transport streaming flag."""
+    build_args, build_kwargs = request
+    attempts.append({
+        "url": build_args[1],
+        "headers": build_kwargs["headers"],
+        "payload": build_kwargs["json"],
+        "timeout": build_kwargs["timeout"],
+        "stream": bool(kwargs["stream"]),
+    })
+
+
+def _assert_native_error_attempt(attempts, *, model, api_key, timeout, streaming):
+    """Assert one native request kept its official destination and wire identity."""
+    assert len(attempts) == 1
+    attempt = attempts[0]
+    assert attempt["url"] == ZAI_CHAT_COMPLETIONS_URL
+    assert attempt["headers"] == {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    assert attempt["timeout"] == timeout
+    assert attempt["stream"] is streaming
+    assert attempt["payload"]["model"] == model
+    assert attempt["payload"].get("stream", False) is streaming
+
+
+def _assert_sdk_records_omit_markers(caplog, markers):
+    """Inspect every captured SDK log channel, including deferred record data."""
+    records = [record for record in caplog.records if record.name.startswith("llm_api_adapter")]
+    rendered = " ".join(
+        record.getMessage() + repr(record.args) + repr(record.exc_info)
+        for record in records
+    )
+    for marker in markers:
+        assert marker not in rendered
+    return records
+
+
+_NATIVE_HTTP_FAILURES = (
+    (401, {}, LLMAPIAuthorizationError),
+    (403, {}, LLMAPIAuthorizationError),
+    (429, {"error": {"type": "rate_limit_error"}}, LLMAPIRateLimitError),
+    (402, {}, LLMAPIUsageLimitError),
+    (400, {"error": {"type": "context_length_exceeded"}}, LLMAPITokenLimitError),
+    (408, {}, LLMAPITimeoutError),
+    (504, {}, LLMAPITimeoutError),
+    (422, {}, LLMAPIClientError),
+    (500, {}, LLMAPIServerError),
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("lane", ["requests", "httpx", "async"])
+@pytest.mark.parametrize("method_kind", ["chat", "stream"])
+@pytest.mark.parametrize("status,payload,expected_error", _NATIVE_HTTP_FAILURES)
+def test_zai_native_http_failures_keep_categories_and_safe_transport_logs(
+    zai_adapter_runtime, monkeypatch, caplog, model, lane, method_kind,
+    status, payload, expected_error,
+):
+    """Real Core transports map native HTTP failures and omit private log text."""
+    import json
+    import logging
+    import requests
+    import httpx
+    from llm_api_adapter.llms import requests_transport
+
+    api_key = "SYNTHETIC_PRIVATE_CREDENTIAL_91"
+    raw_event = "SYNTHETIC_RAW_PROVIDER_EVENT_72"
+    reasoning = "SYNTHETIC_REASONING_TEXT_64"
+    tool_args = "SYNTHETIC_TOOL_ARGUMENTS_38"
+    timeout = 17.25
+    message = f"{api_key} {raw_event} {reasoning} {tool_args}"
+    body = copy.deepcopy(payload or {"error": {"message": message}})
+    if isinstance(body.get("error"), dict):
+        body["error"].setdefault("message", message)
+    attempts = []
+
+    class RequestsResponse:
+        status_code = status
+        def json(self): return body
+        def raise_for_status(self):
+            raise requests.HTTPError(message, response=self)
+        def iter_lines(self, **kwargs):
+            del kwargs
+            yield ("data: " + json.dumps({"error": body.get("error", {})})).encode()
+        def close(self): pass
+
+    if lane == "requests":
+        adapter = ZaiAdapter(api_key=api_key, model=model)
+        def post(*args, **kwargs):
+            _record_post_attempt(attempts, args, kwargs)
+            return RequestsResponse()
+        monkeypatch.setattr(requests_transport.requests, "post", post)
+    elif lane == "httpx":
+        adapter = ZaiAdapter(api_key=api_key, model=model, transport="httpx")
+        class HttpxResponse:
+            status_code = status
+            def __init__(self):
+                self.request = httpx.Request("POST", ZAI_CHAT_COMPLETIONS_URL)
+            def json(self): return body
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError(message, request=self.request, response=self)
+            def iter_lines(self):
+                yield "data: " + json.dumps({"error": body.get("error", {})})
+            def close(self): pass
+        class HttpxClient:
+            def post(self, *args, **kwargs):
+                _record_post_attempt(attempts, args, kwargs)
+                return HttpxResponse()
+            def build_request(self, *args, **kwargs): return args, kwargs
+            def send(self, request, **kwargs):
+                _record_send_attempt(attempts, request, kwargs)
+                return HttpxResponse()
+            def close(self): pass
+        monkeypatch.setattr(httpx, "Client", HttpxClient)
+    else:
+        adapter = ZaiAdapter(api_key=api_key, model=model)
+        class AsyncResponse:
+            status_code = status
+            def __init__(self):
+                self.request = httpx.Request("POST", ZAI_CHAT_COMPLETIONS_URL)
+            def json(self): return body
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError(message, request=self.request, response=self)
+            async def aread(self): return None
+            async def aclose(self): return None
+            async def aiter_lines(self):
+                yield "data: " + json.dumps({"error": body.get("error", {})})
+        class AsyncClient:
+            async def post(self, *args, **kwargs):
+                _record_post_attempt(attempts, args, kwargs)
+                return AsyncResponse()
+            def build_request(self, *args, **kwargs): return args, kwargs
+            async def send(self, request, **kwargs):
+                _record_send_attempt(attempts, request, kwargs)
+                return AsyncResponse()
+            async def aclose(self): return None
+        monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(expected_error) as caught:
+        if lane == "async":
+            async def invoke():
+                if method_kind == "chat":
+                    return await adapter.achat([UserMessage("safe failure")], timeout_s=timeout)
+                return [item async for item in adapter.astream_chat(
+                    [UserMessage("safe failure")], timeout_s=timeout,
+                )]
+            asyncio.run(invoke())
+        elif method_kind == "chat":
+            adapter.chat([UserMessage("safe failure")], timeout_s=timeout)
+        else:
+            list(adapter.stream_chat([UserMessage("safe failure")], timeout_s=timeout))
+    assert type(caught.value) is expected_error
+    _assert_native_error_attempt(
+        attempts, model=model, api_key=api_key, timeout=timeout,
+        streaming=method_kind == "stream",
+    )
+    transport_records = [r for r in caplog.records if r.name.endswith(("requests_transport", "httpx_transport", "async_streaming"))]
+    assert transport_records
+    _assert_sdk_records_omit_markers(
+        caplog, (api_key, raw_event, reasoning, tool_args),
+    )
+    diagnostics = " ".join(
+        record.getMessage() + repr(record.args) + repr(record.exc_info)
+        for record in transport_records
+    )
+    assert "Z.ai transport failure (details omitted)" in diagnostics
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("lane", ["requests", "httpx", "async"])
+@pytest.mark.parametrize(
+    "error_type,expected_error",
+    [
+        ("authentication_error", LLMAPIAuthorizationError),
+        ("rate_limit_error", LLMAPIRateLimitError),
+        ("insufficient_quota", LLMAPIUsageLimitError),
+        ("context_length_exceeded", LLMAPITokenLimitError),
+        ("timeout_error", LLMAPITimeoutError),
+        ("api_error", LLMAPIServerError),
+        ("invalid_request", LLMAPIClientError),
+    ],
+)
+def test_zai_native_sse_errors_keep_categories_and_do_not_log_raw_events(
+    zai_adapter_runtime, monkeypatch, caplog, model, lane, error_type, expected_error,
+):
+    """Real SSE decoders route native categories without logging event contents."""
+    import json
+    import logging
+    import httpx
+    from llm_api_adapter.llms import requests_transport
+
+    api_key = "SYNTHETIC_SSE_CREDENTIAL_19"
+    markers = (api_key, "SYNTHETIC_SSE_EVENT_28",
+               "SYNTHETIC_SSE_REASONING_37", "SYNTHETIC_SSE_TOOL_ARGS_46")
+    timeout = 23.5
+    frame = "data: " + json.dumps({"error": {
+        "type": error_type, "message": " ".join(markers),
+    }})
+    attempts = []
+
+    class Response:
+        status_code = 200
+        def raise_for_status(self): return None
+        def iter_lines(self, **kwargs):
+            del kwargs
+            yield "event: error".encode()
+            yield frame.encode()
+            yield b""
+        def close(self): pass
+
+    if lane == "requests":
+        adapter = ZaiAdapter(api_key=api_key, model=model)
+        def post(*args, **kwargs):
+            _record_post_attempt(attempts, args, kwargs)
+            return Response()
+        monkeypatch.setattr(requests_transport.requests, "post", post)
+    elif lane == "httpx":
+        adapter = ZaiAdapter(api_key=api_key, model=model, transport="httpx")
+        class HttpxResponse(Response):
+            def iter_lines(self):
+                yield "event: error"
+                yield frame
+                yield ""
+        class HttpxClient:
+            def build_request(self, *args, **kwargs): return args, kwargs
+            def send(self, request, **kwargs):
+                _record_send_attempt(attempts, request, kwargs)
+                return HttpxResponse()
+            def close(self): pass
+        monkeypatch.setattr(httpx, "Client", HttpxClient)
+    else:
+        adapter = ZaiAdapter(api_key=api_key, model=model)
+        class AsyncResponse(Response):
+            async def aiter_lines(self):
+                yield "event: error"
+                yield frame
+                yield ""
+            async def aclose(self): return None
+        class AsyncClient:
+            def build_request(self, *args, **kwargs): return args, kwargs
+            async def send(self, request, **kwargs):
+                _record_send_attempt(attempts, request, kwargs)
+                return AsyncResponse()
+            async def aclose(self): return None
+        monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(expected_error) as caught:
+        if lane == "async":
+            async def consume():
+                return [item async for item in adapter.astream_chat(
+                    [UserMessage("SSE error")], timeout_s=timeout,
+                )]
+            asyncio.run(consume())
+        else:
+            list(adapter.stream_chat([UserMessage("SSE error")], timeout_s=timeout))
+    assert type(caught.value) is expected_error
+    _assert_native_error_attempt(
+        attempts, model=model, api_key=api_key, timeout=timeout, streaming=True,
+    )
+    _assert_sdk_records_omit_markers(caplog, markers)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("lane", ["requests", "httpx", "async"])
+@pytest.mark.parametrize("method_kind", ["chat", "stream"])
+@pytest.mark.parametrize("failure_kind", ["timeout", "connection"])
+def test_zai_native_transport_faults_keep_public_errors_and_safe_logs(
+    zai_adapter_runtime, monkeypatch, caplog, model, lane, method_kind, failure_kind,
+):
+    """Native HTTPX and Requests faults retain mapped classes without echoing text."""
+    import logging
+    import requests
+    import httpx
+    from llm_api_adapter.llms import requests_transport
+
+    api_key = "SYNTHETIC_FAILURE_CREDENTIAL_53"
+    marker = f"{api_key} SYNTHETIC_FAILURE_EVENT_REASONING_TOOL_ARGS_53"
+    timeout = 31.75
+    expected_error = LLMAPITimeoutError if failure_kind == "timeout" else LLMAPIClientError
+    attempts = []
+
+    if lane == "requests":
+        adapter = ZaiAdapter(api_key=api_key, model=model)
+        failure = requests.Timeout(marker) if failure_kind == "timeout" else requests.ConnectionError(marker)
+        def post(*args, **kwargs):
+            _record_post_attempt(attempts, args, kwargs)
+            raise failure
+        monkeypatch.setattr(requests_transport.requests, "post", post)
+    elif lane == "httpx":
+        adapter = ZaiAdapter(api_key=api_key, model=model, transport="httpx")
+        request = httpx.Request("POST", ZAI_CHAT_COMPLETIONS_URL)
+        failure = httpx.TimeoutException(marker, request=request) if failure_kind == "timeout" else httpx.ConnectError(marker, request=request)
+        class HttpxClient:
+            def post(self, *args, **kwargs):
+                _record_post_attempt(attempts, args, kwargs)
+                raise failure
+            def build_request(self, *args, **kwargs): return args, kwargs
+            def send(self, request, **kwargs):
+                _record_send_attempt(attempts, request, kwargs)
+                raise failure
+            def close(self): pass
+        monkeypatch.setattr(httpx, "Client", HttpxClient)
+    else:
+        adapter = ZaiAdapter(api_key=api_key, model=model)
+        request = httpx.Request("POST", ZAI_CHAT_COMPLETIONS_URL)
+        failure = httpx.TimeoutException(marker, request=request) if failure_kind == "timeout" else httpx.ConnectError(marker, request=request)
+        class AsyncClient:
+            async def post(self, *args, **kwargs):
+                _record_post_attempt(attempts, args, kwargs)
+                raise failure
+            def build_request(self, *args, **kwargs): return args, kwargs
+            async def send(self, request, **kwargs):
+                _record_send_attempt(attempts, request, kwargs)
+                raise failure
+            async def aclose(self): return None
+        monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(expected_error) as caught:
+        if lane == "async":
+            async def invoke():
+                if method_kind == "chat":
+                    return await adapter.achat([UserMessage("transport fault")], timeout_s=timeout)
+                return [item async for item in adapter.astream_chat(
+                    [UserMessage("transport fault")], timeout_s=timeout,
+                )]
+            asyncio.run(invoke())
+        elif method_kind == "chat":
+            adapter.chat([UserMessage("transport fault")], timeout_s=timeout)
+        else:
+            list(adapter.stream_chat([UserMessage("transport fault")], timeout_s=timeout))
+    assert type(caught.value) is expected_error
+    assert caught.value.detail == marker
+    _assert_native_error_attempt(
+        attempts, model=model, api_key=api_key, timeout=timeout,
+        streaming=method_kind == "stream",
+    )
+    records = [r for r in caplog.records if r.name.endswith(("requests_transport", "httpx_transport", "async_streaming"))]
+    assert records
+    assert "Z.ai transport failure (details omitted)" in " ".join(r.getMessage() for r in records)
+    _assert_sdk_records_omit_markers(caplog, (api_key, marker))

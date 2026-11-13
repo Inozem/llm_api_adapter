@@ -27,6 +27,11 @@ ZAI_BASE_URL = "https://api.z.ai/api/paas/v4"
 ZAI_CHAT_COMPLETIONS_URL = f"{ZAI_BASE_URL}/chat/completions"
 
 
+def _format_zai_diagnostic(_value: object) -> str:
+    """Return a fixed private diagnostic without echoing untrusted content."""
+    return "Z.ai transport failure (details omitted)"
+
+
 class _ZaiBoundSyncClient(OpenAICompatibleSyncClient):
     """Request-bound native policy over Core's compatible sync engine."""
 
@@ -37,7 +42,7 @@ class _ZaiBoundSyncClient(OpenAICompatibleSyncClient):
         self.transport = "requests"
         self._sync_transport = transport
         self._api_variant_override = None
-        self._diagnostic_formatter = None
+        self._diagnostic_formatter = _format_zai_diagnostic
 
     def _prepare_chat_payload_for_model(
         self, model: str, kwargs: dict[str, Any], *, streaming: bool = False

@@ -15,6 +15,7 @@ from .sync_client import (
     ZAI_BASE_URL,
     ZAI_CHAT_COMPLETIONS_URL,
     ZaiSyncClient,
+    _format_zai_diagnostic,
     _validated_response,
 )
 
@@ -29,7 +30,7 @@ class _ZaiBoundAsyncClient(_AsyncExecutionMixin, OpenAICompatibleSyncClient):
         self.transport = "requests"
         self._sync_transport = None
         self._api_variant_override = None
-        self._diagnostic_formatter = None
+        self._diagnostic_formatter = _format_zai_diagnostic
 
     async def chat_completion(
         self, model: str, timeout: float | None = None, **kwargs: Any
