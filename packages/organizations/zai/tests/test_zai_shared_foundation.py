@@ -40,7 +40,7 @@ from llm_api_adapter.errors.llm_api_error import (
 from llm_api_adapter.errors.config_errors import LLMConfigError, LLMReasoningLevelError
 from llm_api_adapter.adapters.base_adapter import LLMAdapterBase
 from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
-from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
+from llm_api_adapter.llm_registry.llm_registry import Pricing, PricingTier, RegistrySpec
 from llm_api_adapter.llm_registry.reasoning import (
     CANONICAL_REASONING_LEVELS,
     resolve_reasoning_level,
@@ -4394,3 +4394,569 @@ def test_zai_native_stream_usage_merges_cumulative_snapshots_without_doubling(
         assert payload["stream"] is True
         assert payload["stream_options"] == {"include_usage": True}
         assert actual_timeout == timeout
+
+
+_PRICING_USAGE_CASES = [
+    pytest.param(
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
+         "cache_write_tokens": 5,
+         "prompt_tokens_details": {"cached_tokens": 3, "cache_write_tokens": 7}},
+        (10, 4, 14, 3, None), id="complete-cache-subset",
+    ),
+    pytest.param(
+        {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9,
+         "prompt_tokens_details": {"cached_tokens": 0}},
+        (7, 2, 9, 0, None), id="mid-input-cache-zero",
+    ),
+    pytest.param(
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
+         "prompt_tokens_details": {"cached_tokens": 10}},
+        (10, 4, 14, 10, None), id="full-cache-hit",
+    ),
+    pytest.param(
+        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+         "prompt_tokens_details": {"cached_tokens": 0}},
+        (0, 0, 0, 0, None), id="reported-zeroes",
+    ),
+    pytest.param(
+        {"prompt_tokens": 0, "completion_tokens": 4, "total_tokens": 4},
+        (0, 4, 4, None, None), id="zero-input-unknown-cache",
+    ),
+    pytest.param(_NO_USAGE, None, id="usage-missing"),
+    pytest.param(
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 15},
+        None, id="usage-contradictory-total",
+    ),
+    pytest.param({"prompt_tokens": 10}, (10, None, None, None, None), id="input-only"),
+    pytest.param(
+        {"prompt_tokens": 10, "prompt_tokens_details": {"cached_tokens": 3}},
+        (10, None, None, 3, None), id="partial-input-with-confirmed-cache",
+    ),
+    pytest.param({"completion_tokens": 4}, (None, 4, None, None, None), id="output-only"),
+    pytest.param({"total_tokens": 14}, (None, None, 14, None, None), id="total-only"),
+    pytest.param(
+        {"prompt_tokens": 10, "completion_tokens": True},
+        None, id="invalid-output-with-valid-input",
+    ),
+    pytest.param(
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
+         "prompt_tokens_details": {}},
+        (10, 4, 14, None, None), id="missing-cache-evidence",
+    ),
+    pytest.param(
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
+         "prompt_tokens_details": {"cached_tokens": True}},
+        (10, 4, 14, None, None), id="invalid-cache-evidence",
+    ),
+]
+
+
+def _zai_raw_model_metadata(model):
+    """Read exact Z.ai model tariff and limits from the registered metadata."""
+    return PLUGIN.model_metadata.organization_data["models"][model]
+
+
+def _zai_expected_costs(raw_usage, normalized, rates, currency):
+    """Calculate expected costs independently from the reported counts and raw rates."""
+    if normalized is None or normalized[0] is None:
+        return None, None, None, None
+    input_tokens, output_tokens, _, cache_tokens, _ = normalized
+    input_rate, output_rate, cache_rate = rates
+    if cache_tokens is None and cache_rate is not None:
+        input_cost = None
+    elif cache_tokens and cache_rate is None:
+        input_cost = None
+    else:
+        cached = cache_tokens or 0
+        input_cost = (input_tokens - cached) * input_rate + cached * (cache_rate or 0)
+    output_cost = None if output_tokens is None else output_tokens * output_rate
+    total_cost = None if input_cost is None or output_cost is None else input_cost + output_cost
+    return currency, input_cost, output_cost, total_cost
+
+
+def _install_pricing_accounting_io(monkeypatch, *, model, lane, raw_usage):
+    """Stub only backend I/O while leaving Core JSON/SSE and finalization active."""
+    import httpx
+    from llm_api_adapter.llms import requests_transport
+
+    calls = []
+
+    def make_response(streaming):
+        events = _accounting_reply(model, raw_usage, streaming=True) if streaming else []
+        return _AccountingHTTPResponse(
+            _accounting_reply(model, raw_usage), streaming=streaming, events=events,
+        )
+
+    def requests_post(url, *, headers, json, timeout=None, stream=False):
+        calls.append(("requests", "POST", url, headers, json, timeout, stream))
+        return make_response(stream)
+
+    is_async = lane in {"achat", "astream"}
+    is_httpx = lane.endswith("httpx")
+    is_stream = lane.startswith("stream") or lane == "astream"
+    if not is_async and not is_httpx:
+        monkeypatch.setattr(requests_transport.requests, "post", requests_post)
+    elif not is_async:
+        class SyncClient:
+            def post(self, url, *, headers, json, timeout):
+                calls.append(("httpx-json", "POST", url, headers, json, timeout, False))
+                return make_response(False)
+
+            def build_request(self, method, url, *, headers, json, timeout):
+                calls.append(("httpx-build", method, url, headers, json, timeout, True))
+                return (method, url, headers, json, timeout)
+
+            def send(self, request, *, stream):
+                method, url, headers, payload, timeout = request
+                calls.append(("httpx-send", method, url, headers, payload, timeout, stream))
+                return make_response(stream)
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(httpx, "Client", SyncClient)
+    else:
+        class AsyncClient:
+            async def post(self, url, *, headers, json, timeout):
+                calls.append(("async-json", "POST", url, headers, json, timeout, False))
+                return make_response(False)
+
+            def build_request(self, method, url, *, headers, json, timeout):
+                calls.append(("async-build", method, url, headers, json, timeout, True))
+                return (method, url, headers, json, timeout)
+
+            async def send(self, request, *, stream):
+                method, url, headers, payload, timeout = request
+                calls.append(("async-send", method, url, headers, payload, timeout, stream))
+                return make_response(stream)
+
+            async def aclose(self):
+                return None
+
+        monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+    return calls, is_async, is_stream, is_httpx
+
+
+def _run_pricing_lane(caller, lane, completed):
+    """Invoke one public native execution method and return its completed response."""
+    kwargs = {"timeout_s": 6.75}
+    messages = [UserMessage("price reported usage")]
+    if lane in {"chat-requests", "chat-httpx"}:
+        return caller.chat(messages, **kwargs)
+    if lane == "achat":
+        return asyncio.run(caller.achat(messages, **kwargs))
+    if lane in {"stream-requests", "stream-httpx"}:
+        assert list(caller.stream_chat(messages, on_done=completed.append, **kwargs)) == ["accounted"]
+        return completed[0]
+
+    async def collect():
+        assert [item async for item in caller.astream_chat(
+            messages, on_done=completed.append, **kwargs,
+        )] == ["accounted"]
+    asyncio.run(collect())
+    return completed[0]
+
+
+def _assert_pricing_lane_trace(calls, lane, model, *, invocations=1, timeout=6.75):
+    """Verify each public invocation made exactly its expected official request sequence."""
+    expected_once = {
+        "chat-requests": ["requests"], "chat-httpx": ["httpx-json"],
+        "achat": ["async-json"], "stream-requests": ["requests"],
+        "stream-httpx": ["httpx-build", "httpx-send"],
+        "astream": ["async-build", "async-send"],
+    }[lane]
+    expected = expected_once * invocations
+    assert [call[0] for call in calls] == expected
+    streaming = lane.startswith("stream") or lane == "astream"
+    for _, method, url, headers, payload, actual_timeout, stream in calls:
+        assert method == "POST"
+        assert url == ZAI_CHAT_COMPLETIONS_URL
+        assert headers == {"Authorization": "Bearer synthetic-zai-key", "Content-Type": "application/json"}
+        assert actual_timeout == timeout
+        assert payload["model"] == model
+        assert stream is streaming
+        if streaming:
+            assert payload["stream"] is True
+            assert payload["stream_options"] == {"include_usage": True}
+        else:
+            assert "stream" not in payload
+
+
+def _assert_response_costs(response, currency, input_cost, output_cost, total_cost):
+    """Check each known price approximately and each unknown price explicitly."""
+    assert response.currency == currency
+    for actual, expected in (
+        (response.cost_input, input_cost),
+        (response.cost_output, output_cost),
+        (response.cost_total, total_cost),
+    ):
+        if expected is None:
+            assert actual is None
+        else:
+            assert actual == pytest.approx(expected)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize(
+    "lane", ["chat-requests", "chat-httpx", "achat", "stream-requests", "stream-httpx", "astream"],
+)
+@pytest.mark.parametrize("pricing_mode", ["registry", "caller-setters"])
+@pytest.mark.parametrize(("raw_usage", "normalized"), _PRICING_USAGE_CASES)
+def test_zai_native_registry_and_caller_tariffs_price_reported_usage(
+    zai_adapter_runtime, monkeypatch, model, lane, pricing_mode, raw_usage, normalized,
+):
+    """Price native usage through all public methods without estimating unknown components."""
+    raw_model = _zai_raw_model_metadata(model)
+    raw_org = PLUGIN.model_metadata.organization_data
+    native_rates = (
+        raw_model["pricing_tiers"][0]["input_per_1m"] / 1_000_000,
+        raw_model["pricing_tiers"][0]["output_per_1m"] / 1_000_000,
+        raw_model["pricing_tiers"][0]["cache_read_input_per_1m"] / 1_000_000,
+    )
+    caller_rates = (native_rates[0] * 3, native_rates[1] * 2, native_rates[2])
+    currency = raw_org["currency"]
+    caller_currency = "TST"
+    calls, is_async, is_stream, is_httpx = _install_pricing_accounting_io(
+        monkeypatch, model=model, lane=lane, raw_usage=raw_usage,
+    )
+    caller, _ = _native_adapter("direct", model, "httpx" if is_httpx else "requests")
+    if pricing_mode == "caller-setters":
+        caller.pricing.set_in_per_1m(raw_model["pricing_tiers"][0]["input_per_1m"] * 3)
+        caller.pricing.set_out_per_1m(raw_model["pricing_tiers"][0]["output_per_1m"] * 2)
+        caller.pricing.set_currency(caller_currency)
+        rates, expected_currency = caller_rates, caller_currency
+    else:
+        rates, expected_currency = native_rates, currency
+
+    completed = []
+    response = _run_pricing_lane(caller, lane, completed)
+    assert response.content == "accounted"
+    assert response.model == model
+    assert response.finish_reason == "stop"
+    assert _usage_tuple(response.usage) == normalized
+    expected_costs = _zai_expected_costs(raw_usage, normalized, rates, expected_currency)
+    _assert_response_costs(response, *expected_costs)
+    assert response.cost_breakdown is None
+    if is_stream:
+        assert response.response_id == "accounting-stream-id"
+        assert completed == [response]
+    else:
+        assert response.response_id == "accounting-response-id"
+        assert completed == []
+    expected_kinds = {
+        "chat-requests": ["requests"], "chat-httpx": ["httpx-json"],
+        "achat": ["async-json"], "stream-requests": ["requests"],
+        "stream-httpx": ["httpx-build", "httpx-send"],
+        "astream": ["async-build", "async-send"],
+    }[lane]
+    assert [call[0] for call in calls] == expected_kinds
+    for _, method, url, headers, payload, timeout, stream_flag in calls:
+        assert method == "POST"
+        assert url == ZAI_CHAT_COMPLETIONS_URL
+        assert headers == {"Authorization": "Bearer synthetic-zai-key", "Content-Type": "application/json"}
+        assert timeout == 6.75
+        assert payload["model"] == model
+        assert stream_flag is is_stream
+        if is_stream:
+            assert payload["stream"] is True
+            assert payload["stream_options"] == {"include_usage": True}
+        else:
+            assert "stream" not in payload
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize(
+    "lane", ["chat-requests", "chat-httpx", "achat", "stream-requests", "stream-httpx", "astream"],
+)
+def test_zai_native_caller_tier_boundary_uses_full_reported_input(
+    zai_adapter_runtime, monkeypatch, model, lane,
+):
+    """Select synthetic caller tiers at inclusive boundaries, including cache-heavy prompts."""
+    import httpx
+    from llm_api_adapter.llms import requests_transport
+
+    raw_model = _zai_raw_model_metadata(model)
+    raw_tier = raw_model["pricing_tiers"][0]
+    boundary = raw_model["limits"]["context_window_tokens"] // 2
+    low_rates = (
+        raw_tier["input_per_1m"] / 1_000_000,
+        raw_tier["output_per_1m"] / 1_000_000,
+        raw_tier["cache_read_input_per_1m"] / 1_000_000,
+    )
+    high_rates = tuple(rate * 2 for rate in low_rates)
+    pricing = Pricing((
+        PricingTier(boundary, low_rates[0], low_rates[1], low_rates[2]),
+        PricingTier(None, high_rates[0], high_rates[1], high_rates[2]),
+    ), currency="SYN")
+    cases = ((boundary - 1, 0), (boundary, 0), (boundary + 1, 0), (boundary + 1, 2))
+    calls = []
+    index = 0
+    response_usage = []
+
+    def make_response(streaming):
+        usage = response_usage[index]
+        events = _accounting_reply(model, usage, streaming=True) if streaming else []
+        return _AccountingHTTPResponse(_accounting_reply(model, usage), streaming=streaming, events=events)
+
+    def requests_post(url, *, headers, json, timeout=None, stream=False):
+        calls.append(("requests", "POST", url, headers, json, timeout, stream))
+        return make_response(stream)
+
+    is_async = lane in {"achat", "astream"}
+    is_httpx = lane.endswith("httpx")
+    if not is_async and not is_httpx:
+        monkeypatch.setattr(requests_transport.requests, "post", requests_post)
+    elif not is_async:
+        class SyncClient:
+            def post(self, url, *, headers, json, timeout):
+                calls.append(("httpx-json", "POST", url, headers, json, timeout, False))
+                return make_response(False)
+            def build_request(self, method, url, *, headers, json, timeout):
+                calls.append(("httpx-build", method, url, headers, json, timeout, True))
+                return (method, url, headers, json, timeout)
+            def send(self, request, *, stream):
+                method, url, headers, payload, timeout = request
+                calls.append(("httpx-send", method, url, headers, payload, timeout, stream))
+                return make_response(stream)
+            def close(self):
+                return None
+        monkeypatch.setattr(httpx, "Client", SyncClient)
+    else:
+        class AsyncClient:
+            async def post(self, url, *, headers, json, timeout):
+                calls.append(("async-json", "POST", url, headers, json, timeout, False))
+                return make_response(False)
+            def build_request(self, method, url, *, headers, json, timeout):
+                calls.append(("async-build", method, url, headers, json, timeout, True))
+                return (method, url, headers, json, timeout)
+            async def send(self, request, *, stream):
+                method, url, headers, payload, timeout = request
+                calls.append(("async-send", method, url, headers, payload, timeout, stream))
+                return make_response(stream)
+            async def aclose(self):
+                return None
+        monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    caller, _ = _native_adapter("direct", model, "httpx" if is_httpx else "requests")
+    caller.pricing = pricing
+    for input_tokens, cached_tokens in cases:
+        usage = {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": 4,
+            "total_tokens": input_tokens + 4,
+            "prompt_tokens_details": {"cached_tokens": cached_tokens},
+        }
+        response_usage.append(usage)
+        completed = []
+        response = _run_pricing_lane(caller, lane, completed)
+        selected_rates = low_rates if input_tokens <= boundary else high_rates
+        expected_input = ((input_tokens - cached_tokens) * selected_rates[0]
+                          + cached_tokens * selected_rates[2])
+        expected_output = 4 * selected_rates[1]
+        assert response.content == "accounted"
+        assert response.model == model
+        assert response.finish_reason == "stop"
+        assert _usage_tuple(response.usage) == (input_tokens, 4, input_tokens + 4, cached_tokens, None)
+        _assert_response_costs(
+            response, "SYN", expected_input, expected_output,
+            expected_input + expected_output,
+        )
+        assert response.cost_breakdown is None
+        if lane.startswith("stream") or lane == "astream":
+            assert response.response_id == "accounting-stream-id"
+            assert completed == [response]
+        else:
+            assert response.response_id == "accounting-response-id"
+        index += 1
+    _assert_pricing_lane_trace(calls, lane, model, invocations=4)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+def test_zai_native_pricing_mutation_and_assignment_references_are_live(
+    zai_adapter_runtime, monkeypatch, model,
+):
+    """Prove registry copies, setters, and caller-assigned Pricing references via real sends."""
+    from llm_api_adapter.llms import requests_transport
+
+    raw_model = _zai_raw_model_metadata(model)
+    raw_tier = raw_model["pricing_tiers"][0]
+    registry_model = zai_adapter_runtime.organizations["zai"].models[model]
+    registry_snapshot = copy.deepcopy(registry_model.pricing_tiers)
+    adapter, _ = _native_adapter("direct", model)
+    control, _ = _native_adapter("direct", model)
+    facade, _ = _native_adapter("facade", model)
+    adapter_pricing_reference = adapter.pricing
+    assert adapter.pricing is not control.pricing
+    assert adapter.pricing is not registry_model.pricing_tiers
+    assert adapter.pricing.tiers is not control.pricing.tiers
+    calls = []
+    usage = {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
+             "prompt_tokens_details": {"cached_tokens": 3}}
+
+    def post(url, *, headers, json, timeout=None, stream=False):
+        calls.append((url, headers, json, timeout, stream))
+        return _AccountingHTTPResponse(_accounting_reply(model, usage), streaming=False, events=[])
+
+    monkeypatch.setattr(requests_transport.requests, "post", post)
+    native_rates = (raw_tier["input_per_1m"] / 1_000_000,
+                    raw_tier["output_per_1m"] / 1_000_000,
+                    raw_tier["cache_read_input_per_1m"] / 1_000_000)
+
+    def check(response, rates, currency):
+        expected = _zai_expected_costs(usage, (10, 4, 14, 3, None), rates, currency)
+        assert response.content == "accounted"
+        assert response.model == model
+        assert response.response_id == "accounting-response-id"
+        assert response.finish_reason == "stop"
+        assert _usage_tuple(response.usage) == (10, 4, 14, 3, None)
+        assert response.currency == currency
+        assert response.cost_input == pytest.approx(expected[1])
+        assert response.cost_output == pytest.approx(expected[2])
+        assert response.cost_total == pytest.approx(expected[3])
+        assert response.cost_breakdown is None
+
+    adapter_pricing_reference.set_in_per_1m(raw_tier["input_per_1m"] * 2)
+    adapter_pricing_reference.set_out_per_1m(raw_tier["output_per_1m"] * 3)
+    adapter_pricing_reference.set_currency("SET")
+    assert adapter.pricing is adapter_pricing_reference
+    first = adapter.chat([UserMessage("pricing before reference assignment")], timeout_s=3.5)
+    check(first, (native_rates[0] * 2, native_rates[1] * 3, native_rates[2]), "SET")
+
+    control_response = control.chat([UserMessage("independent registry copy")], timeout_s=3.5)
+    check(control_response, native_rates, PLUGIN.model_metadata.organization_data["currency"])
+
+    shared = Pricing((PricingTier(None, *native_rates),), currency="RAW")
+    adapter.pricing = shared
+    facade.adapter.pricing = shared
+    assert adapter.pricing is shared and facade.adapter.pricing is shared
+    assert facade.pricing is shared
+    assigned_before_mutation = adapter.chat(
+        [UserMessage("assigned direct per-token pricing before setter mutation")],
+        timeout_s=3.5,
+    )
+    check(assigned_before_mutation, native_rates, "RAW")
+    shared.set_in_per_1m(raw_tier["input_per_1m"] * 4)
+    shared.set_out_per_1m(raw_tier["output_per_1m"] * 5)
+    shared.set_currency("REF")
+    assigned_response = adapter.chat([UserMessage("pricing after reference mutation")], timeout_s=3.5)
+    facade_response = facade.chat([UserMessage("facade delegated pricing")], timeout_s=3.5)
+    assigned_rates = (native_rates[0] * 4, native_rates[1] * 5, native_rates[2])
+    check(assigned_response, assigned_rates, "REF")
+    check(facade_response, assigned_rates, "REF")
+    control_after = control.chat([UserMessage("registry copy remains independent")], timeout_s=3.5)
+    check(control_after, native_rates, PLUGIN.model_metadata.organization_data["currency"])
+    fresh, _ = _native_adapter("direct", model)
+    fresh_response = fresh.chat([UserMessage("fresh adapter keeps registry defaults")], timeout_s=3.5)
+    check(fresh_response, native_rates, PLUGIN.model_metadata.organization_data["currency"])
+
+    assert len(calls) == 7
+    for url, headers, payload, timeout, stream in calls:
+        assert url == ZAI_CHAT_COMPLETIONS_URL
+        assert headers == {"Authorization": "Bearer synthetic-zai-key", "Content-Type": "application/json"}
+        assert payload["model"] == model and "stream" not in payload
+        assert timeout == 3.5 and stream is False
+    current_registry_pricing = zai_adapter_runtime.organizations["zai"].models[model].pricing_tiers
+    assert current_registry_pricing == registry_snapshot
+    assert current_registry_pricing is not adapter.pricing
+    assert current_registry_pricing is not control.pricing
+    assert current_registry_pricing is not fresh.pricing
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize(
+    "lane", ["chat-requests", "chat-httpx", "achat", "stream-requests", "stream-httpx", "astream"],
+)
+def test_zai_native_positive_cache_without_caller_read_rate_stays_unpriced(
+    zai_adapter_runtime, monkeypatch, model, lane,
+):
+    """A caller tariff without a cache rate cannot price confirmed cached input."""
+    raw_tier = _zai_raw_model_metadata(model)["pricing_tiers"][0]
+    usage = {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
+             "prompt_tokens_details": {"cached_tokens": 3}}
+    calls, _, is_stream, is_httpx = _install_pricing_accounting_io(
+        monkeypatch, model=model, lane=lane, raw_usage=usage,
+    )
+    caller, _ = _native_adapter("direct", model, "httpx" if is_httpx else "requests")
+    caller.pricing = Pricing((PricingTier(
+        None, raw_tier["input_per_1m"] / 1_000_000,
+        raw_tier["output_per_1m"] / 1_000_000,
+    ),), currency="CALLER")
+    completed = []
+    response = _run_pricing_lane(caller, lane, completed)
+    assert response.content == "accounted"
+    assert response.model == model
+    assert response.finish_reason == "stop"
+    assert _usage_tuple(response.usage) == (10, 4, 14, 3, None)
+    _assert_response_costs(
+        response, "CALLER", None,
+        4 * raw_tier["output_per_1m"] / 1_000_000, None,
+    )
+    assert response.cost_breakdown is None
+    if is_stream:
+        assert response.response_id == "accounting-stream-id"
+        assert completed == [response]
+    else:
+        assert response.response_id == "accounting-response-id"
+        assert completed == []
+    _assert_pricing_lane_trace(calls, lane, model)
+
+
+_ZERO_CALLER_PRICING_CASES = [
+    pytest.param(
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
+         "prompt_tokens_details": {"cached_tokens": 3}},
+        (10, 4, 14, 3, None), (0.0, 0.0, 0.0), id="complete-positive-cache-zero-rates",
+    ),
+    pytest.param(_NO_USAGE, None, (None, None, None), id="omitted-usage-remains-unknown"),
+    pytest.param(
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
+         "prompt_tokens_details": {}},
+        (10, 4, 14, None, None), (None, 0.0, None), id="missing-cache-evidence-remains-unknown",
+    ),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize(
+    "lane", ["chat-requests", "chat-httpx", "achat", "stream-requests", "stream-httpx", "astream"],
+)
+@pytest.mark.parametrize(("raw_usage", "normalized", "expected_costs"), _ZERO_CALLER_PRICING_CASES)
+def test_zai_native_zero_rate_caller_tariff_preserves_unknown_evidence(
+    zai_adapter_runtime, monkeypatch, model, lane, raw_usage, normalized, expected_costs,
+):
+    """Explicit zero rates price reported components as zero without filling missing evidence."""
+    raw_tier = _zai_raw_model_metadata(model)["pricing_tiers"][0]
+    pricing = Pricing((PricingTier(
+        None,
+        raw_tier["input_per_1m"] / 1_000_000,
+        raw_tier["output_per_1m"] / 1_000_000,
+        0.0,
+    ),), currency="ZERO")
+    pricing.set_in_per_1m(0)
+    pricing.set_out_per_1m(0)
+    calls, _, is_stream, is_httpx = _install_pricing_accounting_io(
+        monkeypatch, model=model, lane=lane, raw_usage=raw_usage,
+    )
+    caller, _ = _native_adapter("direct", model, "httpx" if is_httpx else "requests")
+    caller.pricing = pricing
+    completed = []
+    response = _run_pricing_lane(caller, lane, completed)
+    assert response.content == "accounted"
+    assert response.model == model
+    assert response.finish_reason == "stop"
+    assert _usage_tuple(response.usage) == normalized
+    expected_currency = "ZERO" if normalized is not None and normalized[0] is not None else None
+    _assert_response_costs(response, expected_currency, *expected_costs)
+    assert response.cost_breakdown is None
+    if is_stream:
+        assert response.response_id == "accounting-stream-id"
+        assert completed == [response]
+    else:
+        assert response.response_id == "accounting-response-id"
+        assert completed == []
+    _assert_pricing_lane_trace(calls, lane, model)
