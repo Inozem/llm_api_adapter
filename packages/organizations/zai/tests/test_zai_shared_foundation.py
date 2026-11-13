@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
+import inspect
 import ipaddress
 import os
 from pathlib import Path
@@ -31,8 +32,15 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPITimeoutError,
     LLMAPITokenLimitError,
     LLMAPIUsageLimitError,
+    ToolChoiceError,
 )
+from llm_api_adapter.errors.config_errors import LLMConfigError, LLMReasoningLevelError
+from llm_api_adapter.adapters.base_adapter import LLMAdapterBase
+from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
+from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent, SyncTransport, TransportRequest
+from llm_api_adapter.llms.requests_transport import RequestsSyncTransport
+from llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
 from llm_api_adapter.llms.openai_compatible.sync_client import OpenAICompatibleSyncClient
 from llm_api_adapter.llms.openai_compatible.async_client import _AsyncExecutionMixin
 from llm_api_adapter_zai.clients import (
@@ -46,6 +54,21 @@ from llm_api_adapter_zai.clients import (
 from llm_api_adapter_zai import clients as clients_package
 from llm_api_adapter_zai.clients import async_client as async_client_module
 from llm_api_adapter_zai.clients import sync_client as sync_client_module
+from llm_api_adapter_zai.adapter import ZaiAdapter
+from llm_api_adapter_zai.plugin import PLUGIN
+import llm_api_adapter.adapters.base_adapter as base_adapter_module
+import llm_api_adapter.universal_adapter as universal_module
+from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.models.messages.file_parts import DocumentPart
+from llm_api_adapter.models.responses.chat_response import ChatResponse
+from llm_api_adapter.models.tools.tool_spec import ToolSpec
+from llm_api_adapter_zai.adapter import _ZaiStreamState
+from llm_api_adapter_zai.streaming import ZaiStreamAssembler
+
+
+ZAI_MODELS = tuple(PLUGIN.model_metadata.organization_data["models"])
 
 
 def _is_loopback(host: Any) -> bool:
@@ -510,3 +533,685 @@ assert not any(name == root or name.startswith(root + ".") for name in sys.modul
         cwd=repo, env=env, text=True, capture_output=True, timeout=20,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.fixture
+def zai_adapter_runtime(monkeypatch):
+    """Install the real package registry into the adapter and facade lookup sites."""
+    model_registry = RegistrySpec()
+    assert PLUGIN.model_metadata is not None
+    assert model_registry.register_organization_metadata(PLUGIN.model_metadata)
+    provider_registry = ServiceProviderRegistry()
+    PLUGIN.register(provider_registry)
+    monkeypatch.setattr(universal_module, "LLM_REGISTRY", model_registry)
+    monkeypatch.setattr(universal_module, "SERVICE_PROVIDER_REGISTRY", provider_registry)
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", model_registry)
+    return model_registry
+
+
+def _native_adapter(mode, model, transport="requests"):
+    if mode == "facade":
+        facade = UniversalLLMAPIAdapter(
+            organization="zai", model=model, api_key="synthetic-zai-key", transport=transport
+        )
+        return facade, facade.adapter
+    adapter = ZaiAdapter(
+        api_key="synthetic-zai-key", model=model, transport=transport
+    )
+    return adapter, adapter
+
+
+def _response_payload(model):
+    return {
+        "id": "synthetic-response-id",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "synthetic answer"},
+            "finish_reason": "stop",
+        }],
+    }
+
+
+def _stream_payload(model):
+    return {
+        "id": "synthetic-stream-id",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {"content": "synthetic answer"},
+            "finish_reason": "stop",
+        }],
+    }
+
+
+class _ControlledHTTPResponse:
+    """Minimal response surface consumed by the real sync transport implementations."""
+
+    status_code = 200
+
+    def __init__(self, payload, *, streaming=False):
+        self.payload = payload
+        self.streaming = streaming
+        self.closed = False
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+    def iter_lines(self, **kwargs):
+        del kwargs
+        data = _stream_payload(self.payload["model"])
+        import json
+        yield ("data: " + json.dumps(data)).encode()
+        yield b""
+        yield b"data: [DONE]"
+        yield b""
+
+    def close(self):
+        self.closed = True
+
+
+class _ControlledHTTPXClient:
+    """HTTPX client double that records calls while preserving actual transport routing."""
+
+    def __init__(self, observed):
+        self.observed = observed
+        self.closed = False
+
+    def post(self, url, *, headers, json, timeout):
+        self.observed.append(("json", url, headers, json, timeout))
+        return _ControlledHTTPResponse(_response_payload(json["model"]))
+
+    def build_request(self, method, url, *, headers, json, timeout):
+        self.observed.append(("build", method, url, headers, json, timeout))
+        return (method, url, headers, json, timeout)
+
+    def send(self, request, *, stream):
+        method, url, headers, payload, timeout = request
+        self.observed.append(("send", method, url, headers, payload, timeout, stream))
+        return _ControlledHTTPResponse(_response_payload(payload["model"]), streaming=True)
+
+    def close(self):
+        self.closed = True
+
+
+def _install_sync_http_mock(monkeypatch, transport_name):
+    """Patch only the backend I/O methods used by the selected real sync transport."""
+    observed = []
+    if transport_name == "requests":
+        from llm_api_adapter.llms import requests_transport
+
+        def post(url, *, headers, json, timeout, stream=False):
+            observed.append(("stream" if stream else "json", url, headers, json, timeout, stream))
+            return _ControlledHTTPResponse(_response_payload(json["model"]), streaming=stream)
+
+        monkeypatch.setattr(requests_transport.requests, "post", post)
+    else:
+        import httpx
+
+        monkeypatch.setattr(
+            httpx, "Client", lambda: _ControlledHTTPXClient(observed)
+        )
+    return observed
+
+
+def _assert_native_request(observed, transport_name, method_kind, model, *, timeout):
+    assert observed
+    expected_io_kind = "json" if method_kind == "chat" else "stream"
+    if transport_name == "requests":
+        assert len(observed) == 1
+        call = observed[-1]
+        assert call[0] == expected_io_kind
+        _, url, headers, payload, actual_timeout, *stream_args = call
+    elif method_kind == "chat":
+        assert len(observed) == 1
+        _, url, headers, payload, actual_timeout = observed[-1]
+        assert observed[-1][0] == "json"
+    else:
+        assert len(observed) == 2
+        built, sent = observed[-2:]
+        assert built[0] == "build" and sent[0] == "send"
+        _, _, url, headers, payload, actual_timeout = built
+        assert sent[-1] is True
+    assert url == ZAI_CHAT_COMPLETIONS_URL
+    assert headers == {
+        "Authorization": "Bearer synthetic-zai-key",
+        "Content-Type": "application/json",
+    }
+    assert actual_timeout == timeout
+    expected_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "preserve this request"}],
+        "max_tokens": 17,
+        "temperature": 0.4,
+        "top_p": 0.7,
+    }
+    if method_kind == "stream":
+        expected_payload.update({
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        })
+    assert payload == expected_payload
+
+
+@pytest.mark.unit
+def test_zai_native_constructor_shape_equality_and_supported_imports(zai_adapter_runtime):
+    """Keep the native dataclass's caller-visible positional and keyword contract."""
+    from llm_api_adapter_zai import adapter as public_adapter_module
+
+    signature = inspect.signature(ZaiAdapter)
+    expected = [
+        ("api_key", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty),
+        ("model", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty),
+        ("company", inspect.Parameter.POSITIONAL_OR_KEYWORD, "zai"),
+        ("transport", inspect.Parameter.POSITIONAL_OR_KEYWORD, "requests"),
+        ("pricing", inspect.Parameter.POSITIONAL_OR_KEYWORD, None),
+        ("is_reasoning", inspect.Parameter.POSITIONAL_OR_KEYWORD, False),
+        ("is_adaptive_thinking", inspect.Parameter.POSITIONAL_OR_KEYWORD, False),
+        ("service_provider", inspect.Parameter.POSITIONAL_OR_KEYWORD, None),
+    ]
+    assert [
+        (name, item.kind, item.default)
+        for name, item in signature.parameters.items()
+    ] == expected
+    field_names = {item.name for item in dataclass_fields(ZaiAdapter)}
+    assert "base_url" not in field_names and "api_variant" not in field_names
+    assert public_adapter_module.ZaiAdapter is ZaiAdapter
+    assert PLUGIN.register is not None
+    first = ZaiAdapter("synthetic-zai-key", ZAI_MODELS[0])
+    second = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
+    assert first == second
+    second._client = ZaiSyncClient(RecordingTransport())
+    second._async_client = ZaiAsyncClient()
+    assert first == second
+    resolved_spec = first.model_spec
+    first.model_spec = None
+    assert first != second
+    first.model_spec = resolved_spec
+    assert first == second
+    assert first.service_provider == first.company == "zai"
+    explicit = ZaiAdapter(
+        api_key="synthetic-zai-key", model=ZAI_MODELS[0], service_provider="zai"
+    )
+    assert explicit == first
+    assert ZaiAdapter(
+        "synthetic-zai-key", ZAI_MODELS[0], "zai", "requests", None, False, False, None
+    ) == first
+    assert inspect.signature(ZaiAdapter).parameters["model"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    with pytest.raises(TypeError):
+        ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0], base_url="https://x.invalid")
+    with pytest.raises(TypeError):
+        ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0], api_variant="chat_completions")
+    assert "base_url" not in signature.parameters and "api_variant" not in signature.parameters
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "constructor_kwargs",
+    [
+        {"api_key": "", "model": ZAI_MODELS[0]},
+        {"api_key": "synthetic-zai-key", "model": ZAI_MODELS[0], "transport": "invalid"},
+        {"api_key": "synthetic-zai-key", "model": ZAI_MODELS[0], "service_provider": ""},
+        {"api_key": "synthetic-zai-key", "model": ZAI_MODELS[0], "service_provider": object()},
+    ],
+)
+def test_zai_native_constructor_validation_stays_at_construction_without_io(
+    zai_adapter_runtime, monkeypatch, constructor_kwargs
+):
+    """Preserve existing native configuration errors before constructing a usable adapter."""
+    sync_sends = []
+    async_sends = []
+
+    def fake_post(*args, **kwargs):
+        sync_sends.append((args, kwargs))
+        raise AssertionError("invalid construction must not send")
+
+    async def fake_async_request(url, **kwargs):
+        async_sends.append((url, kwargs))
+        raise AssertionError("invalid construction must not send")
+
+    from llm_api_adapter.llms import requests_transport
+    monkeypatch.setattr(requests_transport.requests, "post", fake_post)
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    with pytest.raises(ValueError):
+        ZaiAdapter(**constructor_kwargs)
+    assert sync_sends == [] and async_sends == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("explicit_provider", [False, True])
+def test_zai_facade_resolves_implicit_and_explicit_native_service_provider(
+    zai_adapter_runtime, model, explicit_provider
+):
+    """Resolve every registered Z.ai profile under implicit and explicit provider selection."""
+    options = {"service_provider": "zai"} if explicit_provider else {}
+    facade = UniversalLLMAPIAdapter(
+        organization="zai",
+        model=model,
+        api_key="synthetic-zai-key",
+        **options,
+    )
+    assert isinstance(facade.adapter, ZaiAdapter)
+    assert facade.adapter.service_provider == "zai"
+    assert facade.adapter.model_spec is zai_adapter_runtime.organizations["zai"].models[model]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("mode", ["direct", "facade"])
+@pytest.mark.parametrize("transport_name", ["requests", "httpx"])
+@pytest.mark.parametrize("method_kind", ["chat", "stream"])
+def test_zai_native_sync_methods_preserve_real_transport_wire_contract(
+    zai_adapter_runtime, monkeypatch, model, mode, transport_name, method_kind
+):
+    observed = _install_sync_http_mock(monkeypatch, transport_name)
+    caller, adapter = _native_adapter(mode, model, transport_name)
+    transport_type = RequestsSyncTransport if transport_name == "requests" else HttpxSyncTransport
+    assert isinstance(adapter._sync_transport, transport_type)
+    method = getattr(caller, "stream_chat" if method_kind == "stream" else "chat")
+    kwargs = dict(
+        max_tokens=17, temperature=0.4, top_p=0.7, timeout_s=8.25
+    )
+    completed = []
+    if method_kind == "chat":
+        response = method([UserMessage("preserve this request")], **kwargs)
+        assert isinstance(response, ChatResponse)
+    else:
+        assert list(method([UserMessage("preserve this request")], on_done=completed.append, **kwargs)) == ["synthetic answer"]
+        assert len(completed) == 1
+        assert completed[0].response_id == "synthetic-stream-id"
+        assert completed[0].model == model and completed[0].content == "synthetic answer"
+        kwargs["max_tokens"] = 17
+    if method_kind == "chat":
+        assert response.content == "synthetic answer"
+        assert response.response_id == "synthetic-response-id"
+        assert response.model == model
+    _assert_native_request(observed, transport_name, method_kind, model, timeout=8.25)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("mode", ["direct", "facade"])
+@pytest.mark.parametrize("method_kind", ["achat", "astream_chat"])
+def test_zai_native_async_methods_preserve_nondefault_wire_contract(
+    zai_adapter_runtime, monkeypatch, model, mode, method_kind
+):
+    observed = []
+
+    async def async_request(url, **kwargs):
+        observed.append(("json", url, kwargs))
+        return _response_payload(model)
+
+    async def async_stream(url, **kwargs):
+        observed.append(("stream", url, kwargs))
+        yield SSEEvent(None, data=_stream_payload(model))
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    caller, _ = _native_adapter(mode, model)
+    request_kwargs = {
+        "max_tokens": 23, "temperature": 0.6, "top_p": 0.8, "timeout_s": 6.75
+    }
+    if method_kind == "achat":
+        response = asyncio.run(
+            caller.achat([UserMessage("preserve this request")], **request_kwargs)
+        )
+        assert isinstance(response, ChatResponse)
+        assert response.content == "synthetic answer"
+        kind, url, kwargs = observed[-1]
+        assert kind == "json"
+        assert response.response_id == "synthetic-response-id" and response.model == model
+    else:
+        completed = []
+        async def consume():
+            return [
+                text async for text in caller.astream_chat(
+                    [UserMessage("preserve this request")],
+                    on_done=completed.append,
+                    **request_kwargs,
+                )
+            ]
+
+        assert asyncio.run(consume()) == ["synthetic answer"]
+        assert len(completed) == 1
+        assert completed[0].response_id == "synthetic-stream-id"
+        assert completed[0].model == model and completed[0].content == "synthetic answer"
+        kind, url, kwargs = observed[-1]
+        assert kind == "stream"
+    assert len(observed) == 1
+    assert url == ZAI_CHAT_COMPLETIONS_URL
+    assert kwargs["headers"] == {
+        "Authorization": "Bearer synthetic-zai-key",
+        "Content-Type": "application/json",
+    }
+    assert kwargs["timeout"] == 6.75
+    expected_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "preserve this request"}],
+        "max_tokens": 23,
+        "temperature": 0.6,
+        "top_p": 0.8,
+    }
+    if method_kind == "astream_chat":
+        expected_payload.update({
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        })
+    assert kwargs["payload"] == expected_payload
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("mode", ["direct", "facade"])
+@pytest.mark.parametrize("profile", ["omitted", "explicit_defaults"])
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+def test_zai_native_methods_omit_native_default_request_fields(
+    zai_adapter_runtime, monkeypatch, model, mode, profile, method_kind
+):
+    observed = []
+    caller, adapter = _native_adapter(mode, model)
+    adapter._sync_transport = RecordingTransport(body=_response_payload(model))
+
+    async def async_request(url, **kwargs):
+        observed.append((url, kwargs))
+        return _response_payload(model)
+
+    async def async_stream(url, **kwargs):
+        observed.append((url, kwargs))
+        yield SSEEvent(None, data=_stream_payload(model))
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    method = getattr(caller, method_kind)
+    request_kwargs = {} if profile == "omitted" else {
+        "max_tokens": None, "temperature": 1.0, "top_p": 1.0, "timeout_s": None
+    }
+    if method_kind == "chat":
+        response = method([UserMessage("defaults")], **request_kwargs)
+        assert response.content == "synthetic answer"
+        payload = adapter._sync_transport.requests[-1].payload
+    elif method_kind == "stream_chat":
+        adapter._sync_transport.events = [SSEEvent(None, data=_stream_payload(model))]
+        assert list(method([UserMessage("defaults")], **request_kwargs)) == ["synthetic answer"]
+        payload = adapter._sync_transport.requests[-1].payload
+    elif method_kind == "achat":
+        response = asyncio.run(method([UserMessage("defaults")], **request_kwargs))
+        assert response.content == "synthetic answer"
+        payload = observed[-1][1]["payload"]
+    else:
+        async def consume():
+            return [text async for text in method([UserMessage("defaults")], **request_kwargs)]
+        assert asyncio.run(consume()) == ["synthetic answer"]
+        payload = observed[-1][1]["payload"]
+    if method_kind in {"chat", "stream_chat"}:
+        assert len(adapter._sync_transport.requests) == 1
+        assert adapter._sync_transport.requests[-1].timeout is None
+    else:
+        assert len(observed) == 1
+        assert observed[-1][1]["timeout"] is None
+    expected_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "defaults"}],
+    }
+    if method_kind in {"stream_chat", "astream_chat"}:
+        expected_payload.update({
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        })
+    assert payload == expected_payload
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+def test_zai_public_methods_reject_invalid_requests_before_any_transport(
+    zai_adapter_runtime, monkeypatch, model, method_kind
+):
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    transport = RecordingTransport(body=_response_payload(model))
+    adapter._sync_transport = transport
+    async_calls = []
+
+    async def async_request(url, **kwargs):
+        async_calls.append((url, kwargs))
+        return _response_payload(model)
+
+    async def async_stream(url, **kwargs):
+        async_calls.append((url, kwargs))
+        yield SSEEvent(None, data=_stream_payload(model))
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    model_spec = zai_adapter_runtime.organizations["zai"].models[model]
+    tool_choice_rule = next(
+        rule for rule in model_spec.request_rules.rules
+        if rule.handler == "restrict_tool_choice"
+    )
+    allowed_tool_choices = set(tool_choice_rule.arguments["allowed_values"])
+    assert "none" not in allowed_tool_choices
+    valid_tool = ToolSpec(
+        name="lookup",
+        description="Look up a value.",
+        json_schema={"type": "object", "properties": {}},
+    )
+    invalid_cases = [
+        ({"max_tokens": True}, ValueError),
+        ({"max_tokens": 0}, ValueError),
+        ({"max_tokens": -1}, ValueError),
+        ({"max_tokens": 1.5}, ValueError),
+        ({"max_tokens": model_spec.limits.max_output_tokens + 1}, ValueError),
+        ({"temperature": 2.1}, ValueError),
+        ({"temperature": -0.1}, ValueError),
+        ({"top_p": 1.1}, ValueError),
+        ({"top_p": -0.1}, ValueError),
+        ({"tool_choice": "none", "tools": [valid_tool]}, ToolChoiceError),
+        ({"parallel_tool_calls": True}, NotImplementedError),
+        ({"parallel_tool_calls": False}, NotImplementedError),
+        ({"messages": [UserMessage("doc", files=[DocumentPart(url="https://example.test/file.pdf")])]}, ValueError),
+        ({"messages": [UserMessage("doc", files=[DocumentPart(data=b"%PDF", media_type="application/pdf")])]}, ValueError),
+        ({"json_schema": {"type": "object"}}, NotImplementedError),
+        ({"response_model": dict}, NotImplementedError),
+    ]
+    if (
+        model_spec.reasoning_capability is not None
+        and getattr(model_spec.reasoning_capability, "allowed_values", ())
+    ):
+        invalid_cases.append(({"reasoning_level": "not-a-registered-level"}, LLMReasoningLevelError))
+    for invalid_kwargs, expected_error in invalid_cases:
+        messages = invalid_kwargs.pop("messages", [UserMessage("invalid")])
+        if method_kind == "chat":
+            invocation = lambda: adapter.chat(messages, **invalid_kwargs)
+        elif method_kind == "achat":
+            invocation = lambda: asyncio.run(adapter.achat(messages, **invalid_kwargs))
+        elif method_kind == "stream_chat":
+            invocation = lambda: list(adapter.stream_chat(messages, **invalid_kwargs))
+        else:
+            async def consume():
+                async for _ in adapter.astream_chat(messages, **invalid_kwargs):
+                    pass
+            invocation = lambda: asyncio.run(consume())
+        with pytest.raises(expected_error) as caught:
+            invocation()
+        assert type(caught.value) is expected_error
+    assert transport.requests == []
+    assert async_calls == []
+
+
+@pytest.mark.unit
+def test_zai_sync_transport_replacement_drives_json_and_sse_calls(zai_adapter_runtime):
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
+    replacement = RecordingTransport(
+        body=_response_payload(ZAI_MODELS[0]),
+        events=[SSEEvent(None, data=_stream_payload(ZAI_MODELS[0]))],
+    )
+    adapter._sync_transport = replacement
+    assert adapter.chat([UserMessage("replacement")]).content == "synthetic answer"
+    assert list(adapter.stream_chat([UserMessage("replacement")])) == ["synthetic answer"]
+    assert len(replacement.requests) == 2
+    assert "stream" not in replacement.requests[0].payload
+    assert replacement.requests[1].payload["stream"] is True
+
+
+@pytest.mark.unit
+def test_zai_sync_stream_iterator_defers_valid_preparation_until_consumption(
+    zai_adapter_runtime, monkeypatch
+):
+    """A valid stream iterator does not prepare or send until iteration begins."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
+    transport = RecordingTransport(events=[SSEEvent(None, data=_stream_payload(ZAI_MODELS[0]))])
+    adapter._sync_transport = transport
+    preparations = []
+    original_prepare = LLMAdapterBase._prepare_chat_request
+
+    def observed_prepare(self, *args, **kwargs):
+        preparations.append((args, kwargs))
+        return original_prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(LLMAdapterBase, "_prepare_chat_request", observed_prepare)
+    iterator = adapter.stream_chat([UserMessage("lazy")])
+    assert preparations == [] and transport.requests == []
+    assert list(iterator) == ["synthetic answer"]
+    assert preparations and len(transport.requests) == 1
+
+
+@pytest.mark.unit
+def test_zai_sync_stream_iterator_defers_invalid_max_tokens_until_consumption(
+    zai_adapter_runtime, monkeypatch
+):
+    """Invalid output limits fail at iteration, before any transport send."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
+    transport = RecordingTransport(events=[SSEEvent(None, data=_stream_payload(ZAI_MODELS[0]))])
+    adapter._sync_transport = transport
+    preparations = []
+    original_prepare = LLMAdapterBase._prepare_chat_request
+
+    def observed_prepare(self, *args, **kwargs):
+        preparations.append((args, kwargs))
+        return original_prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(LLMAdapterBase, "_prepare_chat_request", observed_prepare)
+    invalid_iterator = adapter.stream_chat([UserMessage("lazy invalid")], max_tokens=0)
+    assert preparations == [] and transport.requests == []
+    with pytest.raises(ValueError) as caught:
+        list(invalid_iterator)
+    assert type(caught.value) is ValueError
+    assert preparations and transport.requests == []
+
+
+@pytest.mark.unit
+def test_zai_native_compatible_inheritance_and_method_ownership():
+    """Keep compatible execution inherited and the two native stream adapters package-owned."""
+    assert ZaiAdapter.__bases__ == (OpenAICompatibleAdapter,)
+
+
+@pytest.mark.unit
+def test_zai_native_stream_entry_points_remain_package_owned():
+    """The native sync and internal async generators adapt Core lifecycle services."""
+    assert "stream_chat" in ZaiAdapter.__dict__
+    assert "_astream_chat" in ZaiAdapter.__dict__
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method_name", ["chat", "achat", "astream_chat"])
+def test_zai_native_methods_are_directly_inherited(method_name):
+    """Prove each common method has no Z.ai wrapper, alias, or copied definition."""
+    assert method_name not in ZaiAdapter.__dict__
+    assert getattr(ZaiAdapter, method_name) is getattr(OpenAICompatibleAdapter, method_name)
+
+
+@pytest.mark.unit
+def test_zai_package_owned_stream_methods_delegate_to_shared_lifecycle(zai_adapter_runtime, monkeypatch):
+    """Observe existing lifecycle helpers while retaining the real native stream state."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
+    adapter._sync_transport = RecordingTransport(events=[SSEEvent(None, data=_stream_payload(ZAI_MODELS[0]))])
+    sync_calls = []
+    async_calls = []
+    original_sync = LLMAdapterBase._run_sync_stream
+    original_async = LLMAdapterBase._run_async_stream
+
+    def sync_spy(self, *args, **kwargs):
+        sync_calls.append((self, args, kwargs))
+        return original_sync(self, *args, **kwargs)
+
+    async def async_spy(self, *args, **kwargs):
+        async_calls.append((self, args, kwargs))
+        async for item in original_async(self, *args, **kwargs):
+            yield item
+
+    async def async_stream(url, **kwargs):
+        yield SSEEvent(None, data=_stream_payload(ZAI_MODELS[0]))
+
+    monkeypatch.setattr(LLMAdapterBase, "_run_sync_stream", sync_spy)
+    monkeypatch.setattr(LLMAdapterBase, "_run_async_stream", async_spy)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    assert list(adapter.stream_chat([UserMessage("sync lifecycle")])) == ["synthetic answer"]
+
+    async def consume_async():
+        return [text async for text in adapter.astream_chat([UserMessage("async lifecycle")])]
+
+    assert asyncio.run(consume_async()) == ["synthetic answer"]
+    assert len(sync_calls) == 1 and sync_calls[0][0] is adapter
+    assert len(async_calls) == 1 and async_calls[0][0] is adapter
+    sync_state = sync_calls[0][1][1]
+    async_state = async_calls[0][1][1]
+    assert type(sync_state) is _ZaiStreamState
+    assert type(async_state) is _ZaiStreamState
+    assert isinstance(sync_state.assembler, ZaiStreamAssembler)
+    assert isinstance(async_state.assembler, ZaiStreamAssembler)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+def test_zai_unknown_native_model_fails_capability_preflight_before_io(
+    zai_adapter_runtime, monkeypatch, method_kind
+):
+    """An unknown native identifier receives no inferred model capabilities."""
+    with pytest.warns(UserWarning, match="not verified"):
+        adapter = ZaiAdapter(api_key="synthetic-zai-key", model="unregistered-zai-model")
+    assert adapter.model_spec is None
+    transport = RecordingTransport()
+    adapter._sync_transport = transport
+    async_calls = []
+
+    async def async_request(url, **kwargs):
+        async_calls.append((url, kwargs))
+        return _response_payload("unregistered-zai-model")
+
+    async def async_stream(url, **kwargs):
+        async_calls.append((url, kwargs))
+        yield SSEEvent(None, data=_stream_payload("unregistered-zai-model"))
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    if method_kind == "chat":
+        with pytest.raises(NotImplementedError):
+            adapter.chat([UserMessage("unknown model")])
+    elif method_kind == "achat":
+        with pytest.raises(NotImplementedError):
+            asyncio.run(adapter.achat([UserMessage("unknown model")]))
+    elif method_kind == "stream_chat":
+        with pytest.raises(NotImplementedError):
+            list(adapter.stream_chat([UserMessage("unknown model")]))
+    else:
+        async def consume():
+            async for _ in adapter.astream_chat([UserMessage("unknown model")]):
+                pass
+        with pytest.raises(NotImplementedError):
+            asyncio.run(consume())
+    assert transport.requests == [] and async_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("config", [{"base_url": "https://example.test"}, {"api_variant": "chat_completions"}])
+def test_zai_facade_rejects_native_connection_overrides_before_io(
+    zai_adapter_runtime, config
+):
+    """Compatible-only connection settings fail at native facade configuration."""
+    with pytest.raises(LLMConfigError):
+        UniversalLLMAPIAdapter(
+            organization="zai", model=ZAI_MODELS[0], api_key="synthetic-zai-key", **config
+        )
