@@ -1550,3 +1550,350 @@ def test_zai_capture_does_not_synthesize_missing_reasoning(
     if method_kind in {"stream_chat", "astream_chat"}:
         assert visible == ["synthetic visible answer"]
         assert callbacks == []
+
+
+def _overlap_stream_events(model, label):
+    """Build unique tool, reasoning-only, and mixed events for one request."""
+    first_delta = {
+        "tool_calls": [{
+            "index": 0,
+            "id": f"call-{label}",
+            "type": "function",
+            "function": {"name": f"lookup_{label}", "arguments": '{"key":"' + label + '"}'},
+        }],
+    }
+    initial_visible = {"A": "A1", "B": "Bee", "C": "none"}[label]
+    resumed_partial_visible = {"A": "a", "B": "x", "C": "!"}[label]
+    resumed_final_visible = {"A": "2", "B": "Y", "C": "?"}[label]
+    return [
+        SSEEvent(None, data={"id": f"response-{label}", "model": model,
+            "choices": [{"index": 0, "delta": first_delta, "finish_reason": None}]}),
+        SSEEvent(None, data={"id": f"response-{label}", "model": model,
+            "choices": [{"index": 0, "delta": {"reasoning_content": f"{label}-thought-1"}, "finish_reason": None}]}),
+        SSEEvent(None, data={"id": f"response-{label}", "model": model,
+            "choices": [{"index": 0, "delta": {"content": initial_visible}, "finish_reason": None}]}),
+        SSEEvent(None, data={"id": f"response-{label}", "model": model,
+            "choices": [{"index": 0, "delta": {
+                "reasoning_content": f"{label}-thought-2",
+                "content": resumed_partial_visible,
+            }, "finish_reason": None}]}),
+        SSEEvent(None, data={"id": f"response-{label}", "model": model,
+            "choices": [{"index": 0, "delta": {"content": resumed_final_visible}, "finish_reason": "tool_calls"}]}),
+    ]
+
+
+def _overlap_tool(label):
+    return ToolSpec(
+        name=f"lookup_{label}",
+        description="synthetic overlap tool",
+        json_schema={"type": "object", "properties": {"key": {"type": "string"}}},
+    )
+
+
+def _assert_adapter_attributes_unchanged(adapter, original_items):
+    """Check every adapter attribute and retained value identity, without name guesses."""
+    current = vars(adapter)
+    assert current.keys() == original_items.keys()
+    assert all(current[name] is value for name, value in original_items.items())
+
+
+def _overlap_callbacks(callbacks):
+    """Record shared callback order while retaining each callback's own capture list."""
+    def on_chunk(chunk):
+        callbacks["chunks"].append(chunk)
+        callbacks["order"].append(("chunk", chunk.text))
+
+    def on_delta(text):
+        callbacks["deltas"].append(text)
+        callbacks["order"].append(("delta", text))
+
+    def on_reasoning(event):
+        callbacks["reasoning"].append(event)
+        callbacks["order"].append(("reasoning", event.text))
+
+    def on_tool_call(call):
+        callbacks["tools"].append(call)
+        callbacks["order"].append(("tool", call.call_id))
+
+    def on_done(response):
+        callbacks["done"].append(response)
+        callbacks["order"].append(("done", response.response_id))
+
+    return on_chunk, on_delta, on_reasoning, on_tool_call, on_done
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+def test_zai_sync_streams_keep_reasoning_tools_and_callbacks_request_local(
+    zai_adapter_runtime, monkeypatch, model
+):
+    """Interleave native streams while preserving all adapter attribute identities."""
+    effort = zai_adapter_runtime.organizations["zai"].models[model].reasoning_capability.allowed_values[0]
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+
+    class InterleavedTransport(RecordingTransport):
+        def post_sse(self, request, *, http_error_handler=None, stream_error_handler=None):
+            self.requests.append(request)
+            label = request.payload["messages"][0]["content"]
+            def events():
+                yield from _overlap_stream_events(model, label)
+            return events()
+
+    adapter._sync_transport = InterleavedTransport()
+    original_state_factory = ZaiAdapter._new_stream_state
+    states = []
+
+    def retain_state(*, buffer_chars, capture_reasoning):
+        state = original_state_factory(
+            buffer_chars=buffer_chars, capture_reasoning=capture_reasoning
+        )
+        states.append(state)
+        return state
+
+    monkeypatch.setattr(ZaiAdapter, "_new_stream_state", staticmethod(retain_state))
+    original_items = dict(vars(adapter))
+    observed = {label: {"chunks": [], "deltas": [], "reasoning": [], "tools": [], "done": [], "order": []}
+                for label in "ABC"}
+    iterators = {}
+    for label, capture, limit in (("A", True, 2), ("B", True, 3), ("C", False, 4)):
+        callbacks = observed[label]
+        on_chunk, on_delta, on_reasoning, on_tool_call, on_done = _overlap_callbacks(callbacks)
+        iterators[label] = adapter.stream_chat(
+            [UserMessage(label)],
+            reasoning_level=effort,
+            tools=[_overlap_tool(label)],
+            capture_reasoning=capture,
+            buffer_chars=limit,
+            on_chunk=on_chunk,
+            on_delta=on_delta,
+            on_reasoning=on_reasoning,
+            on_tool_call=on_tool_call,
+            on_done=on_done,
+        )
+
+    # First yields happen before thought-2 is sent, leaving the other streams suspended.
+    assert next(iterators["A"]) == "A1"
+    _assert_adapter_attributes_unchanged(adapter, original_items)
+    assert next(iterators["B"]) == "Bee"
+    _assert_adapter_attributes_unchanged(adapter, original_items)
+    assert next(iterators["C"]) == "none"
+    _assert_adapter_attributes_unchanged(adapter, original_items)
+    assert len(states) == 3
+    assert all(type(state) is _ZaiStreamState for state in states)
+    assert len({id(state) for state in states}) == 3
+    assert len({id(state.chunk_buffer) for state in states}) == 3
+    assert len({id(state.usage_tracker) for state in states}) == 3
+    assert len({id(state.assembler) for state in states}) == 3
+    assert states[0].reasoning_collector is not states[1].reasoning_collector
+    assert states[2].reasoning_collector is None
+
+    assert [event.text for event in observed["A"]["reasoning"]] == ["A-thought-1"]
+    assert [event.text for event in observed["B"]["reasoning"]] == ["B-thought-1"]
+    assert observed["C"]["reasoning"] == []
+
+    assert next(iterators["A"]) == "a2"
+    _assert_adapter_attributes_unchanged(adapter, original_items)
+    assert [event.text for event in observed["A"]["reasoning"]] == ["A-thought-1", "A-thought-2"]
+    assert [event.text for event in observed["B"]["reasoning"]] == ["B-thought-1"]
+    assert observed["C"]["reasoning"] == []
+    assert next(iterators["B"]) == "xY"
+    _assert_adapter_attributes_unchanged(adapter, original_items)
+    assert [event.text for event in observed["B"]["reasoning"]] == ["B-thought-1", "B-thought-2"]
+    assert observed["C"]["reasoning"] == []
+    assert next(iterators["C"]) == "!?"
+    _assert_adapter_attributes_unchanged(adapter, original_items)
+
+    for label in "ABC":
+        with pytest.raises(StopIteration):
+            next(iterators[label])
+        _assert_adapter_attributes_unchanged(adapter, original_items)
+
+    for label, visible in (("A", "A1a2"), ("B", "BeexY"), ("C", "none!?")):
+        callbacks = observed[label]
+        expected_chunks = {"A": ["A1", "a2"], "B": ["Bee", "xY"], "C": ["none", "!?"]}[label]
+        assert [chunk.text for chunk in callbacks["chunks"]] == expected_chunks
+        assert callbacks["deltas"] == expected_chunks
+        assert [call.call_id for call in callbacks["tools"]] == [f"call-{label}"]
+        assert [(call.name, call.arguments) for call in callbacks["tools"]] == [
+            (f"lookup_{label}", {"key": label})
+        ]
+        assert len(callbacks["done"]) == 1
+        response = callbacks["done"][0]
+        assert response.content == visible
+        assert [call.call_id for call in response.tool_calls] == [f"call-{label}"]
+        assert [(call.name, call.arguments) for call in response.tool_calls] == [
+            (f"lookup_{label}", {"key": label})
+        ]
+        assert [event.text for event in callbacks["reasoning"]] == (
+            [f"{label}-thought-1", f"{label}-thought-2"] if label != "C" else []
+        )
+        assert [event.text for event in response.reasoning_events] == (
+            [f"{label}-thought-1", f"{label}-thought-2"] if label != "C" else []
+        )
+        assert callbacks["order"] == (
+            [
+                ("reasoning", f"{label}-thought-1"),
+                ("chunk", expected_chunks[0]),
+                ("delta", expected_chunks[0]),
+                ("reasoning", f"{label}-thought-2"),
+                ("chunk", expected_chunks[1]),
+                ("delta", expected_chunks[1]),
+                ("tool", f"call-{label}"),
+                ("done", f"response-{label}"),
+            ] if label != "C" else [
+                ("chunk", expected_chunks[0]),
+                ("delta", expected_chunks[0]),
+                ("chunk", expected_chunks[1]),
+                ("delta", expected_chunks[1]),
+                ("tool", f"call-{label}"),
+                ("done", f"response-{label}"),
+            ]
+        )
+    _assert_adapter_attributes_unchanged(adapter, original_items)
+    assert all(
+        request.payload["reasoning_effort"] == effort
+        and request.payload["thinking"] == {"type": "enabled"}
+        and "capture_reasoning" not in request.payload
+        for request in adapter._sync_transport.requests
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+def test_zai_async_streams_keep_reasoning_tools_and_callbacks_request_local(
+    zai_adapter_runtime, monkeypatch, model
+):
+    """Overlap native async streams behind a deterministic transport start barrier."""
+    effort = zai_adapter_runtime.organizations["zai"].models[model].reasoning_capability.allowed_values[0]
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    original_state_factory = ZaiAdapter._new_stream_state
+    states = []
+
+    def retain_state(*, buffer_chars, capture_reasoning):
+        state = original_state_factory(
+            buffer_chars=buffer_chars, capture_reasoning=capture_reasoning
+        )
+        states.append(state)
+        return state
+
+    monkeypatch.setattr(ZaiAdapter, "_new_stream_state", staticmethod(retain_state))
+    original_items = dict(vars(adapter))
+    start_count = 0
+    all_started = None
+    sent_payloads = []
+
+    async def async_stream(url, **kwargs):
+        nonlocal start_count
+        assert url == ZAI_CHAT_COMPLETIONS_URL
+        label = kwargs["payload"]["messages"][0]["content"]
+        sent_payloads.append(kwargs["payload"])
+        start_count += 1
+        if start_count == 3:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=5)
+        for event in _overlap_stream_events(model, label):
+            yield event
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    observed = {label: {"chunks": [], "deltas": [], "reasoning": [], "tools": [], "done": [], "order": []}
+                for label in "ABC"}
+
+    async def run_overlap():
+        nonlocal all_started
+        all_started = asyncio.Event()
+        streams = {}
+        for label, capture, limit in (("A", True, 2), ("B", True, 3), ("C", False, 4)):
+            callbacks = observed[label]
+            on_chunk, on_delta, on_reasoning, on_tool_call, on_done = _overlap_callbacks(callbacks)
+            streams[label] = adapter.astream_chat(
+                [UserMessage(label)],
+                reasoning_level=effort,
+                tools=[_overlap_tool(label)],
+                capture_reasoning=capture,
+                buffer_chars=limit,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=on_reasoning,
+                on_tool_call=on_tool_call,
+                on_done=on_done,
+            )
+        first_chunks = await asyncio.gather(*(anext(streams[label]) for label in "ABC"))
+        assert first_chunks == ["A1", "Bee", "none"]
+        _assert_adapter_attributes_unchanged(adapter, original_items)
+        assert start_count == 3 and len(states) == 3
+        assert all(type(state) is _ZaiStreamState for state in states)
+        assert len({id(state) for state in states}) == 3
+        assert len({id(state.chunk_buffer) for state in states}) == 3
+        assert len({id(state.usage_tracker) for state in states}) == 3
+        assert len({id(state.assembler) for state in states}) == 3
+        assert states[0].reasoning_collector is not states[1].reasoning_collector
+        assert states[2].reasoning_collector is None
+        assert [event.text for event in observed["A"]["reasoning"]] == ["A-thought-1"]
+        assert [event.text for event in observed["B"]["reasoning"]] == ["B-thought-1"]
+        assert observed["C"]["reasoning"] == []
+        assert await anext(streams["A"]) == "a2"
+        _assert_adapter_attributes_unchanged(adapter, original_items)
+        assert [event.text for event in observed["A"]["reasoning"]] == ["A-thought-1", "A-thought-2"]
+        assert [event.text for event in observed["B"]["reasoning"]] == ["B-thought-1"]
+        assert observed["C"]["reasoning"] == []
+        assert await anext(streams["B"]) == "xY"
+        _assert_adapter_attributes_unchanged(adapter, original_items)
+        assert [event.text for event in observed["B"]["reasoning"]] == ["B-thought-1", "B-thought-2"]
+        assert observed["C"]["reasoning"] == []
+        assert await anext(streams["C"]) == "!?"
+        _assert_adapter_attributes_unchanged(adapter, original_items)
+        for label in "ABC":
+            with pytest.raises(StopAsyncIteration):
+                await anext(streams[label])
+            _assert_adapter_attributes_unchanged(adapter, original_items)
+
+    asyncio.run(run_overlap())
+    for label, visible in (("A", "A1a2"), ("B", "BeexY"), ("C", "none!?")):
+        callbacks = observed[label]
+        expected_chunks = {"A": ["A1", "a2"], "B": ["Bee", "xY"], "C": ["none", "!?"]}[label]
+        assert [chunk.text for chunk in callbacks["chunks"]] == expected_chunks
+        assert callbacks["deltas"] == expected_chunks
+        assert [call.call_id for call in callbacks["tools"]] == [f"call-{label}"]
+        assert [(call.name, call.arguments) for call in callbacks["tools"]] == [
+            (f"lookup_{label}", {"key": label})
+        ]
+        assert len(callbacks["done"]) == 1
+        response = callbacks["done"][0]
+        assert response.content == visible
+        assert [call.call_id for call in response.tool_calls] == [f"call-{label}"]
+        assert [(call.name, call.arguments) for call in response.tool_calls] == [
+            (f"lookup_{label}", {"key": label})
+        ]
+        assert [event.text for event in callbacks["reasoning"]] == (
+            [f"{label}-thought-1", f"{label}-thought-2"] if label != "C" else []
+        )
+        assert [event.text for event in response.reasoning_events] == (
+            [f"{label}-thought-1", f"{label}-thought-2"] if label != "C" else []
+        )
+        assert callbacks["order"] == (
+            [
+                ("reasoning", f"{label}-thought-1"),
+                ("chunk", expected_chunks[0]),
+                ("delta", expected_chunks[0]),
+                ("reasoning", f"{label}-thought-2"),
+                ("chunk", expected_chunks[1]),
+                ("delta", expected_chunks[1]),
+                ("tool", f"call-{label}"),
+                ("done", f"response-{label}"),
+            ] if label != "C" else [
+                ("chunk", expected_chunks[0]),
+                ("delta", expected_chunks[0]),
+                ("chunk", expected_chunks[1]),
+                ("delta", expected_chunks[1]),
+                ("tool", f"call-{label}"),
+                ("done", f"response-{label}"),
+            ]
+        )
+    _assert_adapter_attributes_unchanged(adapter, original_items)
+    assert len(sent_payloads) == 3
+    assert all(
+        payload["reasoning_effort"] == effort
+        and payload["thinking"] == {"type": "enabled"}
+        and "capture_reasoning" not in payload
+        for payload in sent_payloads
+    )
