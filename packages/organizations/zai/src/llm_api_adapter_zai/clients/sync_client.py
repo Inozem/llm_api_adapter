@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from llm_api_adapter.llms.openai_compatible.sync_client import (
+    OpenAICompatibleSyncClient,
+)
 from llm_api_adapter.errors.llm_api_error import (
     LLMAPIAuthorizationError,
     LLMAPIClientError,
@@ -15,10 +18,8 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPIUsageLimitError,
 )
 from llm_api_adapter.llms.transports import (
-    JSONResponse,
     SSEEvent,
     SyncTransport,
-    TransportRequest,
 )
 
 
@@ -26,11 +27,73 @@ ZAI_BASE_URL = "https://api.z.ai/api/paas/v4"
 ZAI_CHAT_COMPLETIONS_URL = f"{ZAI_BASE_URL}/chat/completions"
 
 
+class _ZaiBoundSyncClient(OpenAICompatibleSyncClient):
+    """Request-bound native policy over Core's compatible sync engine."""
+
+    def __init__(self, api_key: str, transport: SyncTransport) -> None:
+        """Bind this invocation's key and transport without creating another."""
+        self.api_key = api_key
+        self.endpoint = ZAI_BASE_URL
+        self.transport = "requests"
+        self._sync_transport = transport
+        self._api_variant_override = None
+        self._diagnostic_formatter = None
+
+    def _prepare_chat_payload_for_model(
+        self, model: str, kwargs: dict[str, Any], *, streaming: bool = False
+    ) -> dict[str, Any]:
+        """Copy the native payload, retaining max_tokens and sampling defaults."""
+        return {"model": model, **dict(kwargs)}
+
+    def chat_completion(
+        self, model: str, timeout: float | None = None, **kwargs: Any
+    ) -> dict[str, Any]:
+        payload = self._prepare_chat_payload_for_model(model, kwargs)
+        response = self._send_request(ZAI_CHAT_COMPLETIONS_URL, payload, timeout)
+        return _validated_response(response.json())
+
+    def stream_chat_completion(
+        self, model: str, timeout: float | None = None, **kwargs: Any
+    ):
+        payload = self._prepare_chat_payload_for_model(
+            model, kwargs, streaming=True
+        )
+        return self._stream_raw_payload(payload, timeout)
+
+    def _complete_raw(
+        self, payload: dict[str, Any], timeout: float | None
+    ) -> dict[str, Any]:
+        response = self._send_request(
+            ZAI_CHAT_COMPLETIONS_URL, dict(payload), timeout
+        )
+        return _validated_response(response.json())
+
+    def _stream_raw_payload(
+        self, payload: dict[str, Any], timeout: float | None
+    ):
+        stream_payload = dict(payload)
+        stream_payload["stream"] = True
+        stream_payload.setdefault("stream_options", {"include_usage": True})
+        return self._stream_request(
+            ZAI_CHAT_COMPLETIONS_URL, stream_payload, timeout
+        )
+
+    def _handle_http_error(self, http_error: Any) -> None:
+        ZaiSyncClient._handle_http_error(http_error)
+
+    def _handle_stream_error(self, event: SSEEvent) -> None:
+        ZaiSyncClient._handle_stream_error(event)
+
+
 class ZaiSyncClient:
     """Submit Z.ai Chat Completions requests through Core's sync transport."""
 
     def __init__(self, transport: SyncTransport) -> None:
         self.transport = transport
+
+    def _for_request(self, api_key: str) -> _ZaiBoundSyncClient:
+        """Bind this invocation's credential and current transport."""
+        return _ZaiBoundSyncClient(api_key, self.transport)
 
     def chat(
         self,
@@ -40,21 +103,7 @@ class ZaiSyncClient:
         timeout_s: float | None,
     ) -> dict[str, Any]:
         """Post one JSON request and validate its top-level response envelope."""
-        response: JSONResponse = self.transport.post_json(
-            TransportRequest(
-                url=ZAI_CHAT_COMPLETIONS_URL,
-                headers=self._headers(api_key),
-                payload=payload,
-                timeout=timeout_s,
-            ),
-            http_error_handler=self._handle_http_error,
-        )
-        response_data = response.json()
-        if not isinstance(response_data, dict):
-            raise LLMAPIClientError(
-                detail="Z.ai Chat Completions returned a non-object response",
-            )
-        return response_data
+        return self._for_request(api_key)._complete_raw(payload, timeout_s)
 
     def stream(
         self,
@@ -64,19 +113,7 @@ class ZaiSyncClient:
         timeout_s: float | None,
     ):
         """Open one Z.ai SSE response and request terminal usage when available."""
-        stream_payload = dict(payload)
-        stream_payload["stream"] = True
-        stream_payload.setdefault("stream_options", {"include_usage": True})
-        return self.transport.post_sse(
-            TransportRequest(
-                url=ZAI_CHAT_COMPLETIONS_URL,
-                headers=self._headers(api_key),
-                payload=stream_payload,
-                timeout=timeout_s,
-            ),
-            http_error_handler=self._handle_http_error,
-            stream_error_handler=self._handle_stream_error,
-        )
+        return self._for_request(api_key)._stream_raw_payload(payload, timeout_s)
 
     @staticmethod
     def _headers(api_key: str) -> dict[str, str]:
@@ -210,3 +247,11 @@ __all__ = [
     "ZaiChatCompletionsSyncClient",
     "ZaiSyncClient",
 ]
+
+
+def _validated_response(response_data: Any) -> dict[str, Any]:
+    if not isinstance(response_data, dict):
+        raise LLMAPIClientError(
+            detail="Z.ai Chat Completions returned a non-object response",
+        )
+    return response_data
