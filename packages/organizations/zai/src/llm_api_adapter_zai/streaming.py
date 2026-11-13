@@ -40,6 +40,7 @@ class ZaiStreamState:
     reasoning_parts: list[str] = field(default_factory=list)
     tool_calls: dict[int, dict[str, Any]] = field(default_factory=dict)
     finish_reason: str | None = None
+    refusal_parts: list[str] = field(default_factory=list)
 
     @property
     def visible_text(self) -> str:
@@ -148,6 +149,10 @@ def consume_zai_sse_event(
                 if isinstance(reasoning, str) and reasoning:
                     reasoning_parts.append(reasoning)
 
+            refusal = delta.get("refusal")
+            if isinstance(refusal, str) and refusal:
+                state.refusal_parts.append(refusal)
+
             _accumulate_tool_calls(delta.get("tool_calls"), state.tool_calls)
 
         finish_reason = choice.get("finish_reason")
@@ -183,6 +188,8 @@ def assemble_zai_response(
             _copy_tool_call(state.tool_calls[index])
             for index in sorted(state.tool_calls)
         ]
+    if state.refusal_parts:
+        message["refusal"] = "".join(state.refusal_parts)
 
     response["choices"] = [
         {

@@ -27,6 +27,7 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE)):
         sys.path.insert(0, source)
 
 from llm_api_adapter.errors.llm_api_error import (
+    InvalidToolArgumentsError,
     LLMAPIAuthorizationError,
     LLMAPIClientError,
     LLMAPIRateLimitError,
@@ -2584,3 +2585,415 @@ def test_zai_unsupported_files_and_structured_output_fail_before_any_send(
     assert adapter._sync_transport.requests == []
     assert async_calls == []
     assert transfer_attempts == []
+
+
+def _outcome_payload(model, case_name, *, streamed=False):
+    """Build a controlled native completed-response or SSE outcome."""
+    message = {"role": "assistant", "content": "A partial answer"}
+    finish_reason = "stop"
+    if case_name == "tool_only":
+        message["content"] = None
+        message["tool_calls"] = [{
+            "id": "call-weather", "type": "function",
+            "function": {"name": "weather", "arguments": '{"city":"Paris"}'},
+        }]
+        finish_reason = "tool_calls"
+    elif case_name == "length":
+        finish_reason = "length"
+    elif case_name == "refusal":
+        message["content"] = None
+        message["refusal"] = "synthetic refusal"
+    elif case_name == "content_filter":
+        message["content"] = None
+        finish_reason = "content_filter"
+
+    choice = {"index": 0, "finish_reason": finish_reason}
+    if streamed:
+        delta = {"content": message["content"]}
+        if "tool_calls" in message:
+            delta["tool_calls"] = [
+                {"index": 0, **message["tool_calls"][0]}
+            ]
+        if "refusal" in message:
+            # Exercise fragmented provider refusal text in the native assembler.
+            delta["refusal"] = "synthetic "
+            choice["finish_reason"] = None
+        choice["delta"] = delta
+        if case_name == "refusal":
+            return [
+                {"id": f"response-{model}", "model": model, "created": 1730000000,
+                 "choices": [choice]},
+                {"id": f"response-{model}", "model": model,
+                 "choices": [{"index": 0, "delta": {"refusal": "refusal"},
+                              "finish_reason": "stop"}]},
+            ]
+    else:
+        choice["message"] = message
+
+    return [{
+        "id": f"response-{model}", "model": model, "created": 1730000000,
+        "choices": [choice],
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+@pytest.mark.parametrize("case_name", ["visible", "tool_only", "length", "refusal", "content_filter"])
+def test_zai_native_outcomes_keep_identity_tools_and_terminal_state(
+    zai_adapter_runtime, monkeypatch, model, method_kind, case_name
+):
+    """All registered models retain reported completed and stream outcomes."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    completed_callbacks = []
+    tool_callbacks = []
+    body = _outcome_payload(model, case_name)[0]
+    events = [SSEEvent(None, data=item) for item in _outcome_payload(
+        model, case_name, streamed=True
+    )]
+    adapter._sync_transport = RecordingTransport(body=body, events=events)
+    async_calls = []
+
+    async def async_request(url, **kwargs):
+        async_calls.append(("chat", url, kwargs))
+        return body
+
+    async def async_stream(url, **kwargs):
+        async_calls.append(("stream", url, kwargs))
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    kwargs = {
+        "on_done": completed_callbacks.append,
+        "on_tool_call": tool_callbacks.append,
+    }
+    visible = None
+    if method_kind == "chat":
+        response = adapter.chat([UserMessage("outcome")])
+    elif method_kind == "achat":
+        response = asyncio.run(adapter.achat([UserMessage("outcome")]))
+    elif method_kind == "stream_chat":
+        visible = list(adapter.stream_chat([UserMessage("outcome")], **kwargs))
+        response = completed_callbacks[0]
+    else:
+        async def consume():
+            return [item async for item in adapter.astream_chat(
+                [UserMessage("outcome")], **kwargs
+            )]
+        visible = asyncio.run(consume())
+        response = completed_callbacks[0]
+
+    assert response.response_id == f"response-{model}"
+    assert response.model == model
+    assert response.timestamp == 1730000000
+    assert len(completed_callbacks) == (1 if method_kind in {"stream_chat", "astream_chat"} else 0)
+    if case_name == "visible":
+        assert response.content == "A partial answer"
+        assert response.finish_reason == "stop"
+        assert response.refusal is None and response.incomplete_reason is None
+        assert response.tool_calls is None
+        expected_visible = ["A partial answer"]
+    elif case_name == "tool_only":
+        assert response.content is None
+        assert response.finish_reason == "tool_calls"
+        assert [(call.name, call.arguments, call.call_id) for call in response.tool_calls] == [
+            ("weather", {"city": "Paris"}, "call-weather")
+        ]
+        assert response.refusal is None and response.incomplete_reason is None
+        expected_visible = []
+    elif case_name == "length":
+        assert response.content == "A partial answer"
+        assert response.finish_reason == "length"
+        assert response.incomplete_reason == "length"
+        assert response.refusal is None and response.tool_calls is None
+        expected_visible = ["A partial answer"]
+    elif case_name == "refusal":
+        assert response.content is None
+        assert response.finish_reason == "stop"
+        assert response.refusal == "synthetic refusal"
+        assert response.incomplete_reason is None and response.tool_calls is None
+        expected_visible = []
+    else:
+        assert response.content is None
+        assert response.finish_reason == "content_filter"
+        assert response.refusal == "content_filter"
+        assert response.incomplete_reason is None and response.tool_calls is None
+        expected_visible = []
+    if visible is not None:
+        assert visible == expected_visible
+    if case_name == "tool_only":
+        assert [(call.name, call.arguments, call.call_id) for call in tool_callbacks] == [
+            ("weather", {"city": "Paris"}, "call-weather")
+        ] if method_kind in {"stream_chat", "astream_chat"} else tool_callbacks == []
+    else:
+        assert tool_callbacks == []
+    assert response.usage is None
+    assert response.parsed_json is None and response.parsed_model is None
+    assert response.reasoning_events == []
+    if method_kind in {"chat", "stream_chat"}:
+        assert len(adapter._sync_transport.requests) == 1
+        assert async_calls == []
+    else:
+        assert len(async_calls) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+def test_zai_terminal_usage_is_reported_without_estimation(
+    zai_adapter_runtime, monkeypatch, model, method_kind
+):
+    """Usage-only terminal events contribute reported counts; absent usage stays absent."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    events = [
+        SSEEvent(None, data={"id": "usage-tail", "model": model, "created": 1730000001,
+                             "choices": [{"index": 0, "delta": {"content": "answer"},
+                                          "finish_reason": "stop"}]}),
+        SSEEvent(None, data={"id": "usage-tail", "model": model,
+                             "choices": [], "usage": {"prompt_tokens": 7,
+                             "completion_tokens": 3, "total_tokens": 10}}),
+    ]
+    adapter._sync_transport = RecordingTransport(events=events)
+    async_calls = []
+
+    async def async_stream(url, **kwargs):
+        async_calls.append((url, kwargs))
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    completed = []
+    kwargs = {"on_done": completed.append}
+    if method_kind == "stream_chat":
+        visible = list(adapter.stream_chat([UserMessage("usage")], **kwargs))
+    else:
+        async def consume():
+            return [item async for item in adapter.astream_chat(
+                [UserMessage("usage")], **kwargs
+            )]
+        visible = asyncio.run(consume())
+    assert visible == ["answer"]
+    assert len(completed) == 1
+    response = completed[0]
+    assert response.response_id == "usage-tail" and response.model == model
+    assert response.content == "answer" and response.finish_reason == "stop"
+    assert (response.usage.input_tokens, response.usage.output_tokens,
+            response.usage.total_tokens) == (7, 3, 10)
+    assert response.parsed_json is None and response.parsed_model is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("raw, expected", [
+    (None, None), ({}, None),
+    ({"prompt_tokens": 4}, (4, None, None)),
+    ({"prompt_tokens": 4, "completion_tokens": 2}, (4, 2, 6)),
+    ({"prompt_tokens": -1}, None),
+    ({"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 9}, None),
+])
+def test_zai_native_usage_parser_keeps_unknown_data_unset(raw, expected):
+    parsed = ZaiAdapter._parse_usage(raw)
+    if expected is None:
+        assert parsed is None
+    else:
+        assert (parsed.input_tokens, parsed.output_tokens, parsed.total_tokens) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method_kind", ["chat", "achat"])
+@pytest.mark.parametrize("case_name", [
+    "top_level", "missing_choices", "empty_choices", "nonlist_choices",
+    "nonmapping_choice", "message", "content", "tool_arguments",
+])
+def test_zai_completed_malformed_outputs_keep_public_error_categories(
+    zai_adapter_runtime, monkeypatch, method_kind, case_name
+):
+    """Malformed native envelopes and JSON arguments retain existing public errors."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
+    valid = _response_payload(ZAI_MODELS[0])
+    if case_name == "top_level":
+        body = []
+        expected_error = LLMAPIClientError
+    elif case_name in {"missing_choices", "empty_choices", "nonlist_choices", "nonmapping_choice"}:
+        body = copy.deepcopy(valid)
+        if case_name == "missing_choices":
+            body.pop("choices")
+        elif case_name == "empty_choices":
+            body["choices"] = []
+        elif case_name == "nonlist_choices":
+            body["choices"] = {"index": 0}
+        else:
+            body["choices"] = ["not-a-choice"]
+        expected_error = LLMAPIClientError
+    else:
+        body = copy.deepcopy(valid)
+        if case_name == "message":
+            body["choices"][0]["message"] = None
+            expected_error = LLMAPIClientError
+        elif case_name == "content":
+            body["choices"][0]["message"]["content"] = ["not", "text"]
+            expected_error = LLMAPIClientError
+        else:
+            body["choices"][0]["message"]["tool_calls"] = [{
+                "id": "bad-json", "type": "function",
+                "function": {"name": "lookup", "arguments": "{bad json"},
+            }]
+            expected_error = InvalidToolArgumentsError
+    adapter._sync_transport = RecordingTransport(body=body)
+    async_calls = []
+
+    async def async_request(url, **kwargs):
+        async_calls.append((url, kwargs))
+        return body
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    with pytest.raises(expected_error) as caught:
+        if method_kind == "chat":
+            adapter.chat([UserMessage("malformed")])
+        else:
+            asyncio.run(adapter.achat([UserMessage("malformed")]))
+    assert type(caught.value) is expected_error
+    if method_kind == "chat":
+        assert len(adapter._sync_transport.requests) == 1
+        assert async_calls == []
+    else:
+        assert adapter._sync_transport.requests == []
+        assert len(async_calls) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+def test_zai_stream_bad_tool_arguments_fail_before_done_callback(
+    zai_adapter_runtime, monkeypatch, model, method_kind
+):
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    payload = {"id": "bad-stream-tool", "model": model, "choices": [{
+        "index": 0, "delta": {"tool_calls": [{"index": 0, "id": "bad-json",
+        "type": "function", "function": {"name": "lookup", "arguments": "{bad"}}]},
+        "finish_reason": "tool_calls",
+    }]}
+    adapter._sync_transport = RecordingTransport(events=[SSEEvent(None, data=payload)])
+    async_calls = []
+
+    async def async_stream(url, **kwargs):
+        async_calls.append((url, kwargs))
+        yield SSEEvent(None, data=payload)
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    completed = []
+    tool_callbacks = []
+    with pytest.raises(InvalidToolArgumentsError) as caught:
+        if method_kind == "stream_chat":
+            list(adapter.stream_chat(
+                [UserMessage("bad tool")], on_done=completed.append,
+                on_tool_call=tool_callbacks.append,
+            ))
+        else:
+            async def consume():
+                return [item async for item in adapter.astream_chat(
+                    [UserMessage("bad tool")], on_done=completed.append,
+                    on_tool_call=tool_callbacks.append,
+                )]
+            asyncio.run(consume())
+    assert type(caught.value) is InvalidToolArgumentsError
+    assert completed == []
+    assert tool_callbacks == []
+    if method_kind == "stream_chat":
+        assert len(adapter._sync_transport.requests) == 1
+        assert async_calls == []
+    else:
+        assert adapter._sync_transport.requests == []
+        assert len(async_calls) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+def test_zai_stream_malformed_payload_and_missing_finish_keep_native_permissiveness(
+    zai_adapter_runtime, monkeypatch, method_kind
+):
+    """Malformed events and EOF without finish retain the native empty outcome."""
+    model = ZAI_MODELS[0]
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    events = [
+        SSEEvent(None, data="not-a-mapping"),
+        SSEEvent(None, data={"choices": [{"index": 1, "delta": {"content": "ignored"}}]}),
+        SSEEvent(None, data={"choices": [{"index": 0, "delta": {"content": 7}}]}),
+    ]
+    adapter._sync_transport = RecordingTransport(events=events)
+
+    async def async_stream(url, **kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    completed = []
+    with pytest.warns(UserWarning, match="OpenAI returned empty content"):
+        if method_kind == "stream_chat":
+            visible = list(adapter.stream_chat(
+                [UserMessage("empty" )], on_done=completed.append
+            ))
+        else:
+            async def consume():
+                return [item async for item in adapter.astream_chat(
+                    [UserMessage("empty")], on_done=completed.append
+                )]
+            visible = asyncio.run(consume())
+    assert visible == [] and len(completed) == 1
+    response = completed[0]
+    assert response.content is None and response.tool_calls is None
+    assert response.response_id is None and response.finish_reason is None
+    assert response.usage is None and response.refusal is None
+    assert response.parsed_json is None and response.parsed_model is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method_kind", ["stream_chat", "astream_chat"])
+def test_zai_stream_partial_visible_eof_keeps_native_outcome_without_finish(
+    zai_adapter_runtime, monkeypatch, method_kind
+):
+    """EOF after valid partial content retains text and identity without inventing state."""
+    model = ZAI_MODELS[0]
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    events = [
+        SSEEvent(None, data="malformed keepalive-like payload"),
+        SSEEvent(None, data={"choices": [{"index": 1, "delta": {"content": "ignored"}}]}),
+        SSEEvent(None, data={
+            "id": "partial-eof", "model": model, "created": 1730000002,
+            "choices": [{"index": 0, "delta": {"content": "partial answer"}}],
+        }),
+    ]
+    adapter._sync_transport = RecordingTransport(events=events)
+    async_calls = []
+
+    async def async_stream(url, **kwargs):
+        async_calls.append((url, kwargs))
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream)
+    completed = []
+    if method_kind == "stream_chat":
+        visible = list(adapter.stream_chat(
+            [UserMessage("partial EOF")], on_done=completed.append
+        ))
+        assert len(adapter._sync_transport.requests) == 1
+        assert async_calls == []
+    else:
+        async def consume():
+            return [item async for item in adapter.astream_chat(
+                [UserMessage("partial EOF")], on_done=completed.append
+            )]
+        visible = asyncio.run(consume())
+        assert adapter._sync_transport.requests == []
+        assert len(async_calls) == 1
+    assert visible == ["partial answer"]
+    assert len(completed) == 1
+    response = completed[0]
+    assert response.response_id == "partial-eof" and response.model == model
+    assert response.timestamp == 1730000002 and response.content == "partial answer"
+    assert response.finish_reason is None and response.incomplete_reason is None
+    assert response.refusal is None and response.tool_calls is None
+    assert response.usage is None
+    assert response.parsed_json is None and response.parsed_model is None
