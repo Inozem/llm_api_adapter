@@ -12,6 +12,7 @@ from pathlib import Path
 import subprocess
 import socket
 import sys
+import warnings
 from typing import Any
 
 import pytest
@@ -38,6 +39,10 @@ from llm_api_adapter.errors.config_errors import LLMConfigError, LLMReasoningLev
 from llm_api_adapter.adapters.base_adapter import LLMAdapterBase
 from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
+from llm_api_adapter.llm_registry.reasoning import (
+    CANONICAL_REASONING_LEVELS,
+    resolve_reasoning_level,
+)
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent, SyncTransport, TransportRequest
 from llm_api_adapter.llms.requests_transport import RequestsSyncTransport
 from llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
@@ -1215,3 +1220,333 @@ def test_zai_facade_rejects_native_connection_overrides_before_io(
         UniversalLLMAPIAdapter(
             organization="zai", model=ZAI_MODELS[0], api_key="synthetic-zai-key", **config
         )
+
+
+_NO_REASONING_ARGUMENT = object()
+
+
+def _reasoning_response_payload(model, reasoning_content="synthetic private thought"):
+    message = {"role": "assistant", "content": "synthetic visible answer"}
+    if reasoning_content is not _NO_REASONING_ARGUMENT:
+        message["reasoning_content"] = reasoning_content
+    return {
+        "id": "synthetic-reasoning-response",
+        "model": model,
+        "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+    }
+
+
+def _reasoning_stream_events(model, reasoning_content="synthetic private thought"):
+    delta = {"content": "synthetic visible answer"}
+    if reasoning_content is not _NO_REASONING_ARGUMENT:
+        delta["reasoning_content"] = reasoning_content
+    return [
+        SSEEvent(None, data={
+            "id": "synthetic-reasoning-stream",
+            "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": "stop"}],
+        }),
+    ]
+
+
+def _run_native_reasoning_request(
+    monkeypatch,
+    model,
+    method_kind,
+    *,
+    reasoning_level=_NO_REASONING_ARGUMENT,
+    capture_reasoning=False,
+    reasoning_content="synthetic private thought",
+):
+    """Run a real native method with controlled transport I/O and return evidence."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    transport = RecordingTransport(
+        body=_reasoning_response_payload(model, reasoning_content),
+        events=_reasoning_stream_events(model, reasoning_content),
+    )
+    adapter._sync_transport = transport
+    async_sends = []
+
+    async def async_request(url, **kwargs):
+        async_sends.append(("chat", url, kwargs))
+        return _reasoning_response_payload(model, reasoning_content)
+
+    async def async_stream_request(url, **kwargs):
+        async_sends.append(("stream", url, kwargs))
+        for event in _reasoning_stream_events(model, reasoning_content):
+            yield event
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream_request)
+    kwargs = {"capture_reasoning": capture_reasoning}
+    if reasoning_level is not _NO_REASONING_ARGUMENT:
+        kwargs["reasoning_level"] = reasoning_level
+    completed = []
+    reasoning_callbacks = []
+    if method_kind in {"stream_chat", "astream_chat"}:
+        kwargs["on_done"] = completed.append
+        kwargs["on_reasoning"] = lambda event: reasoning_callbacks.append(event)
+
+    if method_kind == "chat":
+        response = adapter.chat([UserMessage("reasoning contract")], **kwargs)
+    elif method_kind == "achat":
+        response = asyncio.run(adapter.achat([UserMessage("reasoning contract")], **kwargs))
+    elif method_kind == "stream_chat":
+        visible = list(adapter.stream_chat([UserMessage("reasoning contract")], **kwargs))
+        assert len(completed) == 1
+        response = completed[0]
+    else:
+        async def consume():
+            return [text async for text in adapter.astream_chat(
+                [UserMessage("reasoning contract")], **kwargs
+            )]
+        visible = asyncio.run(consume())
+        assert len(completed) == 1
+        response = completed[0]
+
+    if method_kind in {"chat", "stream_chat"}:
+        assert len(transport.requests) == 1
+        payload = transport.requests[0].payload
+        sends = len(transport.requests)
+    else:
+        assert len(async_sends) == 1
+        payload = async_sends[0][2]["payload"]
+        sends = len(async_sends)
+    return response, payload, sends, visible if method_kind in {
+        "stream_chat", "astream_chat"
+    } else None, reasoning_callbacks
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+def test_zai_reasoning_controls_follow_registered_values_and_resolver(
+    zai_adapter_runtime, monkeypatch, model, method_kind
+):
+    """Cover omitted, native, canonical, and context-scaled levels on each entry point."""
+    model_spec = zai_adapter_runtime.organizations["zai"].models[model]
+    capability = model_spec.reasoning_capability
+    registered_values = capability.allowed_values
+    context = model_spec.limits.context_window_tokens
+    working_values = tuple(value for value in registered_values if value != "none")
+    minimum = working_values[0]
+    maximum = working_values[-1]
+
+    for reasoning_level in (_NO_REASONING_ARGUMENT, None):
+        payloads = {}
+        for capture in (False, True):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                response, payload, sends, visible, callbacks = _run_native_reasoning_request(
+                    monkeypatch,
+                    model,
+                    method_kind,
+                    reasoning_level=reasoning_level,
+                    capture_reasoning=capture,
+                    reasoning_content=_NO_REASONING_ARGUMENT,
+                )
+            assert sends == 1 and caught == []
+            assert "thinking" not in payload and "reasoning_effort" not in payload
+            assert "capture_reasoning" not in payload
+            assert response.reasoning_events == []
+            assert response.content == "synthetic visible answer"
+            if method_kind in {"stream_chat", "astream_chat"}:
+                assert visible == ["synthetic visible answer"] and callbacks == []
+            payloads[capture] = copy.deepcopy(payload)
+        assert payloads[False] == payloads[True]
+
+    category_cutpoints = tuple(
+        (
+            (index * context) // len(working_values),
+            working_values[index - 1],
+            working_values[index],
+        )
+        for index in range(1, len(working_values))
+    )
+    numeric_inputs = tuple(dict.fromkeys((
+        0,
+        1,
+        context - 1,
+        context,
+        context + 1,
+        *(point for cutpoint, _, _ in category_cutpoints for point in (cutpoint, cutpoint + 1)),
+    )))
+    inputs = (*registered_values, *CANONICAL_REASONING_LEVELS, *numeric_inputs)
+    resolved_payloads = {}
+    for value in inputs:
+        resolution = resolve_reasoning_level(model_spec, value)
+        payloads = {}
+        for capture in (False, True):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                response, payload, sends, visible, callbacks = _run_native_reasoning_request(
+                    monkeypatch,
+                    model,
+                    method_kind,
+                    reasoning_level=value,
+                    capture_reasoning=capture,
+                )
+            assert sends == 1
+            assert [str(item.message) for item in caught] == (
+                [resolution.warning] if resolution.warning else []
+            )
+            assert all(issubclass(item.category, UserWarning) for item in caught)
+            assert payload["thinking"] == {"type": "enabled"}
+            assert payload["reasoning_effort"] == resolution.provider_value
+            assert "capture_reasoning" not in payload
+            assert response.content == "synthetic visible answer"
+            assert "synthetic private thought" not in response.content
+            expected_reasoning = ["synthetic private thought"] if capture else []
+            assert [event.text for event in response.reasoning_events] == expected_reasoning
+            if method_kind in {"stream_chat", "astream_chat"}:
+                assert visible == ["synthetic visible answer"]
+                assert [event.text for event in callbacks] == expected_reasoning
+            if value in registered_values:
+                assert resolution.reason == "categorical_direct_match"
+                assert payload["reasoning_effort"] == value
+            payloads[capture] = copy.deepcopy(payload)
+        assert payloads[False] == payloads[True]
+        resolved_payloads[value] = payloads[False]
+
+    assert resolved_payloads["none"]["reasoning_effort"] == minimum
+    assert resolved_payloads["minimal"]["reasoning_effort"] == minimum
+    assert resolved_payloads[0]["reasoning_effort"] == minimum
+    assert resolved_payloads[1]["reasoning_effort"] == minimum
+    assert resolved_payloads[CANONICAL_REASONING_LEVELS[-1]]["reasoning_effort"] == maximum
+    assert resolved_payloads[context]["reasoning_effort"] == maximum
+    assert resolved_payloads[context + 1]["reasoning_effort"] == maximum
+    for cutpoint, lower_value, upper_value in category_cutpoints:
+        assert resolved_payloads[cutpoint]["reasoning_effort"] == lower_value
+        assert resolved_payloads[cutpoint + 1]["reasoning_effort"] == upper_value
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+def test_zai_reasoning_none_warns_and_uses_registered_minimum(
+    zai_adapter_runtime, monkeypatch, model, method_kind
+):
+    """The explicit string none preserves native always-on minimum-effort behavior."""
+    model_spec = zai_adapter_runtime.organizations["zai"].models[model]
+    minimum = next(
+        item for item in model_spec.reasoning_capability.allowed_values if item != "none"
+    )
+    with pytest.warns(UserWarning, match=f"{model}.*minimum supported level.*{minimum}") as caught:
+        response, payload, sends, _, _ = _run_native_reasoning_request(
+            monkeypatch, model, method_kind, reasoning_level="none"
+        )
+    assert len(caught) == 1 and sends == 1
+    assert payload["thinking"] == {"type": "enabled"}
+    assert payload["reasoning_effort"] == minimum
+    assert "synthetic private thought" not in response.content
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+def test_zai_invalid_reasoning_fails_before_sync_or_async_send(
+    zai_adapter_runtime, monkeypatch, model, method_kind
+):
+    """Bad reasoning controls retain the inherited public error and reject locally."""
+    adapter = ZaiAdapter(api_key="synthetic-zai-key", model=model)
+    transport = RecordingTransport()
+    adapter._sync_transport = transport
+    async_sends = []
+
+    async def async_request(url, **kwargs):
+        async_sends.append((url, kwargs))
+        return _response_payload(model)
+
+    async def async_stream_request(url, **kwargs):
+        async_sends.append((url, kwargs))
+        yield SSEEvent(None, data=_stream_payload(model))
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream_request)
+    invalid_values = (True, False, -1, 0.5, "", "unregistered reasoning")
+    for value in invalid_values:
+        if method_kind == "chat":
+            invoke = lambda: adapter.chat([UserMessage("invalid")], reasoning_level=value)
+        elif method_kind == "achat":
+            invoke = lambda: asyncio.run(
+                adapter.achat([UserMessage("invalid")], reasoning_level=value)
+            )
+        elif method_kind == "stream_chat":
+            invoke = lambda: list(
+                adapter.stream_chat([UserMessage("invalid")], reasoning_level=value)
+            )
+        else:
+            async def consume(value=value):
+                async for _ in adapter.astream_chat(
+                    [UserMessage("invalid")], reasoning_level=value
+                ):
+                    pass
+            invoke = lambda: asyncio.run(consume())
+        with pytest.raises(LLMReasoningLevelError) as caught:
+            invoke()
+        assert type(caught.value) is LLMReasoningLevelError
+        assert transport.requests == [] and async_sends == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+def test_zai_reasoning_capture_is_opt_in_separate_and_wire_neutral(
+    zai_adapter_runtime, monkeypatch, model, method_kind
+):
+    """Capture only exposes provider text; it never changes visible text or request controls."""
+    model_spec = zai_adapter_runtime.organizations["zai"].models[model]
+    provider_effort = model_spec.reasoning_capability.allowed_values[0]
+    results = {}
+    for capture in (False, True):
+        response, payload, sends, visible, callbacks = _run_native_reasoning_request(
+            monkeypatch,
+            model,
+            method_kind,
+            reasoning_level=provider_effort,
+            capture_reasoning=capture,
+        )
+        results[capture] = payload
+        assert sends == 1
+        assert response.content == "synthetic visible answer"
+        assert "synthetic private thought" not in response.content
+        assert payload["thinking"] == {"type": "enabled"}
+        assert payload["reasoning_effort"] == provider_effort
+        if method_kind in {"stream_chat", "astream_chat"}:
+            assert visible == ["synthetic visible answer"]
+            assert [event.text for event in callbacks] == (
+                ["synthetic private thought"] if capture else []
+            )
+        assert [event.text for event in response.reasoning_events] == (
+            ["synthetic private thought"] if capture else []
+        )
+    assert results[False] == results[True]
+    assert "capture_reasoning" not in results[True]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODELS)
+@pytest.mark.parametrize("method_kind", ["chat", "achat", "stream_chat", "astream_chat"])
+@pytest.mark.parametrize("reported_reasoning", [_NO_REASONING_ARGUMENT, None, ""])
+def test_zai_capture_does_not_synthesize_missing_reasoning(
+    zai_adapter_runtime, monkeypatch, model, method_kind, reported_reasoning
+):
+    """Opt-in capture leaves absent, null, and empty provider reasoning unavailable."""
+    model_spec = zai_adapter_runtime.organizations["zai"].models[model]
+    provider_effort = model_spec.reasoning_capability.allowed_values[0]
+    response, payload, sends, visible, callbacks = _run_native_reasoning_request(
+        monkeypatch,
+        model,
+        method_kind,
+        reasoning_level=provider_effort,
+        capture_reasoning=True,
+        reasoning_content=reported_reasoning,
+    )
+    assert sends == 1
+    assert response.reasoning_events == []
+    assert "synthetic private thought" not in response.content
+    assert payload["thinking"] == {"type": "enabled"}
+    assert payload["reasoning_effort"] == provider_effort
+    if method_kind in {"stream_chat", "astream_chat"}:
+        assert visible == ["synthetic visible answer"]
+        assert callbacks == []
