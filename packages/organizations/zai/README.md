@@ -4,7 +4,9 @@ An optional Z.ai / GLM organization package for
 [LLM API Adapter](https://github.com/Inozem/llm_api_adapter/), a Python SDK with
 one shared interface for calling LLM APIs.
 
-Uses Z.ai / GLM's official Chat Completions API without a provider SDK.
+Calls the official Z.ai API with `organization="zai"`.
+Requires Python **3.10+** and
+`llm-api-adapter>=0.10.0,<1.0.0`.
 
 ## Installation
 
@@ -14,21 +16,21 @@ Install through the Core package extra:
 pip install "llm-api-adapter[zai]"
 ```
 
-Direct installation is also supported when Core is managed separately:
+Or install the organization package directly:
 
 ```bash
 pip install llm-api-adapter-zai
 ```
 
-Async requests need HTTPX:
+Async requests need the optional async dependencies:
 
 ```bash
-pip install "llm-api-adapter[zai,async]"
+pip install "llm-api-adapter-zai[async]"
 ```
 
 Synchronous requests use `requests` by default. To opt into HTTPX for sync
-`chat()` and `stream_chat()`, install `"llm-api-adapter[zai,httpx]"` and pass
-`transport="httpx"`.
+`chat()` and `stream_chat()`, install `"llm-api-adapter-zai[httpx]"`
+and pass `transport="httpx"`.
 
 ## Quick start
 
@@ -51,50 +53,64 @@ response = adapter.chat(
 print(response.content)
 ```
 
+Use `chat`, `achat`, `stream_chat` or `astream_chat`. Explicit
+`service_provider="zai"` is also supported. Supply your Z.ai credential through
+`api_key`; `base_url` and `api_variant` overrides are unsupported.
+
+`max_tokens` must be a positive integer within the model's output limit. Omit it
+to use the provider default. Use `timeout_s` to set the request timeout.
+
+## Streaming
+
+Use the shared [streaming API](https://github.com/Inozem/llm_api_adapter/#streaming).
+Handle errors around iterator consumption (`for`, `next` or `list`): request
+preparation and validation happen during iteration, with local errors raised
+before provider I/O. Keep mutable request inputs stable until consumption.
+
 ## Supported models
 
 - `glm-5.3-flash`
 - `glm-5.3-flashx`
-- `glm-5.3-flashx-legal` — specialized for legal workflows
+- `glm-5.3-flashx-legal`
 
-All three use the same API parameters documented in the
-[GLM-5.3-Flash family guide](https://docs.z.ai/guides/vlm/glm-5.3-flash).
+See the [Z.ai registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/zai/src/llm_api_adapter_zai/registry/organizations/zai.json)
+for model limits, supported reasoning levels and standard prices.
 
 ## Capabilities
 
 | Capability | All supported models |
 | --- | --- |
-| Text chat; sync/async streaming | Supported through the official Chat Completions endpoint |
+| Sync/async chat and streaming | Supported |
 | Application function tools | `tool_choice="auto"` only; at most 128 declarations |
-| Reasoning | Core `reasoning_level` is mapped to Z.ai effort; kept separate from visible text |
+| Reasoning controls | `reasoning_level`: provider, canonical or numeric value |
+| Reasoning capture | Opt-in `capture_reasoning=True`; separate response events and stream callbacks |
 | Image input | User-message URL, bytes, and data-URL forms |
-| Usage | Valid provider usage only; missing or malformed usage is unavailable |
+| Usage | Valid reported counts, including zero; unknown components stay unavailable |
 | Portable JSON Schema / Pydantic output | Unsupported; rejected before HTTP |
-| Documents and generic files | Unsupported; rejected before HTTP |
-| Deployments, uploads, OCR, retries, continuation, and video | Unsupported |
+| PDF, other documents and generic files | Unsupported; rejected before HTTP |
 
-Unknown, retired, aliased, or unverified model IDs are not inferred. Unsupported
-tool choices, parallel-tool control, provider-built-in tools, and every
-`DocumentPart` URL or byte form fail locally before the transport is called.
-The adapter accepts only the official endpoint and the `ZAI_API_KEY` bearer
-credential.
+Unsupported tool choices and explicit `parallel_tool_calls` are rejected before
+HTTP. Function calls are returned to your application; the SDK does not execute
+tools. Requests are not retried automatically.
 
 `reasoning_level="none"` uses the minimum registered effort and emits a
-warning. `previous_response` is accepted but ignored: send complete `messages`
-history, including assistant tool calls and tool results, on each turn; no
-provider continuation identifier is sent. Exact values and exceptions are
-recorded in the [Z.ai registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/zai/src/llm_api_adapter_zai/registry/organizations/zai.json).
+warning because these models cannot disable thinking. Capture is off by default.
+When enabled, reported reasoning is available through `response.reasoning_events`
+and `on_reasoning` for streams, separate from visible text.
+
+`previous_response` is accepted but ignored: send complete `messages`
+history, including assistant tool calls and tool results, on each turn.
 
 ## Automatic cache usage and pricing
 
-`usage.prompt_tokens_details.cached_tokens` becomes `Usage.cached_tokens`,
-a subset of total input. The model uses its registry's ordinary and cache-read
-USD rates. No separately priced automatic cache-write component is registered,
-so `cache_write_tokens` remains `None`.
+`response.usage` contains valid provider-reported counts. Missing or invalid
+counts stay unavailable; explicit zero remains zero. `usage.cached_tokens` is
+a confirmed subset of input tokens, charged once at the model's cache-read rate.
+Costs use registered USD prices or your caller-local pricing override.
 
 An omitted cache-read split leaves `cost_input` and `cost_total` unknown;
-known output cost can remain available. The adapter does not enable opt-in
-cache controls or price selectable TTLs or storage. See the shared
+known output cost can remain available. Cache-write counts stay `None`;
+explicit cache controls, TTLs and storage pricing are unsupported. See the shared
 [usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
 
 See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
