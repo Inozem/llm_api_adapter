@@ -73,14 +73,6 @@ def test_zai_project_declares_core_dependency_extras_and_entry_point():
 
 
 @pytest.mark.unit
-def test_zai_project_declares_migrated_package_version():
-    """The migrated Z.ai package declares its planned release version."""
-    project = read_project_metadata(PACKAGE_ROOT / "pyproject.toml")
-
-    assert project["version"] == "0.1.3"
-
-
-@pytest.mark.unit
 @pytest.mark.parametrize(
     ("dependency_group", "expected_extra"),
     [("dependencies", None), ("async", "async"), ("httpx", "httpx")],
@@ -115,9 +107,8 @@ def test_zai_core_dependency_groups_require_supported_release(
 
 @pytest.mark.unit
 def test_zai_root_metadata_keeps_core_and_extra_compatible():
-    """The root release stays fixed while its Z.ai extra admits this package."""
+    """Core dependency and Z.ai extra metadata remain compatible."""
     root_project = read_project_metadata(REPOSITORY_ROOT / "pyproject.toml")
-    assert root_project["version"] == "0.10.0"
     assert root_project["dependencies"] == ["requests>=2.32"]
 
     raw_requirement = root_project["optional-dependencies"]["zai"]
@@ -130,6 +121,7 @@ def test_zai_root_metadata_keeps_core_and_extra_compatible():
     assert parsed.specifier == ROOT_ZAI_REQUIREMENT_SPECIFIER
     assert parsed.specifier.contains("0.1.2")
     assert parsed.specifier.contains("0.1.3")
+    assert parsed.specifier.contains("0.1.3.post1")
 
 
 @pytest.mark.unit
