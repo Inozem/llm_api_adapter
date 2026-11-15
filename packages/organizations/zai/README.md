@@ -32,14 +32,6 @@ Synchronous requests use `requests` by default. To opt into HTTPX for sync
 `chat()` and `stream_chat()`, install `"llm-api-adapter-zai[httpx]"`
 and pass `transport="httpx"`.
 
-The low-level `ZaiSyncClient(api_key, transport="requests", *, sync_transport=None)`
-and `ZaiAsyncClient(api_key)` bind credentials when constructed. Call
-`complete(model, timeout=None, **payload)` or
-`chat_completion(model, timeout=None, **payload)` for a raw JSON object (`dict`);
-call `stream(model, timeout=None, **payload)` or
-`stream_chat_completion(model, timeout=None, **payload)` for raw SSE events.
-For example, use `client.complete("glm-5.3-flash", messages=[{"role": "user", "content": "Hello"}])`.
-
 ## Quick start
 
 ```python
