@@ -171,13 +171,10 @@ class ZaiSyncClient(OpenAICompatibleSyncClient):
         raise LLMAPIClientError(detail=detail)
 
 
-ZaiChatCompletionsSyncClient = ZaiSyncClient
-
-
 def _validated_response(response_data: Any) -> dict[str, Any]:
     if not isinstance(response_data, dict):
         raise LLMAPIClientError(detail="Z.ai Chat Completions returned a non-object response")
     return response_data
 
 
-__all__ = ["ZAI_BASE_URL", "ZAI_CHAT_COMPLETIONS_URL", "ZaiChatCompletionsSyncClient", "ZaiSyncClient"]
+__all__ = ["ZAI_BASE_URL", "ZAI_CHAT_COMPLETIONS_URL", "ZaiSyncClient"]

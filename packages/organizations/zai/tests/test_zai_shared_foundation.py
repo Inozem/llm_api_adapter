@@ -57,8 +57,6 @@ from llm_api_adapter_zai.clients import (
     ZAI_BASE_URL,
     ZAI_CHAT_COMPLETIONS_URL,
     ZaiAsyncClient,
-    ZaiChatCompletionsAsyncClient,
-    ZaiChatCompletionsSyncClient,
     ZaiSyncClient,
 )
 from llm_api_adapter_zai import clients as clients_package
@@ -166,11 +164,9 @@ class RecordingTransport(SyncTransport):
 
 @pytest.mark.unit
 def test_zai_clients_are_concrete_compatible_subclasses_with_native_payloads():
-    assert ZaiChatCompletionsSyncClient is ZaiSyncClient
-    assert ZaiChatCompletionsAsyncClient is ZaiAsyncClient
     assert clients_package.__all__ == [
         "ZAI_BASE_URL", "ZAI_CHAT_COMPLETIONS_URL", "ZaiAsyncClient",
-        "ZaiChatCompletionsAsyncClient", "ZaiChatCompletionsSyncClient", "ZaiSyncClient",
+        "ZaiSyncClient",
     ]
     assert clients_package.ZAI_BASE_URL == ZAI_BASE_URL
     assert clients_package.ZAI_CHAT_COMPLETIONS_URL == ZAI_CHAT_COMPLETIONS_URL

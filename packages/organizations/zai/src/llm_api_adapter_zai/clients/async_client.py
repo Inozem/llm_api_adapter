@@ -35,6 +35,4 @@ class ZaiAsyncClient(OpenAICompatibleAsyncClient, ZaiSyncClient):
         return async_stream_request(*args, **kwargs)
 
 
-ZaiChatCompletionsAsyncClient = ZaiAsyncClient
-
-__all__ = ["ZaiAsyncClient", "ZaiChatCompletionsAsyncClient"]
+__all__ = ["ZaiAsyncClient"]
