@@ -580,22 +580,14 @@ class ZaiAdapter(OpenAICompatibleAdapter):
                 "Z.ai parallel_tool_calls control is not implemented",
             )
 
-    @staticmethod
-    def _map_tools(tools: Optional[list[ToolSpec]]) -> Optional[list[dict[str, Any]]]:
-        if not tools:
-            return None
-        if len(tools) > 128:
+    def _map_tools(
+        self,
+        tools: Optional[list[ToolSpec]],
+    ) -> Optional[list[dict[str, Any]]]:
+        """Enforce Z.ai's native limit and share Core function-tool mapping."""
+        if tools and len(tools) > 128:
             raise ValueError("Z.ai supports at most 128 function tools per request")
-        mapped_tools: list[dict[str, Any]] = []
-        for tool in tools:
-            function: dict[str, Any] = {
-                "name": tool.name,
-                "parameters": tool.json_schema,
-            }
-            if tool.description:
-                function["description"] = tool.description
-            mapped_tools.append({"type": "function", "function": function})
-        return mapped_tools
+        return super()._map_tools_to_openai(tools)
 
     def _map_tool_choice(self, tool_choice: str) -> str:
         if tool_choice != "auto":

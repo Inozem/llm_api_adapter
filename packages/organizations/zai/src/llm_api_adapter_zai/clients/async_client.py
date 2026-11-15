@@ -73,9 +73,6 @@ class _ZaiBoundAsyncClient(OpenAICompatibleAsyncClient):
         """Resolve the package stream seam at stream-open time."""
         return async_stream_request(*args, **kwargs)
 
-    def _headers(self) -> dict[str, str]:
-        return ZaiAsyncClient._headers(self.api_key)
-
     def _handle_http_error(self, http_error: Any) -> None:
         ZaiSyncClient._handle_http_error(http_error)
 
@@ -109,14 +106,6 @@ class ZaiAsyncClient:
     ) -> AsyncIterator[SSEEvent]:
         """Open a Z.ai SSE response and request terminal usage when available."""
         return self._for_request(api_key)._stream_raw_payload(payload, timeout_s)
-
-    @staticmethod
-    def _headers(api_key: str) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-
 
 # Keep the explicit protocol name available to package-local callers.
 ZaiChatCompletionsAsyncClient = ZaiAsyncClient
