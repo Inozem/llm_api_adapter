@@ -36,6 +36,7 @@ from llm_api_adapter.llms.transports import (
     SyncTransport,
     TransportRequest,
 )
+from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.messages.chat_message import (
     AIMessage,
     ToolMessage,
@@ -46,11 +47,14 @@ from llm_api_adapter.models.tools.tool_call import ToolCall
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter_zai.adapter import ZaiAdapter
+from llm_api_adapter_zai.plugin import PLUGIN
 
 
 MODEL = "glm-5.3-flash"
 FLASHX_MODEL = "glm-5.3-flashx"
 FLASHX_LEGAL_MODEL = "glm-5.3-flashx-legal"
+ZAI_MODEL_IDS = tuple(PLUGIN.model_metadata.organization_data["models"])
 WEATHER_TOOL = ToolSpec(
     name="get_weather",
     description="Return the weather for a city.",
@@ -608,6 +612,74 @@ def test_zai_preserves_tool_result_history_in_openai_payload(zai_runtime):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("model", ZAI_MODEL_IDS)
+def test_zai_facade_dict_tool_history_uses_caller_history_with_previous_response(
+    zai_runtime, model
+):
+    """Dictionary tool turns retain associations and previous_response adds no replay field."""
+    adapter = UniversalLLMAPIAdapter(
+        organization="zai", model=model, api_key="zai-test-key"
+    )
+    transport = FakeSyncTransport(zai_response())
+    adapter.adapter._sync_transport = transport
+    messages = [
+        {"role": "user", "content": "Get the forecast."},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call-forecast-4",
+            "type": "function",
+            "function": {
+                "name": "get_weather", "arguments": '{"city":"Rome"}'
+            },
+        }]},
+        {"role": "tool", "tool_call_id": "call-forecast-4", "content": "sunny"},
+        {"role": "user", "content": "Summarize the forecast."},
+    ]
+
+    previous_response = ChatResponse(
+        model=model,
+        response_id="caller-response-id",
+        provider_data={"opaque": "provider-replay-sentinel"},
+    )
+    adapter.chat(
+        messages,
+        tools=[WEATHER_TOOL],
+        tool_choice="auto",
+        previous_response=previous_response,
+    )
+
+    assert len(transport.requests) == 1
+    payload = transport.requests[0].payload
+    assert payload["messages"] == [
+        {"role": "user", "content": "Get the forecast."},
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "call-forecast-4", "type": "function", "function": {
+                "name": "get_weather", "arguments": '{"city": "Rome"}'
+            }
+        }]},
+        {"role": "tool", "tool_call_id": "call-forecast-4", "content": "sunny"},
+        {"role": "user", "content": "Summarize the forecast."},
+    ]
+    assert payload["tool_choice"] == "auto"
+    assert payload["tools"] == [{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Return the weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    }]
+    assert set(payload) == {"model", "messages", "tools", "tool_choice"}
+    adapter.chat(messages, tools=[WEATHER_TOOL], tool_choice="auto")
+    assert len(transport.requests) == 2
+    assert transport.requests[1].payload == payload
+    assert "previous_response" not in payload and "previous_response_id" not in payload
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("image", "expected_url"),
     [
@@ -1134,3 +1206,70 @@ def test_zai_does_not_apply_cache_discount_for_invalid_cache_tokens(
     assert response.cost_input is None
     assert response.cost_output == pytest.approx(40 * 0.50 / 1_000_000)
     assert response.cost_total is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw_usage", "expected"),
+    [
+        ({"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}, (4, 3, 7, None)),
+        ({"prompt_tokens": 4, "completion_tokens": 3}, (4, 3, 7, None)),
+        ({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, (0, 0, 0, None)),
+        ({"prompt_tokens": 4}, (4, None, None, None)),
+        ({"completion_tokens": 3}, (None, 3, None, None)),
+        ({"total_tokens": 7}, (None, None, 7, None)),
+        ({"prompt_tokens": 4, "completion_tokens": None}, (4, None, None, None)),
+        ({"prompt_tokens": None, "completion_tokens": 3}, (None, 3, None, None)),
+        ({"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}, None),
+        ({}, None),
+        (None, None),
+        ([], None),
+        ({"prompt_tokens": True, "completion_tokens": 3, "total_tokens": 4}, None),
+        ({"prompt_tokens": 4, "completion_tokens": False, "total_tokens": 4}, None),
+        ({"prompt_tokens": 4, "total_tokens": True}, None),
+        ({"prompt_tokens": -1, "completion_tokens": 3, "total_tokens": 2}, None),
+        ({"prompt_tokens": 4, "completion_tokens": -1, "total_tokens": 3}, None),
+        ({"prompt_tokens": 4, "total_tokens": -1}, None),
+        ({"prompt_tokens": 4.0, "completion_tokens": 3, "total_tokens": 7}, None),
+        ({"prompt_tokens": 4, "completion_tokens": "3", "total_tokens": 7}, None),
+        ({"prompt_tokens": 4, "total_tokens": "7"}, None),
+        ({"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 8}, None),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": None}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 0}}, (8, 3, 11, 0)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 4}}, (8, 3, 11, 4)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 8}}, (8, 3, 11, 8)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": True}}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": "4"}}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": -1}}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 9}}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "prompt_tokens_details": []}, (8, 3, 11, None)),
+        ({"prompt_tokens": 8, "completion_tokens": 3, "cached_tokens": 4}, (8, 3, 11, None)),
+        ({"completion_tokens": 3, "prompt_tokens_details": {"cached_tokens": 2}}, (None, 3, None, None)),
+    ],
+    ids=[
+        "complete", "sum-from-components", "reported-zero", "input-only", "output-only", "total-only",
+        "null-output", "null-input", "all-null", "empty", "null-object", "non-object",
+        "boolean-input", "boolean-output", "boolean-total", "negative-input", "negative-output",
+        "negative-total", "float-input", "string-output", "string-total", "contradictory-total",
+        "null-total-uses-sum", "cache-zero", "cache-partial", "cache-full", "cache-boolean",
+        "cache-string", "cache-negative", "cache-above-input", "non-object-cache-details",
+        "top-level-cache-is-ignored", "cache-without-input",
+    ],
+)
+def test_zai_native_usage_parser_preserves_reported_counts_and_cache_subset(raw_usage, expected):
+    """Keep native usage parsing exact for present, absent, invalid, and cache counts."""
+    from llm_api_adapter_zai.adapter import ZaiUsage
+
+    parsed = ZaiAdapter._parse_usage(raw_usage)
+    if expected is None:
+        assert parsed is None
+        return
+
+    assert isinstance(parsed, ZaiUsage)
+    assert (
+        parsed.input_tokens,
+        parsed.output_tokens,
+        parsed.total_tokens,
+        parsed.cached_tokens,
+    ) == expected
+    assert parsed.cache_write_tokens is None

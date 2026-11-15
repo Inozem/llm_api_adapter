@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 from llm_api_adapter.adapters.base_adapter import (
     AsyncOnChunk,
@@ -20,9 +20,9 @@ from llm_api_adapter.adapters.base_adapter import (
     OnToolCall,
     _StreamState,
 )
+from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
 from llm_api_adapter.errors.llm_api_error import (
     LLMAPIClientError,
-    LLMAPIError,
     ToolChoiceError,
 )
 from llm_api_adapter.llms.streaming import (
@@ -41,7 +41,7 @@ from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 
-from .clients import ZaiAsyncClient, ZaiSyncClient
+from .clients import ZAI_BASE_URL, ZaiAsyncClient, ZaiSyncClient
 from .streaming import ZaiStreamAssembler, assemble_zai_response
 
 
@@ -59,122 +59,50 @@ class _ZaiStreamState(_StreamState):
     assembler: ZaiStreamAssembler = field(default_factory=ZaiStreamAssembler)
 
 
+class _NonClosingIterator:
+    """Let the shared lifecycle iterate without taking ownership of a source."""
+
+    def __init__(self, source: Iterator[Any]) -> None:
+        self._source = source
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._source)
+
+
 @dataclass(repr=False)
-class ZaiAdapter(LLMAdapterBase):
+class ZaiAdapter(OpenAICompatibleAdapter):
     """Map the shared adapter contract to Z.ai Chat Completions."""
 
     company: str = "zai"
-    _client: ZaiSyncClient = field(init=False, repr=False, compare=False)
-    _async_client: ZaiAsyncClient = field(init=False, repr=False, compare=False)
+    base_url: ClassVar[str] = ZAI_BASE_URL
+    api_variant: ClassVar[str | None] = "chat_completions"
+    _sync_transport: SyncTransport = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        super().__post_init__()
-        self._client = ZaiSyncClient(create_sync_transport(self.transport))
-        self._async_client = ZaiAsyncClient()
+        LLMAdapterBase.__post_init__(self)
+        self._sync_transport = create_sync_transport(self.transport)
 
-    @property
-    def _sync_transport(self) -> SyncTransport:
-        """Compatibility hook used by deterministic transport tests."""
+    def __repr__(self) -> str:
+        """Keep the native adapter's established credential-masked repr."""
 
-        return self._client.transport
+        return LLMAdapterBase.__repr__(self)
 
-    @_sync_transport.setter
-    def _sync_transport(self, transport: SyncTransport) -> None:
-        self._client.transport = transport
+    def _create_sync_client(self):
+        """Bind the native key and current injected transport for this call."""
 
-    def chat(
-        self,
-        messages: list[Message] | Messages,
-        max_tokens: Optional[int] = None,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None,
-        timeout_s: Optional[float] = None,
-        tools: Optional[list[ToolSpec]] = None,
-        tool_choice: Any = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None,
-        json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None,
-        *,
-        capture_reasoning: bool = False,
-    ) -> ChatResponse:
-        """Create one normalized response through Z.ai Chat Completions."""
-
-        _ = previous_response
-        request_context, payload = self._prepare_request_payload(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_level=reasoning_level,
-            tools=tools,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            json_schema=json_schema,
-            response_model=response_model,
+        return ZaiSyncClient(
+            api_key=self.api_key,
+            transport=self.transport,
+            sync_transport=self._sync_transport,
         )
-        try:
-            response = self._client.chat(
-                api_key=self.api_key,
-                payload=payload,
-                timeout_s=timeout_s,
-            )
-            return self._finalize_zai_chat_response(
-                response,
-                capture_reasoning=capture_reasoning,
-                effective_schema=request_context.effective_schema,
-                response_model=request_context.response_model,
-            )
-        except LLMAPIError as error:
-            self.handle_error(error)
 
-    async def achat(
-        self,
-        messages: list[Message] | Messages,
-        max_tokens: Optional[int] = None,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None,
-        timeout_s: Optional[float] = None,
-        tools: Optional[list[ToolSpec]] = None,
-        tool_choice: Any = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None,
-        json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None,
-        *,
-        capture_reasoning: bool = False,
-    ) -> ChatResponse:
-        """Create one normalized response through HTTPX asynchronously."""
+    def _create_async_client(self):
+        """Bind the native key to a fresh request-scoped async client."""
 
-        _ = previous_response
-        request_context, payload = self._prepare_request_payload(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_level=reasoning_level,
-            tools=tools,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            json_schema=json_schema,
-            response_model=response_model,
-        )
-        try:
-            response = await self._async_client.chat(
-                api_key=self.api_key,
-                payload=payload,
-                timeout_s=timeout_s,
-            )
-            return self._finalize_zai_chat_response(
-                response,
-                capture_reasoning=capture_reasoning,
-                effective_schema=request_context.effective_schema,
-                response_model=request_context.response_model,
-            )
-        except LLMAPIError as error:
-            self.handle_error(error)
+        return ZaiAsyncClient(api_key=self.api_key, transport=self.transport)
 
     def stream_chat(
         self,
@@ -199,7 +127,7 @@ class ZaiAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
-        """Stream visible Z.ai deltas through the shared Core lifecycle."""
+        """Lazily stream visible Z.ai deltas through the shared lifecycle."""
 
         _ = previous_response
         request_context, payload = self._prepare_request_payload(
@@ -218,13 +146,15 @@ class ZaiAdapter(LLMAdapterBase):
             buffer_chars=buffer_chars,
             capture_reasoning=capture_reasoning,
         )
-        events = self._client.stream(
-            api_key=self.api_key,
-            payload=payload,
-            timeout_s=timeout_s,
+        stream_payload = dict(payload)
+        stream_payload.pop("model", None)
+        events = self._create_sync_client().stream(
+            model=self.model,
+            timeout=timeout_s,
+            **stream_payload,
         )
-        return self._run_sync_stream(
-            events,
+        lifecycle = self._run_sync_stream(
+            _NonClosingIterator(events),
             state,
             consume_event=self._consume_stream_event,
             finalize_response=self._finalize_stream,
@@ -237,53 +167,13 @@ class ZaiAdapter(LLMAdapterBase):
             capture_reasoning=capture_reasoning,
             on_reasoning=on_reasoning,
         )
-
-    def astream_chat(
-        self,
-        messages: list[Message] | Messages,
-        max_tokens: Optional[int] = None,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None,
-        timeout_s: Optional[float] = None,
-        tools: Optional[list[ToolSpec]] = None,
-        tool_choice: Any = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None,
-        json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None,
-        on_delta: Optional[AsyncOnDelta] = None,
-        on_tool_call: Optional[AsyncOnToolCall] = None,
-        on_done: Optional[AsyncOnDone] = None,
-        buffer_chars: Optional[int] = None,
-        on_chunk: Optional[AsyncOnChunk] = None,
-        *,
-        capture_reasoning: bool = False,
-        on_reasoning: Optional[AsyncOnReasoning] = None,
-    ) -> AsyncIterator[str]:
-        """Return an asynchronous Z.ai SSE iterator."""
-
-        return self._astream_chat(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_level=reasoning_level,
-            timeout_s=timeout_s,
-            tools=tools,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            previous_response=previous_response,
-            json_schema=json_schema,
-            response_model=response_model,
-            on_delta=on_delta,
-            on_tool_call=on_tool_call,
-            on_done=on_done,
-            buffer_chars=buffer_chars,
-            on_chunk=on_chunk,
-            capture_reasoning=capture_reasoning,
-            on_reasoning=on_reasoning,
-        )
+        try:
+            yield from lifecycle
+        except BaseException:
+            self._close_sync_iterators(lifecycle, events, suppress_errors=True)
+            raise
+        else:
+            self._close_sync_iterators(lifecycle, events, suppress_errors=False)
 
     async def _astream_chat(
         self,
@@ -327,12 +217,14 @@ class ZaiAdapter(LLMAdapterBase):
             buffer_chars=buffer_chars,
             capture_reasoning=capture_reasoning,
         )
-        events = self._async_client.stream(
-            api_key=self.api_key,
-            payload=payload,
-            timeout_s=timeout_s,
+        stream_payload = dict(payload)
+        stream_payload.pop("model", None)
+        events = self._create_async_client().stream(
+            model=self.model,
+            timeout=timeout_s,
+            **stream_payload,
         )
-        async for text in self._run_async_stream(
+        lifecycle = self._run_async_stream(
             events,
             state,
             consume_event=self._consume_stream_event_async,
@@ -345,8 +237,29 @@ class ZaiAdapter(LLMAdapterBase):
             on_chunk=on_chunk,
             capture_reasoning=capture_reasoning,
             on_reasoning=on_reasoning,
-        ):
-            yield text
+        )
+        async with self._closing_async_source(events):
+            async with self._closing_async_source(lifecycle):
+                async for text in lifecycle:
+                    yield text
+
+    @staticmethod
+    def _close_sync_iterators(
+        *iterators: Any,
+        suppress_errors: bool,
+    ) -> None:
+        first_error: BaseException | None = None
+        for iterator in iterators:
+            close = getattr(iterator, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None and not suppress_errors:
+            raise first_error
 
     @staticmethod
     def _new_stream_state(
@@ -498,45 +411,127 @@ class ZaiAdapter(LLMAdapterBase):
     ) -> tuple[Any, dict[str, Any]]:
         """Validate Core inputs and serialize the official Z.ai wire shape."""
 
-        self._validate_capability_preflight(
-            parallel_tool_calls=parallel_tool_calls,
+        request_context = self._prepare_chat_request(
+            messages,
+            tools,
+            tool_choice,
+            json_schema,
+            response_model,
         )
+        temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
+        payload = self._build_chat_params(
+            normalized_messages=request_context.normalized_messages,
+            use_responses_api=False,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            reasoning_level=reasoning_level,
+            tools=tools,
+            normalized_tool_choice=request_context.normalized_tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            previous_response=None,
+            effective_schema=None,
+            capture_reasoning=False,
+        )
+        return request_context, payload
+
+    def _prepare_chat_request(
+        self,
+        messages: list[Message] | Messages,
+        tools: Optional[list[ToolSpec]],
+        tool_choice: Any,
+        json_schema: Optional[dict],
+        response_model: Optional[Any],
+    ):
+        """Prepare common message/tool inputs under the native capability policy."""
+
         if json_schema is not None or response_model is not None:
             raise NotImplementedError(
                 f"Z.ai model {self.model!r} does not support portable structured output",
             )
-
-        request_context = self._prepare_chat_request(
+        if self.model_spec is None:
+            raise NotImplementedError(
+                f"Z.ai model {self.model!r} is not verified for supported capabilities",
+            )
+        context = LLMAdapterBase._prepare_chat_request(
+            self,
             messages,
             tools,
             tool_choice,
             None,
             None,
         )
-        self._reject_unsupported_file_parts(request_context.normalized_messages)
-        validated_max_tokens = self._validate_max_tokens(max_tokens)
-        temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
+        self._reject_unsupported_file_parts(context.normalized_messages)
+        return context
 
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": request_context.normalized_messages.to_openai(),
-        }
-        if validated_max_tokens is not None:
-            payload["max_tokens"] = validated_max_tokens
-        if temperature != 1.0:
-            payload["temperature"] = temperature
-        if top_p != 1.0:
-            payload["top_p"] = top_p
+    def _build_chat_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        use_responses_api: bool,
+        max_tokens: Optional[int],
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        tools: Optional[list[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        parallel_tool_calls: Optional[bool],
+        previous_response: Optional[ChatResponse],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> dict[str, Any]:
+        """Build native Chat Completions parameters for inherited execution."""
 
-        mapped_tools = self._map_tools(tools)
-        if mapped_tools is not None:
-            payload["tools"] = mapped_tools
-        if request_context.normalized_tool_choice is not None:
-            payload["tool_choice"] = self._map_tool_choice(
-                request_context.normalized_tool_choice,
-            )
-        self._apply_reasoning_options(payload, reasoning_level)
-        return request_context, payload
+        self._validate_capability_preflight(
+            parallel_tool_calls=parallel_tool_calls,
+        )
+        if use_responses_api:
+            raise NotImplementedError("Z.ai uses Chat Completions only")
+        params = super()._build_chat_params(
+            normalized_messages=normalized_messages,
+            use_responses_api=use_responses_api,
+            max_tokens=self._validate_max_tokens(max_tokens),
+            temperature=temperature,
+            top_p=top_p,
+            reasoning_level=reasoning_level,
+            tools=tools,
+            normalized_tool_choice=normalized_tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            previous_response=previous_response,
+            effective_schema=effective_schema,
+            capture_reasoning=capture_reasoning,
+        )
+        if temperature == 1.0:
+            params.pop("temperature", None)
+        if top_p == 1.0:
+            params.pop("top_p", None)
+        if params.get("reasoning_effort") is not None:
+            params["thinking"] = {"type": "enabled"}
+        return params
+
+    def _parse_chat_response(
+        self,
+        response: dict,
+        *,
+        use_responses_api: bool,
+        capture_reasoning: bool,
+    ) -> ChatResponse:
+        """Keep native envelope, usage, and reasoning normalization in control."""
+
+        if use_responses_api:
+            raise NotImplementedError("Z.ai uses Chat Completions only")
+        return self._parse_response(response, capture_reasoning=capture_reasoning)
+
+    def _apply_response_pricing(self, chat_response: ChatResponse) -> None:
+        """Keep native usage/pricing semantics when sharing response finalization."""
+
+        LLMAdapterBase._apply_response_pricing(self, chat_response)
+
+    def handle_error(self, error: Exception, error_message: Optional[str] = None):
+        """Preserve native errors without logging caller or provider payload text."""
+
+        _ = error_message
+        LLMAdapterBase.handle_error(self, error)
 
     def _validate_capability_preflight(
         self,
@@ -555,24 +550,18 @@ class ZaiAdapter(LLMAdapterBase):
                 "Z.ai parallel_tool_calls control is not implemented",
             )
 
-    @staticmethod
-    def _map_tools(tools: Optional[list[ToolSpec]]) -> Optional[list[dict[str, Any]]]:
-        if not tools:
-            return None
-        if len(tools) > 128:
+    def _map_tools_to_openai(
+        self,
+        tools: Optional[list[ToolSpec]],
+    ) -> Optional[list[dict[str, Any]]]:
+        """Enforce Z.ai's native limit and share Core function-tool mapping."""
+        if tools and len(tools) > 128:
             raise ValueError("Z.ai supports at most 128 function tools per request")
-        mapped_tools: list[dict[str, Any]] = []
-        for tool in tools:
-            function: dict[str, Any] = {
-                "name": tool.name,
-                "parameters": tool.json_schema,
-            }
-            if tool.description:
-                function["description"] = tool.description
-            mapped_tools.append({"type": "function", "function": function})
-        return mapped_tools
+        return super()._map_tools_to_openai(tools)
 
-    def _map_tool_choice(self, tool_choice: str) -> str:
+    def _map_tool_choice_to_openai(self, tool_choice: Optional[str]) -> Any:
+        if tool_choice is None:
+            return None
         if tool_choice != "auto":
             raise ToolChoiceError(
                 detail=(
@@ -613,22 +602,6 @@ class ZaiAdapter(LLMAdapterBase):
                 f"for Z.ai model {self.model!r}",
             )
         return max_tokens
-
-    def _apply_reasoning_options(
-        self,
-        payload: dict[str, Any],
-        reasoning_level: Optional[str | int],
-    ) -> None:
-        if reasoning_level is None:
-            return
-
-        provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
-        if provider_value is None:
-            return
-        if not isinstance(provider_value, str):
-            raise TypeError("Z.ai reasoning resolution must produce a string")
-        payload["thinking"] = {"type": "enabled"}
-        payload["reasoning_effort"] = provider_value
 
     @staticmethod
     def _parse_response(
@@ -728,21 +701,5 @@ class ZaiAdapter(LLMAdapterBase):
             total_tokens=total_tokens,
             cached_tokens=cached_tokens,
         )
-
-    def _finalize_zai_chat_response(
-        self,
-        response: Mapping[str, Any],
-        *,
-        capture_reasoning: bool,
-        effective_schema: Optional[dict],
-        response_model: Optional[Any],
-    ) -> ChatResponse:
-        chat_response = self._finalize_chat_response(
-            self._parse_response(response, capture_reasoning=capture_reasoning),
-            effective_schema=effective_schema,
-            response_model=response_model,
-        )
-        return chat_response
-
 
 __all__ = ["ZaiAdapter", "ZaiUsage"]

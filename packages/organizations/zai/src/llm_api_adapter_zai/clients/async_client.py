@@ -1,70 +1,38 @@
-"""Asynchronous HTTPX calls for Z.ai's official Chat Completions API."""
+"""Asynchronous compatible client with Z.ai's native request policy."""
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator
+from typing import Any
 
-from llm_api_adapter.errors.llm_api_error import LLMAPIClientError
 from llm_api_adapter.llms.async_streaming import async_request, async_stream_request
-from llm_api_adapter.llms.transports import SSEEvent
+from llm_api_adapter.llms.openai_compatible.async_client import OpenAICompatibleAsyncClient
 
-from .sync_client import ZAI_CHAT_COMPLETIONS_URL, ZaiSyncClient
-
-
-class ZaiAsyncClient:
-    """Submit Z.ai JSON and SSE requests without blocking the event loop."""
-
-    async def chat(
-        self,
-        *,
-        api_key: str,
-        payload: dict[str, Any],
-        timeout_s: float | None,
-    ) -> dict[str, Any]:
-        """Post one Z.ai Chat Completions request through HTTPX."""
-        response_data = await async_request(
-            ZAI_CHAT_COMPLETIONS_URL,
-            headers=self._headers(api_key),
-            payload=payload,
-            timeout=timeout_s,
-            http_error_handler=ZaiSyncClient._handle_http_error,
-        )
-        if not isinstance(response_data, dict):
-            raise LLMAPIClientError(
-                detail="Z.ai Chat Completions returned a non-object response",
-            )
-        return response_data
-
-    def stream(
-        self,
-        *,
-        api_key: str,
-        payload: dict[str, Any],
-        timeout_s: float | None,
-    ) -> AsyncIterator[SSEEvent]:
-        """Open a Z.ai SSE response and request terminal usage when available."""
-        stream_payload = dict(payload)
-        stream_payload["stream"] = True
-        stream_payload.setdefault("stream_options", {"include_usage": True})
-        return async_stream_request(
-            ZAI_CHAT_COMPLETIONS_URL,
-            headers=self._headers(api_key),
-            payload=stream_payload,
-            timeout=timeout_s,
-            http_error_handler=ZaiSyncClient._handle_http_error,
-            stream_error_handler=ZaiSyncClient._handle_stream_error,
-        )
-
-    @staticmethod
-    def _headers(api_key: str) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+from .sync_client import (
+    ZaiSyncClient,
+    _format_zai_diagnostic,
+    _validated_response,
+)
 
 
-# Keep the explicit protocol name available to package-local callers.
-ZaiChatCompletionsAsyncClient = ZaiAsyncClient
+class ZaiAsyncClient(OpenAICompatibleAsyncClient, ZaiSyncClient):
+    """Use Core's async engine and inherit Z.ai's native payload/error policy."""
+
+    def __init__(self, api_key: str, transport: str = "requests") -> None:
+        """Initialize through the inherited dataclass without a sync transport."""
+        super().__init__(api_key=api_key, transport=transport, sync_transport=None)
+
+    def __post_init__(self, sync_transport=None) -> None:
+        """Keep the async client transport-free and install safe diagnostics."""
+        self._sync_transport = None
+        self._diagnostic_formatter = _format_zai_diagnostic
+
+    async def _get_async_request(self, *args: Any, **kwargs: Any) -> Any:
+        """Resolve the package request seam and validate native completion JSON."""
+        return _validated_response(await async_request(*args, **kwargs))
+
+    def _get_async_stream_request(self, *args: Any, **kwargs: Any):
+        """Resolve the package stream seam at stream-open time."""
+        return async_stream_request(*args, **kwargs)
 
 
-__all__ = ["ZaiAsyncClient", "ZaiChatCompletionsAsyncClient"]
+__all__ = ["ZaiAsyncClient"]
