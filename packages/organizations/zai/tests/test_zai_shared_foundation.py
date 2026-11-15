@@ -1,4 +1,4 @@
-"""Credential-free legacy and shared-engine contracts for Z.ai clients."""
+"""Credential-free native and shared-engine contracts for Z.ai clients."""
 
 from __future__ import annotations
 
@@ -49,7 +49,10 @@ from llm_api_adapter.llms.transports import JSONResponse, SSEEvent, SyncTranspor
 from llm_api_adapter.llms.requests_transport import RequestsSyncTransport
 from llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
 from llm_api_adapter.llms.openai_compatible.sync_client import OpenAICompatibleSyncClient
-from llm_api_adapter.llms.openai_compatible.async_client import _AsyncExecutionMixin
+from llm_api_adapter.llms.openai_compatible.async_client import (
+    OpenAICompatibleAsyncClient,
+    _AsyncExecutionMixin,
+)
 from llm_api_adapter_zai.clients import (
     ZAI_BASE_URL,
     ZAI_CHAT_COMPLETIONS_URL,
@@ -162,7 +165,7 @@ class RecordingTransport(SyncTransport):
 
 
 @pytest.mark.unit
-def test_zai_clients_keep_exports_keyword_forms_and_raw_payload_semantics():
+def test_zai_clients_are_concrete_compatible_subclasses_with_native_payloads():
     assert ZaiChatCompletionsSyncClient is ZaiSyncClient
     assert ZaiChatCompletionsAsyncClient is ZaiAsyncClient
     assert clients_package.__all__ == [
@@ -171,103 +174,191 @@ def test_zai_clients_keep_exports_keyword_forms_and_raw_payload_semantics():
     ]
     assert clients_package.ZAI_BASE_URL == ZAI_BASE_URL
     assert clients_package.ZAI_CHAT_COMPLETIONS_URL == ZAI_CHAT_COMPLETIONS_URL
-    assert sync_client_module.ZAI_BASE_URL == ZAI_BASE_URL
-    assert sync_client_module.ZAI_CHAT_COMPLETIONS_URL == ZAI_CHAT_COMPLETIONS_URL
-    transport = RecordingTransport()
-    client = ZaiSyncClient(transport)
-    payload = {"max_tokens": 19, "temperature": 1.0}
-    original_payload = copy.deepcopy(payload)
-    assert client.chat(api_key="unit-key", payload=payload, timeout_s=7) == {"ok": True}
-    request = transport.requests[-1]
-    assert request.url == ZAI_CHAT_COMPLETIONS_URL
-    assert request.headers_dict() == {
-        "Authorization": "Bearer unit-key", "Content-Type": "application/json"
-    }
-    assert request.timeout == 7 and request.payload == original_payload
-    assert payload == original_payload
+    assert issubclass(ZaiSyncClient, OpenAICompatibleSyncClient)
+    assert ZaiSyncClient.__mro__[1] is OpenAICompatibleSyncClient
+    assert issubclass(ZaiAsyncClient, OpenAICompatibleAsyncClient)
+    assert ZaiAsyncClient.__bases__ == (OpenAICompatibleAsyncClient, ZaiSyncClient)
 
-    replacement = RecordingTransport()
-    client.transport = replacement
-    client.chat(api_key="replacement key", payload={}, timeout_s=9)
-    assert replacement.requests[0].headers_dict()["Authorization"] == "Bearer replacement key"
-    assert replacement.requests[0].timeout == 9
+    sync_signature = inspect.signature(ZaiSyncClient)
+    assert list(sync_signature.parameters) == ["api_key", "transport", "sync_transport"]
+    assert sync_signature.parameters["api_key"].default is inspect.Parameter.empty
+    assert sync_signature.parameters["sync_transport"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert "endpoint" not in sync_signature.parameters
+    assert list(inspect.signature(ZaiSyncClient.complete).parameters)[1:] == ["model", "timeout", "kwargs"]
+    assert list(inspect.signature(ZaiAsyncClient).parameters) == ["api_key", "transport"]
+    assert list(inspect.signature(ZaiAsyncClient.complete).parameters)[1:] == ["model", "timeout", "kwargs"]
 
-    stream_cases = [
-        ({"max_tokens": 11, "temperature": 1.0}, {"include_usage": True}),
-        ({"stream_options": {"include_usage": False}, "max_tokens": 11, "temperature": 1.0}, {"include_usage": False}),
-        ({"stream_options": {}, "max_tokens": 11, "temperature": 1.0}, {}),
-        ({"stream_options": None, "max_tokens": 11, "temperature": 1.0}, None),
+    sync_parent = OpenAICompatibleSyncClient
+    for method in ("complete", "stream", "stream_chat_completion", "_send_request", "_stream_request", "_headers"):
+        assert inspect.getattr_static(ZaiSyncClient, method) is inspect.getattr_static(sync_parent, method)
+    async_engine = _AsyncExecutionMixin
+    for method in ("complete", "stream", "stream_chat_completion", "_send_request", "_stream_request"):
+        assert inspect.getattr_static(ZaiAsyncClient, method) is inspect.getattr_static(async_engine, method)
+    assert inspect.getattr_static(ZaiAsyncClient, "_headers") is inspect.getattr_static(sync_parent, "_headers")
+    for method in ("_prepare_chat_payload_for_model", "_handle_http_error", "_handle_stream_error"):
+        assert inspect.getattr_static(ZaiAsyncClient, method) is inspect.getattr_static(ZaiSyncClient, method)
+
+    for key in ("short-key", "long synthetic key with additional safe characters"):
+        sync_repr = repr(ZaiSyncClient(key, sync_transport=RecordingTransport()))
+        async_repr = repr(ZaiAsyncClient(key))
+        assert key not in sync_repr and key not in async_repr
+
+    transports = [RecordingTransport(), RecordingTransport()]
+    first = ZaiSyncClient("first sync synthetic key", sync_transport=transports[0])
+    second = ZaiSyncClient("second sync synthetic key", sync_transport=transports[1])
+    send_clients, stream_clients = [], []
+    parent_send = OpenAICompatibleSyncClient._send_request
+    parent_stream = OpenAICompatibleSyncClient._stream_request
+    def send_seen(self, *args, **kwargs):
+        send_clients.append(self)
+        return parent_send(self, *args, **kwargs)
+    def stream_seen(self, *args, **kwargs):
+        stream_clients.append(self)
+        return parent_stream(self, *args, **kwargs)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(OpenAICompatibleSyncClient, "_send_request", send_seen)
+    monkeypatch.setattr(OpenAICompatibleSyncClient, "_stream_request", stream_seen)
+    try:
+        first.complete("glm-5.3-flash", timeout=3, max_tokens=17)
+        second.chat("glm-5.3-flashx", timeout=4, max_tokens=18)
+        first.complete("glm-5.3-flash", timeout=5, max_tokens=19)
+        stream_options = [
+            {},
+            {"stream_options": {"include_usage": False}},
+            {"stream_options": {}},
+            {"stream_options": None},
+        ]
+        snapshots = copy.deepcopy(stream_options)
+        for index, options in enumerate(stream_options):
+            list(
+                (first if index % 2 == 0 else second).stream(
+                    "glm-5.3-flash",
+                    timeout=6 + index,
+                    max_tokens=20 + index,
+                    **options,
+                )
+            )
+    finally:
+        monkeypatch.undo()
+
+    assert send_clients == [first, second, first]
+    assert stream_clients == [first, second, first, second]
+    assert stream_options == snapshots
+    all_requests = transports[0].requests + transports[1].requests
+    assert all(request.url == ZAI_CHAT_COMPLETIONS_URL for request in all_requests)
+    assert [request.headers_dict()["Authorization"] for request in transports[0].requests] == [
+        "Bearer first sync synthetic key"
+    ] * 4
+    assert [request.headers_dict()["Authorization"] for request in transports[1].requests] == [
+        "Bearer second sync synthetic key"
+    ] * 3
+    assert [request.timeout for request in transports[0].requests] == [3, 5, 6, 8]
+    assert [request.timeout for request in transports[1].requests] == [4, 7, 9]
+    assert [request.payload["max_tokens"] for request in transports[0].requests] == [17, 19, 20, 22]
+    assert [request.payload["max_tokens"] for request in transports[1].requests] == [18, 21, 23]
+    assert [request.payload.get("stream_options") for request in transports[0].requests[2:]] == [
+        {"include_usage": True}, {},
     ]
-    for raw, expected_options in stream_cases:
-        snapshot = copy.deepcopy(raw)
-        expected_options = copy.deepcopy(expected_options)
-        list(client.stream(api_key="other-key", payload=raw, timeout_s=None))
-        streamed = replacement.requests[-1].payload
-        assert streamed["stream"] is True and streamed["max_tokens"] == 11
-        assert streamed["temperature"] == 1.0
-        assert streamed["stream_options"] == expected_options
-        assert raw == snapshot
+    assert [request.payload.get("stream_options") for request in transports[1].requests[1:]] == [
+        {"include_usage": False}, None,
+    ]
 
 
 @pytest.mark.unit
-def test_zai_legacy_async_client_preserves_keyword_forms_and_live_patch_points(monkeypatch):
+def test_zai_async_client_inherits_compatible_engine_and_live_patch_points(monkeypatch):
     seen = []
     async def fake_request(url, **kwargs):
-        seen.append(("chat", url, kwargs))
+        seen.append(("json", url, kwargs))
         return {"ok": True}
     async def fake_stream(url, **kwargs):
-        seen.append(("stream", url, kwargs))
+        seen.append(("sse", url, kwargs))
         yield SSEEvent(None, data={"ok": True})
-    client = ZaiAsyncClient()
+
+    class GuardAsyncClient:
+        async def post(self, *args, **kwargs):
+            raise AssertionError("async package seam was bypassed")
+        def build_request(self, *args, **kwargs):
+            raise AssertionError("async package seam was bypassed")
+        async def send(self, *args, **kwargs):
+            raise AssertionError("async package seam was bypassed")
+        async def aclose(self):
+            return None
+    class GuardHTTPX:
+        AsyncClient = GuardAsyncClient
+        TimeoutException = type("TimeoutException", (Exception,), {})
+        HTTPStatusError = type("HTTPStatusError", (Exception,), {})
+        RequestError = type("RequestError", (Exception,), {})
+
+    first = ZaiAsyncClient("first async synthetic key")
+    second = ZaiAsyncClient("second async synthetic key")
+    send_clients, stream_clients = [], []
+    parent_send = _AsyncExecutionMixin._send_request
+    parent_stream = _AsyncExecutionMixin._stream_request
+    async def send_seen(self, *args, **kwargs):
+        send_clients.append(self)
+        return await parent_send(self, *args, **kwargs)
+    async def stream_seen(self, *args, **kwargs):
+        stream_clients.append(self)
+        async for event in parent_stream(self, *args, **kwargs):
+            yield event
+    monkeypatch.setattr(_AsyncExecutionMixin, "_send_request", send_seen)
+    monkeypatch.setattr(_AsyncExecutionMixin, "_stream_request", stream_seen)
     monkeypatch.setattr(async_client_module, "async_request", fake_request)
     monkeypatch.setattr(async_client_module, "async_stream_request", fake_stream)
-    payload = {"temperature": 1.0, "max_tokens": 12}
-    payload_snapshot = copy.deepcopy(payload)
-    stream_payloads = [
+    monkeypatch.setitem(sys.modules, "httpx", GuardHTTPX)
+
+    stream_options = [
         {},
         {"stream_options": {"include_usage": False}},
         {"stream_options": {}},
         {"stream_options": None},
     ]
-    stream_snapshots = [copy.deepcopy(item) for item in stream_payloads]
-    stream_expected_options = [copy.deepcopy(item.get("stream_options", {"include_usage": True})) for item in stream_snapshots]
+    snapshots = copy.deepcopy(stream_options)
     async def exercise():
-        assert await client.chat(api_key="async legacy", payload=payload, timeout_s=6) == {"ok": True}
-        for stream_payload in stream_payloads:
+        assert await first.complete("glm-5.3-flash", timeout=3, max_tokens=17) == {"ok": True}
+        assert await second.chat("glm-5.3-flashx", timeout=4, max_tokens=18) == {"ok": True}
+        assert await first.complete("glm-5.3-flash", timeout=5, max_tokens=19) == {"ok": True}
+        for index, options in enumerate(stream_options):
+            client = first if index % 2 == 0 else second
             assert [event async for event in client.stream(
-                api_key="async legacy", payload=stream_payload, timeout_s=8
+                "glm-5.3-flash", timeout=6 + index, max_tokens=20 + index, **options
             )]
     asyncio.run(exercise())
-    assert payload == payload_snapshot and stream_payloads == stream_snapshots
-    assert seen[0][1] == ZAI_CHAT_COMPLETIONS_URL
-    assert seen[0][2]["headers"]["Authorization"] == "Bearer async legacy"
-    assert seen[0][2]["payload"] == payload_snapshot and seen[0][2]["timeout"] == 6
-    assert [item[2]["payload"]["stream_options"] for item in seen[1:]] == [
-        *stream_expected_options
+
+    assert send_clients == [first, second, first]
+    assert stream_clients == [first, second, first, second]
+    assert stream_options == snapshots
+    assert [item[0] for item in seen] == ["json", "json", "json", "sse", "sse", "sse", "sse"]
+    assert all(item[1] == ZAI_CHAT_COMPLETIONS_URL for item in seen)
+    assert [item[2]["headers"]["Authorization"] for item in seen] == [
+        "Bearer first async synthetic key", "Bearer second async synthetic key",
+        "Bearer first async synthetic key", "Bearer first async synthetic key",
+        "Bearer second async synthetic key", "Bearer first async synthetic key",
+        "Bearer second async synthetic key",
     ]
-    assert all(item[2]["payload"]["stream"] is True for item in seen[1:])
-    assert all(item[2]["headers"]["Authorization"] == "Bearer async legacy" for item in seen[1:])
-    assert all(item[2]["timeout"] == 8 for item in seen[1:])
+    assert [item[2]["timeout"] for item in seen] == [3, 4, 5, 6, 7, 8, 9]
+    assert [item[2]["payload"]["max_tokens"] for item in seen] == [17, 18, 19, 20, 21, 22, 23]
+    assert [item[2]["payload"].get("stream_options") for item in seen[3:]] == [
+        {"include_usage": True}, {"include_usage": False}, {}, None,
+    ]
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("body", [None, [], "text", 3])
-def test_zai_legacy_client_rejects_non_object_json(body):
+def test_zai_client_rejects_non_object_json(body):
     with pytest.raises(LLMAPIClientError):
-        ZaiSyncClient(RecordingTransport(body=body)).chat(
-            api_key="synthetic", payload={}, timeout_s=None
-        )
+        ZaiSyncClient("synthetic", sync_transport=RecordingTransport(body=body)).complete(model="glm-5.3-flash")
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("body", [None, [], "text", 3])
-def test_zai_legacy_async_client_rejects_non_object_json(monkeypatch, body):
+def test_zai_async_client_rejects_non_object_json(monkeypatch, body):
     async def fake_request(url, **kwargs):
         return body
     monkeypatch.setattr(async_client_module, "async_request", fake_request)
     with pytest.raises(LLMAPIClientError):
         asyncio.run(
-            ZaiAsyncClient().chat(api_key="synthetic", payload={}, timeout_s=None)
+            ZaiAsyncClient("synthetic").complete(model="glm-5.3-flash")
         )
 
 
@@ -293,9 +384,7 @@ def test_zai_http_categories_remain_native(status, payload, error):
     class HTTPError(Exception):
         response = Response()
     with pytest.raises(error):
-        ZaiSyncClient(RecordingTransport(http_error=HTTPError("synthetic"))).chat(
-            api_key="synthetic", payload={}, timeout_s=None
-        )
+        ZaiSyncClient("synthetic", sync_transport=RecordingTransport(http_error=HTTPError("synthetic"))).complete(model="glm-5.3-flash")
 
 
 @pytest.mark.unit
@@ -313,159 +402,104 @@ def test_zai_http_categories_remain_native(status, payload, error):
 )
 def test_zai_sse_categories_remain_native(error_type, error):
     event = SSEEvent("error", {"error": {"type": error_type, "message": "synthetic"}})
-    client = ZaiSyncClient(RecordingTransport(events=[event]))
+    client = ZaiSyncClient("synthetic", sync_transport=RecordingTransport(events=[event]))
     with pytest.raises(error):
-        list(client.stream(api_key="synthetic", payload={}, timeout_s=None))
+        list(client.stream(model="glm-5.3-flash"))
 
 
 @pytest.mark.unit
-def test_zai_factories_bind_credentials_and_reuse_the_sync_engine(monkeypatch):
-    """One adapter call or legacy client invocation; never mutated for another call."""
-    transport = RecordingTransport()
-    wrapper = ZaiSyncClient(transport)
-    calls = []
-    original = OpenAICompatibleSyncClient._send_request
-    original_stream = OpenAICompatibleSyncClient._stream_request
-    stream_calls = []
-    def observed(self, *args, **kwargs):
-        calls.append(self)
-        return original(self, *args, **kwargs)
-    def observed_stream(self, *args, **kwargs):
-        stream_calls.append(self)
-        return original_stream(self, *args, **kwargs)
-    monkeypatch.setattr(OpenAICompatibleSyncClient, "_send_request", observed)
-    monkeypatch.setattr(OpenAICompatibleSyncClient, "_stream_request", observed_stream)
-
-    first = wrapper._for_request("first synthetic")
-    second = wrapper._for_request("second synthetic")
-    first.complete(model="glm-5.3-flash", timeout=1, max_tokens=13, temperature=1.0)
-    list(second.stream(model="glm-5.3-flash", timeout=2, max_tokens=13))
-    first.complete(model="glm-5.3-flash", timeout=3, max_tokens=14)
-    replacement = RecordingTransport()
-    wrapper.transport = replacement
-    wrapper.chat(
-        api_key="legacy synthetic", payload={"max_tokens": 9}, timeout_s=6
-    )
-    list(wrapper.stream(
-        api_key="legacy synthetic", payload={"max_tokens": 9}, timeout_s=7
-    ))
-    third = wrapper._for_request("replacement factory")
-    third.complete(model="glm-5.3-flash", timeout=8, max_tokens=10)
-    assert calls and len(calls) == 4 and len(stream_calls) == 2
-    assert [r.headers_dict()["Authorization"] for r in transport.requests] == [
-        "Bearer first synthetic", "Bearer second synthetic", "Bearer first synthetic"
-    ]
-    assert [r.headers_dict()["Authorization"] for r in replacement.requests] == [
-        "Bearer legacy synthetic", "Bearer legacy synthetic", "Bearer replacement factory"
-    ]
-    assert all(r.url == ZAI_CHAT_COMPLETIONS_URL for r in transport.requests + replacement.requests)
-    assert [r.timeout for r in transport.requests] == [1, 2, 3]
-    assert [r.payload.get("max_tokens") for r in transport.requests] == [13, 13, 14]
-    assert [r.timeout for r in replacement.requests] == [6, 7, 8]
-    assert all(engine._sync_transport is transport for engine in calls[:2])
-    assert all(engine._sync_transport is replacement for engine in calls[2:])
-
-    invalid = ZaiSyncClient(RecordingTransport(body=[]))
+def test_zai_direct_client_reuses_parent_transport_engine(monkeypatch):
+    transports = [RecordingTransport(), RecordingTransport()]
+    first = ZaiSyncClient("first direct synthetic key", sync_transport=transports[0])
+    second = ZaiSyncClient("second direct synthetic key", sync_transport=transports[1])
+    send_clients, stream_clients = [], []
+    parent_send = OpenAICompatibleSyncClient._send_request
+    parent_stream = OpenAICompatibleSyncClient._stream_request
+    def send_seen(self, *args, **kwargs):
+        send_clients.append(self)
+        return parent_send(self, *args, **kwargs)
+    def stream_seen(self, *args, **kwargs):
+        stream_clients.append(self)
+        return parent_stream(self, *args, **kwargs)
+    monkeypatch.setattr(OpenAICompatibleSyncClient, "_send_request", send_seen)
+    monkeypatch.setattr(OpenAICompatibleSyncClient, "_stream_request", stream_seen)
+    stream_options = [{}, {"stream_options": {"include_usage": False}}]
+    snapshots = copy.deepcopy(stream_options)
+    first.complete("glm-5.3-flash", timeout=2, max_tokens=11)
+    second.chat("glm-5.3-flashx", timeout=3, max_tokens=12)
+    first.complete("glm-5.3-flash", timeout=4, max_tokens=13)
+    list(first.stream("glm-5.3-flash", timeout=5, max_tokens=14, **stream_options[0]))
+    list(second.stream("glm-5.3-flashx", timeout=6, max_tokens=15, **stream_options[1]))
+    assert send_clients == [first, second, first]
+    assert stream_clients == [first, second]
+    assert stream_options == snapshots
+    assert [request.url for transport in transports for request in transport.requests] == [
+        ZAI_CHAT_COMPLETIONS_URL,
+    ] * 5
+    assert [request.headers_dict()["Authorization"] for request in transports[0].requests] == [
+        "Bearer first direct synthetic key",
+    ] * 3
+    assert [request.headers_dict()["Authorization"] for request in transports[1].requests] == [
+        "Bearer second direct synthetic key",
+    ] * 2
+    assert [request.timeout for request in transports[0].requests] == [2, 4, 5,]
+    assert [request.timeout for request in transports[1].requests] == [3, 6]
+    assert [request.payload["max_tokens"] for transport in transports for request in transport.requests] == [11, 13, 14, 12, 15]
+    assert transports[0].requests[2].payload["stream_options"] == {"include_usage": True}
+    assert transports[1].requests[1].payload["stream_options"] == {"include_usage": False}
+    invalid = ZaiSyncClient("invalid synthetic", sync_transport=RecordingTransport(body=[]))
     with pytest.raises(LLMAPIClientError):
-        invalid._for_request("invalid bound response").complete(
-            model="glm-5.3-flash", max_tokens=1
-        )
-    with pytest.raises(LLMAPIClientError):
-        invalid.chat(api_key="invalid legacy response", payload={}, timeout_s=None)
+        invalid.complete(model="glm-5.3-flash", max_tokens=1)
+
+
+@pytest.mark.unit
+def test_zai_adapter_factories_reuse_exact_injected_transport(monkeypatch, zai_adapter_runtime):
+    from llm_api_adapter_zai import adapter as adapter_module
+    created = []
+    adapter_factory = adapter_module.create_sync_transport
+    def counted_factory(name):
+        transport = adapter_factory(name)
+        created.append(transport)
+        return transport
+    monkeypatch.setattr(adapter_module, "create_sync_transport", counted_factory)
+    adapter = ZaiAdapter("first adapter synthetic key", ZAI_MODELS[0])
+    initial_transport = adapter._sync_transport
+    assert created == [initial_transport]
+
+    def forbidden_factory(self, transport):
+        raise AssertionError("a client factory allocated a duplicate sync transport")
+    monkeypatch.setattr(OpenAICompatibleSyncClient, "_create_sync_transport", forbidden_factory)
+    first_sync = adapter._create_sync_client()
+    first_async = adapter._create_async_client()
+    assert first_sync is not adapter._create_sync_client()
+    assert first_async is not adapter._create_async_client()
+    assert first_sync._sync_transport is initial_transport
+    assert first_async._sync_transport is None
+    assert first_sync.api_key == first_async.api_key == "first adapter synthetic key"
+
+    second_transport = RecordingTransport()
+    adapter.api_key = "second adapter synthetic key"
+    adapter._sync_transport = second_transport
+    second_sync = adapter._create_sync_client()
+    second_async = adapter._create_async_client()
+    assert second_sync.api_key == second_async.api_key == "second adapter synthetic key"
+    assert second_sync._sync_transport is second_transport
+    assert first_sync.api_key == first_async.api_key == "first adapter synthetic key"
+    assert first_sync._sync_transport is initial_transport
+    assert len(created) == 1
+    assert not hasattr(adapter, "_client") and not hasattr(adapter, "_async_client")
 
 
 @pytest.mark.unit
 def test_zai_async_factory_uses_shared_async_execution_and_live_patch_points(monkeypatch):
-    wrapper = ZaiAsyncClient()
-    first = wrapper._for_request("async synthetic")
-    second = wrapper._for_request("second async synthetic")
-    calls = []
-    response_body = [{"ok": True}]
-    async def fake_request(url, **kwargs):
-        calls.append(("json", url, kwargs))
-        return response_body[0]
-    async def fake_stream(url, **kwargs):
-        calls.append(("sse", url, kwargs))
-        yield SSEEvent(None, data={"ok": True})
-    monkeypatch.setattr(async_client_module, "async_request", fake_request)
-    monkeypatch.setattr(async_client_module, "async_stream_request", fake_stream)
-
-    class GuardAsyncClient:
-        async def post(self, *args, **kwargs):
-            raise AssertionError("stale async patch point attempted provider I/O")
-        def build_request(self, *args, **kwargs):
-            return object()
-        async def send(self, *args, **kwargs):
-            raise AssertionError("stale async stream patch point attempted provider I/O")
-        async def aclose(self):
-            return None
-    class GuardHTTPX:
-        AsyncClient = GuardAsyncClient
-        TimeoutException = type("TimeoutException", (Exception,), {})
-        HTTPStatusError = type("HTTPStatusError", (Exception,), {})
-        RequestError = type("RequestError", (Exception,), {})
-    monkeypatch.setitem(sys.modules, "httpx", GuardHTTPX)
-    mixin_send = _AsyncExecutionMixin._send_request
-    mixin_stream = _AsyncExecutionMixin._stream_request
-    send_calls, stream_calls = [], []
-    async def send_seen(self, *a, **kw):
-        send_calls.append(self)
-        return await mixin_send(self, *a, **kw)
-    async def stream_seen(self, *a, **kw):
-        stream_calls.append(self)
-        async for event in mixin_stream(self, *a, **kw): yield event
-    monkeypatch.setattr(_AsyncExecutionMixin, "_send_request", send_seen)
-    monkeypatch.setattr(_AsyncExecutionMixin, "_stream_request", stream_seen)
-
-    async def exercise():
-        assert await first.complete(model="glm-5.3-flash", timeout=4, max_tokens=7) == {"ok": True}
-        assert [e async for e in second.stream(model="glm-5.3-flash", timeout=5, max_tokens=8)]
-        assert await first.complete(model="glm-5.3-flash", timeout=6, max_tokens=9) == {"ok": True}
-        assert [e async for e in first.stream(model="glm-5.3-flash", timeout=7, max_tokens=10)]
-        assert await wrapper.chat(
-            api_key="legacy async", payload={"max_tokens": 6}, timeout_s=9
-        ) == {"ok": True}
-        legacy_stream_payload = {"stream_options": {"include_usage": False}}
-        legacy_stream_snapshot = dict(legacy_stream_payload)
-        assert [event async for event in wrapper.stream(
-            api_key="legacy async", payload=legacy_stream_payload, timeout_s=10
-        )]
-        assert legacy_stream_payload == legacy_stream_snapshot
-        assert [item[2]["headers"]["Authorization"] for item in calls] == [
-            "Bearer async synthetic", "Bearer second async synthetic",
-            "Bearer async synthetic", "Bearer async synthetic",
-            "Bearer legacy async", "Bearer legacy async",
-        ]
-        assert all(item[1] == ZAI_CHAT_COMPLETIONS_URL for item in calls)
-        assert [item[2]["timeout"] for item in calls] == [4, 5, 6, 7, 9, 10]
-        assert [item[2]["payload"].get("max_tokens") for item in calls] == [
-            7, 8, 9, 10, 6, None
-        ]
-        assert calls[3][2]["payload"]["stream_options"] == {"include_usage": True}
-        assert calls[5][2]["payload"]["stream_options"] == {"include_usage": False}
-        response_body[0] = []
-        with pytest.raises(LLMAPIClientError):
-            await first.complete(model="glm-5.3-flash", timeout=11, max_tokens=1)
-        with pytest.raises(LLMAPIClientError):
-            await wrapper.chat(api_key="legacy async", payload={}, timeout_s=12)
-    asyncio.run(exercise())
-    assert len(send_calls) == 5 and len(stream_calls) == 3 and len(calls) == 8
-    assert [item[0] for item in calls] == [
-        "json", "sse", "json", "sse", "json", "sse", "json", "json"
-    ]
-    assert [item[2]["headers"]["Authorization"] for item in calls] == [
-        "Bearer async synthetic", "Bearer second async synthetic",
-        "Bearer async synthetic", "Bearer async synthetic",
-        "Bearer legacy async", "Bearer legacy async",
-        "Bearer async synthetic", "Bearer legacy async",
-    ]
-    assert all(item[1] == ZAI_CHAT_COMPLETIONS_URL for item in calls)
-    assert [item[2]["timeout"] for item in calls] == [4, 5, 6, 7, 9, 10, 11, 12]
-    assert [item[2]["payload"].get("max_tokens") for item in calls] == [
-        7, 8, 9, 10, 6, None, 1, None
-    ]
-    assert calls[3][2]["payload"]["stream_options"] == {"include_usage": True}
-    assert calls[5][2]["payload"]["stream_options"] == {"include_usage": False}
+    assert ZaiAsyncClient._prepare_chat_payload_for_model is ZaiSyncClient._prepare_chat_payload_for_model
+    assert inspect.getattr_static(ZaiAsyncClient, "_handle_http_error") is inspect.getattr_static(ZaiSyncClient, "_handle_http_error")
+    assert inspect.getattr_static(ZaiAsyncClient, "_handle_stream_error") is inspect.getattr_static(ZaiSyncClient, "_handle_stream_error")
+    client = ZaiAsyncClient("async factory synthetic key")
+    assert client._sync_transport is None
+    assert inspect.getattr_static(ZaiAsyncClient, "_send_request") is inspect.getattr_static(_AsyncExecutionMixin, "_send_request")
+    assert inspect.getattr_static(ZaiAsyncClient, "_stream_request") is inspect.getattr_static(_AsyncExecutionMixin, "_stream_request")
+    assert inspect.getattr_static(ZaiAsyncClient, "_headers") is inspect.getattr_static(OpenAICompatibleSyncClient, "_headers")
 
 
 @pytest.mark.unit
@@ -738,8 +772,7 @@ def test_zai_native_constructor_shape_equality_and_supported_imports(zai_adapter
     first = ZaiAdapter("synthetic-zai-key", ZAI_MODELS[0])
     second = ZaiAdapter(api_key="synthetic-zai-key", model=ZAI_MODELS[0])
     assert first == second
-    second._client = ZaiSyncClient(RecordingTransport())
-    second._async_client = ZaiAsyncClient()
+    second._sync_transport = RecordingTransport()
     assert first == second
     resolved_spec = first.model_spec
     first.model_spec = None

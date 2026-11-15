@@ -79,13 +79,11 @@ class ZaiAdapter(OpenAICompatibleAdapter):
     company: str = "zai"
     base_url: ClassVar[str] = ZAI_BASE_URL
     api_variant: ClassVar[str | None] = "chat_completions"
-    _client: ZaiSyncClient = field(init=False, repr=False, compare=False)
-    _async_client: ZaiAsyncClient = field(init=False, repr=False, compare=False)
+    _sync_transport: SyncTransport = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         LLMAdapterBase.__post_init__(self)
-        self._client = ZaiSyncClient(create_sync_transport(self.transport))
-        self._async_client = ZaiAsyncClient()
+        self._sync_transport = create_sync_transport(self.transport)
 
     def __repr__(self) -> str:
         """Keep the native adapter's established credential-masked repr."""
@@ -95,22 +93,16 @@ class ZaiAdapter(OpenAICompatibleAdapter):
     def _create_sync_client(self):
         """Bind the native key and current injected transport for this call."""
 
-        return self._client._for_request(self.api_key)
+        return ZaiSyncClient(
+            api_key=self.api_key,
+            transport=self.transport,
+            sync_transport=self._sync_transport,
+        )
 
     def _create_async_client(self):
         """Bind the native key to a fresh request-scoped async client."""
 
-        return self._async_client._for_request(self.api_key)
-
-    @property
-    def _sync_transport(self) -> SyncTransport:
-        """Compatibility hook used by deterministic transport tests."""
-
-        return self._client.transport
-
-    @_sync_transport.setter
-    def _sync_transport(self, transport: SyncTransport) -> None:
-        self._client.transport = transport
+        return ZaiAsyncClient(api_key=self.api_key, transport=self.transport)
 
     def stream_chat(
         self,
@@ -419,9 +411,6 @@ class ZaiAdapter(OpenAICompatibleAdapter):
     ) -> tuple[Any, dict[str, Any]]:
         """Validate Core inputs and serialize the official Z.ai wire shape."""
 
-        self._validate_capability_preflight(
-            parallel_tool_calls=parallel_tool_calls,
-        )
         request_context = self._prepare_chat_request(
             messages,
             tools,
@@ -430,14 +419,19 @@ class ZaiAdapter(OpenAICompatibleAdapter):
             response_model,
         )
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
-        payload = self._build_zai_payload(
+        payload = self._build_chat_params(
             normalized_messages=request_context.normalized_messages,
+            use_responses_api=False,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
             reasoning_level=reasoning_level,
             tools=tools,
             normalized_tool_choice=request_context.normalized_tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            previous_response=None,
+            effective_schema=None,
+            capture_reasoning=False,
         )
         return request_context, payload
 
@@ -488,56 +482,32 @@ class ZaiAdapter(OpenAICompatibleAdapter):
     ) -> dict[str, Any]:
         """Build native Chat Completions parameters for inherited execution."""
 
-        _ = previous_response, effective_schema, capture_reasoning
         self._validate_capability_preflight(
             parallel_tool_calls=parallel_tool_calls,
         )
         if use_responses_api:
             raise NotImplementedError("Z.ai uses Chat Completions only")
-        return self._build_zai_payload(
+        params = super()._build_chat_params(
             normalized_messages=normalized_messages,
-            max_tokens=max_tokens,
+            use_responses_api=use_responses_api,
+            max_tokens=self._validate_max_tokens(max_tokens),
             temperature=temperature,
             top_p=top_p,
             reasoning_level=reasoning_level,
             tools=tools,
             normalized_tool_choice=normalized_tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            previous_response=previous_response,
+            effective_schema=effective_schema,
+            capture_reasoning=capture_reasoning,
         )
-
-    def _build_zai_payload(
-        self,
-        *,
-        normalized_messages: Messages,
-        max_tokens: Optional[int],
-        temperature: float,
-        top_p: float,
-        reasoning_level: Optional[str | int],
-        tools: Optional[list[ToolSpec]],
-        normalized_tool_choice: Optional[str],
-    ) -> dict[str, Any]:
-        """Apply one native payload policy for completions and both streams."""
-
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": normalized_messages.to_openai(),
-        }
-        validated_max_tokens = self._validate_max_tokens(max_tokens)
-        if validated_max_tokens is not None:
-            payload["max_tokens"] = validated_max_tokens
-        if temperature != 1.0:
-            payload["temperature"] = temperature
-        if top_p != 1.0:
-            payload["top_p"] = top_p
-
-        mapped_tools = self._map_tools(tools)
-        if mapped_tools is not None:
-            payload["tools"] = mapped_tools
-        if normalized_tool_choice is not None:
-            payload["tool_choice"] = self._map_tool_choice(
-                normalized_tool_choice,
-            )
-        self._apply_reasoning_options(payload, reasoning_level)
-        return payload
+        if temperature == 1.0:
+            params.pop("temperature", None)
+        if top_p == 1.0:
+            params.pop("top_p", None)
+        if params.get("reasoning_effort") is not None:
+            params["thinking"] = {"type": "enabled"}
+        return params
 
     def _parse_chat_response(
         self,
@@ -580,7 +550,7 @@ class ZaiAdapter(OpenAICompatibleAdapter):
                 "Z.ai parallel_tool_calls control is not implemented",
             )
 
-    def _map_tools(
+    def _map_tools_to_openai(
         self,
         tools: Optional[list[ToolSpec]],
     ) -> Optional[list[dict[str, Any]]]:
@@ -589,7 +559,9 @@ class ZaiAdapter(OpenAICompatibleAdapter):
             raise ValueError("Z.ai supports at most 128 function tools per request")
         return super()._map_tools_to_openai(tools)
 
-    def _map_tool_choice(self, tool_choice: str) -> str:
+    def _map_tool_choice_to_openai(self, tool_choice: Optional[str]) -> Any:
+        if tool_choice is None:
+            return None
         if tool_choice != "auto":
             raise ToolChoiceError(
                 detail=(
@@ -630,22 +602,6 @@ class ZaiAdapter(OpenAICompatibleAdapter):
                 f"for Z.ai model {self.model!r}",
             )
         return max_tokens
-
-    def _apply_reasoning_options(
-        self,
-        payload: dict[str, Any],
-        reasoning_level: Optional[str | int],
-    ) -> None:
-        if reasoning_level is None:
-            return
-
-        provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
-        if provider_value is None:
-            return
-        if not isinstance(provider_value, str):
-            raise TypeError("Z.ai reasoning resolution must produce a string")
-        payload["thinking"] = {"type": "enabled"}
-        payload["reasoning_effort"] = provider_value
 
     @staticmethod
     def _parse_response(
