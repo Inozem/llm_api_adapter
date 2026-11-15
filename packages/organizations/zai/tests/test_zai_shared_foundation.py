@@ -3397,7 +3397,7 @@ def test_zai_native_async_stream_cancellation_closes_raw_source_without_success(
     chunk_trace = []
     delta_trace = []
     yielded = []
-    cancellations = []
+    public_cancellations = []
 
     async def consume():
         stream = adapter.astream_chat(
@@ -3407,13 +3407,25 @@ def test_zai_native_async_stream_cancellation_closes_raw_source_without_success(
         )
         yielded.append(await asyncio.wait_for(anext(stream), timeout=2))
         assert yielded == ["ab"]
-        waiter = asyncio.create_task(anext(stream))
+
+        async def consume_next():
+            """Capture cancellation where the public stream receives it."""
+            try:
+                return await anext(stream)
+            except asyncio.CancelledError as error:
+                public_cancellations.append(error)
+                raise
+
+        waiter = asyncio.create_task(consume_next())
         await asyncio.wait_for(source.gate_started.wait(), timeout=2)
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError) as caught:
             await waiter
-        cancellations.append(caught.value)
-        assert source.cancelled is caught.value
+        assert len(public_cancellations) == 1
+        assert public_cancellations[0].args == ()
+        assert source.cancelled is public_cancellations[0]
+        assert isinstance(caught.value, asyncio.CancelledError)
+        assert caught.value.args == public_cancellations[0].args
         assert source.close_count == 1
         assert len(async_calls) == 1
         assert adapter._sync_transport.requests == []
@@ -3422,7 +3434,7 @@ def test_zai_native_async_stream_cancellation_closes_raw_source_without_success(
 
     async_calls = _bind_tracked_async_source(monkeypatch, source)
     asyncio.run(asyncio.wait_for(consume(), timeout=5))
-    assert len(cancellations) == 1
+    assert len(public_cancellations) == 1
 
 
 @pytest.mark.unit
