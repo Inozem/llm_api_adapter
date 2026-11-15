@@ -119,13 +119,6 @@ class ZaiSyncClient:
         """Open one Z.ai SSE response and request terminal usage when available."""
         return self._for_request(api_key)._stream_raw_payload(payload, timeout_s)
 
-    @staticmethod
-    def _headers(api_key: str) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-
     @classmethod
     def _handle_http_error(cls, http_error: Any) -> None:
         """Map a native HTTP exception to the normalized Core hierarchy."""

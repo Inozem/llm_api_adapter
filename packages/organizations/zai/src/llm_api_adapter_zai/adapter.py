@@ -23,7 +23,6 @@ from llm_api_adapter.adapters.base_adapter import (
 from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
 from llm_api_adapter.errors.llm_api_error import (
     LLMAPIClientError,
-    LLMAPIError,
     ToolChoiceError,
 )
 from llm_api_adapter.llms.streaming import (
@@ -71,19 +70,6 @@ class _NonClosingIterator:
 
     def __next__(self):
         return next(self._source)
-
-
-class _NonClosingAsyncIterator:
-    """Let the shared lifecycle iterate without taking ownership of a source."""
-
-    def __init__(self, source: AsyncIterator[Any]) -> None:
-        self._source = source
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        return await self._source.__anext__()
 
 
 @dataclass(repr=False)
@@ -247,7 +233,7 @@ class ZaiAdapter(OpenAICompatibleAdapter):
             **stream_payload,
         )
         lifecycle = self._run_async_stream(
-            _NonClosingAsyncIterator(events),
+            events,
             state,
             consume_event=self._consume_stream_event_async,
             finalize_response=self._finalize_stream,
