@@ -5,9 +5,8 @@ from __future__ import annotations
 from typing import Any, AsyncIterator
 
 from llm_api_adapter.llms.async_streaming import async_request, async_stream_request
-from llm_api_adapter.llms.openai_compatible.async_client import _AsyncExecutionMixin
-from llm_api_adapter.llms.openai_compatible.sync_client import (
-    OpenAICompatibleSyncClient,
+from llm_api_adapter.llms.openai_compatible.async_client import (
+    OpenAICompatibleAsyncClient,
 )
 from llm_api_adapter.llms.transports import SSEEvent
 
@@ -20,7 +19,7 @@ from .sync_client import (
 )
 
 
-class _ZaiBoundAsyncClient(_AsyncExecutionMixin, OpenAICompatibleSyncClient):
+class _ZaiBoundAsyncClient(OpenAICompatibleAsyncClient):
     """Request-bound Z.ai policy over Core's async JSON and SSE engine."""
 
     def __init__(self, api_key: str) -> None:
@@ -37,10 +36,7 @@ class _ZaiBoundAsyncClient(_AsyncExecutionMixin, OpenAICompatibleSyncClient):
     ) -> Any:
         """Send native max_tokens and sampling fields through the shared engine."""
         payload = {"model": model, **dict(kwargs)}
-        response_data = await self._send_request(
-            ZAI_CHAT_COMPLETIONS_URL, payload, timeout
-        )
-        return _validated_response(response_data)
+        return await self._complete_raw(payload, timeout)
 
     def stream_chat_completion(
         self, model: str, timeout: float | None = None, **kwargs: Any

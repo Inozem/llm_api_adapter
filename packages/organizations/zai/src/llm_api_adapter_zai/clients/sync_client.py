@@ -54,8 +54,7 @@ class _ZaiBoundSyncClient(OpenAICompatibleSyncClient):
         self, model: str, timeout: float | None = None, **kwargs: Any
     ) -> dict[str, Any]:
         payload = self._prepare_chat_payload_for_model(model, kwargs)
-        response = self._send_request(ZAI_CHAT_COMPLETIONS_URL, payload, timeout)
-        return _validated_response(response.json())
+        return self._complete_raw(payload, timeout)
 
     def stream_chat_completion(
         self, model: str, timeout: float | None = None, **kwargs: Any

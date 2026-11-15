@@ -260,18 +260,10 @@ class ZaiAdapter(OpenAICompatibleAdapter):
             capture_reasoning=capture_reasoning,
             on_reasoning=on_reasoning,
         )
-        try:
-            async for text in lifecycle:
-                yield text
-        except BaseException:
-            await self._close_async_iterators(
-                lifecycle, events, suppress_errors=True
-            )
-            raise
-        else:
-            await self._close_async_iterators(
-                lifecycle, events, suppress_errors=False
-            )
+        async with self._closing_async_source(events):
+            async with self._closing_async_source(lifecycle):
+                async for text in lifecycle:
+                    yield text
 
     @staticmethod
     def _close_sync_iterators(
@@ -285,24 +277,6 @@ class ZaiAdapter(OpenAICompatibleAdapter):
                 continue
             try:
                 close()
-            except BaseException as error:
-                if first_error is None:
-                    first_error = error
-        if first_error is not None and not suppress_errors:
-            raise first_error
-
-    @staticmethod
-    async def _close_async_iterators(
-        *iterators: Any,
-        suppress_errors: bool,
-    ) -> None:
-        first_error: BaseException | None = None
-        for iterator in iterators:
-            close = getattr(iterator, "aclose", None)
-            if not callable(close):
-                continue
-            try:
-                await close()
             except BaseException as error:
                 if first_error is None:
                     first_error = error
@@ -793,21 +767,5 @@ class ZaiAdapter(OpenAICompatibleAdapter):
             total_tokens=total_tokens,
             cached_tokens=cached_tokens,
         )
-
-    def _finalize_zai_chat_response(
-        self,
-        response: Mapping[str, Any],
-        *,
-        capture_reasoning: bool,
-        effective_schema: Optional[dict],
-        response_model: Optional[Any],
-    ) -> ChatResponse:
-        chat_response = self._finalize_chat_response(
-            self._parse_response(response, capture_reasoning=capture_reasoning),
-            effective_schema=effective_schema,
-            response_model=response_model,
-        )
-        return chat_response
-
 
 __all__ = ["ZaiAdapter", "ZaiUsage"]
