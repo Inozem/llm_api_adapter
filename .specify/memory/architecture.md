@@ -9,8 +9,9 @@ data owns verified exact-model facts, while code and tests implement and evidenc
 This artifact records durable design boundaries only.
 
 **Messages implementation status**: Constitution 0.9.0 approves the additive
-`anthropic_compatible` boundary. Feature 011's T001 updates governance and architecture only;
-the new mode, shared Messages foundation and native Claude/Qwen migration remain implementation
+`anthropic_compatible` boundary. Protocol-neutral connection, redaction and caller-tariff
+utilities are implemented.
+The new mode, shared Messages foundation and native Claude/Qwen migration remain implementation
 work. The approved Messages passages below define acceptance boundaries, not existing runtime
 registration, completed migration or provider certification.
 
@@ -66,6 +67,20 @@ reasoning resolution, stream buffering and completion, response finalization, an
 pricing finalization. Shared behavior belongs here only when it is observable as a common
 contract for the supported organizations.
 
+### Compatible connection utilities
+
+`adapters/compatible_connection.py` owns the implemented common HTTP(S) root/IP-literal
+validation, diagnostic redaction and caller-tariff validation. Callers supply the resource
+suffixes that are invalid as API roots; the neutral module contains no protocol selection,
+native adapter/client policy or model lookup. It reuses the existing `Pricing`/`PricingTier`
+objects and validators, without another calculator or tariff representation.
+
+`adapters/openai_compatible/adapter.py` retains the OpenAI resource suffixes, API selector and
+thin compatibility wrapper/aliases. Its existing local validation/redaction calls and the legacy
+import module remain effective; the facade still uses its existing bindings. Both OpenAI-compatible
+APIs retain their behavior. This utility extraction does not register Messages mode or complete
+the native migration.
+
 ### Organization adapters and clients
 
 Organization adapters transform the shared request and response models to and from an
@@ -108,9 +123,9 @@ conversion, transports, `_ChatRequestContext`, `TransportRequest`, response type
 reasoning/usage helpers and owned-resource lifecycle; they introduce no provider SDK or framework.
 
 Generic construction performs no native model-profile lookup and has no native reasoning,
-accounting or tariff default. Neutral components import no native policy. Existing compatible
-connection/redaction/caller-pricing validation has a protocol-neutral owner, with existing
-OpenAI-compatible exports and behavior retained during extraction.
+accounting or tariff default. Neutral components import no native policy. The implemented
+compatible-connection utilities above are the reuse point for this planned connection; existing
+OpenAI-compatible exports and behavior remain intact.
 
 Native Claude owns official connection/version/authentication, registry/snapshot rules,
 reasoning/capture, files, errors and tariffs. Qwen owns explicit per-operation Frankfurt workspace
