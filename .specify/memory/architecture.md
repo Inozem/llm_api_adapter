@@ -108,8 +108,7 @@ reuse the common client layer. Native integrations retain connection settings, m
 reasoning, accounting and public compatibility. Qwen routing remains local to each request;
 generic connections inherit no native model facts.
 
-The compatible adapter supports the four direct request methods. Facade registration and native
-migration remain pending.
+`UniversalLLMAPIAdapter` exposes this connection through the four common methods.
 
 ### Shared models
 
