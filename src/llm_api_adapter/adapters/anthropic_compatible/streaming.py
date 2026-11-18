@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 import json
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 from ...errors.llm_api_error import InvalidToolArgumentsError, LLMAPIClientError
 from ...llms.transports import SSEEvent
@@ -30,7 +30,7 @@ class MessagesBlockState:
 EventPolicy = Callable[[SSEEvent], bool]
 BlockPolicy = Callable[[int, dict[str, Any]], dict[str, Any]]
 DeltaPolicy = Callable[[dict[str, Any], Mapping[str, Any]], bool]
-IndexPolicy = Callable[[int, str, MessagesBlockState], bool]
+IndexPolicy = Callable[[int, str, MessagesBlockState], bool | Literal["replace"]]
 
 
 def _protocol_error(detail: str) -> LLMAPIClientError:
@@ -78,9 +78,14 @@ def _check_index(
         raise _protocol_error("Messages content block index is invalid")
     if kind == "content_block_start":
         if index in state.blocks:
-            if index_policy is not None and not index_policy(index, kind, state):
+            decision = index_policy(index, kind, state) if index_policy is not None else True
+            if decision == "replace":
+                state.open_indexes.discard(index)
+                state.blocks.pop(index, None)
+            elif not decision:
                 return False
-            raise _protocol_error("Messages content block index was started more than once")
+            else:
+                raise _protocol_error("Messages content block index was started more than once")
         return True
     if index not in state.blocks:
         if index_policy is not None and not index_policy(index, kind, state):
@@ -118,8 +123,9 @@ def consume_messages_event(
 
     Policy callbacks are small parser seams: an event hook may skip malformed
     nonterminal input, a block hook may apply a characterized block transform,
-    a delta hook may skip an incompatible delta, and an index hook may ignore
-    unmatched block references. They do not create another accumulation path.
+    a delta hook may skip or admit a characterized delta, and an index hook may
+    ignore unmatched references or replace a duplicate start. They do not
+    create another accumulation path.
     """
     if not isinstance(event, SSEEvent):
         raise _protocol_error("Messages event is malformed")
@@ -154,28 +160,36 @@ def consume_messages_event(
         delta = _require_mapping(payload.get("delta"), "Messages content delta is malformed")
         block = state.blocks[index]
         delta_type = delta.get("type")
+        if not isinstance(delta_type, str):
+            if delta_policy is not None and not delta_policy(block, delta):
+                return "", ""
+            raise _protocol_error("Messages content delta is malformed")
         compatible = (
             delta_type == "text_delta" and block.get("type") == "text"
             or delta_type == "thinking_delta" and block.get("type") == "thinking"
             or delta_type in {"signature_delta", "input_json_delta"} and block.get("type") == "tool_use"
             or delta_type == "signature_delta" and block.get("type") == "thinking"
         )
-        if not compatible:
-            if delta_policy is not None and not delta_policy(block, delta):
-                return "", ""
+        if delta_policy is not None:
+            admitted = delta_policy(block, delta)
+        else:
+            admitted = True
+        if not compatible and not admitted:
+            return "", ""
+        if not compatible and delta_policy is None:
             raise _protocol_error("Messages content delta does not match its block")
-        if delta_policy is not None and not delta_policy(block, delta):
+        if not admitted:
             return "", ""
         if delta_type == "text_delta":
             if not isinstance(delta.get("text"), str):
                 raise _protocol_error("Messages text delta is malformed")
             visible = delta["text"]
-            block["text"] += visible
+            block["text"] = f"{block.get('text', '')}{visible}"
         elif delta_type == "thinking_delta":
             if not isinstance(delta.get("thinking"), str):
                 raise _protocol_error("Messages thinking delta is malformed")
             thinking = delta["thinking"]
-            block["thinking"] += thinking
+            block["thinking"] = f"{block.get('thinking', '')}{thinking}"
         elif delta_type == "signature_delta":
             if not isinstance(delta.get("signature"), str):
                 raise _protocol_error("Messages signature delta is malformed")

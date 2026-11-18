@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
-from typing import Any, AsyncIterator, Dict, Iterator, List, Mapping, Optional
+from typing import Any, AsyncIterator, Dict, Iterator, Literal, Mapping, Optional
 
 from ..base_adapter import (
     AsyncOnChunk,
@@ -19,26 +18,92 @@ from ..base_adapter import (
     OnToolCall,
     _StreamState,
 )
-from ...errors.llm_api_error import InvalidToolArgumentsError
 from ...llms.streaming import (
     StreamChunkBuffer,
     StreamReasoningCollector,
     StreamUsageTracker,
 )
 from ...models.responses.chat_response import ChatResponse, Usage
+from ..anthropic_compatible import streaming as common_streaming
+from ..anthropic_compatible.streaming import MessagesBlockState
+from ...llms.transports import SSEEvent
 
 
 @dataclass
 class _AnthropicStreamState(_StreamState):
-    message_data: Dict[str, Any]
-    content_blocks: Dict[int, Dict[str, Any]]
-    input_json_fragments: Dict[int, List[str]]
     usage: Dict[str, Any]
-    message_delta: Dict[str, Any]
+    shared: MessagesBlockState
 
 
 class _AnthropicStreamingMixin:
     """Consume Anthropic SSE events and finalize normalized stream responses."""
+
+    @staticmethod
+    def _native_event(event: Any) -> Optional[SSEEvent]:
+        """Skip malformed native frames and normalize their historical event fallback."""
+        if not isinstance(event, SSEEvent) or not isinstance(event.data, Mapping):
+            return None
+        payload = event.data
+        kind = event.event or payload.get("type")
+        if not isinstance(kind, str):
+            return None
+        if kind in {"content_block_start", "content_block_delta", "content_block_stop"}:
+            index = payload.get("index")
+            if not isinstance(index, int):
+                return None
+            if isinstance(index, bool):
+                payload = dict(payload, index=int(index))
+            if kind == "content_block_start" and not isinstance(payload.get("content_block"), Mapping):
+                return None
+            if kind == "content_block_delta" and not isinstance(payload.get("delta"), Mapping):
+                return None
+        if kind == "message_start" and not isinstance(payload.get("message"), Mapping):
+            return None
+        if kind == "message_delta" and not isinstance(payload.get("delta"), Mapping):
+            payload = dict(payload, delta={})
+        if kind in {"message_start", "message_delta"}:
+            payload = dict(payload)
+            message = payload.get("message")
+            if isinstance(message, Mapping):
+                message = dict(message)
+                if "usage" in message and not isinstance(message["usage"], Mapping):
+                    message.pop("usage")
+                payload["message"] = message
+            for key in ("message", "delta", "usage"):
+                if key in payload and not isinstance(payload[key], Mapping):
+                    payload.pop(key)
+        return SSEEvent(event=kind, data=payload, done=event.done)
+
+    @staticmethod
+    def _native_block(_index: int, block: Dict[str, Any]) -> Dict[str, Any]:
+        if block.get("type") == "text":
+            block["text"] = str(block.get("text") or "")
+        elif block.get("type") == "thinking":
+            block["thinking"] = str(block.get("thinking") or "")
+        elif block.get("type") == "tool_use":
+            value = block.get("input")
+            block["input"] = dict(value) if isinstance(value, Mapping) else {}
+        return block
+
+    @staticmethod
+    def _native_delta(block: Dict[str, Any], delta: Mapping[str, Any]) -> bool:
+        kind = delta.get("type")
+        if not isinstance(kind, str):
+            return False
+        field = {"text_delta": "text", "thinking_delta": "thinking",
+                 "input_json_delta": "partial_json"}.get(kind)
+        if field is None:
+            return False
+        value = delta.get(field)
+        return isinstance(value, str) and not (field == "partial_json" and not value)
+
+    @staticmethod
+    def _native_index(
+        index: int, kind: str, state: MessagesBlockState
+    ) -> bool | Literal["replace"]:
+        if kind == "content_block_start" and index in state.blocks:
+            return "replace"
+        return index in state.blocks
 
     async def _consume_stream_async(
         self,
@@ -54,11 +119,8 @@ class _AnthropicStreamingMixin:
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
         state = _AnthropicStreamState(
-            message_data={"model": self.model, "content": []},
-            content_blocks={},
-            input_json_fragments={},
             usage={},
-            message_delta={},
+            shared=MessagesBlockState(message={"model": self.model, "content": []}),
             chunk_buffer=StreamChunkBuffer(buffer_chars),
             usage_tracker=StreamUsageTracker(),
             reasoning_collector=(
@@ -91,96 +153,29 @@ class _AnthropicStreamingMixin:
         on_delta: Optional[AsyncOnDelta],
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
-        payload = event.data if isinstance(event.data, Mapping) else {}
-        event_type = event.event or payload.get("type")
-        if event_type == "message_start":
-            state.message_data = self._handle_message_start(
-                payload,
-                state.usage,
-                state.message_data,
-            )
-            state.usage_tracker.record(
-                state.chunk_buffer,
-                self._normalize_stream_usage(state.usage),
-            )
-        elif event_type == "content_block_start":
-            self._start_content_block(payload, state.content_blocks)
-        elif event_type == "content_block_delta":
-            async for text in self._consume_content_block_delta_async(
-                payload,
-                state.content_blocks,
-                state.input_json_fragments,
-                state.chunk_buffer,
-                on_chunk,
-                on_delta,
-                state.reasoning_collector,
-                state.reasoning_response,
-                on_reasoning,
+        normalized = self._native_event(event)
+        if normalized is None:
+            return
+        visible, thinking = common_streaming.consume_messages_event(
+            state.shared, normalized, block_policy=self._native_block,
+            delta_policy=self._native_delta, index_policy=self._native_index,
+        )
+        state.usage = dict(state.shared.usage) if isinstance(state.shared.usage, Mapping) else {}
+        if visible:
+            async for text in self._emit_async_stream_chunks(
+                state.chunk_buffer.add(visible), on_chunk, on_delta
             ):
                 yield text
-        elif event_type == "content_block_stop":
-            self._finalize_content_block(
-                payload,
-                state.content_blocks,
-                state.input_json_fragments,
+        if thinking and state.reasoning_collector is not None and state.reasoning_response is not None:
+            await self._record_async_reasoning_event(
+                state.reasoning_response, state.reasoning_collector, thinking,
+                capture_reasoning=True, kind="summary", on_reasoning=on_reasoning,
             )
-        elif event_type == "message_delta":
-            self._handle_message_delta(
-                payload,
-                state.message_delta,
-                state.usage,
-            )
+        if normalized.event in {"message_start", "message_delta"}:
             state.usage_tracker.record(
                 state.chunk_buffer,
                 self._normalize_stream_usage(state.usage),
             )
-
-    async def _consume_content_block_delta_async(
-        self,
-        payload: Mapping[str, Any],
-        content_blocks: Dict[int, Dict[str, Any]],
-        input_json_fragments: Dict[int, List[str]],
-        chunk_buffer: StreamChunkBuffer,
-        on_chunk: Optional[AsyncOnChunk],
-        on_delta: Optional[AsyncOnDelta],
-        reasoning_collector: Optional[StreamReasoningCollector],
-        reasoning_response: Optional[ChatResponse],
-        on_reasoning: Optional[AsyncOnReasoning],
-    ) -> AsyncIterator[str]:
-        index = payload.get("index")
-        delta = payload.get("delta")
-        if not isinstance(index, int) or not isinstance(delta, Mapping):
-            return
-        block = content_blocks.get(index)
-        if block is None:
-            return
-        if delta.get("type") == "text_delta":
-            text = delta.get("text")
-            if isinstance(text, str) and text:
-                block["text"] = f"{block.get('text', '')}{text}"
-                async for emitted_text in self._emit_async_stream_chunks(
-                    chunk_buffer.add(text),
-                    on_chunk,
-                    on_delta,
-                ):
-                    yield emitted_text
-        elif delta.get("type") == "thinking_delta":
-            thinking_text = delta.get("thinking")
-            if isinstance(thinking_text, str) and thinking_text:
-                block["thinking"] = f"{block.get('thinking', '')}{thinking_text}"
-                if reasoning_collector is not None and reasoning_response is not None:
-                    await self._record_async_reasoning_event(
-                        reasoning_response,
-                        reasoning_collector,
-                        thinking_text,
-                        capture_reasoning=True,
-                        kind="summary",
-                        on_reasoning=on_reasoning,
-                    )
-        elif delta.get("type") == "input_json_delta":
-            partial_json = delta.get("partial_json")
-            if isinstance(partial_json, str):
-                input_json_fragments.setdefault(index, []).append(partial_json)
 
     def _consume_stream(
         self,
@@ -196,11 +191,8 @@ class _AnthropicStreamingMixin:
         on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
         state = _AnthropicStreamState(
-            message_data={"model": self.model, "content": []},
-            content_blocks={},
-            input_json_fragments={},
             usage={},
-            message_delta={},
+            shared=MessagesBlockState(message={"model": self.model, "content": []}),
             chunk_buffer=StreamChunkBuffer(buffer_chars),
             usage_tracker=StreamUsageTracker(),
             reasoning_collector=(
@@ -232,44 +224,22 @@ class _AnthropicStreamingMixin:
         on_delta: Optional[OnDelta],
         on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
-        payload = event.data if isinstance(event.data, Mapping) else {}
-        event_type = event.event or payload.get("type")
-        if event_type == "message_start":
-            state.message_data = self._handle_message_start(
-                payload,
-                state.usage,
-                state.message_data,
+        normalized = self._native_event(event)
+        if normalized is None:
+            return
+        visible, thinking = common_streaming.consume_messages_event(
+            state.shared, normalized, block_policy=self._native_block,
+            delta_policy=self._native_delta, index_policy=self._native_index,
+        )
+        state.usage = dict(state.shared.usage) if isinstance(state.shared.usage, Mapping) else {}
+        if visible:
+            yield from self._emit_stream_chunks(state.chunk_buffer.add(visible), on_chunk, on_delta)
+        if thinking and state.reasoning_collector is not None and state.reasoning_response is not None:
+            self._record_reasoning_event(
+                state.reasoning_response, state.reasoning_collector, thinking,
+                capture_reasoning=True, kind="summary", on_reasoning=on_reasoning,
             )
-            state.usage_tracker.record(
-                state.chunk_buffer,
-                self._normalize_stream_usage(state.usage),
-            )
-        elif event_type == "content_block_start":
-            self._start_content_block(payload, state.content_blocks)
-        elif event_type == "content_block_delta":
-            yield from self._consume_content_block_delta(
-                payload,
-                state.content_blocks,
-                state.input_json_fragments,
-                state.chunk_buffer,
-                on_chunk,
-                on_delta,
-                state.reasoning_collector,
-                state.reasoning_response,
-                on_reasoning,
-            )
-        elif event_type == "content_block_stop":
-            self._finalize_content_block(
-                payload,
-                state.content_blocks,
-                state.input_json_fragments,
-            )
-        elif event_type == "message_delta":
-            self._handle_message_delta(
-                payload,
-                state.message_delta,
-                state.usage,
-            )
+        if normalized.event in {"message_start", "message_delta"}:
             state.usage_tracker.record(
                 state.chunk_buffer,
                 self._normalize_stream_usage(state.usage),
@@ -285,11 +255,8 @@ class _AnthropicStreamingMixin:
     ) -> ChatResponse:
         parser_kwargs = {"capture_reasoning": True} if capture_reasoning else {}
         chat_response = ChatResponse.from_anthropic_response(
-            self._build_stream_response(
-                state.message_data,
-                state.content_blocks,
-                state.message_delta,
-                state.usage,
+            common_streaming.finalize_messages_stream(
+                state.shared, validate_completion=lambda _state: None
             ),
             **parser_kwargs,
         )
@@ -299,130 +266,6 @@ class _AnthropicStreamingMixin:
             effective_schema=effective_schema,
             response_model=response_model,
         )
-
-    def _handle_message_start(
-        self,
-        payload: Mapping[str, Any],
-        usage: Dict[str, Any],
-        message_data: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        message = payload.get("message")
-        if not isinstance(message, Mapping):
-            return message_data
-        initial_usage = message.get("usage")
-        if isinstance(initial_usage, Mapping):
-            usage.update(initial_usage)
-        return dict(message)
-
-    def _start_content_block(
-        self,
-        payload: Mapping[str, Any],
-        content_blocks: Dict[int, Dict[str, Any]],
-    ) -> None:
-        index = payload.get("index")
-        block = payload.get("content_block")
-        if not isinstance(index, int) or not isinstance(block, Mapping):
-            return
-        content_blocks[index] = dict(block)
-        if block.get("type") == "text":
-            content_blocks[index]["text"] = str(block.get("text") or "")
-        elif block.get("type") == "thinking":
-            content_blocks[index]["thinking"] = str(block.get("thinking") or "")
-        elif block.get("type") == "tool_use":
-            current_input = block.get("input")
-            content_blocks[index]["input"] = (
-                dict(current_input) if isinstance(current_input, Mapping) else {}
-            )
-
-    def _consume_content_block_delta(
-        self,
-        payload: Mapping[str, Any],
-        content_blocks: Dict[int, Dict[str, Any]],
-        input_json_fragments: Dict[int, List[str]],
-        chunk_buffer: StreamChunkBuffer,
-        on_chunk: Optional[OnChunk],
-        on_delta: Optional[OnDelta],
-        reasoning_collector: Optional[StreamReasoningCollector],
-        reasoning_response: Optional[ChatResponse],
-        on_reasoning: Optional[OnReasoning],
-    ) -> Iterator[str]:
-        index = payload.get("index")
-        delta = payload.get("delta")
-        if not isinstance(index, int) or not isinstance(delta, Mapping):
-            return
-        block = content_blocks.get(index)
-        if block is None:
-            return
-        if delta.get("type") == "text_delta":
-            text = delta.get("text")
-            if isinstance(text, str) and text:
-                block["text"] = f"{block.get('text', '')}{text}"
-                yield from self._emit_stream_chunks(
-                    chunk_buffer.add(text),
-                    on_chunk,
-                    on_delta,
-                )
-        elif delta.get("type") == "thinking_delta":
-            thinking_text = delta.get("thinking")
-            if isinstance(thinking_text, str) and thinking_text:
-                block["thinking"] = f"{block.get('thinking', '')}{thinking_text}"
-                if reasoning_collector is not None and reasoning_response is not None:
-                    self._record_reasoning_event(
-                        reasoning_response,
-                        reasoning_collector,
-                        thinking_text,
-                        capture_reasoning=True,
-                        kind="summary",
-                        on_reasoning=on_reasoning,
-                    )
-        elif delta.get("type") == "input_json_delta":
-            partial_json = delta.get("partial_json")
-            if isinstance(partial_json, str):
-                input_json_fragments.setdefault(index, []).append(partial_json)
-
-    def _finalize_content_block(
-        self,
-        payload: Mapping[str, Any],
-        content_blocks: Dict[int, Dict[str, Any]],
-        input_json_fragments: Dict[int, List[str]],
-    ) -> None:
-        index = payload.get("index")
-        block = content_blocks.get(index) if isinstance(index, int) else None
-        if not block or block.get("type") != "tool_use":
-            return
-        raw_input = "".join(input_json_fragments.get(index, []))
-        if not raw_input:
-            return
-        try:
-            parsed_input = json.loads(raw_input)
-        except json.JSONDecodeError as error:
-            raise InvalidToolArgumentsError(
-                detail=(
-                    "Anthropic tool input JSON parse failed "
-                    f"for tool={block.get('name')!r}: {error}"
-                )
-            ) from error
-        if not isinstance(parsed_input, dict):
-            raise InvalidToolArgumentsError(
-                detail=(
-                    "Anthropic tool input must decode to dict "
-                    f"for tool={block.get('name')!r}"
-                )
-            )
-        block["input"] = parsed_input
-
-    def _handle_message_delta(
-        self,
-        payload: Mapping[str, Any],
-        message_delta: Dict[str, Any],
-        usage: Dict[str, Any],
-    ) -> None:
-        delta = payload.get("delta")
-        if isinstance(delta, Mapping):
-            message_delta.update(delta)
-        delta_usage = payload.get("usage")
-        if isinstance(delta_usage, Mapping):
-            usage.update(delta_usage)
 
     @staticmethod
     def _normalize_stream_usage(raw_usage: Mapping[str, Any]) -> Optional[Usage]:
@@ -446,21 +289,6 @@ class _AnthropicStreamingMixin:
             return value
         return None
 
-    def _build_stream_response(
-        self,
-        message_data: Dict[str, Any],
-        content_blocks: Dict[int, Dict[str, Any]],
-        message_delta: Dict[str, Any],
-        usage: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        final_response = dict(message_data)
-        final_response["content"] = [
-            content_blocks[index] for index in sorted(content_blocks)
-        ]
-        final_response.update(message_delta)
-        if usage:
-            final_response["usage"] = usage
-        return final_response
 
 
 __all__ = ["_AnthropicStreamState", "_AnthropicStreamingMixin"]
