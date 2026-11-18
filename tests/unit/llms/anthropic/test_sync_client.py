@@ -430,3 +430,162 @@ def test_sync_custom_endpoint_version_timeout_and_bound_error_handlers():
         assert stream_kwargs["http_error_handler"].__func__ is ClaudeSyncClient._handle_http_error
         assert stream_kwargs["stream_error_handler"].__func__ is ClaudeSyncClient._handle_stream_error
     events.close.assert_called_once()
+
+
+@pytest.mark.unit
+def test_shared_messages_native_json_and_stream_dispatch(monkeypatch, client):
+    from src.llm_api_adapter.llms.anthropic_compatible.sync_client import (
+        _SyncMessagesExecutionMixin,
+    )
+
+    response = Mock()
+    response.json.return_value = {"id": "native-minimal"}
+
+    class RawEvents:
+        def __iter__(self):
+            return iter([SSEEvent(event="future_native_event", data={"kept": True})])
+
+        def close(self):
+            pass
+
+    raw_events = RawEvents()
+    transport = Mock()
+    transport.post_json.return_value = response
+    transport.post_sse.return_value = raw_events
+    client._sync_transport = transport
+
+    json_requests = []
+    stream_requests = []
+    execute_json = _SyncMessagesExecutionMixin._execute_prepared_request
+    execute_stream = _SyncMessagesExecutionMixin._execute_prepared_stream
+
+    def observe_json(self, request):
+        json_requests.append(request)
+        return execute_json(self, request)
+
+    def observe_stream(self, request):
+        stream_requests.append(request)
+        yield from execute_stream(self, request)
+
+    monkeypatch.setattr(_SyncMessagesExecutionMixin, "_execute_prepared_request", observe_json)
+    monkeypatch.setattr(_SyncMessagesExecutionMixin, "_execute_prepared_stream", observe_stream)
+
+    result = client.chat_completion(
+        "claude-opus-4-8", timeout_s=7, messages=[{"role": "user", "content": "Hi"}]
+    )
+    assert result == {"id": "native-minimal"}
+    assert list(client.stream("claude-opus-4-8", timeout_s=11, messages=[])) == [
+        SSEEvent(event="future_native_event", data={"kept": True})
+    ]
+
+    assert len(json_requests) == len(stream_requests) == 1
+    assert json_requests[0].url == stream_requests[0].url == "https://api.anthropic.com/v1/messages"
+    assert json_requests[0].timeout == 7
+    assert stream_requests[0].timeout == 11
+    assert json_requests[0].payload == {
+        "model": "claude-opus-4-8",
+        "messages": [{"role": "user", "content": "Hi"}],
+    }
+    assert stream_requests[0].payload["stream"] is True
+    assert json_requests[0].headers_dict()["anthropic-version"] == "2023-06-01"
+    assert transport.post_json.call_args.kwargs["http_error_handler"].__self__ is client
+    stream_handlers = transport.post_sse.call_args.kwargs
+    assert stream_handlers["http_error_handler"].__self__ is client
+    assert stream_handlers["stream_error_handler"].__self__ is client
+
+
+@pytest.mark.unit
+def test_shared_messages_native_stream_binds_headers_and_transport_on_iteration(client):
+    first_transport = Mock()
+    second_transport = Mock()
+    response = Mock()
+    response.json.return_value = {"id": "late-bound"}
+    second_transport.post_json.return_value = response
+    source = Mock()
+    source.__iter__ = Mock(return_value=iter([]))
+    source.close = Mock()
+    second_transport.post_sse.return_value = source
+    client._sync_transport = first_transport
+
+    events = client.stream("claude-opus-4-8", messages=[])
+
+    client.api_key = "changed-key"
+    client.api_version = "changed-version"
+    client._sync_transport = second_transport
+    assert list(events) == []
+    request = second_transport.post_sse.call_args.args[0]
+    assert request.headers_dict()["x-api-key"] == "changed-key"
+    assert request.headers_dict()["anthropic-version"] == "changed-version"
+    first_transport.post_sse.assert_not_called()
+    source.close.assert_called_once()
+
+
+@pytest.mark.unit
+def test_shared_messages_native_preserves_public_and_json_error_identity(client):
+    import json
+
+    from src.llm_api_adapter.errors.llm_api_error import LLMAPIClientError
+
+    public_error = LLMAPIClientError(detail="native identity")
+
+    class ErrorTransport:
+        def post_json(self, request, **kwargs):
+            raise public_error
+
+    client._sync_transport = ErrorTransport()
+    with pytest.raises(LLMAPIClientError) as public_raised:
+        client._send_request("https://gateway.test/messages", {})
+    assert public_raised.value is public_error
+
+    decode_error = json.JSONDecodeError("bad JSON", "not JSON", 0)
+
+    class DecodeTransport:
+        def post_json(self, request, **kwargs):
+            raise decode_error
+
+    client._sync_transport = DecodeTransport()
+    with pytest.raises(json.JSONDecodeError) as decode_raised:
+        client._send_request("https://gateway.test/messages", {})
+    assert decode_raised.value is decode_error
+
+
+@pytest.mark.unit
+def test_shared_messages_native_stream_cleanup_preserves_primary_and_propagates_normal_close(client):
+    primary = RuntimeError("native iteration failure")
+
+    class BrokenSource:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise primary
+
+        def close(self):
+            raise ValueError("secondary close failure")
+
+    class BrokenTransport:
+        def post_sse(self, request, **kwargs):
+            return BrokenSource()
+
+    client._sync_transport = BrokenTransport()
+    with pytest.raises(RuntimeError) as iteration_raised:
+        list(client._stream_request("https://gateway.test/messages", {}))
+    assert iteration_raised.value is primary
+
+    close_error = ValueError("normal close failure")
+
+    class ClosingSource:
+        def __iter__(self):
+            return iter(())
+
+        def close(self):
+            raise close_error
+
+    class ClosingTransport:
+        def post_sse(self, request, **kwargs):
+            return ClosingSource()
+
+    client._sync_transport = ClosingTransport()
+    with pytest.raises(ValueError) as close_raised:
+        list(client._stream_request("https://gateway.test/messages", {}))
+    assert close_raised.value is close_error

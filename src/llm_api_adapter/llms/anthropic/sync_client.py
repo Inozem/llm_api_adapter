@@ -15,6 +15,7 @@ from ...errors.llm_api_error import (
     LLMAPITimeoutError,
 )
 from ..request_rules import apply_model_request_rules
+from ..anthropic_compatible.sync_client import _SyncMessagesExecutionMixin
 from ..transports import (
     SSEEvent,
     SyncTransport,
@@ -25,7 +26,7 @@ from ..transports import (
 logger = logging.getLogger(__name__)
 
 @dataclass
-class ClaudeSyncClient:
+class ClaudeSyncClient(_SyncMessagesExecutionMixin):
     api_key: str
     endpoint: str = "https://api.anthropic.com/v1"
     api_version: str = "2023-06-01"
@@ -116,33 +117,27 @@ class ClaudeSyncClient:
         return payload
 
     def _send_request(self, url: str, payload: dict, timeout_s: float | None = None):
-        return self._sync_transport.post_json(
+        return self._execute_prepared_request(
             TransportRequest(
                 url=url,
                 headers=self._headers(),
                 payload=payload,
                 timeout=timeout_s,
-            ),
-            http_error_handler=self._handle_http_error,
+            )
         )
 
     def _stream_request(
         self, url: str, payload: dict, timeout_s: float | None = None
     ) -> Iterator[SSEEvent]:
-        events = self._sync_transport.post_sse(
+        """Stream raw events, binding headers and transport on iteration."""
+        yield from self._execute_prepared_stream(
             TransportRequest(
                 url=url,
                 headers=self._headers(),
                 payload=payload,
                 timeout=timeout_s,
-            ),
-            http_error_handler=self._handle_http_error,
-            stream_error_handler=self._handle_stream_error,
+            )
         )
-        try:
-            yield from events
-        finally:
-            events.close()
 
     def _handle_stream_error(self, event: SSEEvent) -> None:
         payload = event.data if isinstance(event.data, Mapping) else {}
