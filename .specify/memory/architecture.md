@@ -100,15 +100,16 @@ transports, cleanup and public errors remain the shared authorities.
 
 The Messages foundation separates shared protocol handling from provider policy.
 `llms/anthropic_compatible/` owns synchronous and asynchronous JSON/SSE exchange through existing
-transports. `adapters/anthropic_compatible/` will own common request preparation, response
-normalization and stream processing.
+transports. `adapters/anthropic_compatible/` supplies common Messages assembly, response normalization
+and block reconstruction.
 
 Native Claude and Qwen adapters will build on the compatible adapter, and their clients will
 reuse the common client layer. Native integrations retain connection settings, model rules,
 reasoning, accounting and public compatibility. Qwen routing remains local to each request;
 generic connections inherit no native model facts.
 
-Raw clients are implemented. Adapter/facade integration and native migration remain pending.
+Raw clients and protocol helpers are implemented. Adapter/facade integration and native migration
+remain pending.
 
 ### Shared models
 
