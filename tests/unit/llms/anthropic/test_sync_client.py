@@ -1,4 +1,5 @@
 from unittest.mock import patch, Mock
+from dataclasses import fields
 
 import pytest
 import requests
@@ -11,6 +12,7 @@ from src.llm_api_adapter.errors.llm_api_error import (
     LLMAPITimeoutError,
 )
 from src.llm_api_adapter.llms.anthropic.sync_client import ClaudeSyncClient
+from src.llm_api_adapter.adapters.anthropic_adapter import ClaudeSyncClient as ShimSyncClient
 from src.llm_api_adapter.llms.streaming import SSEEvent
 
 
@@ -330,3 +332,101 @@ def test_stream_passes_unknown_event_types_through(mock_post, client):
     assert list(client.stream("claude-opus-4-8", messages=[])) == [
         SSEEvent(event="future_event", data={"type": "future_event", "value": "kept"})
     ]
+
+
+@pytest.mark.unit
+def test_sync_client_positional_dataclass_defaults_repr_and_transport_patch_point():
+    transport, equivalent_transport = Mock(name="first transport"), Mock(name="second transport")
+    with patch(
+        "src.llm_api_adapter.llms.anthropic.sync_client.create_sync_transport",
+        side_effect=[transport, equivalent_transport, Mock(), Mock(), Mock()],
+    ) as factory:
+        client = ClaudeSyncClient("secret-key", "https://proxy.test/v1", "v-test", "requests")
+        equivalent = ClaudeSyncClient("secret-key", "https://proxy.test/v1", "v-test", "requests")
+        different_endpoint = ClaudeSyncClient("secret-key", "https://other.test/v1", "v-test", "requests")
+        different_version = ClaudeSyncClient("secret-key", "https://proxy.test/v1", "v-other", "requests")
+        different_transport = ClaudeSyncClient("secret-key", "https://proxy.test/v1", "v-test", "httpx")
+
+    assert ShimSyncClient is ClaudeSyncClient
+    assert [call.args[0] for call in factory.call_args_list] == [
+        "requests", "requests", "requests", "requests", "httpx",
+    ]
+    assert client == equivalent
+    assert client._sync_transport is transport
+    assert equivalent._sync_transport is equivalent_transport
+    assert client._sync_transport is not equivalent._sync_transport
+    assert client != different_endpoint
+    assert client != different_version
+    assert client != different_transport
+    assert "secret-key" not in repr(client)
+    assert client.endpoint == "https://proxy.test/v1"
+    assert client.api_version == "v-test"
+    assert [field.name for field in fields(client)] == [
+        "api_key", "endpoint", "api_version", "transport", "_sync_transport",
+    ]
+    internal_transport = fields(client)[-1]
+    assert (internal_transport.init, internal_transport.repr, internal_transport.compare) == (
+        False, False, False,
+    )
+    with patch("src.llm_api_adapter.llms.anthropic.sync_client.create_sync_transport", return_value=Mock()):
+        defaults = ClaudeSyncClient("test_api_key")
+    assert defaults.endpoint == "https://api.anthropic.com/v1"
+    assert defaults.api_version == "2023-06-01"
+    assert defaults.transport == "requests"
+
+
+@pytest.mark.unit
+def test_native_headers_and_endpoint_stay_module_patchable(client):
+    assert client._headers() == {
+        "x-api-key": "test_api_key",
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    with patch.object(client, "_send_request", return_value=Mock(json=lambda: {"id": "msg"})) as send:
+        assert client.chat_completion("claude-sonnet-4-5", messages=[])["id"] == "msg"
+    assert send.call_args.args[0] == "https://api.anthropic.com/v1/messages"
+
+
+@pytest.mark.unit
+def test_sync_custom_endpoint_version_timeout_and_bound_error_handlers():
+    transport = Mock()
+    response = Mock()
+    response.json.return_value = {"id": "msg_custom"}
+    transport.post_json.return_value = response
+    events = Mock()
+    events.__iter__ = Mock(return_value=iter([]))
+    events.close = Mock()
+    transport.post_sse.return_value = events
+    with patch(
+        "src.llm_api_adapter.llms.anthropic.sync_client.create_sync_transport",
+        return_value=transport,
+    ):
+        client = ClaudeSyncClient(
+            "custom-key", endpoint="https://gateway.test/prefix/v9",
+            api_version="2025-01-01", transport="requests",
+        )
+        assert client.chat_completion("custom-model", timeout_s=7, messages=[]) == {"id": "msg_custom"}
+        request, = transport.post_json.call_args.args
+        http_handler = transport.post_json.call_args.kwargs["http_error_handler"]
+        assert request.url == "https://gateway.test/prefix/v9/messages"
+        assert request.timeout == 7
+        assert request.headers_dict() == {
+            "x-api-key": "custom-key",
+            "anthropic-version": "2025-01-01",
+            "Content-Type": "application/json",
+        }
+        assert http_handler.__self__ is client
+        assert http_handler.__func__ is ClaudeSyncClient._handle_http_error
+
+        assert list(client.stream("custom-model", timeout_s=11, messages=[])) == []
+        stream_request, = transport.post_sse.call_args.args
+        stream_kwargs = transport.post_sse.call_args.kwargs
+        assert stream_request.url == "https://gateway.test/prefix/v9/messages"
+        assert stream_request.timeout == 11
+        assert stream_request.headers_dict()["x-api-key"] == "custom-key"
+        assert stream_request.headers_dict()["anthropic-version"] == "2025-01-01"
+        assert stream_kwargs["http_error_handler"].__self__ is client
+        assert stream_kwargs["stream_error_handler"].__self__ is client
+        assert stream_kwargs["http_error_handler"].__func__ is ClaudeSyncClient._handle_http_error
+        assert stream_kwargs["stream_error_handler"].__func__ is ClaudeSyncClient._handle_stream_error
+    events.close.assert_called_once()
