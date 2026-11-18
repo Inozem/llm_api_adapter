@@ -495,6 +495,59 @@ def test_shared_messages_native_json_and_stream_dispatch(monkeypatch, client):
 
 
 @pytest.mark.unit
+def test_native_public_methods_reuse_compatible_request_preparation(monkeypatch, client):
+    from src.llm_api_adapter.llms.anthropic_compatible.sync_client import (
+        AnthropicCompatibleSyncClient,
+    )
+
+    assert isinstance(client, AnthropicCompatibleSyncClient)
+    original = AnthropicCompatibleSyncClient._request_data
+    prepared = []
+    payload_hooks = []
+    payload_objects = []
+    endpoint_at_hook = []
+    original_endpoint = client.endpoint
+    original_payload = client._prepare_chat_payload_for_model
+
+    def observe_request(self, model, kwargs, *, stream):
+        prepared.append(stream)
+        return original(self, model, kwargs, stream=stream)
+
+    def observe_payload(model, kwargs):
+        payload = original_payload(model, kwargs)
+        payload_hooks.append(model)
+        payload_objects.append(payload)
+        endpoint_at_hook.append(client.endpoint)
+        client.endpoint = "https://mutated.test/v9"
+        return payload
+
+    monkeypatch.setattr(AnthropicCompatibleSyncClient, "_request_data", observe_request)
+    monkeypatch.setattr(client, "_prepare_chat_payload_for_model", observe_payload)
+    transport = Mock()
+    response = Mock()
+    response.json.return_value = {"ok": True}
+    transport.post_json.return_value = response
+    source = Mock()
+    source.__iter__ = Mock(return_value=iter([SSEEvent("raw", {})]))
+    source.close = Mock()
+    transport.post_sse.return_value = source
+    client._sync_transport = transport
+
+    assert client.chat_completion("claude-opus-4-8", messages=[]) == {"ok": True}
+    client.endpoint = original_endpoint
+    assert list(client.stream("claude-opus-4-8", messages=[])) == [SSEEvent("raw", {})]
+    assert prepared == [False, True]
+    assert payload_hooks == ["claude-opus-4-8", "claude-opus-4-8"]
+    assert endpoint_at_hook == [original_endpoint, original_endpoint]
+    json_request = transport.post_json.call_args.args[0]
+    stream_request = transport.post_sse.call_args.args[0]
+    assert json_request.url == stream_request.url == f"{original_endpoint}/messages"
+    assert json_request.payload is payload_objects[0]
+    assert stream_request.payload is payload_objects[1]
+    assert stream_request.payload["stream"] is True
+
+
+@pytest.mark.unit
 def test_shared_messages_native_stream_binds_headers_and_transport_on_iteration(client):
     first_transport = Mock()
     second_transport = Mock()

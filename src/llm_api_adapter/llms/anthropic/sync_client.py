@@ -15,7 +15,7 @@ from ...errors.llm_api_error import (
     LLMAPITimeoutError,
 )
 from ..request_rules import apply_model_request_rules
-from ..anthropic_compatible.sync_client import _SyncMessagesExecutionMixin
+from ..anthropic_compatible.sync_client import AnthropicCompatibleSyncClient
 from ..transports import (
     SSEEvent,
     SyncTransport,
@@ -26,7 +26,7 @@ from ..transports import (
 logger = logging.getLogger(__name__)
 
 @dataclass
-class ClaudeSyncClient(_SyncMessagesExecutionMixin):
+class ClaudeSyncClient(AnthropicCompatibleSyncClient):
     api_key: str
     endpoint: str = "https://api.anthropic.com/v1"
     api_version: str = "2023-06-01"
@@ -52,8 +52,7 @@ class ClaudeSyncClient(_SyncMessagesExecutionMixin):
         }
 
     def chat_completion(self, model: str, timeout_s: float | None = None, **kwargs):
-        url = f"{self.endpoint}/messages"
-        payload = self._prepare_chat_payload_for_model(model, kwargs)
+        url, payload = self._request_data(model, kwargs, stream=False)
         response = self._send_request(url, payload, timeout_s)
         return response.json()
 
@@ -61,9 +60,7 @@ class ClaudeSyncClient(_SyncMessagesExecutionMixin):
         self, model: str, timeout_s: float | None = None, **kwargs
     ) -> Iterator[SSEEvent]:
         """Stream raw Messages API SSE events without interpreting content blocks."""
-        url = f"{self.endpoint}/messages"
-        payload = self._prepare_chat_payload_for_model(model, kwargs)
-        payload["stream"] = True
+        url, payload = self._request_data(model, kwargs, stream=True)
         return self._stream_request(url, payload, timeout_s)
 
     @staticmethod
@@ -115,6 +112,10 @@ class ClaudeSyncClient(_SyncMessagesExecutionMixin):
             if isinstance(thinking, dict) and thinking.get("type") != "disabled":
                 payload["thinking"] = {**thinking, "display": "summarized"}
         return payload
+
+    def _raise_execution_error(self, error: BaseException) -> None:
+        """Retain native exception identity instead of generic sanitization."""
+        raise error
 
     def _send_request(self, url: str, payload: dict, timeout_s: float | None = None):
         return self._execute_prepared_request(

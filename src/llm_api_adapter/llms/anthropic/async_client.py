@@ -40,8 +40,7 @@ class ClaudeAsyncClient(_AsyncMessagesExecutionMixin, ClaudeSyncClient):
         timeout_s: float | None = None,
         **kwargs,
     ):
-        url = f"{self.endpoint}/messages"
-        payload = self._prepare_chat_payload_for_model(model, kwargs)
+        url, payload = self._request_data(model, kwargs, stream=False)
         return await self._send_request(url, payload, timeout_s)
 
     def stream(
@@ -51,9 +50,7 @@ class ClaudeAsyncClient(_AsyncMessagesExecutionMixin, ClaudeSyncClient):
         **kwargs,
     ) -> AsyncIterator[SSEEvent]:
         """Return raw Anthropic Messages SSE events."""
-        url = f"{self.endpoint}/messages"
-        payload = self._prepare_chat_payload_for_model(model, kwargs)
-        payload["stream"] = True
+        url, payload = self._request_data(model, kwargs, stream=True)
         return self._stream_request(url, payload, timeout_s)
 
     async def _send_request(

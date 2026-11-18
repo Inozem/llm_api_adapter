@@ -152,6 +152,62 @@ async def test_async_custom_endpoint_version_timeout_and_bound_error_handlers():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_native_async_public_methods_reuse_compatible_request_preparation(monkeypatch, client):
+    from src.llm_api_adapter.llms.anthropic_compatible.sync_client import (
+        AnthropicCompatibleSyncClient,
+    )
+
+    original = AnthropicCompatibleSyncClient._request_data
+    prepared = []
+    payload_hooks = []
+    payload_objects = []
+    endpoint_at_hook = []
+    original_endpoint = client.endpoint
+    original_payload = client._prepare_chat_payload_for_model
+
+    def observe_request(self, model, kwargs, *, stream):
+        prepared.append(stream)
+        return original(self, model, kwargs, stream=stream)
+
+    def observe_payload(model, kwargs):
+        payload = original_payload(model, kwargs)
+        payload_hooks.append(model)
+        payload_objects.append(payload)
+        endpoint_at_hook.append(client.endpoint)
+        client.endpoint = "https://mutated.test/v9"
+        return payload
+
+    monkeypatch.setattr(AnthropicCompatibleSyncClient, "_request_data", observe_request)
+    monkeypatch.setattr(client, "_prepare_chat_payload_for_model", observe_payload)
+    request = AsyncMock(return_value={"ok": True})
+
+    async def events():
+        yield SSEEvent("raw", {})
+
+    stream_request = Mock(return_value=events())
+    with patch.object(async_client_module, "async_request", request), patch.object(
+        async_client_module, "async_stream_request", stream_request
+    ):
+        assert await client.chat_completion("claude-opus-4-8", messages=[]) == {"ok": True}
+        client.endpoint = original_endpoint
+        assert [event async for event in client.stream("claude-opus-4-8", messages=[])] == [
+            SSEEvent("raw", {})
+        ]
+
+    assert prepared == [False, True]
+    assert payload_hooks == ["claude-opus-4-8", "claude-opus-4-8"]
+    assert endpoint_at_hook == [original_endpoint, original_endpoint]
+    assert request.await_args.args[0] == stream_request.call_args.args[0] == (
+        f"{original_endpoint}/messages"
+    )
+    assert request.await_args.kwargs["payload"] is payload_objects[0]
+    assert stream_request.call_args.kwargs["payload"] is payload_objects[1]
+    assert request.await_args.kwargs["payload"]["model"] == "claude-opus-4-8"
+    assert stream_request.call_args.kwargs["payload"]["stream"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_shared_messages_async_json_dispatch_keeps_native_request_policy(client):
     from src.llm_api_adapter.llms.anthropic_compatible.async_client import (
         _AsyncMessagesExecutionMixin,

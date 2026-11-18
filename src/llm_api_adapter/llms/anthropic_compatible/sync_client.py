@@ -207,10 +207,12 @@ class AnthropicCompatibleSyncClient(_SyncMessagesExecutionMixin):
         self._raise_safe_execution_error(error)
 
     def _request_data(self, model: str, kwargs: dict, *, stream: bool) -> tuple[str, dict]:
+        """Bind the destination before invoking an overridable payload hook."""
+        url = f"{self.endpoint}/messages"
         payload = self._prepare_chat_payload_for_model(model, kwargs)
         if stream:
             payload["stream"] = True
-        return f"{self.endpoint}/messages", payload
+        return url, payload
 
     def _send_request(self, url: str, payload: dict, timeout_s: float | None = None):
         return self._execute_prepared_request(
