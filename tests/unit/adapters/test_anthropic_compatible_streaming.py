@@ -7,12 +7,10 @@ from src.llm_api_adapter.adapters.anthropic_compatible.streaming import (
     consume_messages_event,
     finalize_messages_stream,
 )
-from src.llm_api_adapter.adapters.anthropic_compatible.payloads import (
-    first_text_block,
-    normalize_messages_response,
-)
+from src.llm_api_adapter.adapters.anthropic_compatible.payloads import normalize_messages_response
 from src.llm_api_adapter.errors.llm_api_error import InvalidToolArgumentsError, LLMAPIClientError
 from src.llm_api_adapter.llms.transports import SSEEvent
+from tests.unit.adapters.anthropic_compatible_helpers import first_text_block
 from tests.fixtures.anthropic_compatible import messages_event_trace, premature_eof_trace
 
 pytestmark = pytest.mark.unit

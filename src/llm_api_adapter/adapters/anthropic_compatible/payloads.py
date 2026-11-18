@@ -83,13 +83,6 @@ def concatenate_text_blocks(blocks: list[dict[str, Any]]) -> str | None:
     return "".join(text for text in texts if isinstance(text, str)) if texts else None
 
 
-def first_text_block(blocks: list[dict[str, Any]]) -> str | None:
-    for block in blocks:
-        if isinstance(block, dict) and block.get("type") == "text":
-            return block.get("text") if isinstance(block.get("text"), str) else None
-    return None
-
-
 def normalize_messages_response(
     response: Mapping[str, Any], *, capture_reasoning: bool = False,
     text_normalizer: Callable[[list[dict[str, Any]]], str | None] = concatenate_text_blocks,
@@ -123,5 +116,5 @@ def normalize_messages_response(
     return result
 
 
-__all__ = ["build_generic_messages_payload", "build_messages_payload", "concatenate_text_blocks", "first_text_block",
+__all__ = ["build_generic_messages_payload", "build_messages_payload", "concatenate_text_blocks",
            "normalize_messages_response", "normalize_tool_choice"]

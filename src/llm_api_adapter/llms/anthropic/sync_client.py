@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-import logging
 from typing import Iterator, Mapping
 
 # Kept as a module attribute for existing white-box patch points. Requests are
@@ -12,7 +11,6 @@ from ...errors.llm_api_error import (
     LLMAPITokenLimitError,
     LLMAPIClientError,
     LLMAPIServerError,
-    LLMAPITimeoutError,
 )
 from ..request_rules import apply_model_request_rules
 from ..anthropic_compatible.sync_client import AnthropicCompatibleSyncClient
@@ -22,8 +20,6 @@ from ..transports import (
     TransportRequest,
     create_sync_transport,
 )
-
-logger = logging.getLogger(__name__)
 
 @dataclass
 class ClaudeSyncClient(AnthropicCompatibleSyncClient):

@@ -3,7 +3,6 @@ import pytest
 from src.llm_api_adapter.adapters.anthropic_compatible.payloads import (
     build_generic_messages_payload,
     build_messages_payload,
-    first_text_block,
     normalize_messages_response,
 )
 from src.llm_api_adapter.models.messages.chat_message import (
@@ -13,6 +12,7 @@ from src.llm_api_adapter.models.responses.chat_response import Usage
 from src.llm_api_adapter.models.tools.tool_spec import ToolSpec
 from src.llm_api_adapter.models.tools.tool_call import ToolCall
 from tests.fixtures.anthropic_compatible import multiple_blocks_response
+from tests.unit.adapters.anthropic_compatible_helpers import first_text_block
 
 pytestmark = pytest.mark.unit
 

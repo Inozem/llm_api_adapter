@@ -132,15 +132,6 @@ class _AnthropicPayloadMixin:
             **parser_kwargs,
         )
 
-    def _to_anthropic_tool_choice(
-        self,
-        tool_choice: Optional[str],
-    ) -> Optional[Dict[str, Any]]:
-        if tool_choice is None:
-            return None
-        self._validate_anthropic_tool_choice(tool_choice)
-        return common_payloads.normalize_tool_choice(tool_choice)
-
     def _validate_anthropic_tool_choice(self, tool_choice: Optional[str]) -> None:
         if tool_choice is None:
             return
