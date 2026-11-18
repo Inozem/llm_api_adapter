@@ -62,17 +62,26 @@ class _MessagesPreparedRunners:
 
     def _run_prepared_chat(self, operation: _PreparedMessagesOperation) -> ChatResponse:
         try:
-            result = operation.client._execute_prepared_request(operation.transport_request)
-            return self._finalize_messages_operation(operation, result.json())
+            raw = self._dispatch_prepared_chat(operation)
+            return self._finalize_messages_operation(operation, raw)
         except Exception as error:
             self.handle_error(error)
 
     async def _run_prepared_achat(self, operation: _PreparedMessagesOperation) -> ChatResponse:
         try:
-            raw = await operation.client._execute_prepared_request(operation.transport_request)
+            raw = await self._dispatch_prepared_achat(operation)
             return self._finalize_messages_operation(operation, raw)
         except Exception as error:
             self.handle_error(error)
+
+    def _dispatch_prepared_chat(self, operation: _PreparedMessagesOperation) -> Any:
+        return operation.client._execute_prepared_request(operation.transport_request).json()
+
+    async def _dispatch_prepared_achat(self, operation: _PreparedMessagesOperation) -> Any:
+        return await operation.client._execute_prepared_request(operation.transport_request)
+
+    def _dispatch_prepared_stream(self, operation: _PreparedMessagesOperation) -> Any:
+        return operation.client._execute_prepared_stream(operation.transport_request)
 
     def _new_messages_stream_state(
         self, buffer_chars: int, capture_reasoning: bool
@@ -92,6 +101,7 @@ class _MessagesPreparedRunners:
     ) -> Iterator[str]:
         try:
             visible, thinking = self._consume_messages_event(state.blocks, event)
+            self._record_prepared_usage(event, state)
         except Exception as error:
             self.handle_error(error)
         if visible:
@@ -110,13 +120,16 @@ class _MessagesPreparedRunners:
     ) -> AsyncIterator[str]:
         try:
             visible, thinking = self._consume_messages_event(state.blocks, event)
+            self._record_prepared_usage(event, state)
         except Exception as error:
             self.handle_error(error)
         if visible:
-            async for text in self._emit_async_stream_chunks(
+            chunks = self._emit_async_stream_chunks(
                 state.common.chunk_buffer.add(visible), on_chunk, on_delta
-            ):
-                yield text
+            )
+            async with self._closing_async_source(chunks):
+                async for text in chunks:
+                    yield text
         if thinking and state.common.reasoning_collector is not None:
             await self._record_async_reasoning_event(
                 state.common.reasoning_response, state.common.reasoning_collector, thinking,
@@ -129,8 +142,13 @@ class _MessagesPreparedRunners:
         """Overridable decoded-event policy hook; accumulation stays shared."""
         return consume_messages_event(state, event)
 
+    def _record_prepared_usage(
+        self, event: SSEEvent, state: _MessagesStreamState
+    ) -> None:
+        """Optional provider usage policy after common event accumulation."""
+
     def _finalize_prepared_stream(
-        self, operation: _PreparedMessagesOperation, state: _MessagesStreamState,
+        self, state: _MessagesStreamState,
         *, capture_reasoning: bool, effective_schema: Any, response_model: Any,
     ) -> ChatResponse:
         try:
@@ -152,30 +170,22 @@ class _MessagesPreparedRunners:
                              buffer_chars: int | None, on_delta: Any,
                              on_tool_call: Any, on_done: Any, on_chunk: Any,
                              on_reasoning: Any) -> Iterator[str]:
-        state = state or self._new_messages_stream_state(buffer_chars, operation.capture_reasoning)
         try:
             events = self._managed_sync_events(
-                operation.client._execute_prepared_stream(operation.transport_request)
+                self._dispatch_prepared_stream(operation)
             )
         except Exception as error:
             self.handle_error(error)
         primary: BaseException | None = None
         try:
-            yield from self._run_sync_stream(
-                events, state.common,
-                consume_event=lambda event, common, **callbacks: self._consume_prepared_event(
-                    event, state, **callbacks
-                ),
-                finalize_response=lambda common, **kwargs: self._finalize_prepared_stream(
-                    operation, state, **kwargs
-                ),
+            yield from self._consume_dispatched_stream(
+                operation, events, state=state, buffer_chars=buffer_chars,
                 effective_schema=operation.chat_context.effective_schema,
                 response_model=operation.chat_context.response_model,
                 on_delta=on_delta,
                 on_tool_call=on_tool_call,
                 on_done=on_done,
                 on_chunk=on_chunk,
-                capture_reasoning=operation.capture_reasoning,
                 on_reasoning=on_reasoning,
             )
         except BaseException as exc:
@@ -190,6 +200,44 @@ class _MessagesPreparedRunners:
                     if primary is None:
                         raise
 
+    def _consume_dispatched_stream(
+        self, operation: _PreparedMessagesOperation, events: Iterator[SSEEvent], *,
+        state: _MessagesStreamState | None, buffer_chars: int | None, effective_schema: Any,
+        response_model: Any, on_delta: Any, on_tool_call: Any, on_done: Any,
+        on_chunk: Any, on_reasoning: Any,
+    ) -> Iterator[str]:
+        """Run common sync consumption after dispatch; adapters may wrap policy hooks."""
+        state = state or self._new_messages_stream_state(
+            buffer_chars, operation.capture_reasoning
+        )
+        yield from self._consume_prepared_source(
+            events, state, capture_reasoning=operation.capture_reasoning,
+            effective_schema=effective_schema, response_model=response_model,
+            on_delta=on_delta, on_tool_call=on_tool_call, on_done=on_done,
+            on_chunk=on_chunk, on_reasoning=on_reasoning,
+        )
+
+    def _consume_prepared_source(
+        self, events: Iterator[SSEEvent], state: _MessagesStreamState, *,
+        capture_reasoning: bool, effective_schema: Any, response_model: Any,
+        on_delta: Any, on_tool_call: Any, on_done: Any, on_chunk: Any,
+        on_reasoning: Any,
+    ) -> Iterator[str]:
+        """Own common sync event consumption and response finalization."""
+        yield from self._run_sync_stream(
+            events, state.common,
+            consume_event=lambda event, common, **callbacks: self._consume_prepared_event(
+                event, state, **callbacks
+            ),
+            finalize_response=lambda common, **kwargs: self._finalize_prepared_stream(
+                state, **kwargs
+            ),
+            effective_schema=effective_schema, response_model=response_model,
+            on_delta=on_delta, on_tool_call=on_tool_call, on_done=on_done,
+            on_chunk=on_chunk, capture_reasoning=capture_reasoning,
+            on_reasoning=on_reasoning,
+        )
+
     async def _run_prepared_astream(self, operation: _PreparedMessagesOperation, *,
                                     state: _MessagesStreamState | None = None,
                                     buffer_chars: int | None, on_delta: Any,
@@ -197,7 +245,7 @@ class _MessagesPreparedRunners:
                                     on_reasoning: Any) -> AsyncIterator[str]:
         state = state or self._new_messages_stream_state(buffer_chars, operation.capture_reasoning)
         try:
-            events = operation.client._execute_prepared_stream(operation.transport_request)
+            events = self._dispatch_prepared_stream(operation)
         except Exception as error:
             self.handle_error(error)
         lifecycle = self._run_async_stream(
@@ -206,7 +254,7 @@ class _MessagesPreparedRunners:
                 event, state, **callbacks
             ),
             finalize_response=lambda common, **kwargs: self._finalize_prepared_stream(
-                operation, state, **kwargs
+                state, **kwargs
             ),
             effective_schema=operation.chat_context.effective_schema,
             response_model=operation.chat_context.response_model,
