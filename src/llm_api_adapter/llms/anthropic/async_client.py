@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import AsyncIterator
 
 from ..async_streaming import async_request, async_stream_request
+from ..anthropic_compatible.async_client import _AsyncMessagesExecutionMixin
+from ..transports import TransportRequest
 from ..streaming import SSEEvent
 from .sync_client import ClaudeSyncClient
 
 
 @dataclass
-class ClaudeAsyncClient(ClaudeSyncClient):
+class ClaudeAsyncClient(_AsyncMessagesExecutionMixin, ClaudeSyncClient):
     """Call Anthropic's Messages API without blocking the event loop."""
 
     def __repr__(self) -> str:
@@ -24,6 +27,12 @@ class ClaudeAsyncClient(ClaudeSyncClient):
             f"ClaudeAsyncClient(api_key='{masked}', endpoint='{self.endpoint}', "
             f"api_version='{self.api_version}')"
         )
+
+    async def _get_async_request(self, *args, **kwargs):
+        return await async_request(*args, **kwargs)
+
+    def _get_async_stream_request(self, *args, **kwargs):
+        return async_stream_request(*args, **kwargs)
 
     async def chat_completion(
         self,
@@ -53,12 +62,13 @@ class ClaudeAsyncClient(ClaudeSyncClient):
         payload: dict,
         timeout_s: float | None = None,
     ):
-        return await async_request(
-            url,
-            headers=self._headers(),
-            payload=payload,
-            timeout=timeout_s,
-            http_error_handler=self._handle_http_error,
+        return await self._execute_prepared_request(
+            TransportRequest(
+                url=url,
+                headers=self._headers(),
+                payload=payload,
+                timeout=timeout_s,
+            )
         )
 
     async def _stream_request(
@@ -67,19 +77,19 @@ class ClaudeAsyncClient(ClaudeSyncClient):
         payload: dict,
         timeout_s: float | None = None,
     ) -> AsyncIterator[SSEEvent]:
-        events = async_stream_request(
-            url,
-            headers=self._headers(),
-            payload=payload,
-            timeout=timeout_s,
-            http_error_handler=self._handle_http_error,
-            stream_error_handler=self._handle_stream_error,
-        )
-        try:
+        """Stream raw events, resolving native headers and helper on iteration."""
+        async with aclosing(
+            self._execute_prepared_stream(
+                TransportRequest(
+                    url=url,
+                    headers=self._headers(),
+                    payload=payload,
+                    timeout=timeout_s,
+                )
+            )
+        ) as events:
             async for event in events:
                 yield event
-        finally:
-            await events.aclose()
 
 
 __all__ = ["ClaudeAsyncClient"]
