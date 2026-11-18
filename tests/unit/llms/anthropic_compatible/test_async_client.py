@@ -376,3 +376,257 @@ async def test_async_connection_root_is_required_and_invalid_roots_fail_before_i
     assert _isolate_network_and_native_policy["attempts"] == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_prepared_async_execution_forwards_request_local_contexts():
+    from src.llm_api_adapter.llms.anthropic_compatible.async_client import _AsyncMessagesExecutionMixin
+    from src.llm_api_adapter.llms.transports import TransportRequest
+
+    bridge = object.__new__(_AsyncMessagesExecutionMixin)
+    captured = []
+    callbacks = []
+
+    async def json_request(url, *, headers, payload, timeout, http_error_handler):
+        captured.append((url, headers, payload, timeout))
+        callbacks.append((http_error_handler,))
+        return {"url": url, "model": payload["model"]}
+
+    class StreamSource:
+        def __init__(self):
+            self.closed = 0
+            self.sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return SSEEvent("future", {"opaque": True})
+
+        async def aclose(self):
+            self.closed += 1
+
+    source = StreamSource()
+
+    def stream_request(url, *, headers, payload, timeout, http_error_handler, stream_error_handler):
+        captured.append((url, headers, payload, timeout))
+        callbacks.append((http_error_handler, stream_error_handler))
+        return source
+
+    bridge._get_async_request = json_request
+    bridge._get_async_stream_request = stream_request
+    first = TransportRequest("https://one.example/prefix/messages", {"x-api-key": "one"}, {"model": "m1"}, 3)
+    second = TransportRequest("http://two.example/root/messages", {"x-workspace": "two"}, {"model": "m2"}, 5)
+
+    assert await bridge._execute_prepared_request(first) == {"url": first.url, "model": "m1"}
+    events = bridge._execute_prepared_stream(second)
+    assert await events.__anext__() == SSEEvent("future", {"opaque": True})
+    await events.aclose()
+
+    assert captured == [
+        (first.url, {"x-api-key": "one"}, {"model": "m1"}, 3),
+        (second.url, {"x-workspace": "two"}, {"model": "m2"}, 5),
+    ]
+    assert source.closed == 1
+    assert callbacks[0][0].__self__ is bridge
+    assert callbacks[1][0].__self__ is bridge
+    assert callbacks[1][1].__self__ is bridge
+    assert not hasattr(bridge, "api_key")
+    assert not hasattr(bridge, "endpoint")
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_async_configuration_preserves_whitespace_and_overlapping_request_contexts():
+    from src.llm_api_adapter.llms.anthropic_compatible.async_client import AnthropicCompatibleAsyncClient
+
+    client = AnthropicCompatibleAsyncClient(api_key=" ", endpoint=ROOT)
+    headers_calls, captured = [], []
+    ready = asyncio.Event()
+
+    def headers():
+        headers_calls.append(len(headers_calls) + 1)
+        return {"x-call": str(headers_calls[-1])}
+
+    async def async_json(url, *, headers, payload, timeout, http_error_handler):
+        captured.append((headers, payload))
+        if len(captured) == 2:
+            ready.set()
+        await ready.wait()
+        return {"model": payload["model"]}
+
+    client._headers = headers
+    client._get_async_request = async_json
+    one, two = await asyncio.gather(
+        client.chat_completion("model one", messages=[{"role": "user", "content": "one"}]),
+        client.chat_completion("model two", messages=[{"role": "user", "content": "two"}]),
+    )
+
+    assert {one["model"], two["model"]} == {"model one", "model two"}
+    assert headers_calls == [1, 2]
+    assert sorted((header["x-call"], body["model"]) for header, body in captured) == [
+        ("1", "model one"), ("2", "model two")
+    ]
+    assert client.api_key == " "
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_async_diagnostics_redact_escaped_key_and_encoded_endpoint_key():
+    from urllib.parse import quote
+
+    from src.llm_api_adapter.llms.anthropic_compatible.async_client import AnthropicCompatibleAsyncClient
+
+    key = 'quoted"\\line\nkey'
+    encoded = quote(key, safe="")
+    endpoint = f"https://gateway.example/prefix/{encoded}"
+    client = AnthropicCompatibleAsyncClient(api_key=key, endpoint=endpoint)
+    representation = repr(client)
+
+    assert client.api_key == key
+    assert client.endpoint == endpoint
+    assert key not in representation
+    assert encoded not in representation
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_async_execution_sanitizes_message_and_detail_without_mutating_original():
+    from urllib.parse import quote
+
+    from src.llm_api_adapter.errors.llm_api_error import LLMAPIClientError
+
+    client = _client()
+    encoded_key = quote(KEY, safe="")
+    original = LLMAPIClientError(
+        message=f"failed {KEY} {encoded_key} https://user:pass@gateway.example/?token=x",
+        detail=f"detail {KEY} {encoded_key} https://user:pass@gateway.example/#fragment",
+    )
+
+    async def fail_json(url, **kwargs):
+        raise original
+
+    client._get_async_request = fail_json
+    with pytest.raises(LLMAPIClientError) as raised:
+        await client.chat_completion(MODEL, messages=MESSAGES)
+
+    assert raised.value is not original
+    assert original.message.startswith("failed " + KEY)
+    assert original.detail.startswith("detail " + KEY)
+    assert raised.value.__cause__ is None
+    for visible in (str(raised.value), raised.value.message, raised.value.detail or "", repr(raised.value)):
+        assert KEY not in visible
+        assert encoded_key not in visible
+        assert "user:pass" not in visible
+        assert "token=x" not in visible
+        assert "#fragment" not in visible
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_async_stream_source_creation_and_normal_cleanup_errors_use_generic_policy():
+    from src.llm_api_adapter.errors.llm_api_error import LLMAPIClientError
+
+    client = _client()
+    eager = LLMAPIClientError(message=f"source {KEY}")
+
+    def eager_source(url, **kwargs):
+        raise eager
+
+    client._get_async_stream_request = eager_source
+    with pytest.raises(LLMAPIClientError) as raised_eager:
+        async for _ in client.stream(MODEL, messages=MESSAGES):
+            pass
+    assert raised_eager.value is not eager
+    assert KEY not in str(raised_eager.value)
+
+    cleanup = LLMAPIClientError(message=f"cleanup {KEY}")
+
+    class Source:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+        async def aclose(self):
+            raise cleanup
+
+    client._get_async_stream_request = lambda url, **kwargs: Source()
+    with pytest.raises(LLMAPIClientError) as raised_cleanup:
+        async for _ in client.stream(MODEL, messages=MESSAGES):
+            pass
+    assert raised_cleanup.value is not cleanup
+    assert KEY not in str(raised_cleanup.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_keyless_async_bridge_preserves_native_error_identity_and_primary_close_failure():
+    from src.llm_api_adapter.errors.llm_api_error import LLMAPIClientError
+    from src.llm_api_adapter.llms.anthropic_compatible.async_client import _AsyncMessagesExecutionMixin
+    from src.llm_api_adapter.llms.transports import TransportRequest
+
+    bridge = object.__new__(_AsyncMessagesExecutionMixin)
+    native_error = LLMAPIClientError(detail="native")
+
+    async def fail_json(url, **kwargs):
+        raise native_error
+
+    bridge._get_async_request = fail_json
+    with pytest.raises(LLMAPIClientError) as raised:
+        await bridge._execute_prepared_request(TransportRequest("https://one.example/messages"))
+    assert raised.value is native_error
+
+    decode_error = json.JSONDecodeError("bad JSON", "secret response", 0)
+
+    async def fail_decode(url, **kwargs):
+        raise decode_error
+
+    bridge._get_async_request = fail_decode
+    with pytest.raises(json.JSONDecodeError) as decode_raised:
+        await bridge._execute_prepared_request(TransportRequest("https://one.example/messages"))
+    assert decode_raised.value is decode_error
+    assert not hasattr(bridge, "api_key")
+    assert not hasattr(bridge, "endpoint")
+
+    primary = RuntimeError("iteration")
+
+    class BrokenSource:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise primary
+
+        async def aclose(self):
+            raise ValueError("secondary close")
+
+    bridge._get_async_stream_request = lambda *args, **kwargs: BrokenSource()
+    events = bridge._execute_prepared_stream(TransportRequest("https://two.example/messages"))
+    with pytest.raises(RuntimeError) as iter_error:
+        async for _ in events:
+            pass
+    assert iter_error.value is primary
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_async_success_status_malformed_json_maps_to_client_error_and_closes(monkeypatch, _isolate_network_and_native_policy):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, text="not-json", request=request)
+
+    clients = _install_async_httpx(monkeypatch, handler)
+    with pytest.raises(LLMAPIClientError, match="Malformed JSON response"):
+        await _client().chat_completion(MODEL, messages=MESSAGES, max_tokens=37)
+
+    assert len(seen) == 1
+    assert seen[0].url == httpx.URL(MESSAGE_URL)
+    assert clients[0].is_closed
+
+

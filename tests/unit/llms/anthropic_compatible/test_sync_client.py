@@ -429,3 +429,294 @@ def test_selected_transport_failures_map_once_without_fallback(transport, error,
     assert _isolate_network_and_native_policy["attempts"] == []
 
 
+@pytest.mark.unit
+def test_prepared_sync_execution_is_independent_of_generic_instance_state():
+    from src.llm_api_adapter.llms.anthropic_compatible.sync_client import _SyncMessagesExecutionMixin
+    from src.llm_api_adapter.llms.transports import JSONResponse, TransportRequest
+
+    class ControlledTransport:
+        def __init__(self):
+            self.requests = []
+            self.source = None
+            self.callbacks = []
+
+        def post_json(self, request, **kwargs):
+            self.requests.append(request)
+            self.callbacks.append(kwargs)
+            return JSONResponse({"url": request.url})
+
+        def post_sse(self, request, **kwargs):
+            self.requests.append(request)
+            self.callbacks.append(kwargs)
+
+            class Source:
+                def __init__(self):
+                    self.closed = 0
+                    self.items = iter([SSEEvent("future", {"opaque": True})])
+
+                def __iter__(self):
+                    return self
+
+                def __next__(self):
+                    return next(self.items)
+
+                def close(self):
+                    self.closed += 1
+
+            self.source = Source()
+            return self.source
+
+    bridge = object.__new__(_SyncMessagesExecutionMixin)
+    transport = ControlledTransport()
+    bridge._get_sync_transport = lambda: transport
+    first = TransportRequest("https://one.example/prefix/messages", {"x-api-key": "one"}, {"model": "m1"})
+    second = TransportRequest("http://two.example/root/messages", {"x-workspace": "two"}, {"model": "m2"})
+
+    assert bridge._execute_prepared_request(first).json() == {"url": first.url}
+    assert bridge._execute_prepared_request(second).json() == {"url": second.url}
+    events = bridge._execute_prepared_stream(second)
+    assert next(events) == SSEEvent("future", {"opaque": True})
+    events.close()
+
+    assert [request.url for request in transport.requests] == [first.url, second.url, second.url]
+    assert transport.requests[0].headers_dict() == {"x-api-key": "one"}
+    assert transport.requests[1].headers_dict() == {"x-workspace": "two"}
+    assert transport.source.closed == 1
+    assert transport.callbacks[0]["http_error_handler"].__self__ is bridge
+    assert transport.callbacks[1]["http_error_handler"].__self__ is bridge
+    assert transport.callbacks[2]["http_error_handler"].__self__ is bridge
+    assert transport.callbacks[2]["stream_error_handler"].__self__ is bridge
+    assert not hasattr(bridge, "api_key")
+    assert not hasattr(bridge, "endpoint")
+
+
+@pytest.mark.unit
+def test_compatible_diagnostics_redact_keys_and_credential_urls():
+    client = _client()
+    diagnostic = client._format_diagnostic(
+        f"key={KEY}; request=https://name:secret@gateway.example/path?token=private#fragment"
+    )
+    representation = repr(client)
+
+    assert KEY not in diagnostic
+    assert "name:secret" not in diagnostic
+    assert "token=private" not in diagnostic
+    assert "#fragment" not in diagnostic
+    assert KEY not in representation
+
+
+@pytest.mark.unit
+def test_sync_repr_redacts_ordinary_key_encoded_in_valid_endpoint_path():
+    from urllib.parse import quote
+
+    from src.llm_api_adapter.llms.anthropic_compatible.sync_client import AnthropicCompatibleSyncClient
+
+    endpoint = f"https://gateway.example/prefix/{quote(KEY, safe='')}"
+    client = AnthropicCompatibleSyncClient(api_key=KEY, endpoint=endpoint)
+    representation = repr(client)
+
+    assert client.api_key == KEY
+    assert client.endpoint == endpoint
+    assert KEY not in representation
+    assert quote(KEY, safe="") not in representation
+
+
+@pytest.mark.unit
+def test_sync_configuration_preserves_whitespace_and_builds_headers_once_per_operation():
+    from src.llm_api_adapter.llms.anthropic_compatible.sync_client import AnthropicCompatibleSyncClient
+    from src.llm_api_adapter.llms.transports import JSONResponse
+
+    client = AnthropicCompatibleSyncClient(api_key=" ", endpoint=ROOT)
+    calls, captured = [], []
+
+    def headers():
+        calls.append(len(calls) + 1)
+        return {"x-call": str(calls[-1])}
+
+    class Transport:
+        def post_json(self, request, **kwargs):
+            captured.append(request)
+            return JSONResponse({"ok": True})
+
+        def post_sse(self, request, **kwargs):
+            captured.append(request)
+
+            class Source:
+                def __init__(self):
+                    self.done = False
+                    self.closed = 0
+
+                def __iter__(self):
+                    return self
+
+                def __next__(self):
+                    if self.done:
+                        raise StopIteration
+                    self.done = True
+                    return SSEEvent("future", {})
+
+                def close(self):
+                    self.closed += 1
+
+            self.source = Source()
+            return self.source
+
+    client._headers = headers
+    client._sync_transport = Transport()
+    assert client.chat_completion(" ", max_tokens=1) == {"ok": True}
+    assert list(client.stream(" ", max_tokens=1)) == [SSEEvent("future", {})]
+
+    assert calls == [1, 2]
+    assert [request.headers_dict() for request in captured] == [{"x-call": "1"}, {"x-call": "2"}]
+    assert [request.payload["model"] for request in captured] == [" ", " "]
+    assert client.api_key == " "
+
+
+@pytest.mark.unit
+def test_generic_execution_sanitizes_both_error_fields_without_mutating_original():
+    from urllib.parse import quote
+
+    from src.llm_api_adapter.errors.llm_api_error import LLMAPIClientError
+
+    client = _client()
+    encoded_key = quote(KEY, safe="")
+    original = LLMAPIClientError(
+        message=f"failed {KEY} {encoded_key} https://user:pass@gateway.example/?token=x",
+        detail=f"detail {KEY} {encoded_key} https://user:pass@gateway.example/#fragment",
+    )
+
+    class Transport:
+        def post_json(self, request, **kwargs):
+            raise original
+
+    client._sync_transport = Transport()
+    with pytest.raises(LLMAPIClientError) as raised:
+        client.chat_completion(MODEL, messages=MESSAGES)
+
+    assert raised.value is not original
+    assert original.message.startswith("failed " + KEY)
+    assert original.detail.startswith("detail " + KEY)
+    for visible in (str(raised.value), raised.value.message, raised.value.detail or "", repr(raised.value)):
+        assert KEY not in visible
+        assert encoded_key not in visible
+        assert "user:pass" not in visible
+        assert "token=x" not in visible
+        assert "#fragment" not in visible
+
+
+@pytest.mark.unit
+def test_sync_stream_handles_eager_and_cleanup_core_errors_safely():
+    from src.llm_api_adapter.errors.llm_api_error import LLMAPIClientError
+
+    client = _client()
+    eager = LLMAPIClientError(message=f"source {KEY}", detail=f"{KEY} https://user:pass@host/?x=1")
+
+    class EagerTransport:
+        def post_sse(self, request, **kwargs):
+            raise eager
+
+    client._sync_transport = EagerTransport()
+    with pytest.raises(LLMAPIClientError) as raised_eager:
+        list(client.stream(MODEL, messages=MESSAGES))
+    assert raised_eager.value is not eager
+    assert KEY not in str(raised_eager.value)
+    assert "user:pass" not in str(raised_eager.value)
+
+    cleanup = LLMAPIClientError(message=f"cleanup {KEY}")
+
+    class CleanupTransport:
+        def post_sse(self, request, **kwargs):
+            class Source:
+                def __iter__(self):
+                    return iter(())
+
+                def close(self):
+                    raise cleanup
+
+            return Source()
+
+    client._sync_transport = CleanupTransport()
+    with pytest.raises(LLMAPIClientError) as raised_cleanup:
+        list(client.stream(MODEL, messages=MESSAGES))
+    assert raised_cleanup.value is not cleanup
+    assert KEY not in str(raised_cleanup.value)
+
+
+@pytest.mark.unit
+def test_keyless_sync_bridge_preserves_error_identity_and_primary_close_failure():
+    from src.llm_api_adapter.errors.llm_api_error import LLMAPIClientError
+    from src.llm_api_adapter.llms.anthropic_compatible.sync_client import _SyncMessagesExecutionMixin
+    from src.llm_api_adapter.llms.transports import TransportRequest
+
+    bridge = object.__new__(_SyncMessagesExecutionMixin)
+    native_error = LLMAPIClientError(detail="native")
+
+    class EagerTransport:
+        def post_sse(self, request, **kwargs):
+            raise native_error
+
+    bridge._get_sync_transport = lambda: EagerTransport()
+    with pytest.raises(LLMAPIClientError) as raised:
+        list(bridge._execute_prepared_stream(TransportRequest("https://one.example/messages")))
+    assert raised.value is native_error
+
+    decode_error = json.JSONDecodeError("bad JSON", "secret response", 0)
+
+    class DecodeTransport:
+        def post_json(self, request, **kwargs):
+            raise decode_error
+
+    bridge._get_sync_transport = lambda: DecodeTransport()
+    with pytest.raises(json.JSONDecodeError) as decode_raised:
+        bridge._execute_prepared_request(TransportRequest("https://one.example/messages"))
+    assert decode_raised.value is decode_error
+    assert not hasattr(bridge, "api_key")
+    assert not hasattr(bridge, "endpoint")
+
+    primary = RuntimeError("iteration")
+
+    class BrokenSource:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise primary
+
+        def close(self):
+            raise ValueError("secondary close")
+
+    class IterationTransport:
+        def post_sse(self, request, **kwargs):
+            return BrokenSource()
+
+    bridge._get_sync_transport = lambda: IterationTransport()
+    events = bridge._execute_prepared_stream(TransportRequest("https://two.example/messages"))
+    with pytest.raises(RuntimeError) as iter_error:
+        list(events)
+    assert iter_error.value is primary
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", ["requests", "httpx"])
+def test_success_status_malformed_json_maps_to_client_error_and_closes(transport, monkeypatch, _isolate_network_and_native_policy):
+    if transport == "requests":
+        mock = _isolate_network_and_native_policy["requests"]
+        mock.post(MESSAGE_URL, text="not-json", status_code=200)
+        with pytest.raises(LLMAPIClientError, match="Malformed JSON response"):
+            _client("requests").chat_completion(MODEL, messages=MESSAGES, max_tokens=37)
+        _assert_requests_history(mock)
+        assert len(_isolate_network_and_native_policy["closed_responses"]) == 1
+    else:
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(200, text="not-json", request=request)
+
+        clients = _install_sync_httpx(monkeypatch, handler)
+        with pytest.raises(LLMAPIClientError, match="Malformed JSON response"):
+            _client("httpx").chat_completion(MODEL, messages=MESSAGES, max_tokens=37)
+        assert len(seen) == 1
+        assert clients[0].is_closed
+
+

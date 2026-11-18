@@ -8,13 +8,6 @@
 data owns verified exact-model facts, while code and tests implement and evidence the contract.
 This artifact records durable design boundaries only.
 
-**Messages implementation status**: Constitution 0.9.0 approves the additive
-`anthropic_compatible` boundary. Protocol-neutral connection, redaction and caller-tariff
-utilities are implemented.
-The new mode, shared Messages foundation and native Claude/Qwen migration remain implementation
-work. The approved Messages passages below define acceptance boundaries, not existing runtime
-registration, completed migration or provider certification.
-
 ## Architectural Purpose
 
 The project provides one application-facing LLM contract while keeping organization-specific
@@ -69,17 +62,9 @@ contract for the supported organizations.
 
 ### Compatible connection utilities
 
-`adapters/compatible_connection.py` owns the implemented common HTTP(S) root/IP-literal
-validation, diagnostic redaction and caller-tariff validation. Callers supply the resource
-suffixes that are invalid as API roots; the neutral module contains no protocol selection,
-native adapter/client policy or model lookup. It reuses the existing `Pricing`/`PricingTier`
-objects and validators, without another calculator or tariff representation.
-
-`adapters/openai_compatible/adapter.py` retains the OpenAI resource suffixes, API selector and
-thin compatibility wrapper/aliases. Its existing local validation/redaction calls and the legacy
-import module remain effective; the facade still uses its existing bindings. Both OpenAI-compatible
-APIs retain their behavior. This utility extraction does not register Messages mode or complete
-the native migration.
+Compatible modes share URL validation, safe diagnostics and caller-tariff validation in
+`adapters/compatible_connection.py`, reusing existing pricing types. Protocol selection and
+resource paths belong to each protocol integration; these utilities perform no model lookup.
 
 ### Organization adapters and clients
 
@@ -111,31 +96,19 @@ async remains a native-sync subclass and shares the common async execution mixin
 adapter constructs generic clients directly; its clients have no native-policy switch. Existing
 transports, cleanup and public errors remain the shared authorities.
 
-#### Approved Messages execution boundary (implementation pending)
+#### Messages foundation
 
-Neutral components in `adapters/anthropic_compatible/` and `llms/anthropic_compatible/` own common
-Messages assembly, JSON/SSE execution and block reconstruction. The concrete compatible adapter
-and its prepared-request runners serve generic Messages and native Claude/Qwen; both native
-sync/async client families delegate to the same client execution, including the common async
-execution mixin. Native wrappers retain signatures, preparation timing and policy, without a
-second common exchange/reconstruction/callback engine. These components reuse existing message
-conversion, transports, `_ChatRequestContext`, `TransportRequest`, response types, buffer,
-reasoning/usage helpers and owned-resource lifecycle; they introduce no provider SDK or framework.
+The Messages foundation separates shared protocol handling from provider policy.
+`llms/anthropic_compatible/` owns synchronous and asynchronous JSON/SSE exchange through existing
+transports. `adapters/anthropic_compatible/` will own common request preparation, response
+normalization and stream processing.
 
-Generic construction performs no native model-profile lookup and has no native reasoning,
-accounting or tariff default. Neutral components import no native policy. The implemented
-compatible-connection utilities above are the reuse point for this planned connection; existing
-OpenAI-compatible exports and behavior remain intact.
+Native Claude and Qwen adapters will build on the compatible adapter, and their clients will
+reuse the common client layer. Native integrations retain connection settings, model rules,
+reasoning, accounting and public compatibility. Qwen routing remains local to each request;
+generic connections inherit no native model facts.
 
-Native Claude owns official connection/version/authentication, registry/snapshot rules,
-reasoning/capture, files, errors and tariffs. Qwen owns explicit per-operation Frankfurt workspace
-binding, headers, exact-model reasoning/tool/file rules, errors and CNY accounting. Request-local
-credentials/endpoints/payloads never become shared mutable adapter routing state. Native public
-constructors, dataclass shape, imports/patch surfaces and Claude-lazy/Qwen-eager stream preparation
-remain compatible. Generic strict completion and concatenated visible text use explicit policy
-seams; native characterized EOF/tolerance, first-text final responses and raw direct-client event
-APIs retain their meaning. This sharing neither verifies a new model nor broadens file support
-globally; exact native capability profiles remain authoritative.
+Raw clients are implemented. Adapter/facade integration and native migration remain pending.
 
 ### Shared models
 
