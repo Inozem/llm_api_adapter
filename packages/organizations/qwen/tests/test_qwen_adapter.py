@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from dataclasses import fields, replace
+from dataclasses import fields
 import inspect
 import logging
 from pathlib import Path
 import sys
+from types import MappingProxyType
 import warnings
 
 import pytest
@@ -37,7 +38,6 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPIUsageLimitError,
 )
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
-from llm_api_adapter.llm_registry.request_rules import RequestRule, RequestRules
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.tools import ToolSpec
@@ -1154,6 +1154,183 @@ def test_qwen_stream_parser_ignores_malformed_nonterminal_events():
         state,
         model="qwen3.8-max",
     ) == {"content": [], "model": "qwen3.8-max"}
+
+
+@pytest.mark.unit
+def test_qwen_stream_parser_safely_ignores_unhashable_event_kinds_and_uses_empty_name_fallback():
+    state = QwenMessagesStreamParser.new_state(
+        buffer_chars=None,
+        capture_reasoning=False,
+    )
+    malformed_events = (
+        SSEEvent(event=None, data={"type": []}),
+        SSEEvent(event=None, data={"type": {}}),
+    )
+    for event in malformed_events:
+        assert QwenMessagesStreamParser.consume_event(event, state) == (None, None)
+
+    assert QwenMessagesStreamParser.consume_event(
+        SSEEvent(
+            event="",
+            data={
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": "kept"},
+            },
+        ),
+        state,
+    ) == (None, None)
+    assert QwenMessagesStreamParser.finalize(
+        state,
+        model="qwen3.8-max",
+    )["content"] == [{"type": "text", "text": "kept"}]
+
+
+@pytest.mark.unit
+def test_qwen_stream_preserves_malformed_start_usage_for_native_validation():
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+
+    state = QwenMessagesStreamParser.new_state(
+        buffer_chars=None,
+        capture_reasoning=False,
+    )
+    QwenMessagesStreamParser.consume_event(
+        SSEEvent(
+            event="message_start",
+            data={
+                "type": "message_start",
+                "message": {
+                    "id": "synthetic",
+                    "content": [],
+                    "usage": [],
+                },
+            },
+        ),
+        state,
+    )
+
+    response = QwenMessagesStreamParser.finalize(state, model="qwen3.8-max")
+    assert response["usage"] == []
+    with pytest.raises(LLMAPIClientError, match="response.usage must be an object"):
+        QwenAdapter._parse_response(response, capture_reasoning=False)
+
+
+@pytest.mark.unit
+def test_qwen_stream_keeps_prior_valid_usage_when_later_start_usage_is_malformed():
+    state = QwenMessagesStreamParser.new_state(
+        buffer_chars=None,
+        capture_reasoning=False,
+    )
+    for message in (
+        {
+            "id": "synthetic-valid",
+            "content": [],
+            "usage": {"input_tokens": 7, "output_tokens": 0},
+        },
+        {
+            "id": "synthetic-invalid",
+            "content": [],
+            "usage": [],
+        },
+    ):
+        QwenMessagesStreamParser.consume_event(
+            SSEEvent(
+                event="message_start",
+                data={"type": "message_start", "message": message},
+            ),
+            state,
+        )
+
+    response = QwenMessagesStreamParser.finalize(state, model="qwen3.8-max")
+    assert response["usage"] == {"input_tokens": 7, "output_tokens": 0}
+
+
+@pytest.mark.unit
+def test_qwen_reuses_shared_messages_assembly_and_stream_reconstruction(
+    qwen_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter.adapters.anthropic_compatible import payloads, streaming
+    import llm_api_adapter_qwen.adapter as qwen_adapter_module
+    import llm_api_adapter_qwen.streaming as qwen_streaming_module
+
+    assembly_calls = []
+    consume_calls = []
+    finalize_calls = []
+    original_build = qwen_adapter_module.build_messages_payload
+    original_consume = qwen_streaming_module.consume_messages_event
+    original_finalize = qwen_streaming_module.finalize_messages_stream
+
+    def build_spy(**kwargs):
+        assembly_calls.append(kwargs)
+        return original_build(**kwargs)
+
+    def consume_spy(*args, **kwargs):
+        consume_calls.append(args[1])
+        return original_consume(*args, **kwargs)
+
+    def finalize_spy(*args, **kwargs):
+        finalize_calls.append(args[0])
+        return original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(qwen_adapter_module, "build_messages_payload", build_spy)
+    monkeypatch.setattr(qwen_streaming_module, "consume_messages_event", consume_spy)
+    monkeypatch.setattr(qwen_streaming_module, "finalize_messages_stream", finalize_spy)
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {}, events=qwen_messages_sse_events("qwen3.8-max")
+    )
+    adapter.adapter._sync_transport = transport
+
+    list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=64,
+            workspace_id="frankfurt-workspace",
+        )
+    )
+
+    assert len(assembly_calls) == 1
+    assert assembly_calls[0]["messages"].items
+    assert consume_calls
+    assert finalize_calls
+    assert payloads.build_messages_payload is original_build
+    assert streaming.consume_messages_event is original_consume
+
+
+@pytest.mark.unit
+def test_qwen_shared_stream_policy_keeps_native_tolerated_edges():
+    state = QwenMessagesStreamParser.new_state(
+        buffer_chars=None,
+        capture_reasoning=False,
+    )
+    events = [
+        SSEEvent(event="content_block_start", data={"index": -1, "content_block": {"type": "text", "text": ""}}),
+        SSEEvent(event="content_block_delta", data={"index": -1, "delta": {"type": "text_delta", "text": "before"}}),
+        SSEEvent(event="content_block_stop", data={"index": -1}),
+        SSEEvent(event="content_block_delta", data={"index": -1, "delta": {"type": "text_delta", "text": "after"}}),
+        SSEEvent(event="content_block_start", data={"index": 1, "content_block": {"type": "tool_use", "name": "lookup", "input": {"keep": True}}}),
+        SSEEvent(event="content_block_delta", data={"index": 1, "delta": {"type": "signature_delta", "signature": "ignored"}}),
+        SSEEvent(event="content_block_delta", data={"index": 1, "delta": {"type": "input_json_delta", "partial_json": ""}}),
+        SSEEvent(event="content_block_stop", data={"index": 1}),
+        SSEEvent(event="message_delta", data={"delta": None, "usage": {"output_tokens": 3}}),
+    ]
+
+    outputs = [QwenMessagesStreamParser.consume_event(event, state) for event in events]
+
+    assert outputs[1] == ("before", None)
+    assert outputs[2] == (None, None)
+    assert outputs[3] == ("after", None)
+    response = QwenMessagesStreamParser.finalize(state, model="qwen3.8-max")
+    assert response["content"] == [
+        {"type": "text", "text": "beforeafter"},
+        {"type": "tool_use", "name": "lookup", "input": {"keep": True}},
+    ]
+    assert response["usage"] == {"output_tokens": 3}
 
 
 @pytest.mark.unit
@@ -3121,22 +3298,16 @@ def test_qwen_sync_async_and_stream_share_cache_read_pricing(qwen_runtime, monke
         )
 
 
-def _install_forced_tool_modes(adapter, modes):
-    from llm_api_adapter.llm_registry.llm_registry import ModelSpec
+def _install_forced_tool_modes(adapter, modes, monkeypatch):
+    from llm_api_adapter_qwen import registry as qwen_registry
 
-    model_spec = adapter.adapter.model_spec
-    assert isinstance(model_spec, ModelSpec)
-    request_rules = RequestRules()
+    policies = dict(qwen_registry.QWEN_MODEL_POLICIES)
+    model = adapter.adapter.model
     if modes is not None:
-        request_rules = RequestRules(
-            rules=(
-                RequestRule(
-                    handler="disable_reasoning_for_forced_tools",
-                    arguments={"modes": list(modes)},
-                ),
-            )
-        )
-    adapter.adapter.model_spec = replace(model_spec, request_rules=request_rules)
+        policies[model] = frozenset(modes)
+    else:
+        policies.pop(model, None)
+    monkeypatch.setattr(qwen_registry, "QWEN_MODEL_POLICIES", MappingProxyType(policies))
 
 
 @pytest.mark.unit
@@ -3232,13 +3403,14 @@ def test_qwen_forced_tool_policy_uses_only_declared_exact_modes(
     should_warn,
     expected_wire_choice,
     caplog,
+    monkeypatch,
 ):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
         model=model,
         api_key="qwen-test-key",
     )
-    _install_forced_tool_modes(adapter, modes)
+    _install_forced_tool_modes(adapter, modes, monkeypatch)
     transport = FakeSyncTransport(
         {
             "id": "msg-qwen-forced-policy",
@@ -3288,13 +3460,14 @@ def test_qwen_forced_tool_policy_uses_only_declared_exact_modes(
 def test_qwen_bound_forced_tool_policy_preserves_schema_format_and_warns_once(
     qwen_runtime,
     caplog,
+    monkeypatch,
 ):
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
         model="qwen3.8-max",
         api_key="qwen-test-key",
     )
-    _install_forced_tool_modes(adapter, ("any", "tool"))
+    _install_forced_tool_modes(adapter, ("any", "tool"), monkeypatch)
     schema_format = deepcopy(
         {"type": "json_schema", "schema": FLAT_OBJECT_SCHEMA}
     )

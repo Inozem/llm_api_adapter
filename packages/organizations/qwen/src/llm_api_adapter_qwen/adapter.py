@@ -21,7 +21,9 @@ from llm_api_adapter.adapters.base_adapter import (
     OnReasoning,
     OnToolCall,
 )
-from llm_api_adapter.adapters.structured_output import validate_core_portable_schema
+from llm_api_adapter.adapters.anthropic_compatible.payloads import (
+    build_messages_payload,
+)
 from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIError
 from llm_api_adapter.llms.transports import SyncTransport, create_sync_transport
 from llm_api_adapter.models.messages.chat_message import Message, Messages, UserMessage
@@ -31,6 +33,7 @@ from llm_api_adapter.models.tools.tool_spec import ToolSpec
 
 from .clients.async_client import QwenMessagesAsyncClient
 from .clients.sync_client import QwenMessagesSyncClient, validate_workspace_id
+from .request_rules import forced_tool_reasoning_modes
 from .streaming import QwenMessagesStreamParser, QwenMessagesStreamState
 
 
@@ -325,34 +328,32 @@ class QwenAdapter(LLMAdapterBase):
         self._reject_document_parts(request_context.normalized_messages)
         validated_max_tokens = self._validate_max_tokens(max_tokens)
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
-        system_prompt, message_payload = request_context.normalized_messages.to_anthropic()
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": message_payload,
-            "max_tokens": validated_max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-        }
-        if system_prompt is not None:
-            payload["system"] = system_prompt
-        if tools:
-            payload["tools"] = [self._to_qwen_tool(tool) for tool in tools]
-        if request_context.normalized_tool_choice is not None:
-            payload["tool_choice"] = self._to_qwen_tool_choice(
-                request_context.normalized_tool_choice,
-            )
-        if request_context.effective_schema is not None:
-            payload.setdefault("output_config", {})["format"] = {
-                "type": "json_schema",
-                "schema": self._to_qwen_structured_output_schema(
-                    request_context.effective_schema,
-                ),
-            }
-        self._apply_reasoning_options(payload, reasoning_level)
-        self._disable_thinking_for_forced_tool_choice(
-            payload,
-            normalized_tool_choice=request_context.normalized_tool_choice,
+        payload = build_messages_payload(
+            model=self.model,
+            messages=request_context.normalized_messages,
+            max_tokens=validated_max_tokens,
+            tools=tools,
+            tool_choice=request_context.normalized_tool_choice,
+            response_schema=request_context.effective_schema,
+            temperature=temperature,
+            top_p=top_p,
         )
+        self._apply_reasoning_options(payload, reasoning_level)
+        if self.model_spec is not None:
+            declared_modes = forced_tool_reasoning_modes(self.model)
+            normalized_mode = (
+                "any"
+                if request_context.normalized_tool_choice == "any"
+                else "tool"
+                if request_context.normalized_tool_choice
+                not in {None, "auto", "none"}
+                else request_context.normalized_tool_choice
+            )
+            if declared_modes and normalized_mode in declared_modes:
+                self._disable_thinking_for_forced_tool_choice(
+                    payload,
+                    normalized_tool_choice=normalized_mode,
+                )
         return validated_workspace_id, request_context, payload
 
     def _consume_stream_event(
@@ -520,29 +521,6 @@ class QwenAdapter(LLMAdapterBase):
         )
         warnings.warn(message, UserWarning, stacklevel=4)
         logger.warning(message)
-
-    @staticmethod
-    def _to_qwen_structured_output_schema(schema: dict) -> dict:
-        """Validate the shared portable profile without changing its meaning."""
-        return validate_core_portable_schema(schema, provider="qwen")
-
-    @staticmethod
-    def _to_qwen_tool(tool: ToolSpec) -> dict[str, Any]:
-        """Map one validated Core tool to the Messages wire format."""
-        payload: dict[str, Any] = {
-            "name": tool.name,
-            "input_schema": tool.json_schema,
-        }
-        if tool.description:
-            payload["description"] = tool.description
-        return payload
-
-    @staticmethod
-    def _to_qwen_tool_choice(normalized_tool_choice: str) -> dict[str, str]:
-        """Map normalized Core tool selection to Model Studio Messages."""
-        if normalized_tool_choice in {"auto", "none", "any"}:
-            return {"type": normalized_tool_choice}
-        return {"type": "tool", "name": normalized_tool_choice}
 
     @staticmethod
     def _parse_response(
