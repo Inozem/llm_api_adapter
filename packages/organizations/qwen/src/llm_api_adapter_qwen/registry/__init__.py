@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from importlib.resources import files
+from types import MappingProxyType
 from typing import Any
 
 from llm_api_adapter.llm_registry.llm_registry import OrganizationModelMetadata
+from ..request_rules import validate_qwen_policy_catalogue
 
 
 def _load_organization_data() -> dict[str, Any]:
@@ -18,9 +20,14 @@ def _load_organization_data() -> dict[str, Any]:
     return organization_data
 
 
+_ORGANIZATION_DATA = _load_organization_data()
+QWEN_MODEL_POLICIES = MappingProxyType(
+    validate_qwen_policy_catalogue(_ORGANIZATION_DATA)
+)
+
 MODEL_METADATA = OrganizationModelMetadata(
     organization="qwen",
-    organization_data=_load_organization_data(),
+    organization_data=_ORGANIZATION_DATA,
 )
 
 
