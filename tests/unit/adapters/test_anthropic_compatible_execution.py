@@ -15,7 +15,11 @@ import requests_mock
 
 from src.llm_api_adapter.adapters.anthropic_compatible.adapter import AnthropicCompatibleAdapter
 from src.llm_api_adapter.adapters.anthropic_compatible.execution import _PreparedMessagesOperation
-from src.llm_api_adapter.errors.llm_api_error import InvalidToolArgumentsError, LLMAPIClientError
+from src.llm_api_adapter.errors.llm_api_error import (
+    InvalidToolArgumentsError,
+    LLMAPIClientError,
+    LLMAPIServerError,
+)
 from src.llm_api_adapter.llms.transports import SSEEvent, TransportRequest
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 from src.llm_api_adapter.models.tools.tool_spec import ToolSpec
@@ -516,3 +520,132 @@ def test_invalid_parallel_tool_setting_rejected_before_dispatch(value):
             [UserMessage(content="hi")], max_tokens=5, parallel_tool_calls=value
         )
     assert calls == []
+
+
+def _provider_http_error_body():
+    return {
+        "type": "error",
+        "error": {"type": "api_error", "message": "synthetic provider failure"},
+    }
+
+
+@pytest.mark.parametrize("transport", ["requests", "httpx"])
+def test_public_chat_provider_http_error_survives_transport_cleanup(
+    transport, monkeypatch
+):
+    adapter = _adapter(transport=transport)
+    cleanup_attempts = []
+    calls = []
+
+    if transport == "requests":
+        import requests
+
+        original_close = requests.Response.close
+
+        def failing_response_close(response):
+            cleanup_attempts.append("response")
+            original_close(response)
+            raise RuntimeError("response cleanup")
+
+        monkeypatch.setattr(requests.Response, "close", failing_response_close)
+        with requests_mock.Mocker(real_http=False) as http:
+            http.post(URL, status_code=503, json=_provider_http_error_body())
+            with pytest.raises(LLMAPIServerError):
+                adapter.chat([UserMessage(content="prompt")], max_tokens=9)
+            assert http.call_count == 1
+            request = http.request_history[0]
+            assert request.method == "POST" and request.url == URL
+            assert request.json()["model"] == MODEL
+    else:
+        original_client_factory = httpx.Client
+        original_client_close = original_client_factory.close
+        original_response_close = httpx.Response.close
+
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(
+                503, json=_provider_http_error_body(), request=request
+            )
+
+        class ClientWithCleanupFailures:
+            def __init__(self):
+                self.client = original_client_factory(
+                    transport=httpx.MockTransport(handler)
+                )
+
+            def post(self, *args, **kwargs):
+                response = self.client.post(*args, **kwargs)
+
+                def failing_response_close():
+                    cleanup_attempts.append("response")
+                    original_response_close(response)
+                    raise RuntimeError("response cleanup")
+
+                response.close = failing_response_close
+                return response
+
+            def close(self):
+                cleanup_attempts.append("client")
+                original_client_close(self.client)
+                raise RuntimeError("client cleanup")
+
+        monkeypatch.setattr(httpx, "Client", ClientWithCleanupFailures)
+        with pytest.raises(LLMAPIServerError):
+            adapter.chat([UserMessage(content="prompt")], max_tokens=9)
+        assert len(calls) == 1
+        assert calls[0].method == "POST" and str(calls[0].url) == URL
+        assert json.loads(calls[0].content)["model"] == MODEL
+
+    assert cleanup_attempts == (["response"] if transport == "requests" else ["response", "client"])
+
+
+def test_public_achat_provider_http_error_survives_async_httpx_cleanup(monkeypatch):
+    async def scenario():
+        original_client_factory = httpx.AsyncClient
+        original_client_close = original_client_factory.aclose
+        original_response_close = httpx.Response.aclose
+        cleanup_attempts = []
+        calls = []
+
+        async def handler(request):
+            calls.append(request)
+            return httpx.Response(
+                503, json=_provider_http_error_body(), request=request
+            )
+
+        class ClientWithCleanupFailures:
+            def __init__(self):
+                self.client = original_client_factory(
+                    transport=httpx.MockTransport(handler)
+                )
+
+            async def post(self, *args, **kwargs):
+                response = await self.client.post(*args, **kwargs)
+
+                async def failing_response_close():
+                    cleanup_attempts.append("response")
+                    await original_response_close(response)
+                    raise RuntimeError("response cleanup")
+
+                response.aclose = failing_response_close
+                return response
+
+            async def aclose(self):
+                cleanup_attempts.append("client")
+                await original_client_close(self.client)
+                raise RuntimeError("client cleanup")
+
+        monkeypatch.setattr(httpx, "AsyncClient", ClientWithCleanupFailures)
+        adapter = _adapter(transport="httpx")
+        adapter._create_sync_client = lambda: pytest.fail(
+            "async chat used a synchronous client"
+        )
+        with pytest.raises(LLMAPIServerError):
+            await adapter.achat([UserMessage(content="prompt")], max_tokens=9)
+
+        assert len(calls) == 1
+        assert calls[0].method == "POST" and str(calls[0].url) == URL
+        assert json.loads(calls[0].content)["model"] == MODEL
+        assert cleanup_attempts == ["response", "client"]
+
+    asyncio.run(scenario())

@@ -15,6 +15,7 @@ from ..models.responses.chat_response import Usage
 from ..models.responses.reasoning_event import ReasoningEvent, ReasoningEventKind
 from ..models.responses.stream_chunk import StreamChunk
 from .transports import (
+    _cleanup_preserving_primary,
     HTTPErrorHandler,
     SSEEvent,
     SSEFrameDecoder,
@@ -223,7 +224,7 @@ def iter_sse_events(response: requests.Response) -> Iterator[SSEEvent]:
 
     decoder = SSEFrameDecoder()
 
-    try:
+    with _cleanup_preserving_primary(response.close):
         try:
             lines = response.iter_lines(decode_unicode=True)
         except TypeError:
@@ -241,8 +242,6 @@ def iter_sse_events(response: requests.Response) -> Iterator[SSEEvent]:
         event = decoder.finish()
         if event is not None:
             yield event
-    finally:
-        response.close()
 
 
 def stream_request(
