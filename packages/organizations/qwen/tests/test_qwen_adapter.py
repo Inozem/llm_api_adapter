@@ -2000,6 +2000,225 @@ def test_qwen_adapter_preserves_dataclass_construction_and_transport_patch_surfa
     assert positional_done[0].content == "Hallo"
 
 
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_qwen_inherits_and_invokes_all_shared_prepared_runners(
+    qwen_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter.adapters.anthropic_compatible.adapter import (
+        AnthropicCompatibleAdapter,
+    )
+    from llm_api_adapter.adapters.anthropic_compatible.execution import (
+        _MessagesPreparedRunners,
+    )
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    assert QwenAdapter.__bases__ == (AnthropicCompatibleAdapter,)
+    assert QwenAdapter._consume_prepared_event is _MessagesPreparedRunners._consume_prepared_event
+    assert QwenAdapter._consume_prepared_event_async is _MessagesPreparedRunners._consume_prepared_event_async
+    assert QwenAdapter._finalize_prepared_stream is _MessagesPreparedRunners._finalize_prepared_stream
+    adapter = QwenAdapter("qwen-test-key", "qwen3.8-max")
+    prepared_state = adapter._new_messages_stream_state(None, False)
+    prepared_state.common.message_data["content"].append(
+        {"type": "text", "text": "synthetic provider content"}
+    )
+    assert "synthetic provider content" not in repr(prepared_state)
+    adapter._sync_transport = FakeSyncTransport(
+        {
+            "content": [{"type": "text", "text": "sync"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+        events=qwen_messages_sse_events(),
+    )
+    async_requests = []
+
+    async def fake_async_request(url, **kwargs):
+        async_requests.append((url, kwargs))
+        return {
+            "content": [{"type": "text", "text": "async"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    def fake_async_stream_request(url, **kwargs):
+        async_requests.append((url, kwargs))
+
+        async def events():
+            for event in qwen_messages_sse_events():
+                yield event
+
+        return events()
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    calls = []
+
+    original_chat = _MessagesPreparedRunners._run_prepared_chat
+    original_achat = _MessagesPreparedRunners._run_prepared_achat
+    original_stream = _MessagesPreparedRunners._run_prepared_stream
+    original_astream = _MessagesPreparedRunners._run_prepared_astream
+
+    def run_chat(self, *args, **kwargs):
+        calls.append("chat")
+        return original_chat(self, *args, **kwargs)
+
+    async def run_achat(self, *args, **kwargs):
+        calls.append("achat")
+        return await original_achat(self, *args, **kwargs)
+
+    def run_stream(self, *args, **kwargs):
+        calls.append("stream")
+        return original_stream(self, *args, **kwargs)
+
+    def run_astream(self, *args, **kwargs):
+        calls.append("astream")
+        return original_astream(self, *args, **kwargs)
+
+    monkeypatch.setattr(_MessagesPreparedRunners, "_run_prepared_chat", run_chat)
+    monkeypatch.setattr(_MessagesPreparedRunners, "_run_prepared_achat", run_achat)
+    monkeypatch.setattr(_MessagesPreparedRunners, "_run_prepared_stream", run_stream)
+    monkeypatch.setattr(_MessagesPreparedRunners, "_run_prepared_astream", run_astream)
+
+    messages = [{"role": "user", "content": "Hello"}]
+    adapter.chat(messages, max_tokens=64, workspace_id="frankfurt-workspace")
+    await adapter.achat(messages, max_tokens=64, workspace_id="frankfurt-workspace")
+    list(adapter.stream_chat(messages, max_tokens=64, workspace_id="frankfurt-workspace"))
+    [text async for text in adapter.astream_chat(
+        messages, max_tokens=64, workspace_id="frankfurt-workspace"
+    )]
+
+    assert calls == ["chat", "achat", "stream", "astream"]
+    assert len(async_requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_qwen_eager_stream_sources_close_before_shared_iteration(qwen_runtime):
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+
+    class SyncSource:
+        def __init__(self):
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise StopIteration
+
+        def close(self):
+            self.closed = True
+
+    class AsyncSource:
+        def __init__(self):
+            self.closed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+        async def aclose(self):
+            self.closed = True
+
+    adapter = QwenAdapter("qwen-test-key", "qwen3.8-max")
+    sync_source = SyncSource()
+    sync_calls = []
+
+    def sync_stream(**kwargs):
+        sync_calls.append(kwargs)
+        return sync_source
+
+    adapter._client.stream = sync_stream
+    sync_result = adapter.stream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        workspace_id="frankfurt-workspace",
+    )
+    assert len(sync_calls) == 1
+    sync_result.close()
+    assert sync_source.closed is True
+    with pytest.raises(StopIteration):
+        next(sync_result)
+
+    async_source = AsyncSource()
+    async_calls = []
+
+    def async_stream(**kwargs):
+        async_calls.append(kwargs)
+        return async_source
+
+    adapter._async_client.stream = async_stream
+    async_result = adapter.astream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        workspace_id="frankfurt-workspace",
+    )
+    assert len(async_calls) == 1
+    await async_result.aclose()
+    assert async_source.closed is True
+    with pytest.raises(StopAsyncIteration):
+        await anext(async_result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_qwen_stream_validates_buffer_before_opening_native_sources(qwen_runtime):
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+
+    adapter = QwenAdapter("qwen-test-key", "qwen3.8-max")
+    sync_calls = []
+    async_calls = []
+    adapter._client.stream = lambda **kwargs: sync_calls.append(kwargs)
+    adapter._async_client.stream = lambda **kwargs: async_calls.append(kwargs)
+    messages = [{"role": "user", "content": "Hello"}]
+
+    with pytest.raises(ValueError, match="buffer_chars"):
+        adapter.stream_chat(
+            messages,
+            max_tokens=64,
+            buffer_chars=0,
+            workspace_id="frankfurt-workspace",
+        )
+    with pytest.raises(ValueError, match="buffer_chars"):
+        adapter.astream_chat(
+            messages,
+            max_tokens=64,
+            buffer_chars=0,
+            workspace_id="frankfurt-workspace",
+        )
+
+    assert sync_calls == []
+    assert async_calls == []
+
+
+@pytest.mark.unit
+def test_qwen_shared_runner_preserves_native_error_identity(qwen_runtime):
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+
+    adapter = QwenAdapter("qwen-test-key", "qwen3.8-max")
+    original = LLMAPIClientError(detail="native Qwen failure")
+
+    def fail_chat(**kwargs):
+        raise original
+
+    adapter._client.chat = fail_chat
+    with pytest.raises(LLMAPIClientError) as caught:
+        adapter.chat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=64,
+            workspace_id="frankfurt-workspace",
+        )
+
+    assert caught.value is original
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("model", QWEN_MODELS)
 def test_qwen_chat_and_stream_final_responses_use_first_text_block(
