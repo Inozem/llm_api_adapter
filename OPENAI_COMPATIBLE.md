@@ -14,7 +14,7 @@ remains in the [main README](README.md#installation).
 - [Common operations and wire forms](#common-operations-and-wire-forms)
 - [Stateless history and server-dependent support](#stateless-history-and-server-dependent-support)
 - [Compatible usage and caller tariffs](#compatible-usage-and-caller-tariffs)
-- [Async examples](ASYNC_API.md#openai-compatible-endpoints)
+- [Async examples](ASYNC_API.md#compatible-endpoints)
 
 ## Quick start
 
@@ -72,9 +72,10 @@ resource URLs ending in `/chat/completions` or `/responses` are rejected.
 Unknown, blank, case-varied or non-string selectors are invalid. These
 configuration errors raise `LLMConfigError` before discovery or I/O. Omit
 `service_provider` or set it to `"openai_compatible"`; another provider
-conflicts with this mode. For every other organization, including native
-`"openai"`, non-`None` `base_url` or `api_variant` raises `LLMConfigError`;
-omitting both retains its existing routing.
+conflicts with this mode. Native organizations, including `"openai"`, reject
+non-`None` `base_url` and `api_variant`; omitting both retains their existing
+routing. The separate [Anthropic-compatible Messages mode](ANTHROPIC_COMPATIBLE.md#connection-selection)
+also requires an explicit `base_url`, but rejects non-`None` `api_variant`.
 
 Any nonempty model ID is sent unchanged. A name matching a registered OpenAI
 model still receives no native profile, alias resolution, capability flags,
@@ -88,7 +89,7 @@ Both APIs support `chat()`, `achat()`, `stream_chat()` and `astream_chat()`
 with the existing typed/dictionary messages, tool definitions, portable
 schemas, responses and error hierarchy. Sync calls default to `requests`;
 `transport="httpx"` requires `[httpx]`. Async calls always use HTTPX and
-require `[async]`; see the [compatible async example](ASYNC_API.md#openai-compatible-endpoints).
+require `[async]`; see the [compatible async example](ASYNC_API.md#compatible-endpoints).
 
 | Public concept | Chat Completions | Responses |
 | --- | --- | --- |
