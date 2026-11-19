@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import fields
+from copy import deepcopy
+from dataclasses import fields, replace
 import inspect
+import logging
 from pathlib import Path
 import sys
 import warnings
@@ -35,6 +37,7 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPIUsageLimitError,
 )
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
+from llm_api_adapter.llm_registry.request_rules import RequestRule, RequestRules
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.tools import ToolSpec
@@ -3116,3 +3119,369 @@ def test_qwen_sync_async_and_stream_share_cache_read_pricing(qwen_runtime, monke
         assert result.cost_total == pytest.approx(
             expected_input_cost + expected_output_cost
         )
+
+
+def _install_forced_tool_modes(adapter, modes):
+    from llm_api_adapter.llm_registry.llm_registry import ModelSpec
+
+    model_spec = adapter.adapter.model_spec
+    assert isinstance(model_spec, ModelSpec)
+    request_rules = RequestRules()
+    if modes is not None:
+        request_rules = RequestRules(
+            rules=(
+                RequestRule(
+                    handler="disable_reasoning_for_forced_tools",
+                    arguments={"modes": list(modes)},
+                ),
+            )
+        )
+    adapter.adapter.model_spec = replace(model_spec, request_rules=request_rules)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    (
+        "model",
+        "modes",
+        "reasoning_level",
+        "tool_choice",
+        "expected_reasoning",
+        "should_warn",
+        "expected_wire_choice",
+    ),
+    [
+        # Missing rule must not borrow the Qwen-wide forced-tool behavior.
+        (
+            "qwen3.8-max",
+            None,
+            "medium",
+            "any",
+            ("output_config", {"effort": "medium"}),
+            False,
+            {"type": "any"},
+        ),
+        # A declared any-only rule does not apply to a named tool choice.
+        (
+            "qwen3.7-plus",
+            ("any",),
+            2048,
+            "get_weather",
+            ("thinking", {"type": "enabled", "budget_tokens": 2048}),
+            False,
+            {"type": "tool", "name": "get_weather"},
+        ),
+        # A declared tool-only rule does not apply to any-tool selection.
+        (
+            "qwen3.8-flash",
+            ("tool",),
+            "medium",
+            "any",
+            ("output_config", {"effort": "medium"}),
+            False,
+            {"type": "any"},
+        ),
+        # Matching any policy changes thinking and warns exactly once.
+        (
+            "qwen3.8-max",
+            ("any",),
+            "medium",
+            "any",
+            ("thinking", {"type": "disabled"}),
+            True,
+            {"type": "any"},
+        ),
+        # Matching named-tool behavior is checked on a second existing profile.
+        (
+            "qwen3.7-flash",
+            ("tool",),
+            2048,
+            "get_weather",
+            ("thinking", {"type": "disabled"}),
+            True,
+            {"type": "tool", "name": "get_weather"},
+        ),
+        # Declared forced-tool behavior leaves automatic and disabled choices alone.
+        (
+            "qwen3.8-flash",
+            ("any", "tool"),
+            "medium",
+            "auto",
+            ("output_config", {"effort": "medium"}),
+            False,
+            {"type": "auto"},
+        ),
+        (
+            "qwen3.8-flash",
+            ("any", "tool"),
+            "medium",
+            "none",
+            ("output_config", {"effort": "medium"}),
+            False,
+            {"type": "none"},
+        ),
+    ],
+)
+def test_qwen_forced_tool_policy_uses_only_declared_exact_modes(
+    qwen_runtime,
+    model,
+    modes,
+    reasoning_level,
+    tool_choice,
+    expected_reasoning,
+    should_warn,
+    expected_wire_choice,
+    caplog,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    _install_forced_tool_modes(adapter, modes)
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-forced-policy",
+            "model": model,
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_qwen_policy",
+                    "name": "get_weather",
+                    "input": {},
+                }
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+    )
+    adapter.adapter._sync_transport = transport
+    caplog.clear()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        adapter.chat(
+            [{"role": "user", "content": "Use the tool."}],
+            max_tokens=64,
+            reasoning_level=reasoning_level,
+            tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+            tool_choice=tool_choice,
+            workspace_id="frankfurt-workspace",
+        )
+
+    assert len(caught) == (1 if should_warn else 0)
+    if should_warn:
+        assert "disabled thinking because forced tool_choice" in str(caught[0].message)
+    payload = transport.requests[0].payload
+    assert payload[expected_reasoning[0]] == expected_reasoning[1]
+    assert payload["tool_choice"] == expected_wire_choice
+    policy_logs = [
+        record
+        for record in caplog.records
+        if record.name == "llm_api_adapter_qwen.adapter"
+        and "disabled thinking because forced tool_choice" in record.message
+    ]
+    assert len(policy_logs) == (1 if should_warn else 0)
+
+
+@pytest.mark.unit
+def test_qwen_bound_forced_tool_policy_preserves_schema_format_and_warns_once(
+    qwen_runtime,
+    caplog,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    _install_forced_tool_modes(adapter, ("any", "tool"))
+    schema_format = deepcopy(
+        {"type": "json_schema", "schema": FLAT_OBJECT_SCHEMA}
+    )
+    expected_format = deepcopy(schema_format)
+    payload = {
+        "thinking": {"type": "enabled", "budget_tokens": 2048},
+        "output_config": {"format": schema_format, "effort": "high"},
+    }
+
+    expected_payload = deepcopy(payload)
+    expected_payload["thinking"] = {"type": "disabled"}
+    expected_payload["output_config"].pop("effort")
+    with caplog.at_level(logging.WARNING, logger="llm_api_adapter_qwen.adapter"):
+        with pytest.warns(
+            UserWarning,
+            match="disabled thinking because forced tool_choice",
+        ) as caught:
+            adapter.adapter._disable_thinking_for_forced_tool_choice(
+                payload,
+                normalized_tool_choice="any",
+            )
+
+    assert len(caught) == 1
+    assert payload == expected_payload
+    assert payload["output_config"]["format"] == expected_format
+    assert len(caplog.records) == 1
+
+    caplog.clear()
+    with warnings.catch_warnings(record=True) as second_warnings:
+        warnings.simplefilter("always")
+        adapter.adapter._disable_thinking_for_forced_tool_choice(
+            payload,
+            normalized_tool_choice="any",
+        )
+    assert second_warnings == []
+    assert caplog.records == []
+    assert payload == expected_payload
+
+
+UNKNOWN_QWEN_MODEL = "qwen-test-unregistered-native-id"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["chat", "stream_chat"])
+def test_qwen_unknown_native_model_keeps_unknown_selection_without_policy(
+    qwen_runtime,
+    method,
+):
+    with pytest.warns(UserWarning, match="is not verified") as selection_warnings:
+        adapter = UniversalLLMAPIAdapter(
+            organization="qwen",
+            model=UNKNOWN_QWEN_MODEL,
+            api_key="qwen-test-key",
+        )
+    assert len(selection_warnings) == 1
+    assert adapter.adapter.model_spec is None
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-unknown",
+            "model": UNKNOWN_QWEN_MODEL,
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+        events=qwen_messages_sse_events(UNKNOWN_QWEN_MODEL),
+    )
+    adapter.adapter._sync_transport = transport
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        if method == "chat":
+            adapter.chat(
+                [{"role": "user", "content": "Hello"}],
+                max_tokens=64,
+                tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+                tool_choice="any",
+                workspace_id="frankfurt-workspace",
+            )
+            request = transport.requests[0]
+        else:
+            list(
+                adapter.stream_chat(
+                    [{"role": "user", "content": "Hello"}],
+                    max_tokens=64,
+                    tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+                    tool_choice={"type": "tool", "name": "get_weather"},
+                    workspace_id="frankfurt-workspace",
+                )
+            )
+            request = transport.sse_requests[0]
+
+    assert captured == []
+    assert len(transport.requests) + len(transport.sse_requests) == 1
+    assert request.payload["model"] == UNKNOWN_QWEN_MODEL
+    assert "thinking" not in request.payload
+    assert "output_config" not in request.payload
+    assert request.url == (
+        "https://frankfurt-workspace.eu-central-1.maas.aliyuncs.com/"
+        "apps/anthropic/v1/messages"
+    )
+    assert request.headers_dict() == {
+        "x-api-key": "qwen-test-key",
+        "Content-Type": "application/json",
+    }
+    assert "anthropic-version" not in request.headers_dict()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["achat", "astream_chat"])
+async def test_qwen_unknown_native_model_has_no_async_forced_tool_inference(
+    qwen_runtime,
+    monkeypatch,
+    method,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    requests = []
+    with pytest.warns(UserWarning, match="is not verified") as selection_warnings:
+        adapter = UniversalLLMAPIAdapter(
+            organization="qwen",
+            model=UNKNOWN_QWEN_MODEL,
+            api_key="qwen-test-key",
+        )
+    assert len(selection_warnings) == 1
+    assert adapter.adapter.model_spec is None
+
+    async def fake_async_request(url, **kwargs):
+        requests.append((url, kwargs))
+        return {
+            "id": "msg-qwen-unknown-async",
+            "model": UNKNOWN_QWEN_MODEL,
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    def fake_async_stream_request(url, **kwargs):
+        requests.append((url, kwargs))
+
+        async def events():
+            for event in qwen_messages_sse_events(UNKNOWN_QWEN_MODEL):
+                yield event
+
+        return events()
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        if method == "achat":
+            await adapter.achat(
+                [{"role": "user", "content": "Hello"}],
+                max_tokens=64,
+                tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+                tool_choice="any",
+                workspace_id="frankfurt-workspace",
+            )
+        else:
+            [
+                text
+                async for text in adapter.astream_chat(
+                    [{"role": "user", "content": "Hello"}],
+                    max_tokens=64,
+                    tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+                    tool_choice={"type": "tool", "name": "get_weather"},
+                    workspace_id="frankfurt-workspace",
+                )
+            ]
+
+    assert captured == []
+    assert len(requests) == 1
+    url, kwargs = requests[0]
+    payload = kwargs["payload"]
+    assert payload["model"] == UNKNOWN_QWEN_MODEL
+    assert "thinking" not in payload
+    assert "output_config" not in payload
+    assert url == (
+        "https://frankfurt-workspace.eu-central-1.maas.aliyuncs.com/"
+        "apps/anthropic/v1/messages"
+    )
+    assert kwargs["headers"] == {
+        "x-api-key": "qwen-test-key",
+        "Content-Type": "application/json",
+    }
