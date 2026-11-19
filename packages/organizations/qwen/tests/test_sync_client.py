@@ -24,6 +24,7 @@ from llm_api_adapter.errors.llm_api_error import (
 )
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.llms.anthropic_compatible.sync_client import (
+    AnthropicCompatibleSyncClient,
     _SyncMessagesExecutionMixin,
 )
 from llm_api_adapter_qwen.clients.sync_client import (
@@ -80,6 +81,9 @@ def test_sync_client_keeps_transport_only_constructor_and_request_local_routing(
     constructor = inspect.signature(QwenMessagesSyncClient)
     assert list(constructor.parameters) == ["transport"]
     assert constructor.parameters["transport"].default is inspect.Parameter.empty
+    assert issubclass(QwenMessagesSyncClient, AnthropicCompatibleSyncClient)
+    assert client._get_sync_transport() is transport
+    assert "endpoint" not in repr(client) and "api_key" not in repr(client)
     with pytest.raises(TypeError):
         QwenMessagesSyncClient()
     for method in (client.chat, client.stream):
@@ -242,7 +246,7 @@ def test_sync_client_dispatches_json_and_sse_through_shared_execution(monkeypatc
 
 
 @pytest.mark.unit
-def test_sync_stream_binds_transport_when_stream_is_prepared():
+def test_sync_stream_defers_source_creation_until_first_read():
     first_transport = RecordingTransport()
     second_transport = RecordingTransport()
     client = QwenMessagesSyncClient(first_transport)
@@ -254,9 +258,11 @@ def test_sync_stream_binds_transport_when_stream_is_prepared():
     )
 
     client.transport = second_transport
-    assert list(stream)
-    assert len(first_transport.sse_requests) == 1
+    assert first_transport.sse_requests == []
     assert second_transport.sse_requests == []
+    assert list(stream)
+    assert first_transport.sse_requests == []
+    assert len(second_transport.sse_requests) == 1
 
 
 @pytest.mark.unit
@@ -463,7 +469,7 @@ def test_sync_stream_preserves_primary_error_and_closes_source():
 
 
 @pytest.mark.unit
-def test_sync_stream_close_before_iteration_closes_eager_source():
+def test_sync_stream_close_before_iteration_does_not_create_source():
     class ClosableSource:
         def __iter__(self):
             return self
@@ -488,4 +494,5 @@ def test_sync_stream_close_before_iteration_closes_eager_source():
         timeout_s=None,
     )
     stream.close()
-    assert transport.source.closed
+    assert transport.sse_requests == []
+    assert not hasattr(transport, "source")

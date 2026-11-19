@@ -54,7 +54,6 @@ class _PreparedQwenOperation:
     payload: dict[str, Any] = field(repr=False)
     timeout_s: Optional[float]
     capture_reasoning: bool = False
-    stream_source: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -66,80 +65,6 @@ class _QwenPreparedStreamState:
     @property
     def blocks(self) -> Any:
         return self.common
-
-
-class _OwnedSyncIterator:
-    """Keep an eager source closable before the shared runner starts."""
-
-    def __init__(self, runner: Iterator[str], source: Any) -> None:
-        self._runner = runner
-        self._source = source
-        self._started = False
-        self._closed = False
-
-    def __iter__(self) -> _OwnedSyncIterator:
-        return self
-
-    def __next__(self) -> str:
-        if self._closed:
-            raise StopIteration
-        self._started = True
-        return next(self._runner)
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        if self._started:
-            close = getattr(self._runner, "close", None)
-            if close is not None:
-                close()
-            return
-        try:
-            close = getattr(self._source, "close", None)
-            if close is not None:
-                close()
-        finally:
-            close = getattr(self._runner, "close", None)
-            if close is not None:
-                close()
-
-
-class _OwnedAsyncIterator:
-    """Keep an eager async source closable before shared iteration starts."""
-
-    def __init__(self, runner: AsyncIterator[str], source: Any) -> None:
-        self._runner = runner
-        self._source = source
-        self._started = False
-        self._closed = False
-
-    def __aiter__(self) -> _OwnedAsyncIterator:
-        return self
-
-    async def __anext__(self) -> str:
-        if self._closed:
-            raise StopAsyncIteration
-        self._started = True
-        return await anext(self._runner)
-
-    async def aclose(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        if self._started:
-            close = getattr(self._runner, "aclose", None)
-            if close is not None:
-                await close()
-            return
-        try:
-            close = getattr(self._source, "aclose", None)
-            if close is not None:
-                await close()
-        finally:
-            close = getattr(self._runner, "aclose", None)
-            if close is not None:
-                await close()
 
 
 @dataclass(repr=False)
@@ -184,28 +109,6 @@ class QwenAdapter(AnthropicCompatibleAdapter):
     def _sync_transport(self, transport: SyncTransport) -> None:
         self._client.transport = transport
 
-    def _prepared_operation(
-        self,
-        request_context: Any,
-        payload: dict[str, Any],
-        *,
-        workspace_id: str,
-        timeout_s: Optional[float],
-        capture_reasoning: bool,
-        async_mode: bool = False,
-        stream_source: Any = None,
-    ) -> _PreparedQwenOperation:
-        return _PreparedQwenOperation(
-            chat_context=request_context,
-            client=self._async_client if async_mode else self._client,
-            api_key=self.api_key,
-            workspace_id=workspace_id,
-            payload=payload,
-            timeout_s=timeout_s,
-            capture_reasoning=capture_reasoning,
-            stream_source=stream_source,
-        )
-
     def chat(
         self,
         messages: list[Message] | Messages,
@@ -225,7 +128,7 @@ class QwenAdapter(AnthropicCompatibleAdapter):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Create one Qwen Messages response in an explicit Frankfurt workspace."""
-        workspace_id, request_context, payload = self._prepare_request_payload(
+        operation = self._prepare_operation(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -237,16 +140,10 @@ class QwenAdapter(AnthropicCompatibleAdapter):
             json_schema=json_schema,
             response_model=response_model,
             workspace_id=workspace_id,
-        )
-        _ = previous_response
-
-        operation = self._prepared_operation(
-            request_context,
-            payload,
-            workspace_id=workspace_id,
             timeout_s=timeout_s,
             capture_reasoning=capture_reasoning,
         )
+        _ = previous_response
         return self._run_prepared_chat(operation)
 
     async def achat(
@@ -268,7 +165,7 @@ class QwenAdapter(AnthropicCompatibleAdapter):
         capture_reasoning: bool = False,
     ) -> ChatResponse:
         """Create one Qwen Messages response without blocking the event loop."""
-        workspace_id, request_context, payload = self._prepare_request_payload(
+        operation = self._prepare_operation(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -280,17 +177,11 @@ class QwenAdapter(AnthropicCompatibleAdapter):
             json_schema=json_schema,
             response_model=response_model,
             workspace_id=workspace_id,
-        )
-        _ = previous_response
-
-        operation = self._prepared_operation(
-            request_context,
-            payload,
-            workspace_id=workspace_id,
             timeout_s=timeout_s,
             capture_reasoning=capture_reasoning,
             async_mode=True,
         )
+        _ = previous_response
         return await self._run_prepared_achat(operation)
 
     def stream_chat(
@@ -318,7 +209,7 @@ class QwenAdapter(AnthropicCompatibleAdapter):
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
         """Stream Qwen Messages text through the shared synchronous lifecycle."""
-        workspace_id, request_context, payload = self._prepare_request_payload(
+        operation = self._prepare_operation(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -330,23 +221,11 @@ class QwenAdapter(AnthropicCompatibleAdapter):
             json_schema=json_schema,
             response_model=response_model,
             workspace_id=workspace_id,
+            timeout_s=timeout_s,
+            capture_reasoning=capture_reasoning,
         )
         _ = previous_response
         state = self._new_messages_stream_state(buffer_chars, capture_reasoning)
-        events = self._client.stream(
-            api_key=self.api_key,
-            workspace_id=workspace_id,
-            payload=payload,
-            timeout_s=timeout_s,
-        )
-        operation = self._prepared_operation(
-            request_context,
-            payload,
-            workspace_id=workspace_id,
-            timeout_s=timeout_s,
-            capture_reasoning=capture_reasoning,
-            stream_source=events,
-        )
         runner = self._run_prepared_stream(
             operation,
             state=state,
@@ -357,7 +236,7 @@ class QwenAdapter(AnthropicCompatibleAdapter):
             on_chunk=on_chunk,
             on_reasoning=on_reasoning,
         )
-        return _OwnedSyncIterator(runner, events)
+        return runner
 
     def astream_chat(
         self,
@@ -384,49 +263,44 @@ class QwenAdapter(AnthropicCompatibleAdapter):
         on_reasoning: Optional[AsyncOnReasoning] = None,
     ) -> AsyncIterator[str]:
         """Stream Qwen Messages text through the shared async lifecycle."""
-        workspace_id, request_context, payload = self._prepare_request_payload(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_level=reasoning_level,
-            tools=tools,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            json_schema=json_schema,
-            response_model=response_model,
-            workspace_id=workspace_id,
-        )
-        _ = previous_response
-        state = self._new_messages_stream_state(buffer_chars, capture_reasoning)
-        events = self._async_client.stream(
-            api_key=self.api_key,
-            workspace_id=workspace_id,
-            payload=payload,
-            timeout_s=timeout_s,
-        )
-        operation = self._prepared_operation(
-            request_context,
-            payload,
-            workspace_id=workspace_id,
-            timeout_s=timeout_s,
-            capture_reasoning=capture_reasoning,
-            async_mode=True,
-            stream_source=events,
-        )
-        runner = self._run_prepared_astream(
-            operation,
-            state=state,
-            buffer_chars=buffer_chars,
-            on_delta=on_delta,
-            on_tool_call=on_tool_call,
-            on_done=on_done,
-            on_chunk=on_chunk,
-            on_reasoning=on_reasoning,
-        )
-        return _OwnedAsyncIterator(runner, events)
+        async def run() -> AsyncIterator[str]:
+            operation = self._prepare_operation(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                tools=tools,
+                tool_choice=tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
+                json_schema=json_schema,
+                response_model=response_model,
+                workspace_id=workspace_id,
+                timeout_s=timeout_s,
+                capture_reasoning=capture_reasoning,
+                async_mode=True,
+            )
+            state = self._new_messages_stream_state(
+                buffer_chars, capture_reasoning
+            )
+            _ = previous_response
+            runner = self._run_prepared_astream(
+                operation,
+                state=state,
+                buffer_chars=buffer_chars,
+                on_delta=on_delta,
+                on_tool_call=on_tool_call,
+                on_done=on_done,
+                on_chunk=on_chunk,
+                on_reasoning=on_reasoning,
+            )
+            async with self._closing_async_source(runner):
+                async for text in runner:
+                    yield text
 
-    def _prepare_request_payload(
+        return run()
+
+    def _prepare_operation(
         self,
         *,
         messages: list[Message] | Messages,
@@ -440,8 +314,11 @@ class QwenAdapter(AnthropicCompatibleAdapter):
         json_schema: Optional[dict],
         response_model: Optional[Any],
         workspace_id: str | None,
-    ) -> tuple[str, Any, dict[str, Any]]:
-        """Validate one shared request and serialize its Qwen Messages payload."""
+        timeout_s: Optional[float],
+        capture_reasoning: bool,
+        async_mode: bool = False,
+    ) -> _PreparedQwenOperation:
+        """Validate, serialize, and capture one request before execution."""
         validated_workspace_id = validate_workspace_id(workspace_id)
         self._reject_unsupported_features(parallel_tool_calls=parallel_tool_calls)
         request_context = self._prepare_chat_request(
@@ -480,7 +357,15 @@ class QwenAdapter(AnthropicCompatibleAdapter):
                     payload,
                     normalized_tool_choice=normalized_mode,
                 )
-        return validated_workspace_id, request_context, payload
+        return _PreparedQwenOperation(
+            chat_context=request_context,
+            client=self._async_client if async_mode else self._client,
+            api_key=self.api_key,
+            workspace_id=validated_workspace_id,
+            payload=payload,
+            timeout_s=timeout_s,
+            capture_reasoning=capture_reasoning,
+        )
 
     def _dispatch_prepared_chat(self, operation: _PreparedQwenOperation) -> Any:
         return operation.client.chat(
@@ -502,7 +387,12 @@ class QwenAdapter(AnthropicCompatibleAdapter):
         )
 
     def _dispatch_prepared_stream(self, operation: _PreparedQwenOperation) -> Any:
-        return operation.stream_source
+        return operation.client.stream(
+            api_key=operation.api_key,
+            workspace_id=operation.workspace_id,
+            payload=operation.payload,
+            timeout_s=operation.timeout_s,
+        )
 
     def _normalize_prepared_response(
         self,

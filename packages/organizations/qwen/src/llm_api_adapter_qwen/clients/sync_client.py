@@ -22,7 +22,7 @@ from llm_api_adapter.llms.transports import (
     TransportRequest,
 )
 from llm_api_adapter.llms.anthropic_compatible.sync_client import (
-    _SyncMessagesExecutionMixin,
+    AnthropicCompatibleSyncClient,
 )
 
 
@@ -52,67 +52,27 @@ def messages_url(workspace_id: object) -> str:
     )
 
 
-class _PreparedSSETransport:
-    """Return a stream source opened at the native method-call boundary."""
-
-    def __init__(self, events: Iterator[SSEEvent]) -> None:
-        self._events = events
-
-    def post_sse(
-        self,
-        request: TransportRequest,
-        *,
-        http_error_handler: Any = None,
-        stream_error_handler: Any = None,
-    ) -> Iterator[SSEEvent]:
-        _ = request, http_error_handler, stream_error_handler
-        return self._events
-
-
-class _PreparedStreamIterator:
-    """Keep eager Qwen stream sources closable before first iteration."""
-
-    def __init__(
-        self,
-        execution: Iterator[SSEEvent],
-        events: Iterator[SSEEvent],
-    ) -> None:
-        self._execution = execution
-        self._events = events
-        self._started = False
-
-    def __iter__(self) -> _PreparedStreamIterator:
-        return self
-
-    def __next__(self) -> SSEEvent:
-        self._started = True
-        return next(self._execution)
-
-    def close(self) -> None:
-        if self._started:
-            close = getattr(self._execution, "close", None)
-        else:
-            close = getattr(self._events, "close", None)
-        if close is not None:
-            close()
-
-
-class _QwenSyncExecutionBridge(_SyncMessagesExecutionMixin):
-    """Bind one Qwen operation to the neutral shared execution methods."""
-
-    def __init__(self, transport: SyncTransport, client_class: type) -> None:
-        self._sync_transport = transport
-        # Keep transport diagnostics and mapping bound to Qwen's existing
-        # classmethods, whose class binding is part of the native patch surface.
-        self._handle_http_error = client_class._handle_http_error
-        self._handle_stream_error = client_class._handle_stream_error
-
-
-class QwenMessagesSyncClient:
+class QwenMessagesSyncClient(AnthropicCompatibleSyncClient):
     """Submit Qwen Messages requests through one Core synchronous transport."""
 
     def __init__(self, transport: SyncTransport) -> None:
         self.transport = transport
+
+    def _get_sync_transport(self) -> SyncTransport:
+        return self.transport
+
+    def __repr__(self) -> str:
+        return object.__repr__(self)
+
+    def _headers(self, api_key: str) -> dict[str, str]:
+        return {"x-api-key": api_key, "Content-Type": "application/json"}
+
+    def _raise_execution_error(self, error: BaseException) -> None:
+        raise error
+
+    @staticmethod
+    def _format_diagnostic(value: object) -> str:
+        return str(value)
 
     def chat(
         self,
@@ -122,11 +82,10 @@ class QwenMessagesSyncClient:
         payload: dict[str, Any],
         timeout_s: float | None,
     ) -> dict[str, Any]:
-        bridge = _QwenSyncExecutionBridge(self.transport, type(self))
-        response: JSONResponse = bridge._execute_prepared_request(
+        response: JSONResponse = self._execute_prepared_request(
             TransportRequest(
                 url=messages_url(workspace_id),
-                headers={"x-api-key": api_key, "Content-Type": "application/json"},
+                headers=self._headers(api_key),
                 payload=payload,
                 timeout=timeout_s,
             )
@@ -151,23 +110,11 @@ class QwenMessagesSyncClient:
         stream_payload["stream"] = True
         request = TransportRequest(
             url=messages_url(workspace_id),
-            headers={"x-api-key": api_key, "Content-Type": "application/json"},
+            headers=self._headers(api_key),
             payload=stream_payload,
             timeout=timeout_s,
         )
-        # Qwen historically opens its transport source when stream() is called,
-        # before the returned iterator is consumed. Preserve that timing while
-        # handing all event iteration and cleanup to the shared execution mixin.
-        events = self.transport.post_sse(
-            request,
-            http_error_handler=type(self)._handle_http_error,
-            stream_error_handler=type(self)._handle_stream_error,
-        )
-        execution_bridge = _QwenSyncExecutionBridge(
-            _PreparedSSETransport(events), type(self)
-        )
-        execution = execution_bridge._execute_prepared_stream(request)
-        return _PreparedStreamIterator(execution, events)
+        return self._execute_prepared_stream(request)
 
     @classmethod
     def _handle_http_error(cls, http_error: Any) -> None:

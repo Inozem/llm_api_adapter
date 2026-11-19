@@ -1786,19 +1786,21 @@ async def test_qwen_async_operations_reject_workspace_before_transport(
             max_tokens=64,
             workspace_id=workspace_id,
         )
+    async_stream = adapter.astream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        workspace_id=workspace_id,
+    )
     with pytest.raises(ValueError, match="workspace_id"):
-        adapter.astream_chat(
-            [{"role": "user", "content": "Hello"}],
-            max_tokens=64,
-            workspace_id=workspace_id,
-        )
+        await anext(async_stream)
 
     assert requests == []
 
 
+@pytest.mark.asyncio
 @pytest.mark.unit
 @pytest.mark.parametrize("model", QWEN_MODELS)
-def test_qwen_stream_prepares_and_validates_before_returning_iterator(
+async def test_qwen_streams_prepare_at_compatible_times(
     qwen_runtime,
     model,
 ):
@@ -1816,12 +1818,13 @@ def test_qwen_stream_prepares_and_validates_before_returning_iterator(
             max_tokens=0,
             workspace_id="frankfurt-workspace",
         )
+    async_stream = adapter.astream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=0,
+        workspace_id="frankfurt-workspace",
+    )
     with pytest.raises(ValueError, match="max_tokens"):
-        adapter.astream_chat(
-            [{"role": "user", "content": "Hello"}],
-            max_tokens=0,
-            workspace_id="frankfurt-workspace",
-        )
+        await anext(async_stream)
     assert transport.sse_requests == []
 
 
@@ -2098,42 +2101,15 @@ async def test_qwen_inherits_and_invokes_all_shared_prepared_runners(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_qwen_eager_stream_sources_close_before_shared_iteration(qwen_runtime):
+async def test_qwen_streams_create_sources_on_first_read(qwen_runtime):
     from llm_api_adapter_qwen.adapter import QwenAdapter
 
-    class SyncSource:
-        def __init__(self):
-            self.closed = False
-
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            raise StopIteration
-
-        def close(self):
-            self.closed = True
-
-    class AsyncSource:
-        def __init__(self):
-            self.closed = False
-
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            raise StopAsyncIteration
-
-        async def aclose(self):
-            self.closed = True
-
     adapter = QwenAdapter("qwen-test-key", "qwen3.8-max")
-    sync_source = SyncSource()
     sync_calls = []
 
     def sync_stream(**kwargs):
         sync_calls.append(kwargs)
-        return sync_source
+        return iter(qwen_messages_sse_events())
 
     adapter._client.stream = sync_stream
     sync_result = adapter.stream_chat(
@@ -2141,18 +2117,20 @@ async def test_qwen_eager_stream_sources_close_before_shared_iteration(qwen_runt
         max_tokens=64,
         workspace_id="frankfurt-workspace",
     )
+    assert sync_calls == []
+    assert list(sync_result) == ["Hal", "lo"]
     assert len(sync_calls) == 1
-    sync_result.close()
-    assert sync_source.closed is True
-    with pytest.raises(StopIteration):
-        next(sync_result)
 
-    async_source = AsyncSource()
     async_calls = []
 
     def async_stream(**kwargs):
         async_calls.append(kwargs)
-        return async_source
+
+        async def events():
+            for event in qwen_messages_sse_events():
+                yield event
+
+        return events()
 
     adapter._async_client.stream = async_stream
     async_result = adapter.astream_chat(
@@ -2160,11 +2138,10 @@ async def test_qwen_eager_stream_sources_close_before_shared_iteration(qwen_runt
         max_tokens=64,
         workspace_id="frankfurt-workspace",
     )
+    assert async_calls == []
+    assert await anext(async_result) == "Hal"
     assert len(async_calls) == 1
-    await async_result.aclose()
-    assert async_source.closed is True
-    with pytest.raises(StopAsyncIteration):
-        await anext(async_result)
+    assert [text async for text in async_result] == ["lo"]
 
 
 @pytest.mark.asyncio
@@ -2186,13 +2163,14 @@ async def test_qwen_stream_validates_buffer_before_opening_native_sources(qwen_r
             buffer_chars=0,
             workspace_id="frankfurt-workspace",
         )
+    async_result = adapter.astream_chat(
+        messages,
+        max_tokens=64,
+        buffer_chars=0,
+        workspace_id="frankfurt-workspace",
+    )
     with pytest.raises(ValueError, match="buffer_chars"):
-        adapter.astream_chat(
-            messages,
-            max_tokens=64,
-            buffer_chars=0,
-            workspace_id="frankfurt-workspace",
-        )
+        await anext(async_result)
 
     assert sync_calls == []
     assert async_calls == []
@@ -2499,6 +2477,11 @@ async def test_qwen_overlapping_async_workspace_chats_and_streams_are_isolated(
 
     stream_a = make_stream("workspace-a")
     stream_b = make_stream("workspace-b")
+    assert stream_requests == []
+    first_a, first_b = await asyncio.wait_for(
+        asyncio.gather(stream_a.__anext__(), stream_b.__anext__()),
+        timeout=5,
+    )
     assert len(stream_requests) == 2
     assert {
         url: kwargs["payload"]["messages"][0]["content"]
@@ -2507,10 +2490,6 @@ async def test_qwen_overlapping_async_workspace_chats_and_streams_are_isolated(
         "https://workspace-a.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages": "Hello workspace-a",
         "https://workspace-b.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages": "Hello workspace-b",
     }
-    first_a, first_b = await asyncio.wait_for(
-        asyncio.gather(stream_a.__anext__(), stream_b.__anext__()),
-        timeout=5,
-    )
     second_a, second_b = await asyncio.wait_for(
         asyncio.gather(stream_a.__anext__(), stream_b.__anext__()),
         timeout=5,
@@ -2607,6 +2586,9 @@ def test_qwen_sync_workspace_streams_interleave_request_locally(qwen_runtime):
         on_done=done_b.append,
     )
 
+    assert transport.sse_requests == []
+    assert next(stream_a) == "workspace-a"
+    assert next(stream_b) == "workspace-b"
     assert len(transport.sse_requests) == 2
     assert {
         request.url: request.payload["messages"][0]["content"]
@@ -2615,8 +2597,6 @@ def test_qwen_sync_workspace_streams_interleave_request_locally(qwen_runtime):
         "https://workspace-a.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages": "Hello alpha",
         "https://workspace-b.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages": "Hello bravo",
     }
-    assert next(stream_a) == "workspace-a"
-    assert next(stream_b) == "workspace-b"
     assert next(stream_a) == "-end"
     assert next(stream_b) == "-end"
     with pytest.raises(StopIteration):
@@ -2785,11 +2765,11 @@ async def test_qwen_async_rejects_documents_before_io(
             workspace_id="frankfurt-workspace",
         )
     with pytest.raises(ValueError, match="DocumentPart; PDF and OCR are unavailable"):
-        adapter.astream_chat(
+        await anext(adapter.astream_chat(
             messages,
             max_tokens=8,
             workspace_id="frankfurt-workspace",
-        )
+        ))
     assert chat_requests == []
     assert stream_requests == []
 
@@ -2843,12 +2823,12 @@ async def test_qwen_async_rejects_supplied_parallel_control_before_io(
             workspace_id="frankfurt-workspace",
         )
     with pytest.raises(NotImplementedError, match="parallel tool-call"):
-        adapter.astream_chat(
+        await anext(adapter.astream_chat(
             message,
             max_tokens=8,
             parallel_tool_calls=parallel_tool_calls,
             workspace_id="frankfurt-workspace",
-        )
+        ))
 
     assert chat_requests == []
     assert stream_requests == []

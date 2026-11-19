@@ -103,7 +103,7 @@ The Messages foundation separates shared protocol handling from provider policy.
 transports. `adapters/anthropic_compatible/` owns common request execution, Messages assembly,
 response normalization and block reconstruction, reusing the shared adapter lifecycle.
 
-Native Claude and Qwen reuse the compatible adapter and common client layer. Native integrations
+Native Claude and Qwen inherit the compatible adapter and client foundations. Native integrations
 retain connection settings, model rules, reasoning, accounting and public compatibility. Qwen
 routing remains local to each request; generic connections inherit no native model facts.
 

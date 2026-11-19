@@ -18,6 +18,7 @@ for source in (PACKAGE_ROOT / "src", REPOSITORY_ROOT / "src", REPOSITORY_ROOT):
 from llm_api_adapter.errors.llm_api_error import LLMAPIAuthorizationError
 from llm_api_adapter.llms.transports import SSEEvent, TransportRequest
 from llm_api_adapter.llms.anthropic_compatible.async_client import (
+    AnthropicCompatibleAsyncClient,
     _AsyncMessagesExecutionMixin,
 )
 from llm_api_adapter_qwen.clients.sync_client import QwenMessagesSyncClient
@@ -37,6 +38,8 @@ async def test_async_client_zero_argument_construction_and_native_helper_forward
     monkeypatch,
 ):
     client = QwenMessagesAsyncClient()
+    assert issubclass(QwenMessagesAsyncClient, AnthropicCompatibleAsyncClient)
+    assert "endpoint" not in repr(client) and "api_key" not in repr(client)
     constructor = inspect.signature(QwenMessagesAsyncClient)
     assert not constructor.parameters
     with pytest.raises(TypeError):
@@ -231,7 +234,7 @@ async def test_async_client_uses_shared_prepared_execution_and_routes_overlappin
         payload={"model": "qwen3.8-max"},
         timeout_s=9,
     )
-    assert len(stream_calls) == 2  # Native helper source creation stays eager.
+    assert stream_calls == []
     first_response, second_response = await asyncio.gather(
         client.chat(
             api_key="first-key",
@@ -251,6 +254,7 @@ async def test_async_client_uses_shared_prepared_execution_and_routes_overlappin
     first_events, second_events = await asyncio.gather(
         _collect(first_stream), _collect(second_stream)
     )
+    assert len(stream_calls) == 2
 
     assert first_events[0].data["url"].startswith(
         "https://first-workspace.eu-central-1."
@@ -327,7 +331,7 @@ async def test_async_client_forwards_headers_through_native_header_hook(monkeypa
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_async_client_closes_eager_source_before_iteration(monkeypatch):
+async def test_async_client_close_before_iteration_does_not_create_source(monkeypatch):
     class Source:
         def __init__(self):
             self.closed = False
@@ -342,8 +346,11 @@ async def test_async_client_closes_eager_source_before_iteration(monkeypatch):
             self.closed = True
 
     source = Source()
+    calls = []
     monkeypatch.setattr(
-        async_client_module, "async_stream_request", lambda *_args, **_kwargs: source
+        async_client_module,
+        "async_stream_request",
+        lambda *_args, **_kwargs: calls.append(source) or source,
     )
     stream = QwenMessagesAsyncClient().stream(
         api_key="synthetic-key",
@@ -351,9 +358,10 @@ async def test_async_client_closes_eager_source_before_iteration(monkeypatch):
         payload={},
         timeout_s=None,
     )
-    assert not source.closed
+    assert calls == []
     await stream.aclose()
-    assert source.closed
+    assert calls == []
+    assert not source.closed
 
 
 @pytest.mark.asyncio
@@ -454,6 +462,7 @@ async def test_async_client_shared_stream_cleanup_on_early_close_and_cancellatio
         timeout_s=None,
     )
     task = asyncio.create_task(anext(cancelled))
+    await asyncio.sleep(0)
     await entered_events[1].wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
