@@ -369,9 +369,9 @@ cache resources and non-token charges are outside this connection addition.
 
 The generic Messages implementation has deterministic source-tree evidence
 for requests, transports, conversation forms, lifecycle, accounting and
-optional dependency boundaries. Complete generic source-readiness review
-and installed-candidate acceptance remain pending; the source tree and its
-current version do not establish a published feature-bearing artifact.
+optional dependency boundaries. The complete generic source-readiness review
+is accepted. Installed-candidate acceptance remains pending; the source tree
+and its current version do not establish a published feature-bearing artifact.
 
 Native Claude's adapter and both clients use the shared Messages foundation;
 its final migration review is still pending. The four existing native Qwen
