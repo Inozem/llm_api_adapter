@@ -152,6 +152,20 @@ class AnthropicCompatibleAdapter(_MessagesPreparedRunners, LLMAdapterBase):
     ) -> ChatResponse:
         return self._normalize_prepared_response(raw, capture_reasoning=capture_reasoning)
 
+    def _apply_response_pricing(self, chat_response: ChatResponse) -> None:
+        """Apply only covered caller tiers and preserve usage completeness."""
+        if not self.pricing or chat_response.usage is None:
+            return
+        input_tokens = chat_response.usage.input_tokens
+        if input_tokens is None:
+            return
+        try:
+            self.pricing.tier_for_prompt_tokens(input_tokens)
+        except ValueError:
+            # A finite caller schedule does not authorize extrapolation.
+            return
+        super()._apply_response_pricing(chat_response)
+
     def _record_prepared_usage(
         self, event: SSEEvent, state: _MessagesStreamState
     ) -> None:
@@ -230,6 +244,8 @@ class AnthropicCompatibleAdapter(_MessagesPreparedRunners, LLMAdapterBase):
         if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
             raise ValueError("max_tokens must be a positive integer")
         try:
+            if self.pricing is not None:
+                _validate_compatible_pricing(self.pricing)
             self._validate_sampling_scalar("temperature", temperature)
             self._validate_sampling_scalar("top_p", top_p)
             if parallel_tool_calls is not None and not isinstance(parallel_tool_calls, bool):

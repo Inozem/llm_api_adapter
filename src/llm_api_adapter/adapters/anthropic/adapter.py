@@ -46,6 +46,10 @@ class AnthropicAdapter(_AnthropicPayloadMixin, _AnthropicStreamingMixin, Anthrop
     def __repr__(self) -> str:
         return LLMAdapterBase.__repr__(self)
 
+    def _apply_response_pricing(self, chat_response: ChatResponse) -> None:
+        """Retain native registry pricing semantics over generic caller tariffs."""
+        LLMAdapterBase._apply_response_pricing(self, chat_response)
+
     def handle_error(self, error: Exception, error_message: Optional[str] = None):
         """Retain the native base adapter's error identity and diagnostics."""
         if error_message is None and not isinstance(error, LLMAPIError):

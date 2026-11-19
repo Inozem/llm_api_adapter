@@ -803,6 +803,22 @@ async def test_anthropic_fable_5_2_registered_pricing_applies_to_reported_usage(
 
 
 @pytest.mark.unit
+def test_native_anthropic_keeps_base_pricing_tier_selection():
+    """Generic caller-tier fallback must not alter native registry pricing."""
+    adapter = AnthropicAdapter(api_key="test_api_key", model="claude-fable-5-2")
+    adapter.pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": 100, "input_per_1m": 1, "output_per_1m": 2}],
+        currency="CAD",
+    )
+    response = ChatResponse(
+        usage=Usage(input_tokens=101, output_tokens=5, total_tokens=106)
+    )
+
+    with pytest.raises(ValueError, match="do not cover"):
+        adapter._apply_response_pricing(response)
+
+
+@pytest.mark.unit
 def test_pricing_overrides_apply_to_the_selected_tier():
     adapter = _adapter()
     adapter.pricing.set_in_per_1m(7.0)
