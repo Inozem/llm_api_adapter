@@ -339,8 +339,7 @@ async. See the [shared async example](ASYNC_API.md#compatible-endpoints).
 Both modes accept arbitrary nonempty model IDs without native profiles or
 default prices. Their guides cover tools/schema/files, full history,
 reasoning, completion, usage/cache and caller tariffs, subject to server
-support. The [current implementation/release status](ANTHROPIC_COMPATIBLE.md#implementation-and-release-status)
-keeps generic/native review, Qwen migration and candidate acceptance distinct.
+support.
 
 ## Streaming
 
