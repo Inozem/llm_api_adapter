@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from copy import deepcopy
 import math
 from numbers import Real
-from typing import Any, AsyncIterator, Iterator, List, Optional
+from typing import Any, AsyncIterator, Iterator, List, Mapping, Optional
 import warnings
 
 from ...errors.config_errors import LLMConfigError, LLMReasoningLevelError
@@ -16,9 +16,9 @@ from ...errors.llm_api_error import (
     LLMAPIError,
 )
 from ...llm_registry.reasoning import CANONICAL_REASONING_LEVELS
-from ...llms.transports import TransportRequest, validate_sync_transport
+from ...llms.transports import SSEEvent, TransportRequest, validate_sync_transport
 from ...models.messages.chat_message import Message, Messages
-from ...models.responses.chat_response import ChatResponse
+from ...models.responses.chat_response import ChatResponse, Usage
 from ...models.tools.tool_spec import ToolSpec
 from ..base_adapter import (
     AsyncOnChunk, AsyncOnDelta, AsyncOnDone, AsyncOnReasoning, AsyncOnToolCall,
@@ -31,8 +31,18 @@ from ..compatible_connection import (
 )
 from ...llms.anthropic_compatible.sync_client import AnthropicCompatibleSyncClient
 from ...llms.anthropic_compatible.async_client import AnthropicCompatibleAsyncClient
-from .execution import _MessagesPreparedRunners, _PreparedMessagesOperation
-from .payloads import build_generic_messages_payload
+from .execution import (
+    _MessagesPreparedRunners,
+    _MessagesStreamState,
+    _PreparedMessagesOperation,
+)
+from .payloads import build_generic_messages_payload, normalize_messages_response
+from .streaming import MessagesBlockState
+from .usage import (
+    normalize_messages_response_usage,
+    normalize_messages_usage,
+    merge_messages_usage_snapshots,
+)
 
 
 @dataclass(repr=False)
@@ -127,6 +137,54 @@ class AnthropicCompatibleAdapter(_MessagesPreparedRunners, LLMAdapterBase):
             payload=wire_payload,
             timeout=timeout_s,
         )
+
+    def _normalize_prepared_response(
+        self, raw: Any, *, capture_reasoning: bool
+    ) -> ChatResponse:
+        return normalize_messages_response(
+            raw,
+            capture_reasoning=capture_reasoning,
+            usage_normalizer=normalize_messages_response_usage,
+        )
+
+    def _normalize_prepared_stream_response(
+        self, raw: Any, *, capture_reasoning: bool
+    ) -> ChatResponse:
+        return self._normalize_prepared_response(raw, capture_reasoning=capture_reasoning)
+
+    def _record_prepared_usage(
+        self, event: SSEEvent, state: _MessagesStreamState
+    ) -> None:
+        """Attach the current reported-only usage snapshot to subsequent chunks."""
+        if not state.blocks.usage_snapshots:
+            return
+        event_type = event.event
+        if event_type is None and isinstance(event.data, Mapping):
+            event_type = event.data.get("type")
+        if event_type not in {"message_start", "message_delta"}:
+            return
+        usage = normalize_messages_usage(
+            merge_messages_usage_snapshots(state.blocks.usage_snapshots)
+        )
+        if usage is None:
+            # A reported null/malformed final update must clear pending chunk
+            # metadata; StreamUsageTracker intentionally ignores None for its
+            # native callers, so this generic policy writes an explicit unknown.
+            state.common.chunk_buffer.update_metadata(
+                usage=Usage(None, None, None, None, None)
+            )
+            return
+        state.common.usage_tracker.record(state.common.chunk_buffer, usage)
+
+    def _finalize_messages_blocks(
+        self, state: MessagesBlockState
+    ) -> dict[str, Any]:
+        response = super()._finalize_messages_blocks(state)
+        if state.usage_snapshots:
+            response["usage"] = merge_messages_usage_snapshots(
+                state.usage_snapshots
+            )
+        return response
 
     def _validate_generic_reasoning(self, reasoning_level: Optional[str | int]) -> None:
         if reasoning_level is None:
