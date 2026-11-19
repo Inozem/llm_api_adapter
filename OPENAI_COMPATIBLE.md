@@ -1,11 +1,11 @@
 # OpenAI-compatible mode
 
-[← Back to the main README](README.md)
+[Back to the main README](README.md)
 
-Install `llm-api-adapter` for synchronous requests, `[httpx]` for explicit
-sync HTTPX or `[async]` for asynchronous calls. This guide covers the
-caller-selected connection and pricing contract; native organization setup
-remains in the [main README](README.md#installation).
+Install `llm-api-adapter` for synchronous Requests calls. Add `[httpx]` for
+sync HTTPX transport or `[async]` for asynchronous calls. This guide covers
+the connection-specific choices; see the [main README](README.md#installation)
+for native organization setup.
 
 ## Contents
 
@@ -18,10 +18,9 @@ remains in the [main README](README.md#installation).
 
 ## Quick start
 
-Use `organization="openai_compatible"` with an already available server's
-API root, exact model ID and explicit `api_key`. Omitted or `None`
-`api_variant` selects `"chat_completions"`; pass `"responses"` to select
-Responses. Explicit `"chat_completions"` is equivalent to the default.
+Provide the server's API root, exact model ID and nonempty API key. Omitted
+or `None` `api_variant` selects Chat Completions; explicit
+`"chat_completions"` is equivalent. Use `"responses"` to select Responses.
 
 ```python
 import os
@@ -34,218 +33,128 @@ connection = dict(
     api_key=os.environ["COMPATIBLE_API_KEY"],
     base_url=os.environ["COMPATIBLE_BASE_URL"],
 )
-adapter = UniversalLLMAPIAdapter(**connection)  # Chat Completions
+adapter = UniversalLLMAPIAdapter(**connection)  # Chat Completions by default
 response = adapter.chat(
-    messages=[{"role": "user", "content": "Explain SSE briefly."}],
-    max_tokens=256,
+    messages=[{"role": "user", "content": "Hello"}], max_tokens=256,
 )
 print(response.content)
 
 responses = UniversalLLMAPIAdapter(**connection, api_variant="responses")
-for text in responses.stream_chat(
-    messages=[{"role": "user", "content": "Explain SSE briefly."}],
-    max_tokens=256,
-    on_done=lambda result: print(result.usage),
-):
-    print(text, end="", flush=True)
 ```
 
-These calls contact the configured server. Set the environment variables for
-your deployment; the SDK sends the supplied key as a Bearer credential. A
-local server without authentication can accept a non-secret placeholder, but
-`api_key` must still be a nonempty string. Keep real keys out of URLs and code.
+The key is sent as a Bearer credential. A local unauthenticated server can
+use a non-secret placeholder, but the key must still be a nonempty string.
+Keep real keys out of URLs and source code.
 
 ## Connection and protocol selection
 
 `base_url` must be an absolute HTTP(S) root with a host and valid optional
-port. Include any required proxy prefix and `/v1` yourself; the SDK preserves
-the prefix and removes trailing slashes. It does not add a version segment.
+port. Include any proxy prefix and `/v1` required by the server; trailing
+slashes are removed and no version segment is added. For example,
+`http://localhost:8000/v1/` targets `/v1/chat/completions` by default and
+`/v1/responses` with `api_variant="responses"`.
 
-| `base_url` | Effective API | Request destination |
-| --- | --- | --- |
-| `http://localhost:8000/v1/` | Default / `chat_completions` | `http://localhost:8000/v1/chat/completions` |
-| `http://localhost:8000/v1/` | `responses` | `http://localhost:8000/v1/responses` |
-| `https://example.invalid/gateway/api` | `responses` | `https://example.invalid/gateway/api/responses` |
+Roots containing user information, a query or fragment, and full resource
+URLs ending in `/chat/completions` or `/responses` are rejected. The model ID
+is sent unchanged and need not be registered. Omit `service_provider` or set
+it to `"openai_compatible"`; another value conflicts with this mode. Invalid
+configuration raises `LLMConfigError` before discovery or network I/O.
 
-User information (`user:password@host`), query strings, fragments, and full
-resource URLs ending in `/chat/completions` or `/responses` are rejected.
-Unknown, blank, case-varied or non-string selectors are invalid. These
-configuration errors raise `LLMConfigError` before discovery or I/O. Omit
-`service_provider` or set it to `"openai_compatible"`; another provider
-conflicts with this mode. Native organizations, including `"openai"`, reject
-non-`None` `base_url` and `api_variant`; omitting both retains their existing
-routing. The separate [Anthropic-compatible Messages mode](ANTHROPIC_COMPATIBLE.md#connection-selection)
-also requires an explicit `base_url`, but rejects non-`None` `api_variant`.
-
-Any nonempty model ID is sent unchanged. A name matching a registered OpenAI
-model still receives no native profile, alias resolution, capability flags,
-limits, request rules or tariff. The model name never selects an API. There
-is no discovery request, API probe, automatic retry on another dialect, or
-fallback to another endpoint, model or official API after a failure.
+Native organizations reject non-`None` `base_url` and `api_variant`; omitting
+them preserves native routing. Any model name, including one matching a
+registered OpenAI model, gets no native aliases, limits, request rules,
+reasoning defaults or tariff here. The model never selects the API. The SDK
+does not probe, retry another dialect, or fall back to another endpoint,
+model or official service.
 
 ## Common operations and wire forms
 
-Both APIs support `chat()`, `achat()`, `stream_chat()` and `astream_chat()`
-with the existing typed/dictionary messages, tool definitions, portable
-schemas, responses and error hierarchy. Sync calls default to `requests`;
-`transport="httpx"` requires `[httpx]`. Async calls always use HTTPX and
-require `[async]`; see the [compatible async example](ASYNC_API.md#compatible-endpoints).
+Both APIs support `chat()`, `achat()`, `stream_chat()` and `astream_chat()`.
+They accept the shared [message, tool and structured-output forms](README.md#tool--function-calling)
+and response concepts. Sync calls use Requests by default; pass
+`transport="httpx"` to use the optional `[httpx]` dependency. Async calls
+always use HTTPX and require `[async]`; see the [compatible async examples](ASYNC_API.md#compatible-endpoints).
 
 | Public concept | Chat Completions | Responses |
 | --- | --- | --- |
 | History | `messages` | `input` items and system `instructions` |
-| `max_tokens` | `max_completion_tokens` only | `max_output_tokens` only |
-| `ToolSpec` | Nested `tools[].function` | Function fields directly on `tools[]` |
-| Named `tool_choice` / `"any"` | Nested function choice / `"required"` | Flat function choice / `"required"` |
+| `max_tokens` | `max_completion_tokens` | `max_output_tokens` |
+| Tools and choice | Nested function fields; `"any"` maps to `"required"` | Flat function fields; `"any"` maps to `"required"` |
 | Tool history | Assistant `tool_calls` and tool messages | `function_call` / `function_call_output` with matching `call_id` |
-| Portable structured output | `response_format` | `text.format` |
-| Streaming | Chat chunks with `stream_options={"include_usage": true}` | Typed Responses events; no Chat `stream_options` |
+| Structured output | `response_format` | `text.format` |
+| Stream usage | `stream_options={"include_usage": true}` | Responses events; no Chat `stream_options` |
 
-The output limit includes visible and reasoning tokens. Numeric sampling
-defaults `temperature=1.0` and `top_p=1.0` are omitted; explicit nondefaults
-are sent after common validation. Servers requiring the deprecated Chat
-`max_tokens` wire field are outside this dialect. A server may reject a
-supported common option; its error does not trigger a different request form.
+Sampling defaults to `temperature=1.0` and `top_p=1.0`; defaults are omitted.
+Explicit non-defaults are validated and forwarded. Both output-limit fields
+include visible and reasoning tokens. A server may not support every common
+form; its error does not trigger a different request. Chat servers that
+require the legacy wire field `max_tokens` are outside this dialect.
 
-Use the same [tools and tool choices](README.md#tool--function-calling) and
-[portable schemas or response models](README.md#structured-output) as in native mode.
-The SDK validates common inputs, parses completed tool arguments as objects,
-and validates response-model results against the original model. It does not
-execute application functions. Refusal and incomplete results retain their
-terminal fields and leave parsed fields unavailable. Malformed completed
-structured output raises `JSONSchemaError`; malformed returned tool arguments
-raise `InvalidToolArgumentsError`.
+The SDK validates common inputs and returned structured output, parses tool
+arguments, and does not execute application tools. See the shared
+[structured-output guide](README.md#structured-output) for the common API.
 
 ## Stateless history and server-dependent support
 
-Compatible Responses sends `store=false` and the complete caller-supplied
-history. Append assistant calls and matching `ToolMessage` results yourself.
-`previous_response` is accepted but does not send `previous_response_id`,
-`conversation` or opaque reasoning replay, and does not filter history as
-native OpenAI continuation does. It provides no server-side history feature.
+Responses requests set `store=false` and send the complete caller-supplied
+history. Append assistant calls and matching tool results yourself.
+`previous_response` is accepted but ignored: no `previous_response_id`,
+conversation state or opaque replay is sent, and history is not filtered.
 
-An explicit `reasoning_level` is omitted with the existing unverified-model
-warning. `capture_reasoning=True` exposes only supported reasoning actually
-returned by the server, separately from visible text; it does not request a
-native summary or inject an effort default. No reasoning or usage is inferred.
+An explicit `reasoning_level` is omitted with the unverified-model warning.
+`capture_reasoning=True` exposes only reasoning returned by the server; it
+does not request a summary or add an effort default. Common image/PDF forms
+and local rejection rules apply, but server support depends on the selected
+API. Hosted tools, uploads, background responses, WebSockets and vendor
+extensions are server-dependent and outside this connection contract.
 
-Common image/PDF serializers and local rejection rules still apply, while
-acceptance depends on the server and selected API. Hosted tools, upload/file
-services, background responses, WebSockets and vendor-specific replay or
-reasoning dialects are outside this mode. Successful connectivity does not
-establish verified model capabilities or prices, or certify another server.
-
-Streams yield visible text only. A valid terminal outcome is required before
-successful final flush and `on_done`; EOF or `[DONE]` alone is insufficient.
-Protocol failure, cancellation and early close preserve the common cleanup
-contract and do not report successful completion. Usage remains reported-data
-only, and costs default to unavailable; see [compatible usage and caller tariffs](#compatible-usage-and-caller-tariffs).
+Streams yield visible text only. Successful completion requires a valid
+terminal outcome; EOF or `[DONE]` alone is insufficient. Failure, cancellation
+or early close does not report successful completion. Follow the shared
+[stream lifecycle and early-close guidance](README.md#streaming) when consuming
+streams. Usage and cost remain based on reported data; see [caller tariffs](#compatible-usage-and-caller-tariffs).
 
 ## Compatible usage and caller tariffs
 
-Compatible mode has no registered model limits or standard prices. Without
-an explicit caller tariff, `cost_input`, `cost_output`, `cost_total`,
-`currency` and `cost_breakdown` remain `None`, even if usage is reported.
-Both APIs keep only independently reported valid counters: Chat reads
-`prompt_tokens` / `completion_tokens`, and Responses reads `input_tokens` /
-`output_tokens`. Missing, null or malformed usage is unavailable; a present
-empty object yields a `Usage` whose counts are `None`. Invalid counters stay
-`None`, reported zeros stay `0`, and no missing count or total is derived.
+No caller tariff means calculated costs and currency are unavailable, even
+when usage is reported. Chat reads `prompt_tokens` / `completion_tokens`;
+Responses reads `input_tokens` / `output_tokens`. Each valid reported counter
+is kept independently: missing counts remain `None`, reported zero stays `0`,
+and no missing counter or total is fabricated.
 
-Initialize the existing pricing object before using its setters. This example
-assigns illustrative local rates, in currency units per million tokens:
+Assign an existing `Pricing` object to `adapter.adapter.pricing`. This compact
+example uses illustrative local rates, not provider prices; dictionary rates
+are per million tokens, including cache rates:
 
 ```python
 from llm_api_adapter.llm_registry.llm_registry import Pricing
 
-rates = {
-    "currency": "USD",
-    "pricing_tiers": [
-        {
-            "up_to_prompt_tokens": 1000,
-            "input_per_1m": 1.5,
-            "output_per_1m": 3.0,
-            "cache_read_input_per_1m": 0.2,
-            "cache_write_input_per_1m": 2.0,
-        },
-        {
-            "up_to_prompt_tokens": None,
-            "input_per_1m": 2.0,
-            "output_per_1m": 4.0,
-            "cache_read_input_per_1m": 0.3,
-            "cache_write_input_per_1m": 2.5,
-        },
-    ],
-}
 adapter.adapter.pricing = Pricing.from_dict(
-    rates["pricing_tiers"], currency=rates["currency"],
-)
-adapter.pricing.set_out_per_1m(3.5)  # Changes this rate in every tier.
-adapter.pricing.set_currency("EUR")  # Changes the label, not the amounts.
-```
-
-The same dictionary can be stored as JSON using the existing registry-style
-`currency` and `pricing_tiers` fields. Loading it is application code, with
-no model registration or automatic price discovery:
-
-```python
-import json
-from pathlib import Path
-
-rates = json.loads(Path("caller-pricing.json").read_text(encoding="utf-8"))
-adapter.adapter.pricing = Pricing.from_dict(
-    rates["pricing_tiers"], currency=rates["currency"],
-)
-```
-
-For parameter-based construction, `PricingTier` fields are **per token**,
-unlike the per-million dictionary fields and `.set_*_per_1m` setters:
-
-```python
-from llm_api_adapter.llm_registry.llm_registry import Pricing, PricingTier
-
-tariff = Pricing(
-    tiers=(PricingTier(
-        up_to_prompt_tokens=None,
-        in_per_token=0.0,
-        out_per_token=3.0 / 1_000_000,
-    ),),
+    [{
+        "up_to_prompt_tokens": None,
+        "input_per_1m": 1.5,
+        "output_per_1m": 3.0,
+        "cache_read_input_per_1m": 0.2,
+        "cache_write_input_per_1m": 2.0,
+    }],
     currency="USD",
 )
-adapter.adapter.pricing = tariff
+response = adapter.chat(messages=[{"role": "user", "content": "Hello"}])
+print(response.cost_total)
 ```
 
-Finite zero rates are valid through direct tiers or the existing rate
-setters. `Pricing.from_dict` retains its existing positive ordinary-rate
-validation; its cache rates may be zero. Supply finite, nonnegative rates
-and a nonempty currency. Tier boundaries are increasing positive integers;
-only the last boundary may be `None`. A finite final boundary is allowed,
-and usage beyond it leaves costs and currency unavailable.
+The same `currency` and `pricing_tiers` fields can be stored as JSON and
+loaded by application code. `PricingTier` constructor rates are per token;
+dictionary fields and `.set_*_per_1m` setters use per-million rates. See
+[token usage and pricing](README.md#token-usage-and-pricing)
+for shared pricing behavior and types.
 
-Assignment to `adapter.adapter.pricing` retains the supplied object by
-reference; sharing it across adapters shares subsequent setter changes.
-It adds no assignment-time validation hook, so construct a valid tariff first.
-Reading `adapter.pricing` delegates to that object, while assigning the whole
-object to the facade's own `adapter.pricing` attribute is not forwarded.
-Direct `OpenAICompatibleAdapter(..., pricing=tariff)` construction validates
-and defensively copies the tariff before I/O; later mutations of the original
-do not affect that instance. The facade adds no pricing constructor argument
-or setter. Existing native pricing and provider-specific billing rules remain.
-
-Both APIs calculate costs automatically for `chat()`, `achat()`,
-`stream_chat()` and `astream_chat()` using the same calculator and supplied
-currency. Reported total input, including cache subsets, selects one inclusive
-tier for the whole request. Missing input prevents tier selection. Missing
-output can leave input cost known but prevents a complete total; a missing
-`total_tokens` alone does not prevent pricing known components.
-
-Compatible cache counts come only from the selected API's reported details
-(`prompt_tokens_details` or `input_tokens_details`). Cache reads and writes
-are disjoint subsets of full input. A supplied cache rate needs a known valid
-count; a positive reported cache component needs its own rate. Missing or
-contradictory required splits leave input/total cost unknown, even if invalid
-counts were discarded during normalization. A confirmed zero requires no
-charge, and output cost can remain available independently. These are local
-caller estimates, never verified provider prices or invoices. Non-token
-charges are outside this compatible addition.
-
+Cache reads and writes (`cached_tokens` and `cache_write_tokens`) are subsets
+of inclusive total input, not added to it. They come only from
+`prompt_tokens_details` in Chat usage or `input_tokens_details` in Responses
+usage. The inclusive input count selects one tier for the whole request. If a
+finite final tier does not cover it, costs and currency stay unavailable;
+output cost also requires a covered input tier. A missing or contradictory
+required usage detail or rate leaves the affected cost unknown. A total
+requires all incurred token costs to be known. These are caller estimates,
+not provider invoices.
