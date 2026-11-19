@@ -1034,3 +1034,107 @@ def test_native_public_stream_keeps_first_text_policy_and_eof_tolerance():
     ))
     assert "".join(output) == "firstsecond"
     assert done[0].content == "first"
+
+
+@pytest.mark.parametrize("late_kind", ["text", "tool"])
+@pytest.mark.parametrize("transport", ["requests", "httpx", "async"])
+def test_public_generic_stream_rejects_delta_after_closed_block(
+    monkeypatch, late_kind, transport
+):
+    from src.llm_api_adapter.models.messages.chat_message import UserMessage
+
+    blocks = [{"type": "text", "text": "abcdef"}]
+    if late_kind == "tool":
+        blocks.append({
+            "type": "tool_use", "id": "tool-1", "name": "lookup", "input": {"n": 1},
+        })
+    events = messages_event_trace(blocks=blocks)
+    late_index = 0 if late_kind == "text" else 1
+    late_delta = (
+        {"type": "text_delta", "text": "late"}
+        if late_kind == "text"
+        else {"type": "input_json_delta", "partial_json": "not-json"}
+    )
+    stop_position = next(
+        index for index, event in enumerate(events)
+        if event.event == "content_block_stop" and event.data["index"] == late_index
+    )
+    events.insert(stop_position + 1, SSEEvent(
+        "content_block_delta", {"index": late_index, "delta": late_delta},
+    ))
+    body = "\n".join(events_to_sse_lines(events)) + "\n"
+    observations = _install_http_stream(monkeypatch, transport, body)
+    adapter = _adapter_for_transport(transport)
+    if transport == "async":
+        adapter._create_sync_client = lambda: pytest.fail("async path used a sync client")
+    order, output, error = [], [], None
+    kwargs = dict(
+        max_tokens=12, buffer_chars=4, tools=_tool_specs(),
+        on_chunk=lambda value: order.append(("chunk", value)),
+        on_tool_call=lambda value: order.append(("tool", value)),
+        on_done=lambda value: order.append(("done", value)),
+    )
+    if transport == "async":
+        async def run():
+            nonlocal error
+            try:
+                async for chunk in adapter.astream_chat(
+                    [UserMessage(content="prompt")], **kwargs
+                ):
+                    output.append(chunk)
+            except BaseException as exc:
+                error = exc
+        asyncio.run(run())
+    else:
+        try:
+            output.extend(adapter.stream_chat(
+                [UserMessage(content="prompt")], **kwargs
+            ))
+        except BaseException as exc:
+            error = exc
+
+    assert isinstance(error, LLMAPIClientError)
+    assert "".join(output) == "abcd"
+    assert [tag for tag, _ in order] == ["chunk"]
+    assert order[0][1].text == "abcd"
+    _assert_one_request(observations, transport)
+    assert observations["closed"] == (
+        ["response"] if transport == "requests" else ["response", "client"]
+    )
+
+
+def test_native_public_stream_retains_closed_tool_delta_tolerance():
+    from src.llm_api_adapter.adapters.anthropic.adapter import AnthropicAdapter
+    from src.llm_api_adapter.models.messages.chat_message import UserMessage
+
+    trace = messages_event_trace(blocks=[
+        {"type": "text", "text": "abcdef"},
+        {"type": "tool_use", "id": "tool-1", "name": "lookup", "input": {"n": 1}},
+    ])
+    stop_position = next(
+        index for index, event in enumerate(trace)
+        if event.event == "content_block_stop" and event.data["index"] == 1
+    )
+    trace.insert(stop_position + 1, SSEEvent(
+        "content_block_delta", {
+            "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": "not-json"},
+        },
+    ))
+
+    class Client:
+        def stream(self, **_kwargs):
+            return iter(trace)
+
+    native = AnthropicAdapter(api_key="synthetic-test-key", model="claude-sonnet-4-5")
+    native._create_sync_client = lambda: Client()
+    order, output = [], []
+    output.extend(native.stream_chat(
+        [UserMessage(content="prompt")], max_tokens=12,
+        tools=_tool_specs(),
+        on_tool_call=lambda value: order.append(("tool", value)),
+        on_done=lambda value: order.append(("done", value)),
+    ))
+    assert "".join(output) == "abcdef"
+    assert [tag for tag, _ in order] == ["tool", "done"]
+    assert order[0][1].arguments == {"n": 1}

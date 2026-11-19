@@ -91,6 +91,11 @@ def _check_index(
         if index_policy is not None and not index_policy(index, kind, state):
             return False
         raise _protocol_error("Messages content block index has no matching start")
+    if index not in state.open_indexes:
+        if index_policy is None:
+            raise _protocol_error("Messages content block is closed")
+        if not index_policy(index, kind, state):
+            return False
     return True
 
 
