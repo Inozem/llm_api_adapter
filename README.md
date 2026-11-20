@@ -260,10 +260,11 @@ These introductory rates apply through November 30, 2026; Google announces
 USD 4 / 20 / 0.20 from December 1 in its [pricing documentation](https://aistudio.google.com/docs/pricing#gemini-4-carbon).
 Registry tariffs record prices as of the manifest's `effective_date`.
 
-`gpt-6-astra` and `gpt-6.1-sol` use the OpenAI Responses API and do not support
-`temperature` or `top_p`; the adapter omits both according to the same warning
-policy. Neither model can disable reasoning: `reasoning_level="none"` resolves
-to its lowest supported effort, `low`, with a `UserWarning`.
+`gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6-astra`, and `gpt-6.1-sol` use the
+OpenAI Responses API and do not support `temperature` or `top_p`; the adapter
+omits both according to the same warning policy. These models cannot disable
+reasoning: `reasoning_level="none"` resolves to their lowest supported effort,
+`low`, with a `UserWarning`.
 
 `gpt-6-sol` and `gpt-6-luna` use the Responses API and support
 `reasoning_level="none"`. With any higher reasoning effort, OpenAI does not
@@ -478,7 +479,7 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai. Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai require their corresponding optional extras.
 
-- **OpenAI**: You can use models like `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o`, `gpt-4o-mini`.
+- **OpenAI**: You can use models like `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o`, `gpt-4o-mini`.
 - **Anthropic**: Available models include `claude-fable-5-2`, `claude-haiku-5-5`, `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
 - **Google**: Models such as `gemini-4-carbon`, `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, and `gemini-3-flash-preview` can be used. Gemini 2.5 profiles are no longer bundled; update existing configurations to a supported model such as `gemini-3.8-flash`.
 - **Mistral**: Install with `pip install "llm-api-adapter[mistral]"`. Native model IDs are `mistral-large-4`, `mistral-small-2603`, `mistral-medium-3-5`, and `mistral-large-2512`. Hosted `glm-5.3-flash` (`organization="zai"`) and `deepseek-flash` (`organization="deepseek"`) use `service_provider="mistral"` and the Mistral package and key. Their direct-provider packages are optional for these routes. See the [Mistral package README](packages/organizations/mistral/README.md) for examples, fixed wire IDs, and provider-specific limits and prices.
@@ -1270,7 +1271,7 @@ counts must be nonnegative integers with a sum no greater than total input.
 
 | Built-in organization | Automatic cache usage and registered pricing |
 | --- | --- |
-| OpenAI | Responses reads `input_tokens_details.cached_tokens` and `cache_write_tokens`; Chat Completions reads the same fields from `prompt_tokens_details`. All registered models have a cache-read rate. `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` also have a separately priced automatic cache-write component. |
+| OpenAI | Responses reads `input_tokens_details.cached_tokens` and `cache_write_tokens`; Chat Completions reads the same fields from `prompt_tokens_details`. All registered models have a cache-read rate. A model's separately priced automatic cache writes use the rate declared in its registry pricing tiers. |
 | Google | Confirmed automatic cache reads appear in `cached_tokens` as a subset of inclusive input and are priced once. Automatic reads have registered rates except for `gemini-3-flash-preview`, whose cache-read rate is unverified. There is no separately priced automatic cache-write component. |
 | Anthropic | The adapter does not enable opt-in prompt caching, and the registry has no automatic cache-read or cache-write rates. Ordinary input/output pricing applies to its supported requests. |
 
