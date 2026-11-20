@@ -27,20 +27,6 @@ on:
       - ".github/workflows/ci-zai-main.yml"
   pull_request:
     branches: ["main"]
-    paths-ignore:
-      - "packages/**"
-      - ".github/workflows/ci-mistral-dev.yml"
-      - ".github/workflows/ci-mistral-main.yml"
-      - ".github/workflows/ci-xai-dev.yml"
-      - ".github/workflows/ci-xai-main.yml"
-      - ".github/workflows/ci-kimi-dev.yml"
-      - ".github/workflows/ci-kimi-main.yml"
-      - ".github/workflows/ci-qwen-dev.yml"
-      - ".github/workflows/ci-qwen-main.yml"
-      - ".github/workflows/ci-deepseek-dev.yml"
-      - ".github/workflows/ci-deepseek-main.yml"
-      - ".github/workflows/ci-zai-dev.yml"
-      - ".github/workflows/ci-zai-main.yml"
 
 permissions:
   contents: read

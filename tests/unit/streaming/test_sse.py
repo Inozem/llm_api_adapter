@@ -13,6 +13,7 @@ from src.llm_api_adapter.llms.streaming import (
     iter_sse_events,
     stream_request,
 )
+from src.llm_api_adapter.llms.transports import _cleanup_preserving_primary
 
 
 class FakeResponse:
@@ -100,6 +101,27 @@ def test_iter_sse_events_maps_malformed_json_and_closes_response():
         list(iter_sse_events(response))
 
     assert response.closed is True
+
+
+@pytest.mark.unit
+def test_malformed_sse_error_survives_response_close_failure():
+    response = FakeResponse([b"data: not-json", b""])
+    response.close = lambda: (_ for _ in ()).throw(RuntimeError("cleanup"))
+
+    with pytest.raises(LLMAPIClientError, match="Malformed SSE JSON data"):
+        list(iter_sse_events(response))
+
+
+@pytest.mark.unit
+def test_cleanup_only_failure_inside_caller_except_block_is_not_suppressed():
+    try:
+        raise ValueError("caller failure")
+    except ValueError:
+        with pytest.raises(RuntimeError, match="cleanup-only"):
+            with _cleanup_preserving_primary(
+                lambda: (_ for _ in ()).throw(RuntimeError("cleanup-only"))
+            ):
+                pass
 
 
 @pytest.mark.unit

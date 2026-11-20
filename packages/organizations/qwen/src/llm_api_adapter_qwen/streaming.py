@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import json
 from typing import Any, Mapping, Optional
 
+from llm_api_adapter.adapters.anthropic_compatible.streaming import (
+    MessagesBlockState,
+    consume_messages_event,
+    finalize_messages_stream,
+)
+from llm_api_adapter.adapters.anthropic_compatible.usage import (
+    merge_messages_usage_snapshots,
+)
 from llm_api_adapter.adapters.base_adapter import _StreamState
 from llm_api_adapter.errors.llm_api_error import (
     InvalidToolArgumentsError,
@@ -19,6 +26,8 @@ from llm_api_adapter.llms.streaming import (
 from llm_api_adapter.llms.transports import SSEEvent
 from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 
+from .usage import normalize_qwen_accounted_usage
+
 
 @dataclass
 class QwenMessagesStreamState(_StreamState):
@@ -29,6 +38,21 @@ class QwenMessagesStreamState(_StreamState):
     input_json_fragments: dict[int, list[str]] = field(default_factory=dict)
     usage: dict[str, Any] = field(default_factory=dict)
     message_delta: dict[str, Any] = field(default_factory=dict)
+    policy_accounting: bool = False
+    pdf_requested: bool = False
+    _messages_state: MessagesBlockState = field(
+        default_factory=MessagesBlockState,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        self._messages_state.message = self.message_data
+        self._messages_state.blocks = self.content_blocks
+        self._messages_state.argument_fragments = self.input_json_fragments
+        self._messages_state.usage = self.usage
+        self._messages_state.message_delta = self.message_delta
 
 
 class QwenMessagesStreamParser:
@@ -39,6 +63,7 @@ class QwenMessagesStreamParser:
         *,
         buffer_chars: Optional[int],
         capture_reasoning: bool,
+        policy_accounting: bool = False,
     ) -> QwenMessagesStreamState:
         """Create fresh shared lifecycle state for one Qwen stream."""
         return QwenMessagesStreamState(
@@ -49,6 +74,7 @@ class QwenMessagesStreamParser:
                 StreamReasoningCollector() if capture_reasoning else None
             ),
             reasoning_response=ChatResponse() if capture_reasoning else None,
+            policy_accounting=policy_accounting,
         )
 
     @classmethod
@@ -58,30 +84,72 @@ class QwenMessagesStreamParser:
         state: QwenMessagesStreamState,
     ) -> tuple[Optional[str], Optional[str]]:
         """Record one event and return visible and thinking deltas separately."""
-        payload = event.data if isinstance(event.data, Mapping) else {}
-        event_type = event.event or payload.get("type")
-        visible_delta: Optional[str] = None
-        thinking_delta: Optional[str] = None
-
-        if event_type == "message_start":
-            cls._record_message_start(payload, state)
-        elif event_type == "content_block_start":
-            cls._record_content_block_start(payload, state)
-        elif event_type == "content_block_delta":
-            visible_delta, thinking_delta = cls._record_content_block_delta(
-                payload,
-                state,
-            )
-        elif event_type == "content_block_stop":
-            cls._finalize_content_block(payload, state)
-        elif event_type == "message_delta":
-            cls._record_message_delta(payload, state)
-
-        state.usage_tracker.record(
-            state.chunk_buffer,
-            cls._normalize_usage(state.usage),
+        if not isinstance(event, SSEEvent):
+            return None, None
+        cls._sync_compat_state(state)
+        previous_usage = dict(state.usage)
+        adapted = cls._adapt_event(
+            event, preserve_malformed_usage=state.policy_accounting
         )
-        return visible_delta, thinking_delta
+        try:
+            visible, thinking = consume_messages_event(
+                state._messages_state,
+                adapted,
+                event_policy=cls._event_is_usable,
+                block_policy=cls._prepare_block,
+                delta_policy=cls._delta_is_usable,
+                index_policy=cls._index_policy,
+            )
+        except InvalidToolArgumentsError as error:
+            detail = error.detail or "invalid tool arguments"
+            index = (
+                event.data.get("index")
+                if isinstance(event.data, Mapping)
+                else None
+            )
+            block = (
+                state.content_blocks.get(index)
+                if isinstance(index, int) and not isinstance(index, bool)
+                else None
+            )
+            tool_name = block.get("name") if isinstance(block, Mapping) else None
+            if "must be a JSON object" in detail:
+                detail = (
+                    "Qwen tool input must decode to an object "
+                    f"for tool={tool_name!r}"
+                )
+            else:
+                cause = error.__cause__
+                parse_detail = str(cause) if cause is not None else detail
+                detail = (
+                    "Qwen tool input JSON parse failed "
+                    f"for tool={tool_name!r}: {parse_detail}"
+                )
+            raise InvalidToolArgumentsError(detail=detail) from error
+        state.message_data = state._messages_state.message
+        state.content_blocks = state._messages_state.blocks
+        state.input_json_fragments = state._messages_state.argument_fragments
+        merged_usage = (
+            dict(state._messages_state.usage)
+            if isinstance(state._messages_state.usage, Mapping)
+            else previous_usage
+        )
+        if state.policy_accounting and state._messages_state.usage_snapshots:
+            merged_usage = merge_messages_usage_snapshots(
+                state._messages_state.usage_snapshots
+            ) or {}
+        state.usage.clear()
+        state.usage.update(merged_usage)
+        state._messages_state.usage = state.usage
+        state.message_delta = state._messages_state.message_delta
+        normalized = cls._normalize_usage(
+            state.usage, policy_accounting=state.policy_accounting
+        )
+        if state.policy_accounting and state._messages_state.usage_snapshots and normalized is None:
+            state.chunk_buffer.update_metadata(usage=Usage(None, None, None, None, None))
+        else:
+            state.usage_tracker.record(state.chunk_buffer, normalized)
+        return visible or None, thinking or None
 
     @staticmethod
     def finalize(
@@ -90,133 +158,123 @@ class QwenMessagesStreamParser:
         model: str,
     ) -> dict[str, Any]:
         """Rebuild an Anthropic-compatible terminal message response."""
-        response = dict(state.message_data)
+        QwenMessagesStreamParser._sync_compat_state(state)
+        response = finalize_messages_stream(
+            state._messages_state,
+            validate_completion=lambda _state: None,
+        )
         response["model"] = response.get("model") or model
-        response["content"] = [
-            state.content_blocks[index] for index in sorted(state.content_blocks)
-        ]
-        response.update(state.message_delta)
-        if state.usage:
+        if state.pdf_requested:
+            response["_qwen_pdf_requested"] = True
+        if state.policy_accounting and state._messages_state.usage_snapshots:
+            merged = merge_messages_usage_snapshots(
+                state._messages_state.usage_snapshots
+            )
+            if merged is not None:
+                response["usage"] = merged
+            else:
+                response.pop("usage", None)
+        elif state.usage:
             response["usage"] = dict(state.usage)
+        elif "usage" in state.message_data:
+            response["usage"] = state.message_data["usage"]
         return response
 
     @staticmethod
-    def _record_message_start(
-        payload: Mapping[str, Any],
-        state: QwenMessagesStreamState,
-    ) -> None:
-        message = payload.get("message")
-        if not isinstance(message, Mapping):
-            return
-        state.message_data = dict(message)
-        usage = message.get("usage")
-        if isinstance(usage, Mapping):
-            state.usage.update(usage)
+    def _sync_compat_state(state: QwenMessagesStreamState) -> None:
+        """Keep the historical public state attributes writable by callers."""
+        state._messages_state.message = state.message_data
+        state._messages_state.blocks = state.content_blocks
+        state._messages_state.argument_fragments = state.input_json_fragments
+        state._messages_state.usage = state.usage
+        state._messages_state.message_delta = state.message_delta
 
     @staticmethod
-    def _record_content_block_start(
-        payload: Mapping[str, Any],
-        state: QwenMessagesStreamState,
-    ) -> None:
-        index = payload.get("index")
-        block = payload.get("content_block")
-        if isinstance(index, bool) or not isinstance(index, int):
-            return
-        if not isinstance(block, Mapping):
-            return
-        copied_block = dict(block)
-        if copied_block.get("type") == "text":
-            text = copied_block.get("text")
-            copied_block["text"] = text if isinstance(text, str) else ""
-        elif copied_block.get("type") == "thinking":
-            thinking = copied_block.get("thinking")
-            copied_block["thinking"] = thinking if isinstance(thinking, str) else ""
-        elif copied_block.get("type") == "tool_use":
-            current_input = copied_block.get("input")
-            copied_block["input"] = (
-                dict(current_input) if isinstance(current_input, Mapping) else {}
+    def _adapt_event(event: Any, *, preserve_malformed_usage: bool = False) -> Any:
+        """Drop malformed optional usage snapshots as the native parser did."""
+        if not isinstance(event.data, Mapping):
+            return event
+        payload = dict(event.data)
+        kind = event.event or payload.get("type")
+        if (kind == "message_delta" and not preserve_malformed_usage
+                and not isinstance(payload.get("usage"), Mapping)):
+            payload.pop("usage", None)
+        if kind == "message_delta" and not isinstance(payload.get("delta"), Mapping):
+            payload["delta"] = {}
+        return SSEEvent(event=event.event or None, data=payload, done=event.done)
+
+    @staticmethod
+    def _event_is_usable(event: Any) -> bool:
+        payload = event.data
+        if not isinstance(payload, Mapping):
+            return False
+        kind = event.event or payload.get("type")
+        if not isinstance(kind, str):
+            return False
+        if kind == "message_start":
+            return isinstance(payload.get("message"), Mapping)
+        if kind in {
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+        }:
+            index = payload.get("index")
+            if isinstance(index, bool) or not isinstance(index, int):
+                return False
+            if kind == "content_block_start":
+                return isinstance(payload.get("content_block"), Mapping)
+            if kind == "content_block_delta":
+                return isinstance(payload.get("delta"), Mapping)
+        if kind == "message_delta":
+            return True
+        return True
+
+    @staticmethod
+    def _prepare_block(index: int, block: dict[str, Any]) -> dict[str, Any]:
+        _ = index
+        if block.get("type") == "text" and not isinstance(
+            block.get("text"), str
+        ):
+            block["text"] = ""
+        elif block.get("type") == "thinking" and not isinstance(
+            block.get("thinking"), str
+        ):
+            block["thinking"] = ""
+        elif block.get("type") == "tool_use":
+            if not isinstance(block.get("input"), Mapping):
+                block["input"] = {}
+            else:
+                block["input"] = dict(block["input"])
+        return block
+
+    @staticmethod
+    def _delta_is_usable(block: dict[str, Any], delta: Mapping[str, Any]) -> bool:
+        kind = delta.get("type")
+        if kind == "text_delta":
+            return block.get("type") == "text" and isinstance(delta.get("text"), str)
+        if kind == "thinking_delta":
+            return block.get("type") == "thinking" and isinstance(
+                delta.get("thinking"), str
             )
-        state.content_blocks[index] = copied_block
-
-    @staticmethod
-    def _record_content_block_delta(
-        payload: Mapping[str, Any],
-        state: QwenMessagesStreamState,
-    ) -> tuple[Optional[str], Optional[str]]:
-        index = payload.get("index")
-        delta = payload.get("delta")
-        if isinstance(index, bool) or not isinstance(index, int):
-            return None, None
-        if not isinstance(delta, Mapping):
-            return None, None
-        block = state.content_blocks.get(index)
-        if block is None:
-            return None, None
-        if delta.get("type") == "input_json_delta":
-            partial_json = delta.get("partial_json")
-            if isinstance(partial_json, str):
-                state.input_json_fragments.setdefault(index, []).append(partial_json)
-            return None, None
-        if delta.get("type") == "thinking_delta" and block.get("type") == "thinking":
-            thinking = delta.get("thinking")
-            if not isinstance(thinking, str) or not thinking:
-                return None, None
-            block["thinking"] = f"{block.get('thinking', '')}{thinking}"
-            return None, thinking
-        if delta.get("type") != "text_delta" or block.get("type") != "text":
-            return None, None
-        text = delta.get("text")
-        if not isinstance(text, str) or not text:
-            return None, None
-        block["text"] = f"{block.get('text', '')}{text}"
-        return text, None
-
-    @staticmethod
-    def _finalize_content_block(
-        payload: Mapping[str, Any],
-        state: QwenMessagesStreamState,
-    ) -> None:
-        index = payload.get("index")
-        if isinstance(index, bool) or not isinstance(index, int):
-            return
-        block = state.content_blocks.get(index)
-        if not block or block.get("type") != "tool_use":
-            return
-        raw_input = "".join(state.input_json_fragments.get(index, []))
-        if not raw_input:
-            return
-        try:
-            parsed_input = json.loads(raw_input)
-        except json.JSONDecodeError as error:
-            raise InvalidToolArgumentsError(
-                detail=(
-                    "Qwen tool input JSON parse failed "
-                    f"for tool={block.get('name')!r}: {error}"
-                ),
-            ) from error
-        if not isinstance(parsed_input, dict):
-            raise InvalidToolArgumentsError(
-                detail=(
-                    "Qwen tool input must decode to an object "
-                    f"for tool={block.get('name')!r}"
-                ),
+        if kind == "input_json_delta":
+            value = delta.get("partial_json")
+            return (
+                block.get("type") == "tool_use"
+                and isinstance(value, str)
+                and bool(value)
             )
-        block["input"] = parsed_input
+        return False
 
     @staticmethod
-    def _record_message_delta(
-        payload: Mapping[str, Any],
-        state: QwenMessagesStreamState,
-    ) -> None:
-        delta = payload.get("delta")
-        if isinstance(delta, Mapping):
-            state.message_delta.update(delta)
-        usage = payload.get("usage")
-        if isinstance(usage, Mapping):
-            state.usage.update(usage)
+    def _index_policy(index: int, kind: str, state: MessagesBlockState) -> bool | str:
+        if kind == "content_block_start":
+            return "replace" if index in state.blocks else True
+        return index in state.blocks
 
     @staticmethod
-    def _normalize_usage(raw_usage: Mapping[str, Any]) -> Optional[Usage]:
+    def _normalize_usage(raw_usage: Mapping[str, Any], *, policy_accounting: bool = False) -> Optional[Usage]:
+        if policy_accounting:
+            return normalize_qwen_accounted_usage(raw_usage)
         input_tokens = QwenMessagesStreamParser._token_count(
             raw_usage.get("input_tokens"),
         )

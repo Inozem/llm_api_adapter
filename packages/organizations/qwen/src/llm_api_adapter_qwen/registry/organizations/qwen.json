@@ -1,6 +1,26 @@
 {
   "currency": "CNY",
   "models": {
+    "qwen4-max": {
+      "capability_exceptions": [
+        {
+          "capability_id": "provider_continuation",
+          "behavior_id": "ignored",
+          "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
+        }
+      ],
+      "qwen_policy": {
+        "reasoning_modes": {
+          "default": "enabled",
+          "enabled": {"max_input_tokens": 983616, "max_output_tokens": 262144},
+          "disabled": {"max_input_tokens": 991808, "max_output_tokens": 131072}
+        },
+        "input_token_accounting": "ordinary_plus_cache_read_and_write"
+      },
+      "limits": {"context_window_tokens": 1000000, "max_output_tokens": 262144},
+      "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 10.0, "output_per_1m": 30.0, "cache_read_input_per_1m": 0.5}],
+      "reasoning_capability": {"allowed_values": ["none", "low", "high", "xhigh"]}
+    },
     "qwen3.8-max": {
       "capability_exceptions": [
         {
@@ -14,21 +34,12 @@
           "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
         },
         {
-          "capability_id": "pdf_url",
-          "behavior_id": "rejected_before_transport",
-          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
-        },
-        {
-          "capability_id": "pdf_bytes",
-          "behavior_id": "rejected_before_transport",
-          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
-        },
-        {
           "capability_id": "provider_continuation",
           "behavior_id": "ignored",
           "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
+      "qwen_policy": {"request_rules": [{"handler": "disable_reasoning_for_forced_tools", "arguments": {"modes": ["any", "tool"]}}]},
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 12.0, "output_per_1m": 36.0, "cache_read_input_per_1m": 1.5}],
       "reasoning_capability": {"allowed_values": ["none", "low", "medium", "xhigh"]}
@@ -46,21 +57,12 @@
           "behavior": "The adapter disables reasoning according to the model's declared reasoning capability before sending the forced tool choice and emits a warning when it changes the caller's request."
         },
         {
-          "capability_id": "pdf_url",
-          "behavior_id": "rejected_before_transport",
-          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart URLs before transport; PDF input is unavailable in this integration."
-        },
-        {
-          "capability_id": "pdf_bytes",
-          "behavior_id": "rejected_before_transport",
-          "behavior": "The Frankfurt Global Anthropic Messages package rejects DocumentPart bytes before transport; PDF input is unavailable in this integration."
-        },
-        {
           "capability_id": "provider_continuation",
           "behavior_id": "ignored",
           "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
+      "qwen_policy": {"request_rules": [{"handler": "disable_reasoning_for_forced_tools", "arguments": {"modes": ["any", "tool"]}}]},
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [{"up_to_prompt_tokens": null, "input_per_1m": 0.8, "output_per_1m": 2.7, "cache_read_input_per_1m": 0.1}],
       "reasoning_capability": {"allowed_values": ["none", "low", "medium", "xhigh"]}
@@ -93,6 +95,7 @@
           "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
+      "qwen_policy": {"request_rules": [{"handler": "disable_reasoning_for_forced_tools", "arguments": {"modes": ["any", "tool"]}}]},
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [
         {"up_to_prompt_tokens": 256000, "input_per_1m": 2.0, "output_per_1m": 8.0, "cache_read_input_per_1m": 0.4},
@@ -128,6 +131,7 @@
           "behavior": "previous_response is accepted for Core API compatibility but ignored; the request uses caller-provided messages and sends no provider continuation identifier."
         }
       ],
+      "qwen_policy": {"request_rules": [{"handler": "disable_reasoning_for_forced_tools", "arguments": {"modes": ["any", "tool"]}}]},
       "limits": {"context_window_tokens": 1000000, "max_output_tokens": 131072},
       "pricing_tiers": [
         {"up_to_prompt_tokens": 32000, "input_per_1m": 0.2, "output_per_1m": 0.8, "cache_read_input_per_1m": 0.04},
@@ -136,5 +140,10 @@
       ],
       "reasoning_capability": {"min_budget_tokens": 1, "max_budget_tokens": 262144, "can_disable_thinking": true}
     }
+  },
+  "metered_operations": {
+    "qwen4_max_pdf_pages": {"model": "qwen4-max", "unit": "page", "rate": 0.02},
+    "qwen38_max_pdf_pages": {"model": "qwen3.8-max", "unit": "page", "rate": 0.02},
+    "qwen38_flash_pdf_pages": {"model": "qwen3.8-flash", "unit": "page", "rate": 0.02}
   }
 }

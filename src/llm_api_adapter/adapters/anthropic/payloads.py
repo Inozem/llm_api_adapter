@@ -9,7 +9,7 @@ from ...errors.llm_api_error import ToolChoiceError
 from ...models.messages.chat_message import Messages
 from ...models.responses.chat_response import ChatResponse
 from ...models.tools.tool_spec import ToolSpec
-from ..structured_output import validate_core_portable_schema
+from ..anthropic_compatible import payloads as common_payloads
 
 
 class _AnthropicPayloadMixin:
@@ -88,34 +88,21 @@ class _AnthropicPayloadMixin:
         effective_schema: Optional[dict],
         capture_reasoning: bool,
     ) -> Dict[str, Any]:
-        system_prompt, transformed_messages = normalized_messages.to_anthropic()
-        params: Dict[str, Any] = {
-            "model": self.model,
-            "messages": transformed_messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-            "system": system_prompt,
-            "timeout_s": timeout_s,
-            "is_adaptive_thinking": self.is_adaptive_thinking,
-        }
-        if tools:
-            params["tools"] = [self._to_anthropic_tool(tool) for tool in tools]
-        if normalized_tool_choice is not None:
-            params["tool_choice"] = self._to_anthropic_tool_choice(
-                normalized_tool_choice
-            )
-        if parallel_tool_calls is False:
-            params["disable_parallel_tool_use"] = True
-        elif parallel_tool_calls is True:
-            params["disable_parallel_tool_use"] = False
-        if effective_schema is not None:
-            params["output_config"] = {
-                "format": {
-                    "type": "json_schema",
-                    "schema": self._to_anthropic_structured_output_schema(effective_schema),
-                }
-            }
+        self._validate_anthropic_tool_choice(normalized_tool_choice)
+        params: Dict[str, Any] = common_payloads.build_messages_payload(
+            model=self.model,
+            messages=normalized_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            tools=tools,
+            tool_choice=normalized_tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            response_schema=effective_schema,
+        )
+        if timeout_s is not None:
+            params["timeout_s"] = timeout_s
+        params["is_adaptive_thinking"] = self.is_adaptive_thinking
         if reasoning_level is not None:
             provider_value = self._resolve_reasoning_level(
                 reasoning_level
@@ -145,26 +132,9 @@ class _AnthropicPayloadMixin:
             **parser_kwargs,
         )
 
-    def _to_anthropic_tool(self, tool: ToolSpec) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "name": tool.name,
-            "input_schema": tool.json_schema,
-        }
-        if tool.description:
-            payload["description"] = tool.description
-        return payload
-
-    @staticmethod
-    def _to_anthropic_structured_output_schema(schema: dict) -> dict:
-        """Validate the Core profile without changing schema semantics."""
-        return validate_core_portable_schema(schema, provider="anthropic")
-
-    def _to_anthropic_tool_choice(
-        self,
-        tool_choice: Optional[str],
-    ) -> Optional[Dict[str, Any]]:
+    def _validate_anthropic_tool_choice(self, tool_choice: Optional[str]) -> None:
         if tool_choice is None:
-            return None
+            return
         allowed_modes = (
             self.model_spec.request_rules.allowed_tool_choice_modes
             if self.model_spec is not None
@@ -180,11 +150,6 @@ class _AnthropicPayloadMixin:
                     "use tool_choice='auto' or 'none'."
                 )
             )
-        if tool_choice == "none":
-            return {"type": "none"}
-        if tool_choice in ("auto", "any"):
-            return {"type": tool_choice}
-        return {"type": "tool", "name": tool_choice}
 
     def validate_reasoning_and_tokens(
         self,

@@ -16,6 +16,7 @@ from .transports import (
     SyncTransport,
     TransportRequest,
     _format_transport_diagnostic as format_transport_diagnostic,
+    _cleanup_preserving_primary,
     is_generic_stream_error,
     multipart_headers,
     raise_default_http_error,
@@ -54,32 +55,30 @@ class HttpxSyncTransport(SyncTransport):
         client = self._httpx.Client()
         response: Optional[Any] = None
 
-        try:
-            response = client.post(
-                request.url,
-                headers=request.headers_dict(),
-                json=request.payload,
-                timeout=request.timeout,
-            )
-            response.raise_for_status()
-            return JSONResponse(response.json())
-        except LLMAPIError:
-            raise
-        except self._httpx.TimeoutException as exc:
-            logger.error("Synchronous HTTPX request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
-            raise LLMAPITimeoutError(detail=str(exc)) from exc
-        except self._httpx.HTTPStatusError as exc:
-            logger.error("Synchronous HTTPX HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
-            self._handle_http_error(exc, http_error_handler)
-        except self._httpx.RequestError as exc:
-            logger.error("Synchronous HTTPX request exception: %s", format_transport_diagnostic(http_error_handler, exc))
-            raise LLMAPIClientError(detail=str(exc)) from exc
-        finally:
+        with _cleanup_preserving_primary(
+            lambda: response.close() if response is not None else None,
+            client.close,
+        ):
             try:
-                if response is not None:
-                    response.close()
-            finally:
-                client.close()
+                response = client.post(
+                    request.url,
+                    headers=request.headers_dict(),
+                    json=request.payload,
+                    timeout=request.timeout,
+                )
+                response.raise_for_status()
+                return JSONResponse(response.json())
+            except LLMAPIError:
+                raise
+            except self._httpx.TimeoutException as exc:
+                logger.error("Synchronous HTTPX request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
+                raise LLMAPITimeoutError(detail=str(exc)) from exc
+            except self._httpx.HTTPStatusError as exc:
+                logger.error("Synchronous HTTPX HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
+                self._handle_http_error(exc, http_error_handler)
+            except self._httpx.RequestError as exc:
+                logger.error("Synchronous HTTPX request exception: %s", format_transport_diagnostic(http_error_handler, exc))
+                raise LLMAPIClientError(detail=str(exc)) from exc
 
     def post_sse(
         self,
@@ -90,45 +89,45 @@ class HttpxSyncTransport(SyncTransport):
     ) -> Iterator[SSEEvent]:
         client = self._httpx.Client()
         response: Optional[Any] = None
-        parser_owns_response = False
+        parser: Optional[Iterator[SSEEvent]] = None
 
-        try:
-            raw_request = client.build_request(
-                "POST",
-                request.url,
-                headers=request.headers_dict(),
-                json=request.payload,
-                timeout=request.timeout,
-            )
-            response = client.send(raw_request, stream=True)
-            response.raise_for_status()
-
-            parser_owns_response = True
-            for event in iter_sse_events(response):
-                if event.done:
-                    return
-                if is_generic_stream_error(event):
-                    handler = stream_error_handler or raise_default_stream_error
-                    handler(event)
-                    raise_default_stream_error(event)
-                yield event
-        except LLMAPIError:
-            raise
-        except self._httpx.TimeoutException as exc:
-            logger.error("Synchronous HTTPX streaming request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
-            raise LLMAPITimeoutError(detail=str(exc)) from exc
-        except self._httpx.HTTPStatusError as exc:
-            logger.error("Synchronous HTTPX streaming HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
-            self._handle_http_error(exc, http_error_handler)
-        except self._httpx.RequestError as exc:
-            logger.error("Synchronous HTTPX streaming request exception: %s", format_transport_diagnostic(http_error_handler, exc))
-            raise LLMAPIClientError(detail=str(exc)) from exc
-        finally:
+        with _cleanup_preserving_primary(
+            lambda: parser.close() if parser is not None else (
+                response.close() if response is not None else None
+            ),
+            client.close,
+        ):
             try:
-                if response is not None and not parser_owns_response:
-                    response.close()
-            finally:
-                client.close()
+                raw_request = client.build_request(
+                    "POST",
+                    request.url,
+                    headers=request.headers_dict(),
+                    json=request.payload,
+                    timeout=request.timeout,
+                )
+                response = client.send(raw_request, stream=True)
+                response.raise_for_status()
+
+                parser = iter_sse_events(response)
+                for event in parser:
+                    if event.done:
+                        return
+                    if is_generic_stream_error(event):
+                        handler = stream_error_handler or raise_default_stream_error
+                        handler(event)
+                        raise_default_stream_error(event)
+                    yield event
+            except LLMAPIError:
+                raise
+            except self._httpx.TimeoutException as exc:
+                logger.error("Synchronous HTTPX streaming request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
+                raise LLMAPITimeoutError(detail=str(exc)) from exc
+            except self._httpx.HTTPStatusError as exc:
+                logger.error("Synchronous HTTPX streaming HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
+                self._handle_http_error(exc, http_error_handler)
+            except self._httpx.RequestError as exc:
+                logger.error("Synchronous HTTPX streaming request exception: %s", format_transport_diagnostic(http_error_handler, exc))
+                raise LLMAPIClientError(detail=str(exc)) from exc
 
     def post_multipart(
         self,

@@ -1,6 +1,10 @@
 from unittest.mock import patch
+from dataclasses import fields
+import inspect
+from inspect import signature
 
 import pytest
+import asyncio
 
 from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
 from src.llm_api_adapter.errors.llm_api_error import LLMAPIError
@@ -11,6 +15,8 @@ from src.llm_api_adapter.llm_registry.llm_registry import Pricing
 from src.llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
 from src.llm_api_adapter.models.tools import ToolSpec
 from src.llm_api_adapter.llms.streaming import SSEEvent
+from src.llm_api_adapter.adapters.anthropic import adapter as adapter_module
+from src.llm_api_adapter.adapters.anthropic.adapter import AnthropicAdapter as NativeAnthropicAdapter
 
 @pytest.fixture
 def adapter():
@@ -432,3 +438,197 @@ def test_stream_chat_buffers_text_and_orders_chunk_callbacks(adapter):
         ("yield", "o!"),
         ("done", "Hello!"),
     ]
+
+
+@pytest.mark.unit
+def test_native_adapter_import_dataclass_and_call_compatibility(adapter):
+    from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter as ShimAdapter
+
+    assert ShimAdapter is NativeAnthropicAdapter is AnthropicAdapter
+    assert adapter.company == "anthropic"
+    adapter_fields = fields(adapter)
+    assert [field.name for field in adapter_fields] == [
+        "api_key", "model", "company", "transport", "pricing",
+        "is_reasoning", "is_adaptive_thinking", "service_provider", "model_spec",
+    ]
+    assert [field.init for field in adapter_fields] == [True] * 8 + [False]
+    assert adapter_fields[-1].repr is False
+    params = signature(AnthropicAdapter).parameters
+    expected_defaults = {
+        "api_key": inspect.Parameter.empty,
+        "model": inspect.Parameter.empty,
+        "company": "anthropic",
+        "transport": "requests",
+        "pricing": None,
+        "is_reasoning": False,
+        "is_adaptive_thinking": False,
+        "service_provider": None,
+    }
+    assert list(params) == list(expected_defaults)
+    for name, default in expected_defaults.items():
+        assert params[name].default == default
+        assert params[name].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert adapter == AnthropicAdapter(api_key="test_api_key", model="claude-sonnet-4-5")
+    assert "test_api_key" not in repr(adapter)
+
+    positional = AnthropicAdapter(
+        "test_api_key", "claude-sonnet-4-5", "anthropic", "requests",
+        None, False, False, "anthropic",
+    )
+    assert positional.service_provider == "anthropic"
+    assert positional.model_spec is not None
+
+
+@pytest.mark.unit
+def test_all_native_sync_and_async_adapter_methods_keep_required_and_keyword_only_shapes(adapter):
+    from unittest.mock import AsyncMock
+
+    with pytest.raises(TypeError):
+        adapter.chat([UserMessage("hi")])
+    with pytest.raises(TypeError):
+        adapter.achat([UserMessage("hi")])
+    with pytest.raises(TypeError):
+        adapter.stream_chat([UserMessage("hi")])
+    with pytest.raises(TypeError):
+        adapter.astream_chat([UserMessage("hi")])
+
+    with patch.object(adapter_module.ClaudeSyncClient, "chat_completion", return_value={}) as chat, \
+         patch.object(adapter, "_parse_chat_response", return_value=ChatResponse(content="ok")):
+        adapter.chat([UserMessage("hi")], 12, 0.5, 0.8, None, 1.5, capture_reasoning=True)
+    assert chat.call_args.kwargs["max_tokens"] == 12
+    assert chat.call_args.kwargs["temperature"] == 0.5
+    assert chat.call_args.kwargs["top_p"] == 0.8
+    assert chat.call_args.kwargs["timeout_s"] == 1.5
+    assert chat.call_args.kwargs["capture_reasoning"] is True
+    with pytest.raises(TypeError):
+        adapter.chat([UserMessage("hi")], 12, 0.5, 0.8, None, 1.5, True)
+
+    with patch.object(adapter_module.ClaudeAsyncClient, "chat_completion", new_callable=AsyncMock, return_value={}) as achat, \
+         patch.object(adapter, "_parse_chat_response", return_value=ChatResponse(content="ok")):
+        asyncio.run(adapter.achat([UserMessage("hi")], 12, 0.5, 0.8, None, 1.5, capture_reasoning=True))
+    assert achat.await_args.kwargs["max_tokens"] == 12
+    assert achat.await_args.kwargs["temperature"] == 0.5
+    assert achat.await_args.kwargs["top_p"] == 0.8
+    assert achat.await_args.kwargs["timeout_s"] == 1.5
+    assert achat.await_args.kwargs["capture_reasoning"] is True
+    with pytest.raises(TypeError):
+        adapter.achat([UserMessage("hi")], 12, 0.5, 0.8, None, 1.5, True)
+
+    deltas = []
+    sync_events = iter([SSEEvent(
+        event="content_block_start",
+        data={"index": 0, "content_block": {"type": "text", "text": ""}},
+    ), SSEEvent(
+        event="content_block_delta",
+        data={"index": 0, "delta": {"type": "text_delta", "text": "sync"}},
+    )])
+    with patch.object(adapter_module.ClaudeSyncClient, "stream", return_value=sync_events) as stream:
+        sync_stream = adapter.stream_chat([UserMessage("hi")], 12, 0.5, 0.8, None, 1.5, on_delta=deltas.append)
+        assert list(sync_stream) == ["sync"]
+    assert stream.call_args.kwargs["timeout_s"] == 1.5
+    assert stream.call_args.kwargs["max_tokens"] == 12
+    assert stream.call_args.kwargs["temperature"] == 0.5
+    assert stream.call_args.kwargs["top_p"] == 0.8
+    assert deltas == ["sync"]
+    with pytest.raises(TypeError):
+        adapter.stream_chat([UserMessage("hi")], 12, 0.5, 0.8, None, 1.5, True)
+
+    async def consume_async_stream():
+        async def empty_events():
+            yield SSEEvent(
+                event="content_block_start",
+                data={"index": 0, "content_block": {"type": "text", "text": ""}},
+            )
+            yield SSEEvent(
+                event="content_block_delta",
+                data={"index": 0, "delta": {"type": "text_delta", "text": "async"}},
+            )
+        deltas = []
+        with patch.object(adapter_module.ClaudeAsyncClient, "stream", return_value=empty_events()) as stream:
+            iterator = adapter.astream_chat([UserMessage("hi")], 12, 0.5, 0.8, None, 1.5, on_delta=deltas.append)
+            assert hasattr(iterator, "__anext__")
+            assert [value async for value in iterator] == ["async"]
+        assert stream.call_args.kwargs["timeout_s"] == 1.5
+        assert stream.call_args.kwargs["max_tokens"] == 12
+        assert stream.call_args.kwargs["temperature"] == 0.5
+        assert stream.call_args.kwargs["top_p"] == 0.8
+        assert deltas == ["async"]
+    asyncio.run(consume_async_stream())
+    with pytest.raises(TypeError):
+        adapter.astream_chat([UserMessage("hi")], 12, 0.5, 0.8, None, 1.5, True)
+
+
+@pytest.mark.unit
+def test_stream_chat_preparation_and_client_creation_are_lazy(adapter):
+    with patch.object(adapter_module, "ClaudeSyncClient") as client_factory:
+        stream = adapter.stream_chat([UserMessage("hi")], max_tokens=12, temperature=9)
+        client_factory.assert_not_called()
+        with pytest.raises(ValueError):
+            next(stream)
+        client_factory.assert_not_called()
+
+
+@pytest.mark.unit
+def test_stream_chat_constructs_native_client_on_successful_iteration(adapter):
+    with patch.object(adapter_module, "ClaudeSyncClient") as factory:
+        factory.return_value.stream.return_value = iter([])
+        stream = adapter.stream_chat([UserMessage("hi")], max_tokens=12)
+        factory.assert_not_called()
+        assert list(stream) == []
+    factory.assert_called_once_with(api_key="test_api_key", transport="requests")
+    factory.return_value.stream.assert_called_once()
+
+
+@pytest.mark.unit
+def test_stream_chat_keeps_first_text_as_final_response_and_accepts_eof(adapter):
+    events = iter([
+        SSEEvent(event="message_start", data={"message": {"usage": {
+            "input_tokens": 5, "cache_read_input_tokens": 2,
+            "cache_creation_input_tokens": 3,
+        }}}),
+        SSEEvent(event="content_block_start", data={"index": 0, "content_block": {"type": "text", "text": ""}}),
+        SSEEvent(event="content_block_delta", data={"index": 0, "delta": {"type": "text_delta", "text": "first"}}),
+        SSEEvent(event="content_block_start", data={"index": 1, "content_block": {"type": "text", "text": ""}}),
+        SSEEvent(event="content_block_delta", data={"index": 1, "delta": {"type": "text_delta", "text": "second"}}),
+    ])
+    deltas, chunks, done = [], [], []
+    with patch.object(adapter_module.ClaudeSyncClient, "stream", return_value=events):
+        assert list(adapter.stream_chat(
+            [UserMessage("hi")], max_tokens=16,
+            on_delta=deltas.append, on_chunk=chunks.append, on_done=done.append,
+        )) == ["first", "second"]
+    assert deltas == ["first", "second"]
+    assert done[0].content == "first"
+    assert done[0].finish_reason is None
+    assert len(done) == 1
+    assert chunks[0].usage == Usage(input_tokens=5, output_tokens=0, total_tokens=5)
+    assert done[0].usage.input_tokens == 5
+    assert done[0].usage.output_tokens is None
+    assert done[0].usage.total_tokens is None
+    assert done[0].usage.cached_tokens is None
+    assert done[0].usage.cache_write_tokens is None
+
+
+@pytest.mark.unit
+def test_chat_uses_native_first_text_and_preserves_partial_usage(adapter):
+    raw_response = {
+        "model": "claude-sonnet-4-5",
+        "content": [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ],
+        "usage": {
+            "input_tokens": 9,
+            "cache_read_input_tokens": 2,
+            "cache_creation_input_tokens": 3,
+        },
+    }
+    with patch.object(adapter_module.ClaudeSyncClient, "chat_completion", return_value=raw_response):
+        response = adapter.chat([UserMessage("hi")], max_tokens=16)
+
+    assert response.content == "first"
+    assert response.usage.input_tokens == 9
+    assert response.usage.output_tokens is None
+    assert response.usage.total_tokens is None
+    assert response.usage.cached_tokens is None
+    assert response.usage.cache_write_tokens is None

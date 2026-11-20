@@ -967,12 +967,28 @@ def test_anthropic_new_model_registry_profiles(model_name, expected_rates):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("model_name", "expected_max_output_tokens"),
-    [("gemini-4-argon", 32_768), ("gemini-4-carbon", 65_536)],
+    (
+        "model_name",
+        "expected_max_output_tokens",
+        "expected_allowed_values",
+        "expected_input_rate",
+        "expected_output_rate",
+        "expected_cache_read_rate",
+    ),
+    [
+        ("gemini-4-neon", 65_536, ("low", "medium", "high", "xhigh"), 3.0, 15.0, 0.15),
+        ("gemini-4-hydrogen", 65_536, ("low", "medium", "high", "xhigh"), 1.5, 7.5, 0.075),
+        ("gemini-4-argon", 32_768, ("low", "medium", "high"), 2.0, 10.0, 0.1),
+        ("gemini-4-carbon", 65_536, ("low", "medium", "high"), 2.0, 10.0, 0.1),
+    ],
 )
 def test_google_gemini_4_reasoning_model_registry_profile(
     model_name,
     expected_max_output_tokens,
+    expected_allowed_values,
+    expected_input_rate,
+    expected_output_rate,
+    expected_cache_read_rate,
 ):
     model = LLM_REGISTRY.organizations["google"].models[model_name]
 
@@ -982,7 +998,7 @@ def test_google_gemini_4_reasoning_model_registry_profile(
     )
     assert model.limits.context_window_tokens == 1_048_576
     assert model.limits.max_output_tokens == expected_max_output_tokens
-    assert model.reasoning_capability.allowed_values == ("low", "medium", "high")
+    assert model.reasoning_capability.allowed_values == expected_allowed_values
     assert {
         rule.arguments["path"]: rule.arguments["default"]
         for rule in model.request_rules.rules
@@ -994,9 +1010,9 @@ def test_google_gemini_4_reasoning_model_registry_profile(
     assert len(model.pricing_tiers.tiers) == 1
     tier = model.pricing_tiers.tiers[0]
     assert tier.up_to_prompt_tokens is None
-    assert tier.in_per_token * 1_000_000 == pytest.approx(2.0)
-    assert tier.out_per_token * 1_000_000 == pytest.approx(10.0)
-    assert tier.cache_read_in_per_token * 1_000_000 == pytest.approx(0.1)
+    assert tier.in_per_token * 1_000_000 == pytest.approx(expected_input_rate)
+    assert tier.out_per_token * 1_000_000 == pytest.approx(expected_output_rate)
+    assert tier.cache_read_in_per_token * 1_000_000 == pytest.approx(expected_cache_read_rate)
     assert tier.cache_write_in_per_token is None
     assert {
         (item.capability_id, item.behavior_id)
@@ -1008,8 +1024,12 @@ def test_google_gemini_4_reasoning_model_registry_profile(
 
 
 @pytest.mark.unit
-def test_google_gemini_4_carbon_is_first_registered_model():
-    assert next(iter(LLM_REGISTRY.organizations["google"].models)) == "gemini-4-carbon"
+def test_google_gemini_4_models_are_first_registered_in_expected_order():
+    assert list(LLM_REGISTRY.organizations["google"].models)[:3] == [
+        "gemini-4-neon",
+        "gemini-4-hydrogen",
+        "gemini-4-carbon",
+    ]
 
 
 @pytest.mark.unit

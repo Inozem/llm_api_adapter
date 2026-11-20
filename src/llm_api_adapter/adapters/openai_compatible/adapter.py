@@ -4,15 +4,19 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-import ipaddress
 import logging
-import re
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote, urlsplit
 
 from ...errors.config_errors import LLMConfigError
 from ...errors.llm_api_error import InvalidToolArgumentsError, LLMAPIClientError
+from ..compatible_connection import (
+    _URI_RE,
+    _redact_compatible_diagnostic,
+    _validate_api_root as _validate_neutral_api_root,
+    _validate_compatible_pricing,
+    _validate_ip_literal,
+)
 from ...llms.openai_compatible.async_client import OpenAICompatibleAsyncClient
 from ...llms.openai_compatible.sync_client import OpenAICompatibleSyncClient
 from ...llms.transports import validate_sync_transport
@@ -40,40 +44,6 @@ _COMPATIBLE_TOOL_ARGUMENTS_DETAIL = (
     "openai_compatible returned malformed tool arguments; "
     "ensure the server returns valid JSON arguments for each tool call."
 )
-
-
-_URI_RE = re.compile(r"(?i)\bhttps?://[^\s<>]+")
-
-
-def _validate_compatible_pricing(pricing: object) -> Pricing:
-    """Validate a caller tariff without exposing its content in diagnostics."""
-    error = LLMConfigError(message="pricing must be a valid Pricing object.")
-    if not isinstance(pricing, Pricing):
-        raise error
-    try:
-        if not isinstance(pricing.tiers, tuple) or not pricing.tiers:
-            raise ValueError
-        if not isinstance(pricing.currency, str) or not pricing.currency:
-            raise ValueError
-        for tier in pricing.tiers:
-            if not isinstance(tier, PricingTier):
-                raise ValueError
-            if tier.up_to_prompt_tokens is not None:
-                _positive_int(tier.up_to_prompt_tokens, "up_to_prompt_tokens")
-            _finite_non_negative_rate(tier.in_per_token, "in_per_token")
-            _finite_non_negative_rate(tier.out_per_token, "out_per_token")
-            if tier.cache_read_in_per_token is not None:
-                _finite_non_negative_rate(
-                    tier.cache_read_in_per_token, "cache_read_in_per_token"
-                )
-            if tier.cache_write_in_per_token is not None:
-                _finite_non_negative_rate(
-                    tier.cache_write_in_per_token, "cache_write_in_per_token"
-                )
-        Pricing._validate_tiers(pricing.tiers)
-    except (TypeError, ValueError, OverflowError):
-        raise error from None
-    return pricing
 
 
 def _compatible_cache_usage_is_valid(
@@ -169,106 +139,12 @@ def _normalize_compatible_usage(
     )
 
 
-def _redact_compatible_diagnostic(text: object, api_key: str) -> str:
-    """Redact one compatible instance's key and credential-bearing URLs."""
-    def redact_url(match: re.Match[str]) -> str:
-        original = match.group(0)
-        token = original.rstrip(".,;:!?)]")
-        suffix = original[len(token):]
-        url = token
-        try:
-            parsed = urlsplit(url)
-            has_userinfo = parsed.username is not None or parsed.password is not None
-            if has_userinfo or "?" in url or "#" in url:
-                return "[redacted URL]" + suffix
-        except ValueError:
-            return "[redacted URL]" + suffix
-        return original
-
-    result = _URI_RE.sub(redact_url, str(text))
-    encoded_key = quote(api_key, safe="")
-    if "%" in encoded_key:
-        pieces = re.split(r"(%[0-9A-Fa-f]{2})", encoded_key)
-        pattern = "".join(
-            "%"
-            + "".join(
-                f"[{char.lower()}{char.upper()}]"
-                if char.lower() in "abcdef"
-                else char
-                for char in piece[1:]
-            )
-            if piece.startswith("%")
-            else re.escape(piece)
-            for piece in pieces
-        )
-        result = re.sub(pattern, "[redacted]", result)
-    if api_key:
-        result = result.replace(api_key, "[redacted]")
-
-    return result
-
-
-def _validate_ip_literal(netloc: str, hostname: str) -> None:
-    """Validate IPv6 and numeric IPv4 literals without resolving hostnames.
-
-    Keep literal-address validity explicit rather than depending on URL
-    parsing alone.
-    """
-    if netloc.startswith("["):
-        literal = netloc[1:netloc.find("]")]
-        ipaddress.IPv6Address(literal)
-    elif hostname.count(".") == 3 and all(
-        part.isdecimal() for part in hostname.split(".")
-    ):
-        ipaddress.IPv4Address(hostname)
-
-
 def _validate_api_root(base_url: object) -> str:
-    """Validate and normalize an absolute compatible API root without I/O."""
-    error = LLMConfigError(
-        message="base_url must be an absolute HTTP(S) API root."
+    """Retain OpenAI-compatible resource-root restrictions and local patching."""
+    return _validate_neutral_api_root(
+        base_url,
+        resource_paths=("/chat/completions", "/responses"),
     )
-    if not isinstance(base_url, str) or not base_url:
-        raise error
-    if any(
-        character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
-        for character in base_url
-    ):
-        raise error
-    if "\\" in base_url or "?" in base_url or "#" in base_url:
-        raise error
-
-    try:
-        parsed = urlsplit(base_url)
-        scheme = parsed.scheme.lower()
-        hostname = parsed.hostname
-        port = parsed.port
-    except (TypeError, ValueError):
-        raise error from None
-
-    if (
-        scheme not in {"http", "https"}
-        or not parsed.netloc
-        or not hostname
-        or parsed.netloc.endswith(":")
-    ):
-        raise error
-    if "@" in parsed.netloc or parsed.username is not None or parsed.password is not None:
-        raise LLMConfigError(message="base_url must not contain user information.")
-    if port is not None and not 0 <= port <= 65535:
-        raise error
-
-    try:
-        _validate_ip_literal(parsed.netloc, hostname)
-    except ValueError:
-        raise error from None
-
-    if parsed.path.rstrip("/").endswith(("/chat/completions", "/responses")):
-        raise LLMConfigError(
-            message="base_url must be an API root, not a resource URL."
-        )
-
-    return base_url.rstrip("/")
 
 
 def _validate_compatible_connection(

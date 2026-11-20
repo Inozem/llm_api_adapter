@@ -58,7 +58,7 @@ def test_qwen_document_parts_are_rejected_before_messages_transport():
 
     adapter = UniversalLLMAPIAdapter(
         organization="qwen",
-        model="qwen3.8-max",
+        model="qwen3.7-plus",
         api_key="qwen-e2e-non-live-key",
     )
     with (

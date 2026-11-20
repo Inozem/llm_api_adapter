@@ -29,6 +29,8 @@ def test_openai_selects_the_api_variant_for_each_model_family(client_class):
     client = client_class(api_key="test_api_key")
 
     assert client._should_use_responses_api("gpt-5") is True
+    assert client._should_use_responses_api("gpt-6.2-astra") is True
+    assert client._should_use_responses_api("gpt-6.2-sol") is True
     assert client._should_use_responses_api("gpt-4o") is False
 
 
@@ -124,7 +126,9 @@ def test_openai_preserves_native_none_when_registry_allows_it(client_class):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
-@pytest.mark.parametrize("model", ("gpt-6-astra", "gpt-6.1-sol"))
+@pytest.mark.parametrize(
+    "model", ("gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-astra", "gpt-6.1-sol")
+)
 def test_openai_maps_unsupported_none_to_the_first_native_effort(
     client_class, model
 ):
@@ -256,7 +260,9 @@ def test_openai_warns_once_when_omitting_non_default_temperature_for_gpt5_nano(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", OPENAI_CLIENTS, ids=("sync", "async"))
-@pytest.mark.parametrize("model", ("gpt-6-astra", "gpt-6.1-sol"))
+@pytest.mark.parametrize(
+    "model", ("gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-astra", "gpt-6.1-sol")
+)
 def test_openai_warns_when_omitting_unsupported_sampling_parameters(
     client_class, model
 ):
@@ -465,7 +471,10 @@ def test_google_preserves_supported_max_output_tokens_for_current_model(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", GOOGLE_CLIENTS, ids=("sync", "async"))
-@pytest.mark.parametrize("model_name", ("gemini-4-argon", "gemini-4-carbon"))
+@pytest.mark.parametrize(
+    "model_name",
+    ("gemini-4-neon", "gemini-4-hydrogen", "gemini-4-argon", "gemini-4-carbon"),
+)
 @pytest.mark.parametrize(
     ("sampling", "expected_warnings"),
     [

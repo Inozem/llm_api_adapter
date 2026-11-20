@@ -135,6 +135,8 @@ def test_categorical_projection_without_none_uses_the_working_scale(
     [
         ("anthropic", "claude-fable-5-2"),
         ("google", "gemini-3.1-pro-preview"),
+        ("openai", "gpt-6.2-astra"),
+        ("openai", "gpt-6.2-sol"),
         ("openai", "gpt-6-astra"),
         ("openai", "gpt-6.1-sol"),
     ],
@@ -152,6 +154,53 @@ def test_categorical_none_falls_back_to_minimum_when_disable_is_unavailable(
     assert resolution.provider_value == "low"
     assert resolution.reason == "none_to_minimum"
     assert "cannot disable reasoning" in resolution.warning
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model_name", "expected_rates"),
+    (
+        (
+            "gpt-6.2-astra",
+            ((8, 40, 0.4, 10), (16, 60, 0.8, 20)),
+        ),
+        (
+            "gpt-6.2-sol",
+            ((2, 10, 0.1, 2.5), (4, 15, 0.2, 5)),
+        ),
+    ),
+)
+def test_openai_gpt62_models_have_verified_registry_metadata(
+    registry, model_name, expected_rates
+):
+    model = _model(registry, "openai", model_name)
+
+    assert model.limits.context_window_tokens == 1_050_000
+    assert model.limits.max_output_tokens == 128_000
+    assert model.reasoning_capability.allowed_values == (
+        "low", "medium", "high", "xhigh", "max",
+    )
+    assert model.request_rules.api_variant == "responses"
+    assert [rule.arguments["path"] for rule in model.request_rules.rules[1:]] == [
+        "top_p",
+        "temperature",
+    ]
+    assert [
+        (
+            tier.up_to_prompt_tokens,
+            tier.in_per_token * 1_000_000,
+            tier.out_per_token * 1_000_000,
+            tier.cache_read_in_per_token * 1_000_000,
+            tier.cache_write_in_per_token * 1_000_000,
+        )
+        for tier in model.pricing_tiers.tiers
+    ] == [
+        (272_000, *expected_rates[0]),
+        (None, *expected_rates[1]),
+    ]
+
+    assert model.pricing_tiers.tier_for_prompt_tokens(272_000) is model.pricing_tiers.tiers[0]
+    assert model.pricing_tiers.tier_for_prompt_tokens(272_001) is model.pricing_tiers.tiers[1]
 
 
 @pytest.mark.unit

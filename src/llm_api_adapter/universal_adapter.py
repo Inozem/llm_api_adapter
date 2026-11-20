@@ -4,12 +4,16 @@ from typing import Any
 
 from .adapters.base_adapter import LLMAdapterBase
 from .adapters.anthropic_adapter import AnthropicAdapter
+from .adapters.anthropic_compatible.adapter import AnthropicCompatibleAdapter
 from .adapters.openai_adapter import OpenAIAdapter
 from .adapters.google_adapter import GoogleAdapter
 from .adapters.openai_compatible.adapter import (
     OpenAICompatibleAdapter,
-    _redact_compatible_diagnostic,
     _validate_compatible_connection,
+)
+from .adapters.compatible_connection import (
+    _redact_compatible_diagnostic,
+    _validate_api_root,
 )
 from .errors.config_errors import LLMConfigError, OrganizationNotInstalledError
 from .llm_registry.llm_registry import LLM_REGISTRY
@@ -28,6 +32,7 @@ SERVICE_PROVIDER_REGISTRY = ServiceProviderRegistry({
     OpenAIAdapter.company: OpenAIAdapter,
     GoogleAdapter.company: GoogleAdapter,
     OpenAICompatibleAdapter.company: OpenAICompatibleAdapter,
+    AnthropicCompatibleAdapter.company: AnthropicCompatibleAdapter,
 })
 ORGANIZATION_PLUGIN_DISCOVERY = OrganizationPluginDiscovery()
 
@@ -49,7 +54,10 @@ class UniversalLLMAPIAdapter:
             f"service_provider='{self.service_provider}', model='{self.model}', "
             f"transport='{self.transport}', api_key='{masked}')"
         )
-        if self.organization == OpenAICompatibleAdapter.company:
+        if self.organization in {
+            OpenAICompatibleAdapter.company,
+            AnthropicCompatibleAdapter.company,
+        }:
             return _redact_compatible_diagnostic(result, self.api_key)
         return result
 
@@ -78,13 +86,17 @@ class UniversalLLMAPIAdapter:
         Compatible roots reuse the adapter's canonical, side-effect-free validator.
         """
         if (
-            self.organization != OpenAICompatibleAdapter.company
+            self.organization not in {
+                OpenAICompatibleAdapter.company,
+                AnthropicCompatibleAdapter.company,
+            }
             and self.base_url is not None
         ):
             raise LLMConfigError(
                 message=(
                     "base_url is supported only for "
-                    "organization='openai_compatible'."
+                    "organization='openai_compatible' or "
+                    "organization='anthropic_compatible'."
                 )
             )
         if (
@@ -112,6 +124,22 @@ class UniversalLLMAPIAdapter:
                 )
             self.base_url, self.api_variant = _validate_compatible_connection(
                 self.base_url, self.api_variant
+            )
+        elif self.organization == AnthropicCompatibleAdapter.company:
+            if self.service_provider is None:
+                self.service_provider = self.organization
+            elif (
+                not isinstance(self.service_provider, str)
+                or self.service_provider != self.organization
+            ):
+                raise LLMConfigError(
+                    message=(
+                        "Anthropic-compatible mode requires "
+                        "service_provider='anthropic_compatible'."
+                    )
+                )
+            self.base_url = _validate_api_root(
+                self.base_url, resource_paths=("/messages",)
             )
         elif self.service_provider is None:
             self.service_provider = self.organization
@@ -148,6 +176,8 @@ class UniversalLLMAPIAdapter:
             if organization == OpenAICompatibleAdapter.company:
                 factory_kwargs["base_url"] = self.base_url
                 factory_kwargs["api_variant"] = self.api_variant
+            elif organization == AnthropicCompatibleAdapter.company:
+                factory_kwargs["base_url"] = self.base_url
             return adapter_factory(**factory_kwargs)
         if service_provider == organization:
             known_organization = KNOWN_ORGANIZATION_PACKAGES.get(organization)

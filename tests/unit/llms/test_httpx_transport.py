@@ -11,6 +11,7 @@ import pytest
 from src.llm_api_adapter.errors.llm_api_error import (
     LLMAPIClientError,
     LLMAPIRateLimitError,
+    LLMAPIServerError,
     LLMAPITimeoutError,
 )
 from src.llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
@@ -336,6 +337,83 @@ def test_httpx_sync_transport_converts_request_errors():
         with pytest.raises(LLMAPIClientError):
             HttpxSyncTransport().post_json(TransportRequest(url="https://example.test"))
 
+    assert client.close_calls == 1
+
+
+@pytest.mark.unit
+def test_httpx_provider_error_survives_response_and_client_close_failures():
+    response = FakeResponse(status_code=503)
+    client = FakeHttpxClient(response=response)
+    close_attempts = []
+
+    def fail_response_close():
+        close_attempts.append("response")
+        raise RuntimeError("response cleanup")
+
+    def fail_client_close():
+        close_attempts.append("client")
+        raise RuntimeError("client cleanup")
+
+    response.close = fail_response_close
+    client.close = fail_client_close
+    with patch.object(httpx, "Client", return_value=client):
+        with pytest.raises(LLMAPIServerError):
+            HttpxSyncTransport().post_json(
+                TransportRequest(url="https://example.test/messages")
+            )
+
+    assert close_attempts == ["response", "client"]
+
+
+@pytest.mark.unit
+def test_httpx_first_cleanup_only_error_surfaces_after_all_closers():
+    response = FakeResponse(body={"answer": "ok"})
+    client = FakeHttpxClient(response=response)
+    close_attempts = []
+
+    def fail_response_close():
+        close_attempts.append("response")
+        raise RuntimeError("first cleanup")
+
+    def fail_client_close():
+        close_attempts.append("client")
+        raise ValueError("second cleanup")
+
+    response.close = fail_response_close
+    client.close = fail_client_close
+    with patch.object(httpx, "Client", return_value=client):
+        with pytest.raises(RuntimeError, match="first cleanup"):
+            HttpxSyncTransport().post_json(
+                TransportRequest(url="https://example.test/messages")
+            )
+
+    assert close_attempts == ["response", "client"]
+
+
+@pytest.mark.unit
+def test_httpx_sse_parser_factory_failure_closes_acquired_response_and_client(
+    monkeypatch,
+):
+    response = FakeResponse(lines=['data: {"ok": true}', ""])
+    client = FakeHttpxClient(response=response)
+    primary = RuntimeError("parser construction failed")
+
+    def fail_parser(_response):
+        raise primary
+
+    monkeypatch.setattr(
+        "src.llm_api_adapter.llms.httpx_transport.iter_sse_events",
+        fail_parser,
+    )
+    with patch.object(httpx, "Client", return_value=client):
+        events = HttpxSyncTransport().post_sse(
+            TransportRequest(url="https://example.test/stream")
+        )
+        with pytest.raises(RuntimeError) as raised:
+            list(events)
+
+    assert raised.value is primary
+    assert response.close_calls == 1
     assert client.close_calls == 1
 
 

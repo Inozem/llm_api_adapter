@@ -224,6 +224,38 @@ def test_ai_message_to_google_with_tool_calls_and_no_args():
 
 
 @pytest.mark.unit
+def test_ai_message_to_google_replays_explicit_google_call_id_and_signature():
+    msg = AIMessage(
+        content="",
+        tool_calls=[
+            ToolCall(
+                name="weather",
+                arguments={"city": "TLV"},
+                call_id="google-call-1",
+                provider_data={
+                    "googleFunctionCallIdPresent": True,
+                    "thoughtSignature": "sig-1",
+                },
+            )
+        ],
+    )
+
+    assert msg.to_google() == {
+        "role": "model",
+        "parts": [
+            {
+                "functionCall": {
+                    "name": "weather",
+                    "args": {"city": "TLV"},
+                    "id": "google-call-1",
+                },
+                "thoughtSignature": "sig-1",
+            }
+        ],
+    }
+
+
+@pytest.mark.unit
 def test_tool_message_to_openai():
     msg = ToolMessage(content='{"ok": true}', tool_call_id="call_1")
     assert msg.to_openai() == {
@@ -349,6 +381,144 @@ def test_messages_to_google_with_prompt_and_messages():
     assert google_messages == [
         {"role": "user", "parts": [{"text": "ug"}]},
         {"role": "model", "parts": [{"text": "ag"}]},
+    ]
+
+
+@pytest.mark.unit
+def test_messages_to_google_maps_and_groups_identified_tool_results():
+    tool_calls = [
+        ToolCall(
+            name="lookup",
+            arguments={"key": "first"},
+            call_id="call-1",
+            provider_data={"googleFunctionCallIdPresent": True},
+        ),
+        ToolCall(
+            name="lookup",
+            arguments={"key": "second"},
+            call_id="call-2",
+            provider_data={"googleFunctionCallIdPresent": True},
+        ),
+    ]
+    messages = Messages(
+        items=[
+            AIMessage(content="", tool_calls=tool_calls),
+            ToolMessage(content='{"result": 2}', tool_call_id="call-2"),
+            ToolMessage(content='{"result": 1}', tool_call_id="call-1"),
+        ]
+    )
+
+    _, google_messages = messages.to_google()
+
+    assert google_messages == [
+        {
+            "role": "model",
+            "parts": [
+                {"functionCall": {"name": "lookup", "args": {"key": "first"}, "id": "call-1"}},
+                {"functionCall": {"name": "lookup", "args": {"key": "second"}, "id": "call-2"}},
+            ],
+        },
+        {
+            "role": "user",
+            "parts": [
+                {"functionResponse": {"name": "lookup", "response": {"result": 2}, "id": "call-2"}},
+                {"functionResponse": {"name": "lookup", "response": {"result": 1}, "id": "call-1"}},
+            ],
+        },
+    ]
+
+
+@pytest.mark.unit
+def test_messages_to_google_groups_legacy_and_identified_results_in_one_turn():
+    messages = Messages(
+        items=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    ToolCall(name="lookup", arguments={"key": "legacy"}),
+                    ToolCall(
+                        name="lookup",
+                        arguments={"key": "identified"},
+                        call_id="google-call",
+                        provider_data={"googleFunctionCallIdPresent": True},
+                    ),
+                ],
+            ),
+            ToolMessage(content='{"value": 1}', tool_call_id="lookup"),
+            ToolMessage(content='{"value": 2}', tool_call_id="google-call"),
+        ]
+    )
+
+    _, google_messages = messages.to_google()
+
+    assert google_messages[1] == {
+        "role": "user",
+        "parts": [
+            {"functionResponse": {"name": "lookup", "response": {"value": 1}}},
+            {
+                "functionResponse": {
+                    "name": "lookup",
+                    "response": {"value": 2},
+                    "id": "google-call",
+                }
+            },
+        ],
+    }
+
+
+@pytest.mark.unit
+def test_messages_to_google_preserves_google_presence_metadata_from_dict_history():
+    messages = Messages(
+        items=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "name": "lookup",
+                        "arguments": {"key": "x"},
+                        "call_id": "google-call",
+                        "provider_data": {"googleFunctionCallIdPresent": True},
+                    }
+                ],
+            },
+            Prompt(content="system context"),
+            {
+                "role": "tool",
+                "tool_call_id": "google-call",
+                "content": '{"value": 1}',
+            },
+        ]
+    )
+
+    prompt, google_messages = messages.to_google()
+
+    assert prompt == "system context"
+    assert google_messages == [
+        {
+            "role": "model",
+            "parts": [
+                {
+                    "functionCall": {
+                        "name": "lookup",
+                        "args": {"key": "x"},
+                        "id": "google-call",
+                    }
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": "lookup",
+                        "response": {"value": 1},
+                        "id": "google-call",
+                    }
+                }
+            ],
+        },
     ]
 
 

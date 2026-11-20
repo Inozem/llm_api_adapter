@@ -803,6 +803,22 @@ async def test_anthropic_fable_5_2_registered_pricing_applies_to_reported_usage(
 
 
 @pytest.mark.unit
+def test_native_anthropic_keeps_base_pricing_tier_selection():
+    """Generic caller-tier fallback must not alter native registry pricing."""
+    adapter = AnthropicAdapter(api_key="test_api_key", model="claude-fable-5-2")
+    adapter.pricing = Pricing.from_dict(
+        [{"up_to_prompt_tokens": 100, "input_per_1m": 1, "output_per_1m": 2}],
+        currency="CAD",
+    )
+    response = ChatResponse(
+        usage=Usage(input_tokens=101, output_tokens=5, total_tokens=106)
+    )
+
+    with pytest.raises(ValueError, match="do not cover"):
+        adapter._apply_response_pricing(response)
+
+
+@pytest.mark.unit
 def test_pricing_overrides_apply_to_the_selected_tier():
     adapter = _adapter()
     adapter.pricing.set_in_per_1m(7.0)
@@ -1045,6 +1061,67 @@ def test_responses_constructor_pricing_copies_and_setters_stay_instance_local():
     assert second.pricing.tiers[0].in_per_token == pytest.approx(1 / 1_000_000)
     assert second.pricing.tiers[0].out_per_token == pytest.approx(2 / 1_000_000)
     assert native.pricing is native_pricing and native.pricing.tiers == native_tiers
+
+
+@pytest.mark.unit
+def test_anthropic_compatible_constructor_copies_assignment_keeps_reference():
+    """Generic Messages shares the compatible pricing lifecycle without registry writes."""
+    from src.llm_api_adapter.adapters.anthropic_compatible.adapter import (
+        AnthropicCompatibleAdapter,
+    )
+
+    caller = _tiered_pricing()
+    native = AnthropicAdapter(api_key="test-key", model="claude-sonnet-4-5-20250929")
+    native_pricing = native.pricing
+    native_model_pricing = native.model_spec.pricing_tiers
+    native_pricing_snapshot = (
+        native_pricing.currency,
+        tuple(native_pricing.tiers),
+    )
+    native_model_snapshot = (
+        native_model_pricing.currency,
+        tuple(native_model_pricing.tiers),
+    )
+    first = AnthropicCompatibleAdapter(
+        api_key="test-key",
+        model="claude-sonnet-4-5-20250929",
+        base_url="https://example.invalid/v1",
+        pricing=caller,
+    )
+    second = AnthropicCompatibleAdapter(
+        api_key="test-key",
+        model="claude-sonnet-4-5-20250929",
+        base_url="https://example.invalid/v1",
+        pricing=caller,
+    )
+    assert first.pricing is not caller and second.pricing is not caller
+    assert first.pricing is not second.pricing
+    assert first.pricing.tiers is not caller.tiers
+
+    first.pricing.set_in_per_1m(23.0)
+    first.pricing.set_out_per_1m(29.0)
+    first.pricing.set_currency("JPY")
+    assert first.pricing.currency == "JPY"
+    assert first.pricing.tiers[0].in_per_token == pytest.approx(23 / 1_000_000)
+    assert first.pricing.tiers[0].out_per_token == pytest.approx(29 / 1_000_000)
+    assert caller.currency == second.pricing.currency == "USD"
+    assert caller.tiers[0].in_per_token == pytest.approx(1 / 1_000_000)
+    assert second.pricing.tiers[0].out_per_token == pytest.approx(2 / 1_000_000)
+
+    assigned = _tiered_pricing()
+    first.pricing = assigned
+    assert first.pricing is assigned
+    assigned.set_in_per_1m(41.0)
+    assigned.set_currency("CAD")
+    assert first.pricing.tiers[0].in_per_token == pytest.approx(41 / 1_000_000)
+    assert first.pricing.currency == "CAD"
+
+    assert native.pricing is native_pricing
+    assert (native.pricing.currency, tuple(native.pricing.tiers)) == native_pricing_snapshot
+    assert (
+        native.model_spec.pricing_tiers.currency,
+        tuple(native.model_spec.pricing_tiers.tiers),
+    ) == native_model_snapshot
 
 
 @pytest.mark.unit

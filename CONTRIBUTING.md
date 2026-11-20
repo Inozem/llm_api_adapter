@@ -74,78 +74,37 @@ The `dev` and `main` CI workflows run this deterministic coverage across Python 
 
 Keep deterministic tests free of network access, provider credentials, and model-specific prompt tuning. New provider behavior should use sanitized fixtures or mocked transports.
 
-### OpenAI-compatible mode
+### Compatible modes
 
-Core's `openai_compatible` mode accepts an explicit root, exact arbitrary
-model ID and Chat Completions (default) or Responses selector. Follow the
-[connection and wire contract](OPENAI_COMPATIBLE.md) and
-[async guide](ASYNC_API.md#openai-compatible-endpoints). Root/selector/provider
-conflicts must fail before discovery or I/O; neither model names nor a server
-failure may select another API or endpoint. Unknown models have no verified
-capabilities, native reasoning defaults, limits or registered prices.
+Connection and API details belong in the [OpenAI-compatible guide](OPENAI_COMPATIBLE.md),
+[Messages guide](ANTHROPIC_COMPATIBLE.md) and [shared async example](ASYNC_API.md#compatible-endpoints).
+Reuse shared protocol components while preserving native public calls and
+provider-owned policy. Keep Requests as the default, optional dependencies
+optional, and generic connections independent of native model facts/tariffs.
 
-`OpenAIAdapter` directly inherits `OpenAICompatibleAdapter`, using the same
-five execution methods and sibling protocol components under
-`adapters/openai_compatible/`. Native registry rules, continuation and
-pricing stay in native policy; generic
-Responses uses `store=false` and full caller history without continuation
-IDs or opaque replay. Preserve native constructor/import/module-patch
-contracts when changing this shared code. Reuse existing validators,
-factories, lifecycle and pricing arithmetic. Low-level sync/async HTTP and SSE
-execution lives in `llms/openai_compatible/`; concrete `llms/openai/` clients
-retain native routing, request rules, reasoning and existing patch points.
-Compatible factories use generic clients with an explicit endpoint and no
-native-policy switch. Shared request assembly and response dispatch live in
-`adapters/openai_compatible/common/payloads.py`. Keep generic imports
-independent of native OpenAI policy modules, and preserve native policy hooks
-when changing shared assembly. Preserve the native eight-parameter and
-compatible ten-parameter dataclass constructors, real keyword acceptance,
-repr/equality and module-bound/subclass hooks. Native overrides retain
-integration policy; exact-model differences remain registry data.
-
-Exercise both compatible APIs and the omitted-selector Chat default in the
-existing unit/mocked-integration and shared conformance suites. Reuse scenario
-bodies, fixtures and API/case dimensions. Cover four methods, requests and
-sync HTTPX, optional async boundaries, exact destinations/payloads, tools and
-portable schemas, terminal failures, callbacks/cleanup, credential redaction,
-unknown/zero/cache usage and caller-priced/unpriced results. Focused examples:
+Cover all four methods, both sync transports and true async with offline
+tests for routing/validation, optional imports/discovery, conversation
+features, lifecycle/errors and reported usage/caller pricing. Reuse existing
+validators, response types, stream helpers and pricing arithmetic; preserve
+unknown versus zero and each protocol's cache semantics. Useful selections:
 
 ```bash
-python -m pytest -q --import-mode=importlib -m unit tests/unit/test_universal_adapter.py tests/unit/adapters/test_openai_compatible_adapter.py tests/unit/adapters/test_pricing_lifecycle.py tests/unit/conformance/test_facade_contract.py
-python -m pytest -q --import-mode=importlib -m unit tests/unit/adapters/test_openai_client_construction.py tests/unit/adapters/test_openai_adapter_inheritance.py tests/unit/adapters/test_openai_response_normalization.py tests/unit/llms/openai tests/unit/llms/openai_compatible
+python -m pytest -q --import-mode=importlib -m unit tests/unit/adapters tests/unit/llms
+python -m pytest -q --import-mode=importlib -m unit tests/unit/test_universal_adapter.py tests/unit/test_organization_plugins.py tests/unit/test_anthropic_compatible_optional_dependencies.py tests/unit/conformance
 ```
 
-Run affected complete Core and installed organization-package deterministic
-regressions after shared-code changes, retaining the canonical coverage gate.
-For documentation-only edits, check content, examples, links and diffs.
-On Windows, use a fresh verified-unused `--basetemp` outside the workspace
-when generated configuration fixtures trigger editor watchers; keep editor
-and test configuration unchanged.
+Run affected full Core and installed-package regressions after shared-code
+changes, retaining the canonical coverage gate. Report deferred Qwen migration
+failures explicitly without weakening assertions; they must pass before its
+migration acceptance. For documentation-only edits, check content, examples,
+links and diffs. On Windows, use a fresh unused `--basetemp` outside the
+workspace when fixture files trigger editor watchers.
 
-Caller tariffs reuse `Pricing`/`PricingTier`, existing setters and assignment
-to `facade.adapter.pricing`. They remain local inputs, never registry facts.
-Check units, direct-constructor copies versus assignment references,
-inclusive full-input tiers, cache completeness, currency and partial costs
-against the [public pricing contract](OPENAI_COMPATIBLE.md#compatible-usage-and-caller-tariffs).
-Do not borrow native count defaults or tariffs for generic mode.
-
-Every existing E2E test/assertion, fixture, harness, scenario/selection map,
-model/profile choice, marker, retry/threshold, workflow and execution
-configuration remains unchanged for this feature. Compatible-specific API
-selection, full stateless history and pricing differences belong in
-credential-free deterministic tests. Add no separate compatible live case,
-smoke, model target or marker, and force no native model/API. Existing native
-OpenAI E2E checks the shared foundation only through its normal scenarios and
-registered selection; report the protocols actually observed, without
-claiming arbitrary-endpoint certification. The existing native/provider
-exact-candidate gates and authorization rules below remain in force.
-
-Source-tree tests and import-blocking controls do not prove an installed
-dependency boundary. Use the existing TestPyPI candidate installation and
-provider lanes described below, recording exact installed versions and the
-scenarios actually exercised. These lanes install test dependencies; their
-results do not establish a separately isolated requests-only or async-extra
-environment that was not exercised.
+Compatible-specific evidence uses mocked operations. Preserve existing native
+E2E scenarios, fixtures, assertions and selection rules; add no separate
+compatible paid lane. Source tests do not certify arbitrary servers or prove
+an installed dependency boundary. Final native acceptance follows the
+exact-TestPyPI candidate [release flow](#release-flow).
 
 ## Coverage baseline
 

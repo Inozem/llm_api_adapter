@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-import logging
 from typing import Iterator, Mapping
 
 # Kept as a module attribute for existing white-box patch points. Requests are
@@ -12,9 +11,9 @@ from ...errors.llm_api_error import (
     LLMAPITokenLimitError,
     LLMAPIClientError,
     LLMAPIServerError,
-    LLMAPITimeoutError,
 )
 from ..request_rules import apply_model_request_rules
+from ..anthropic_compatible.sync_client import AnthropicCompatibleSyncClient
 from ..transports import (
     SSEEvent,
     SyncTransport,
@@ -22,10 +21,8 @@ from ..transports import (
     create_sync_transport,
 )
 
-logger = logging.getLogger(__name__)
-
 @dataclass
-class ClaudeSyncClient:
+class ClaudeSyncClient(AnthropicCompatibleSyncClient):
     api_key: str
     endpoint: str = "https://api.anthropic.com/v1"
     api_version: str = "2023-06-01"
@@ -51,8 +48,7 @@ class ClaudeSyncClient:
         }
 
     def chat_completion(self, model: str, timeout_s: float | None = None, **kwargs):
-        url = f"{self.endpoint}/messages"
-        payload = self._prepare_chat_payload_for_model(model, kwargs)
+        url, payload = self._request_data(model, kwargs, stream=False)
         response = self._send_request(url, payload, timeout_s)
         return response.json()
 
@@ -60,9 +56,7 @@ class ClaudeSyncClient:
         self, model: str, timeout_s: float | None = None, **kwargs
     ) -> Iterator[SSEEvent]:
         """Stream raw Messages API SSE events without interpreting content blocks."""
-        url = f"{self.endpoint}/messages"
-        payload = self._prepare_chat_payload_for_model(model, kwargs)
-        payload["stream"] = True
+        url, payload = self._request_data(model, kwargs, stream=True)
         return self._stream_request(url, payload, timeout_s)
 
     @staticmethod
@@ -115,34 +109,32 @@ class ClaudeSyncClient:
                 payload["thinking"] = {**thinking, "display": "summarized"}
         return payload
 
+    def _raise_execution_error(self, error: BaseException) -> None:
+        """Retain native exception identity instead of generic sanitization."""
+        raise error
+
     def _send_request(self, url: str, payload: dict, timeout_s: float | None = None):
-        return self._sync_transport.post_json(
+        return self._execute_prepared_request(
             TransportRequest(
                 url=url,
                 headers=self._headers(),
                 payload=payload,
                 timeout=timeout_s,
-            ),
-            http_error_handler=self._handle_http_error,
+            )
         )
 
     def _stream_request(
         self, url: str, payload: dict, timeout_s: float | None = None
     ) -> Iterator[SSEEvent]:
-        events = self._sync_transport.post_sse(
+        """Stream raw events, binding headers and transport on iteration."""
+        yield from self._execute_prepared_stream(
             TransportRequest(
                 url=url,
                 headers=self._headers(),
                 payload=payload,
                 timeout=timeout_s,
-            ),
-            http_error_handler=self._handle_http_error,
-            stream_error_handler=self._handle_stream_error,
+            )
         )
-        try:
-            yield from events
-        finally:
-            events.close()
 
     def _handle_stream_error(self, event: SSEEvent) -> None:
         payload = event.data if isinstance(event.data, Mapping) else {}

@@ -62,6 +62,56 @@ def openai_compatible_no_adapter_selection(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def anthropic_compatible_no_side_effects(monkeypatch):
+    """Guard Anthropic-compatible configuration tests without teardown assertions."""
+    import src.llm_api_adapter.adapters.base_adapter as base_adapter_module
+    import src.llm_api_adapter.llm_registry.llm_registry as registry_module
+
+    calls = []
+
+    def forbidden(boundary):
+        def fail(*_args, **_kwargs):
+            calls.append(boundary)
+            raise AssertionError(f"Unexpected configuration side effect: {boundary}")
+
+        return fail
+
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden("socket.getaddrinfo"))
+    monkeypatch.setattr(
+        requests.sessions.Session, "send", forbidden("requests.Session.send")
+    )
+    monkeypatch.setattr(httpx.Client, "send", forbidden("httpx.Client.send"))
+    monkeypatch.setattr(
+        httpx.AsyncClient, "send", forbidden("httpx.AsyncClient.send")
+    )
+    monkeypatch.setattr(
+        universal_module.ORGANIZATION_PLUGIN_DISCOVERY,
+        "discover",
+        forbidden("organization_plugin_discovery.discover"),
+    )
+    monkeypatch.setattr(
+        base_adapter_module,
+        "resolve_model_spec",
+        forbidden("base_adapter.resolve_model_spec"),
+    )
+    monkeypatch.setattr(
+        registry_module,
+        "resolve_model_spec",
+        forbidden("llm_registry.resolve_model_spec"),
+    )
+    return calls
+
+
+def _anthropic_compatible_adapter_class():
+    """Import the planned public adapter only while a test is executing."""
+    from src.llm_api_adapter.adapters.anthropic_compatible.adapter import (
+        AnthropicCompatibleAdapter,
+    )
+
+    return AnthropicCompatibleAdapter
+
+
 @pytest.mark.unit
 def test_selects_adapter_and_delegates(monkeypatch):
     @dataclass
@@ -1065,3 +1115,208 @@ def test_compatible_seventh_positional_argument_selects_responses_before_io(
     assert facade.adapter.model == "vendor/seventh-position-model"
     assert facade.base_url == "https://example.invalid/gateway/v1"
     assert facade.adapter.api_variant == "responses"
+
+
+@pytest.mark.unit
+def test_anthropic_compatible_seven_position_prefix_defaults_provider_and_preserves_model(
+    anthropic_compatible_no_side_effects,
+):
+    model = "claude-sonnet-4-5-20250929"
+    facade = UniversalLLMAPIAdapter(
+        "anthropic_compatible",
+        model,
+        SYNTHETIC_API_KEY_MARKER,
+        "requests",
+        None,
+        "https://example.invalid/proxy/v1/",
+        None,
+    )
+
+    assert isinstance(facade.adapter, _anthropic_compatible_adapter_class())
+    assert list(inspect.signature(UniversalLLMAPIAdapter).parameters) == [
+        "organization", "model", "api_key", "transport", "service_provider",
+        "base_url", "api_variant",
+    ]
+    assert facade.organization == "anthropic_compatible"
+    assert facade.service_provider == facade.adapter.service_provider == "anthropic_compatible"
+    assert facade.model == facade.adapter.model == model
+    assert facade.base_url == facade.adapter.base_url == "https://example.invalid/proxy/v1"
+    assert facade.adapter.model_spec is None
+    assert facade.adapter.pricing is None
+    assert facade.adapter.is_reasoning is False
+    assert facade.adapter.is_adaptive_thinking is False
+    assert anthropic_compatible_no_side_effects == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:8000/v1",
+        "https://example.invalid/proxy/tenant/V1///",
+        "https://[2001:db8::1]:9443/gateway/messages-v1/",
+    ],
+)
+@pytest.mark.parametrize(
+    "service_provider_option", [{}, {"service_provider": "anthropic_compatible"}]
+)
+def test_anthropic_compatible_facade_accepts_and_normalizes_explicit_roots(
+    base_url, service_provider_option, anthropic_compatible_no_side_effects
+):
+    model = "vendor/Qwen3.5-Plus-2026-11"
+    facade = UniversalLLMAPIAdapter(
+        organization="anthropic_compatible",
+        model=model,
+        api_key=SYNTHETIC_API_KEY_MARKER,
+        base_url=base_url,
+        **service_provider_option,
+    )
+
+    assert isinstance(facade.adapter, _anthropic_compatible_adapter_class())
+    assert facade.model == facade.adapter.model == model
+    assert facade.adapter.model_spec is None
+    assert facade.adapter.pricing is None
+    assert facade.adapter.base_url == base_url.rstrip("/")
+    assert anthropic_compatible_no_side_effects == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        None,
+        "",
+        "   ",
+        False,
+        0,
+        "localhost:8000/v1",
+        "//example.invalid/v1",
+        "ftp://example.invalid/v1",
+        "http:///v1",
+        "https://example.invalid:bad/v1",
+        "https://example.invalid:65536/v1",
+        "https://[2001:db8::zz]:9443/v1",
+        "https://user:synthetic-url-secret@example.invalid/v1",
+        "https://example.invalid/v1?synthetic-query-secret",
+        "https://example.invalid/v1#synthetic-fragment-secret",
+        "https://example.invalid/v1\n/messages",
+        "https://example.invalid/proxy/v1/messages",
+        "https://example.invalid/proxy/v1/messages/",
+        "https://example.invalid/messages",
+    ],
+)
+def test_anthropic_compatible_facade_rejects_invalid_roots_without_discovery_or_io(
+    base_url,
+    anthropic_compatible_no_side_effects,
+    openai_compatible_no_adapter_selection,
+):
+    with pytest.raises(LLMConfigError) as error:
+        UniversalLLMAPIAdapter(
+            organization="anthropic_compatible",
+            model="vendor/model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            base_url=base_url,
+        )
+
+    diagnostic = f"{error.value!s} {error.value!r}"
+    for secret in (
+        SYNTHETIC_API_KEY_MARKER,
+        "synthetic-url-secret",
+        "synthetic-query-secret",
+        "synthetic-fragment-secret",
+    ):
+        assert secret not in diagnostic
+    assert any(word in diagnostic.lower() for word in ("base_url", "root", "url", "endpoint"))
+    assert anthropic_compatible_no_side_effects == []
+    assert openai_compatible_no_adapter_selection == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "api_variant_option",
+    [
+        {"api_variant": "chat_completions"},
+        {"api_variant": "responses"},
+        {"api_variant": "messages"},
+        {"api_variant": ""},
+        {"api_variant": False},
+    ],
+)
+def test_anthropic_compatible_facade_rejects_api_selector_before_selection(
+    api_variant_option,
+    anthropic_compatible_no_side_effects,
+    openai_compatible_no_adapter_selection,
+):
+    with pytest.raises(LLMConfigError) as error:
+        UniversalLLMAPIAdapter(
+            organization="anthropic_compatible",
+            model="vendor/model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            base_url="https://example.invalid/v1",
+            **api_variant_option,
+        )
+    assert "api_variant" in str(error.value).lower()
+    assert anthropic_compatible_no_side_effects == []
+    assert openai_compatible_no_adapter_selection == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "service_provider",
+    [
+        "anthropic",
+        "openai_compatible",
+        "",
+        0,
+    ],
+)
+def test_anthropic_compatible_facade_rejects_provider_conflicts_before_selection(
+    service_provider,
+    anthropic_compatible_no_side_effects,
+    openai_compatible_no_adapter_selection,
+):
+    with pytest.raises(LLMConfigError) as error:
+        UniversalLLMAPIAdapter(
+            organization="anthropic_compatible",
+            model="vendor/model",
+            api_key=SYNTHETIC_API_KEY_MARKER,
+            base_url="https://example.invalid/v1",
+            service_provider=service_provider,
+        )
+    assert any(
+        term in str(error.value).lower()
+        for term in ("service_provider", "service provider", "provider")
+    )
+    assert anthropic_compatible_no_side_effects == []
+    assert openai_compatible_no_adapter_selection == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model", "api_key"),
+    [
+        ("", SYNTHETIC_API_KEY_MARKER),
+        ("vendor/model", ""),
+        (None, SYNTHETIC_API_KEY_MARKER),
+        (17, SYNTHETIC_API_KEY_MARKER),
+        (True, SYNTHETIC_API_KEY_MARKER),
+        ("vendor/model", None),
+        ("vendor/model", 23),
+        ("vendor/model", False),
+    ],
+)
+def test_anthropic_compatible_facade_rejects_invalid_common_fields_before_selection(
+    model,
+    api_key,
+    anthropic_compatible_no_side_effects,
+    openai_compatible_no_adapter_selection,
+):
+    with pytest.raises(ValueError):
+        UniversalLLMAPIAdapter(
+            organization="anthropic_compatible",
+            model=model,
+            api_key=api_key,
+            base_url="https://example.invalid/v1",
+        )
+    assert anthropic_compatible_no_side_effects == []
+    assert openai_compatible_no_adapter_selection == []
