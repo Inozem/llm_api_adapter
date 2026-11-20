@@ -31,16 +31,27 @@ from llm_api_adapter.errors.llm_api_error import LLMAPIClientError
 from llm_api_adapter.llms.transports import SyncTransport, create_sync_transport
 from llm_api_adapter.models.messages.chat_message import Message, Messages, UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart
-from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
+from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage, CostLineItem
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 
 from .clients.async_client import QwenMessagesAsyncClient
 from .clients.sync_client import QwenMessagesSyncClient, validate_workspace_id
 from .request_rules import forced_tool_reasoning_modes
+from .registry import _qwen_model_policy
 from .streaming import QwenMessagesStreamParser, QwenMessagesStreamState
+from .usage import normalize_qwen_accounted_usage
 
 
 logger = logging.getLogger(__name__)
+
+
+def _contains_document_parts(messages: Messages) -> bool:
+    return any(
+        isinstance(file, DocumentPart)
+        for message in messages.items
+        if isinstance(message, UserMessage) and message.files
+        for file in message.files
+    )
 
 
 @dataclass(frozen=True)
@@ -54,6 +65,7 @@ class _PreparedQwenOperation:
     payload: dict[str, Any] = field(repr=False)
     timeout_s: Optional[float]
     capture_reasoning: bool = False
+    pdf_requested: bool = False
 
 
 @dataclass
@@ -98,7 +110,37 @@ class QwenAdapter(AnthropicCompatibleAdapter):
 
     def _apply_response_pricing(self, chat_response: ChatResponse) -> None:
         """Keep the native registry pricing behavior for Qwen responses."""
-        LLMAdapterBase._apply_response_pricing(self, chat_response)
+        policy = _qwen_model_policy(self.model)
+        usage = chat_response.usage
+        if (policy is not None and policy.input_token_accounting and usage is not None
+                and usage.input_tokens is None and self.pricing):
+            tiers = self.pricing.tiers
+            output_rates = {tier.out_per_token for tier in tiers}
+            if len(output_rates) == 1 and tiers[-1].up_to_prompt_tokens is None:
+                tier = tiers[0]
+                cache_rates = {}
+                if tier.cache_read_in_per_token is not None:
+                    cache_rates["price_cache_read_per_token"] = tier.cache_read_in_per_token
+                if tier.cache_write_in_per_token is not None:
+                    cache_rates["price_cache_write_per_token"] = tier.cache_write_in_per_token
+                chat_response.apply_pricing(
+                    price_input_per_token=tier.in_per_token,
+                    price_output_per_token=tier.out_per_token,
+                    currency=self.pricing.currency,
+                    **cache_rates,
+                )
+            else:
+                chat_response.cost_input = None
+                chat_response.cost_output = None
+                chat_response.cost_total = None
+                chat_response.currency = self.pricing.currency
+        else:
+            LLMAdapterBase._apply_response_pricing(self, chat_response)
+        if chat_response.cost_breakdown is not None:
+            chat_response.apply_cost_breakdown(
+                chat_response.cost_breakdown,
+                accounting_complete=bool(chat_response.cost_breakdown),
+            )
 
     @property
     def _sync_transport(self) -> SyncTransport:
@@ -226,6 +268,7 @@ class QwenAdapter(AnthropicCompatibleAdapter):
         )
         _ = previous_response
         state = self._new_messages_stream_state(buffer_chars, capture_reasoning)
+        state.common.pdf_requested = operation.pdf_requested
         runner = self._run_prepared_stream(
             operation,
             state=state,
@@ -283,6 +326,7 @@ class QwenAdapter(AnthropicCompatibleAdapter):
             state = self._new_messages_stream_state(
                 buffer_chars, capture_reasoning
             )
+            state.common.pdf_requested = operation.pdf_requested
             _ = previous_response
             runner = self._run_prepared_astream(
                 operation,
@@ -328,6 +372,7 @@ class QwenAdapter(AnthropicCompatibleAdapter):
             json_schema,
             response_model,
         )
+        pdf_requested = _contains_document_parts(request_context.normalized_messages)
         self._reject_document_parts(request_context.normalized_messages)
         validated_max_tokens = self._validate_max_tokens(max_tokens)
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
@@ -342,6 +387,8 @@ class QwenAdapter(AnthropicCompatibleAdapter):
             top_p=top_p,
         )
         self._apply_reasoning_options(payload, reasoning_level)
+        if pdf_requested:
+            payload["include_tool_usage"] = True
         if self.model_spec is not None:
             declared_modes = forced_tool_reasoning_modes(self.model)
             normalized_mode = (
@@ -357,6 +404,21 @@ class QwenAdapter(AnthropicCompatibleAdapter):
                     payload,
                     normalized_tool_choice=normalized_mode,
                 )
+        policy = _qwen_model_policy(self.model)
+        modes = policy.reasoning_modes if policy is not None else None
+        if modes is not None:
+            thinking = payload.get("thinking")
+            mode = (
+                "disabled"
+                if isinstance(thinking, Mapping) and thinking.get("type") == "disabled"
+                else "enabled"
+                if (isinstance(thinking, Mapping) and thinking.get("type") == "enabled")
+                or isinstance(payload.get("output_config"), Mapping)
+                and "effort" in payload["output_config"]
+                else modes.default
+            )
+            if validated_max_tokens > getattr(modes, mode).max_output_tokens:
+                raise ValueError("max_tokens exceeds the Qwen reasoning mode output limit")
         return _PreparedQwenOperation(
             chat_context=request_context,
             client=self._async_client if async_mode else self._client,
@@ -365,7 +427,43 @@ class QwenAdapter(AnthropicCompatibleAdapter):
             payload=payload,
             timeout_s=timeout_s,
             capture_reasoning=capture_reasoning,
+            pdf_requested=pdf_requested,
         )
+
+    def _finalize_messages_operation(self, operation: Any, raw: Any) -> ChatResponse:
+        if operation.pdf_requested and isinstance(raw, Mapping):
+            raw = dict(raw)
+            raw["_qwen_pdf_requested"] = True
+        return super()._finalize_messages_operation(operation, raw)
+
+    def _page_meter_items(self, raw: Any) -> list[CostLineItem] | None:
+        if not isinstance(raw, Mapping):
+            return None
+        requested = bool(raw.get("_qwen_pdf_requested"))
+        x_tools = raw.get("x_tools")
+        parser_reported = isinstance(x_tools, Mapping) and "pdf_page_parser" in x_tools
+        if not requested and not parser_reported:
+            return None
+        parser = x_tools.get("pdf_page_parser") if parser_reported else None
+        count = parser.get("count") if isinstance(parser, Mapping) else None
+        from llm_api_adapter.llm_registry import llm_registry as registry_module
+        from llm_api_adapter.llm_registry.llm_registry import resolve_metered_operation_spec
+        registry = registry_module.LLM_REGISTRY
+        organization = registry.organizations.get("qwen")
+        candidates = ([candidate for candidate in organization.metered_operations.values()
+                       if candidate.model == self.model and candidate.unit == "page"]
+                      if organization else [])
+        meter = (resolve_metered_operation_spec(registry, "qwen", candidates[0].name)
+                 if len(candidates) == 1 else None)
+        items: list[CostLineItem] = []
+        valid_count = isinstance(count, int) and not isinstance(count, bool) and count >= 0
+        valid = valid_count and meter is not None
+        if valid:
+            items.append(CostLineItem(
+                operation=meter.name, model=meter.model, unit=meter.unit,
+                quantity=count, rate=meter.rate, currency=meter.currency,
+            ))
+        return items if valid else []
 
     def _dispatch_prepared_chat(self, operation: _PreparedQwenOperation) -> Any:
         return operation.client.chat(
@@ -400,7 +498,16 @@ class QwenAdapter(AnthropicCompatibleAdapter):
         *,
         capture_reasoning: bool,
     ) -> ChatResponse:
-        return self._parse_response(raw, capture_reasoning=capture_reasoning)
+        response = self._parse_response(raw, capture_reasoning=capture_reasoning)
+        policy = _qwen_model_policy(self.model)
+        if policy is not None and policy.input_token_accounting:
+            response.usage = normalize_qwen_accounted_usage(
+                raw.get("usage") if isinstance(raw, Mapping) else None
+            )
+        page_items = self._page_meter_items(raw)
+        if page_items is not None:
+            response.cost_breakdown = page_items
+        return response
 
     def _consume_messages_event(
         self,
@@ -433,6 +540,10 @@ class QwenAdapter(AnthropicCompatibleAdapter):
             common=QwenMessagesStreamParser.new_state(
                 buffer_chars=buffer_chars,
                 capture_reasoning=capture_reasoning,
+                policy_accounting=bool(
+                    (policy := _qwen_model_policy(self.model)) is not None
+                    and policy.input_token_accounting
+                ),
             )
         )
 

@@ -10,6 +10,9 @@ from llm_api_adapter.adapters.anthropic_compatible.streaming import (
     consume_messages_event,
     finalize_messages_stream,
 )
+from llm_api_adapter.adapters.anthropic_compatible.usage import (
+    merge_messages_usage_snapshots,
+)
 from llm_api_adapter.adapters.base_adapter import _StreamState
 from llm_api_adapter.errors.llm_api_error import (
     InvalidToolArgumentsError,
@@ -23,6 +26,8 @@ from llm_api_adapter.llms.streaming import (
 from llm_api_adapter.llms.transports import SSEEvent
 from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 
+from .usage import normalize_qwen_accounted_usage
+
 
 @dataclass
 class QwenMessagesStreamState(_StreamState):
@@ -33,6 +38,8 @@ class QwenMessagesStreamState(_StreamState):
     input_json_fragments: dict[int, list[str]] = field(default_factory=dict)
     usage: dict[str, Any] = field(default_factory=dict)
     message_delta: dict[str, Any] = field(default_factory=dict)
+    policy_accounting: bool = False
+    pdf_requested: bool = False
     _messages_state: MessagesBlockState = field(
         default_factory=MessagesBlockState,
         init=False,
@@ -56,6 +63,7 @@ class QwenMessagesStreamParser:
         *,
         buffer_chars: Optional[int],
         capture_reasoning: bool,
+        policy_accounting: bool = False,
     ) -> QwenMessagesStreamState:
         """Create fresh shared lifecycle state for one Qwen stream."""
         return QwenMessagesStreamState(
@@ -66,6 +74,7 @@ class QwenMessagesStreamParser:
                 StreamReasoningCollector() if capture_reasoning else None
             ),
             reasoning_response=ChatResponse() if capture_reasoning else None,
+            policy_accounting=policy_accounting,
         )
 
     @classmethod
@@ -79,7 +88,9 @@ class QwenMessagesStreamParser:
             return None, None
         cls._sync_compat_state(state)
         previous_usage = dict(state.usage)
-        adapted = cls._adapt_event(event)
+        adapted = cls._adapt_event(
+            event, preserve_malformed_usage=state.policy_accounting
+        )
         try:
             visible, thinking = consume_messages_event(
                 state._messages_state,
@@ -123,14 +134,21 @@ class QwenMessagesStreamParser:
             if isinstance(state._messages_state.usage, Mapping)
             else previous_usage
         )
+        if state.policy_accounting and state._messages_state.usage_snapshots:
+            merged_usage = merge_messages_usage_snapshots(
+                state._messages_state.usage_snapshots
+            ) or {}
         state.usage.clear()
         state.usage.update(merged_usage)
         state._messages_state.usage = state.usage
         state.message_delta = state._messages_state.message_delta
-        state.usage_tracker.record(
-            state.chunk_buffer,
-            cls._normalize_usage(state.usage),
+        normalized = cls._normalize_usage(
+            state.usage, policy_accounting=state.policy_accounting
         )
+        if state.policy_accounting and state._messages_state.usage_snapshots and normalized is None:
+            state.chunk_buffer.update_metadata(usage=Usage(None, None, None, None, None))
+        else:
+            state.usage_tracker.record(state.chunk_buffer, normalized)
         return visible or None, thinking or None
 
     @staticmethod
@@ -146,7 +164,17 @@ class QwenMessagesStreamParser:
             validate_completion=lambda _state: None,
         )
         response["model"] = response.get("model") or model
-        if state.usage:
+        if state.pdf_requested:
+            response["_qwen_pdf_requested"] = True
+        if state.policy_accounting and state._messages_state.usage_snapshots:
+            merged = merge_messages_usage_snapshots(
+                state._messages_state.usage_snapshots
+            )
+            if merged is not None:
+                response["usage"] = merged
+            else:
+                response.pop("usage", None)
+        elif state.usage:
             response["usage"] = dict(state.usage)
         elif "usage" in state.message_data:
             response["usage"] = state.message_data["usage"]
@@ -162,13 +190,14 @@ class QwenMessagesStreamParser:
         state._messages_state.message_delta = state.message_delta
 
     @staticmethod
-    def _adapt_event(event: Any) -> Any:
+    def _adapt_event(event: Any, *, preserve_malformed_usage: bool = False) -> Any:
         """Drop malformed optional usage snapshots as the native parser did."""
         if not isinstance(event.data, Mapping):
             return event
         payload = dict(event.data)
         kind = event.event or payload.get("type")
-        if kind == "message_delta" and not isinstance(payload.get("usage"), Mapping):
+        if (kind == "message_delta" and not preserve_malformed_usage
+                and not isinstance(payload.get("usage"), Mapping)):
             payload.pop("usage", None)
         if kind == "message_delta" and not isinstance(payload.get("delta"), Mapping):
             payload["delta"] = {}
@@ -243,7 +272,9 @@ class QwenMessagesStreamParser:
         return index in state.blocks
 
     @staticmethod
-    def _normalize_usage(raw_usage: Mapping[str, Any]) -> Optional[Usage]:
+    def _normalize_usage(raw_usage: Mapping[str, Any], *, policy_accounting: bool = False) -> Optional[Usage]:
+        if policy_accounting:
+            return normalize_qwen_accounted_usage(raw_usage)
         input_tokens = QwenMessagesStreamParser._token_count(
             raw_usage.get("input_tokens"),
         )
