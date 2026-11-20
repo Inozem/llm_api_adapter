@@ -45,15 +45,6 @@ from .usage import normalize_qwen_accounted_usage
 logger = logging.getLogger(__name__)
 
 
-def _contains_document_parts(messages: Messages) -> bool:
-    return any(
-        isinstance(file, DocumentPart)
-        for message in messages.items
-        if isinstance(message, UserMessage) and message.files
-        for file in message.files
-    )
-
-
 @dataclass(frozen=True)
 class _PreparedQwenOperation:
     """Capture routing and native preparation for one Qwen operation."""
@@ -372,8 +363,9 @@ class QwenAdapter(AnthropicCompatibleAdapter):
             json_schema,
             response_model,
         )
-        pdf_requested = _contains_document_parts(request_context.normalized_messages)
-        self._reject_document_parts(request_context.normalized_messages)
+        pdf_requested = self._validate_document_parts(
+            request_context.normalized_messages
+        )
         validated_max_tokens = self._validate_max_tokens(max_tokens)
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
         payload = build_messages_payload(
@@ -563,19 +555,33 @@ class QwenAdapter(AnthropicCompatibleAdapter):
                 "Qwen parallel tool-call controls are not implemented yet",
             )
 
-    @staticmethod
-    def _reject_document_parts(messages: Messages) -> None:
-        """Reject PDFs before Qwen serializes or sends a Messages request."""
-        if any(
-            isinstance(file, DocumentPart)
-            for message in messages.items
-            if isinstance(message, UserMessage) and message.files
-            for file in message.files
-        ):
-            raise ValueError(
-                "Qwen does not support DocumentPart; PDF and OCR are unavailable "
-                "in Qwen 0.1.0.",
-            )
+    def _validate_document_parts(self, messages: Messages) -> bool:
+        """Validate PDF forms against this model's exact profile before serialization."""
+        model_spec = self.model_spec
+        profile = (
+            model_spec.capability_exceptions
+            if model_spec is not None
+            else None
+        )
+        found_document = False
+        for message in messages.items:
+            if not isinstance(message, UserMessage) or not message.files:
+                continue
+            for file in message.files:
+                if not isinstance(file, DocumentPart):
+                    continue
+                found_document = True
+                capability_id = "pdf_url" if file._is_url() else "pdf_bytes"
+                if profile is None or any(
+                    exception.capability_id == capability_id
+                    and exception.behavior_id != "pass"
+                    for exception in profile
+                ):
+                    raise ValueError(
+                        f"Qwen model {self.model} does not support DocumentPart; "
+                        "PDF and OCR are unavailable for this input."
+                    )
+        return found_document
 
     def _apply_reasoning_options(
         self,

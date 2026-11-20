@@ -538,7 +538,7 @@ def test_qwen_chat_serializes_image_parts_for_every_selected_model(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("model", QWEN_MODELS)
+@pytest.mark.parametrize("model", ["qwen3.7-plus", "qwen3.7-flash"])
 @pytest.mark.parametrize(
     "document",
     [
@@ -2712,7 +2712,7 @@ async def test_qwen_async_stream_prices_cache_reads_at_inclusive_cny_tier(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-@pytest.mark.parametrize("model", QWEN_MODELS)
+@pytest.mark.parametrize("model", ["qwen3.7-plus", "qwen3.7-flash"])
 @pytest.mark.parametrize(
     "document",
     [
