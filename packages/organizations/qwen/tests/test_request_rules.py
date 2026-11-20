@@ -188,18 +188,26 @@ def test_loaded_qwen_catalogue_registers_normally_without_core_policy_mutation()
     assert fresh.register_organization_metadata(metadata) is True
     registered = fresh.organizations["qwen"]
     assert tuple(registered.models) == (
+        "qwen4-max",
         "qwen3.8-max",
         "qwen3.8-flash",
         "qwen3.7-plus",
         "qwen3.7-flash",
     )
     for model_name in registered.models:
-        assert forced_tool_reasoning_modes(model_name) == frozenset({"any", "tool"})
         assert registered.models[model_name].request_rules.rules == ()
         assert not hasattr(
             registered.models[model_name].request_rules,
             "disabled_reasoning_tool_choice_modes",
         )
+    for model_name in (
+        "qwen3.8-max",
+        "qwen3.8-flash",
+        "qwen3.7-plus",
+        "qwen3.7-flash",
+    ):
+        assert forced_tool_reasoning_modes(model_name) == frozenset({"any", "tool"})
+    assert forced_tool_reasoning_modes("qwen4-max") is None
 
 
 @pytest.mark.unit

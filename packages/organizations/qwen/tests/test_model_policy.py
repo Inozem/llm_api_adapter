@@ -368,13 +368,13 @@ def test_qwen_zero_rate_meter_is_valid():
 
 
 @pytest.mark.unit
-def test_absent_qwen_extensions_preserve_loaded_profiles_and_core_registry():
+def test_loaded_qwen_extensions_preserve_core_registry_and_resolve_pdf_meters():
     from llm_api_adapter.llm_registry.llm_registry import (
         LLM_REGISTRY,
         RegistrySpec,
         resolve_metered_operation_spec,
     )
-    from llm_api_adapter_qwen.registry import MODEL_METADATA
+    from llm_api_adapter_qwen.registry import MODEL_METADATA, _qwen_model_policy
     from llm_api_adapter_qwen.request_rules import (
         forced_tool_reasoning_modes,
         parse_qwen_request_rules,
@@ -386,10 +386,66 @@ def test_absent_qwen_extensions_preserve_loaded_profiles_and_core_registry():
     loaded = registry.organizations["qwen"]
     catalogue_models = MODEL_METADATA.organization_data["models"]
     assert tuple(loaded.models) == tuple(catalogue_models)
-    assert loaded.metered_operations == {}
-    assert resolve_metered_operation_spec(registry, "qwen", "pdf_pages_a") is None
+    expected_meters = {
+        "qwen4_max_pdf_pages": ("qwen4-max", 0.02),
+        "qwen38_max_pdf_pages": ("qwen3.8-max", 0.02),
+        "qwen38_flash_pdf_pages": ("qwen3.8-flash", 0.02),
+    }
+    assert set(loaded.metered_operations) == set(expected_meters)
+    for operation_name, (model_name, rate) in expected_meters.items():
+        meter = resolve_metered_operation_spec(registry, "qwen", operation_name)
+        assert meter is not None
+        assert (meter.model, meter.unit, meter.rate, meter.currency) == (
+            model_name,
+            "page",
+            rate,
+            "CNY",
+        )
+
     for model_name, model_data in catalogue_models.items():
         declared = model_data.get("qwen_policy", {}).get("request_rules", [])
         assert forced_tool_reasoning_modes(model_name) == parse_qwen_request_rules(declared)
         assert loaded.models[model_name].request_rules.rules == ()
     assert dict(LLM_REGISTRY.organizations) == before_global
+
+    qwen4 = loaded.models["qwen4-max"]
+    assert (qwen4.limits.context_window_tokens, qwen4.limits.max_output_tokens) == (
+        1_000_000,
+        262_144,
+    )
+    assert qwen4.reasoning_capability.allowed_values == ("none", "low", "high", "xhigh")
+    assert len(qwen4.pricing_tiers.tiers) == 1
+    qwen4_tier = qwen4.pricing_tiers.tiers[0]
+    assert (
+        qwen4_tier.up_to_prompt_tokens,
+        qwen4_tier.in_per_token * 1_000_000,
+        qwen4_tier.out_per_token * 1_000_000,
+        qwen4_tier.cache_read_in_per_token * 1_000_000,
+        qwen4_tier.cache_write_in_per_token,
+    ) == (None, 10.0, 30.0, 0.5, None)
+    qwen4_policy = _qwen_model_policy("qwen4-max")
+    assert qwen4_policy is not None
+    assert qwen4_policy.request_rule_modes is None
+    assert qwen4_policy.reasoning_modes.default == "enabled"
+    assert (
+        qwen4_policy.reasoning_modes.enabled.max_input_tokens,
+        qwen4_policy.reasoning_modes.enabled.max_output_tokens,
+        qwen4_policy.reasoning_modes.disabled.max_input_tokens,
+        qwen4_policy.reasoning_modes.disabled.max_output_tokens,
+    ) == (983_616, 262_144, 991_808, 131_072)
+    assert qwen4_policy.input_token_accounting == (
+        "ordinary_plus_cache_read_and_write"
+    )
+
+    for model_name in ("qwen4-max", "qwen3.8-max", "qwen3.8-flash"):
+        exception_ids = {
+            exception.capability_id
+            for exception in loaded.models[model_name].require_capability_profile()
+        }
+        assert not {"pdf_url", "pdf_bytes"} & exception_ids
+    for model_name in ("qwen3.7-plus", "qwen3.7-flash"):
+        exception_ids = {
+            exception.capability_id
+            for exception in loaded.models[model_name].require_capability_profile()
+        }
+        assert {"pdf_url", "pdf_bytes"} <= exception_ids

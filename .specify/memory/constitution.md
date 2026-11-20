@@ -35,6 +35,9 @@ helpers, registries, and plugin discovery before creating an abstraction. They M
 model-name prefixes, ad-hoc model lists, or one-off provider conditionals when registry metadata
 or a generic handler can express the behavior.
 
+New model entries MUST be placed at the beginning of the `models` mapping in their owning
+organization catalogue. Preserve the relative order of existing entries.
+
 Verified organization/provider model profiles MUST keep their standard tariffs in their owning
 organization registries. The `openai_compatible` and `anthropic_compatible` connection modes are
 exempt from requiring an organization tariff catalogue: their only tariff source is explicit
@@ -377,4 +380,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.9.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-18
+**Version**: 0.9.1 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-20
