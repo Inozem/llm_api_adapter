@@ -151,6 +151,10 @@ independent generation cap is published. A request's prompt plus requested `max_
 within that combined budget. Exact limits remain registry data, tier boundaries remain pricing
 thresholds, and registered limit values remain positive integers.
 
+When a provider publishes different limits by reasoning mode, its profile
+owns the independent input and output maxima. The native adapter validates
+the requested output bound after resolving the effective reasoning mode.
+
 Every first-party exact-model profile supplies `capability_exceptions`, including `[]` when no
 deviation applies. Exception IDs describe semantic, value-independent behavior, not model values
 or pytest IDs. An absent exception or `pass` retains positive baseline evidence. Legacy third-party
@@ -205,10 +209,10 @@ Tool definitions and completed calls are normalized by the shared model. The SDK
 requests and results but never executes application functions. Organization-specific tool wire
 formats and unsupported normalized choices remain outside core behavior.
 
-Image and PDF inputs use shared file-part types, while their supported forms are an organization
-capability boundary. A package may provide explicit preprocessing that is necessary to honor the
-public contract, such as Mistral's PDF OCR path. A package must reject an unsupported file form
-before dispatching an invalid native request.
+Image and PDF inputs use shared file-part types. Native profiles specify
+which forms each model accepts. A package may preprocess a file to honor its
+public contract, as Mistral does for PDF OCR. The adapter rejects unsupported
+forms before dispatch.
 
 ## Usage and Cost Boundary
 
@@ -252,8 +256,9 @@ Omitted input/output counts remain `None`; Google's default applies only to omit
 `thoughtsTokenCount` and `cachedContentTokenCount` when its required base counters are valid. Explicit
 zero remains zero, and wholly absent usage remains absent, while direct `Usage` construction keeps its first
 three positional zero defaults. Existing direct `apply_pricing(input_rate, output_rate, currency)`
-and `apply_cost_breakdown(...)` calls remain compatible. Cache is token input, while other metered
-operations are cost line items. An SDK-calculated total requires every incurred component and a
+and `apply_cost_breakdown(...)` calls remain compatible. Other metered operations,
+such as PDF parsing, are cost line items based on the reported quantity and the
+owning catalogue's rates. An SDK-calculated total requires every incurred component and a
 compatible currency to be known. An authoritative complete provider total, such as xAI's reported
 `cost_in_usd_ticks`, may be present with component costs `None`; absent component costs are not
 fabricated or treated as zero. DeepSeek's conditional rate schedule remains registry-owned, with

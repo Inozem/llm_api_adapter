@@ -9,29 +9,17 @@ Anthropic-compatible Messages API.
 
 ## Installation
 
-Install through the Core package extra:
-
 ```bash
 pip install "llm-api-adapter[qwen]"
 ```
 
-Direct installation is also supported when Core is managed separately:
-
-```bash
-pip install llm-api-adapter-qwen
-```
-
-Async requests need HTTPX:
-
-```bash
-pip install "llm-api-adapter[qwen,async]"
-```
-
-Synchronous requests use `requests` by default. To opt into HTTPX for sync
-`chat()` and `stream_chat()`, install `"llm-api-adapter[qwen,httpx]"` and pass
-`transport="httpx"`.
+Install `llm-api-adapter-qwen` directly if you manage Core separately.
+Use `llm-api-adapter[qwen,async]` for async calls. For sync HTTPX, use
+`llm-api-adapter[qwen,httpx]` and pass `transport="httpx"`. Sync defaults to Requests.
 
 ## Quick start
+
+This example uses a package build with Qwen4-Max support.
 
 ```python
 import os
@@ -41,29 +29,23 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 adapter = UniversalLLMAPIAdapter(
     organization="qwen",
-    model="qwen3.8-max",
+    model="qwen4-max",
     api_key=os.environ["QWEN_API_KEY"],
 )
 
 response = adapter.chat(
     messages=[UserMessage("Explain retrieval-augmented generation.")],
-    max_tokens=128,
+    max_tokens=1024,
     workspace_id=os.environ["QWEN_WORKSPACE_ID"],
 )
 print(response.content)
 ```
 
-The package supports only Model Studio's Frankfurt Global deployment. Pass the
-required `workspace_id` explicitly to every `chat`, `stream_chat`, `achat`,
-and `astream_chat` call; it is never read from an environment variable. The
-package uses:
-
-```text
-https://{workspace_id}.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages
-```
+Pass your Frankfurt `workspace_id` explicitly to each chat or streaming call.
 
 ## Supported models
 
+- `qwen4-max`
 - `qwen3.8-max`
 - `qwen3.8-flash`
 - `qwen3.7-plus`
@@ -71,48 +53,35 @@ https://{workspace_id}.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages
 
 ## Capabilities
 
-| Capability | Supported models |
-| --- | --- |
-| Text chat, sync/async streaming, application function tools, JSON Schema/Pydantic output, and image URLs or bytes | All four models |
-| `reasoning_level` | Qwen 3.8: categorical effort; Qwen 3.7: numeric thinking budget |
+All five models support text, tools, JSON Schema or Pydantic output, and images
+by URL or bytes in sync and async calls.
 
-All four models default to hybrid thinking. Set `reasoning_level="none"` to
-disable thinking, or `capture_reasoning=True` to receive provider-emitted
-reasoning separately from visible text. `max_tokens` must be a positive integer
-and limits generated output; it is separate from Qwen 3.7's thinking budget.
-With thinking enabled, Model Studio's reported `usage.output_tokens` can also
-include thinking tokens, so it can exceed `max_tokens` even when the visible
-answer respects that output limit.
+The SDK maps the shared `reasoning_level` to each model's native controls.
+[Reasoning support](https://github.com/Inozem/llm_api_adapter/#reasoning-support)
 
-These four models permit `tool_choice="auto"` and `"none"` in thinking mode, but not a
-forced `"any"` or named tool. For a forced tool call, the adapter automatically
-disables thinking and issues a `UserWarning`; pass `reasoning_level="none"` to
-make that choice explicit without a warning.
+Pass a positive integer `max_tokens`. For Qwen4-Max, the output limit depends
+on the thinking mode.
+[Qwen4-Max limits and defaults](https://help.aliyun.com/en/model-studio/qwen4-max)
 
-Both forced tool-choice modes are declared `pass` exceptions: the adapter
-handles the provider restriction while preserving the tool-call contract.
-`previous_response` is accepted but ignored; supply complete `messages`
-history, including assistant tool calls and tool results, on each turn.
-Exact rules and exceptions are recorded in the [Qwen registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/qwen/src/llm_api_adapter_qwen/registry/organizations/qwen.json).
+Qwen4-Max keeps the requested or default thinking mode with forced tool choices.
+Qwen 3.8 and 3.7 disable thinking for forced `"any"` or named tools, warning when
+the adapter changes the request. The adapter ignores `previous_response`.
+Pass full message history on each turn, including tool calls and results.
+See the exact rules in the [Qwen registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/qwen/src/llm_api_adapter_qwen/registry/organizations/qwen.json).
 
 ## PDF input
 
-The package rejects `DocumentPart` URLs and bytes before any HTTP request.
-It does not upload documents or run OCR.
+Qwen4-Max and both Qwen 3.8 models accept PDFs. Add `DocumentPart(url=...)` or
+`DocumentPart(data=pdf_bytes, media_type="application/pdf")` to
+`UserMessage.files`. Qwen 3.7 and unregistered models reject PDFs locally.
+
+Model Studio bills PDF parsing per page. The SDK adds the charge to
+`cost_breakdown` when the provider reports a page count. Without that count,
+`cost_total` is unknown. [Model Studio PDF guide](https://help.aliyun.com/en/model-studio/pdf-understanding)
 
 ## Automatic cache usage and pricing
 
-Model Studio's Messages usage reports ordinary `input_tokens` separately from
-`cache_read_input_tokens`. When both counts are present, the adapter adds them
-to normalize total `Usage.input_tokens` and exposes cache reads as
-`Usage.cached_tokens`. The registry tier is selected from this total, then
-ordinary and cached input use their own Frankfurt Global CNY rates.
-
-No automatic cache-write component is priced, and `cache_write_tokens` remains
-`None`. An omitted cache-read split leaves `cost_input` and `cost_total` unknown;
-known output cost can remain available. Opt-in caching, TTLs, storage, batch,
-promotional, and negotiated rates are excluded. See the shared
-[usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
-
-See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
-for the shared API contract and examples.
+The SDK uses Frankfurt Global rates from the Qwen catalogue. Qwen4-Max
+includes reported cache writes in input usage. Missing required
+counters or unpriced charges leave the full cost unknown.
+[Shared usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing)
