@@ -37,12 +37,20 @@ Organization API
 first-party service provider to the organization name, resolves a registered adapter, and delegates
 the public request methods. It does not own organization payload rules or protocol behavior.
 
-The additive `api_variant` field follows the existing six-field constructor prefix. Together with
-`base_url`, it is accepted only for `organization="openai_compatible"`; non-`None` values for native
-organizations fail configuration before I/O. Compatible mode requires an explicit valid API root
-and uses `service_provider="openai_compatible"`, without plugin discovery to select another API.
-The explicit variants are `chat_completions` and `responses`; omission or `None` selects Chat
-Completions. Native factory arguments and registry-based API selection remain unchanged.
+The existing seven-field constructor prefix remains `organization`, `model`, `api_key`,
+`transport`, `service_provider`, `base_url`, `api_variant`. Non-`None` compatible-only settings
+for native organizations fail configuration before I/O; native factory arguments and
+registry-based API selection remain unchanged. Supported explicit low-level native client
+endpoint/version settings remain native client policy, outside the facade's root selection.
+
+OpenAI-compatible connections retain an explicit valid API root and matching service provider,
+with `api_variant="chat_completions"` or `"responses"`; omission or `None` selects Chat Completions.
+The approved Anthropic-compatible connection uses `organization=service_provider="anthropic_compatible"`,
+requires an explicit root before `/messages`, preserves API-version/proxy prefixes and has fixed
+Messages selection. Only omission/`None` is valid for its `api_variant`; a non-`None` selector
+remains exclusive to OpenAI-compatible mode. Both modes default a matching service provider and
+reject an explicit mismatch before discovery/I/O. No facade pricing/version field, endpoint
+discovery or protocol fallback is added.
 
 ### Shared adapter contract
 
@@ -51,6 +59,12 @@ normalization, tool validation and selection normalization, structured-output pr
 reasoning resolution, stream buffering and completion, response finalization, and standard
 pricing finalization. Shared behavior belongs here only when it is observable as a common
 contract for the supported organizations.
+
+### Compatible connection utilities
+
+Compatible modes share URL validation, safe diagnostics and caller-tariff validation in
+`adapters/compatible_connection.py`, reusing existing pricing types. Protocol selection and
+resource paths belong to each protocol integration; these utilities perform no model lookup.
 
 ### Organization adapters and clients
 
@@ -82,6 +96,19 @@ async remains a native-sync subclass and shares the common async execution mixin
 adapter constructs generic clients directly; its clients have no native-policy switch. Existing
 transports, cleanup and public errors remain the shared authorities.
 
+#### Messages foundation
+
+The Messages foundation separates shared protocol handling from provider policy.
+`llms/anthropic_compatible/` owns synchronous and asynchronous JSON/SSE exchange through existing
+transports. `adapters/anthropic_compatible/` owns common request execution, Messages assembly,
+response normalization and block reconstruction, reusing the shared adapter lifecycle.
+
+Native Claude and Qwen inherit the compatible adapter and client foundations. Native integrations
+retain connection settings, model rules, reasoning, accounting and public compatibility. Qwen
+routing remains local to each request; generic connections inherit no native model facts.
+
+`UniversalLLMAPIAdapter` exposes this connection through the four common methods.
+
 ### Shared models
 
 Messages, file parts, tool definitions and calls, response/usage/cost values, stream chunks, and
@@ -96,9 +123,10 @@ the model as offered through that API.
 
 When omitted, `service_provider` defaults to `organization`. Native integrations select both the
 adapter and the exact-model profile by the resulting provider. A developer's profile must not
-substitute for missing metadata from the selected provider. The `openai_compatible` identifier is
-the documented connection-mode exception: it selects a generic protocol adapter, not a model
-developer or verified provider profile. The caller owns the endpoint and exact model selection.
+substitute for missing metadata from the selected provider. The `openai_compatible` and approved
+`anthropic_compatible` identifiers are connection-mode exceptions: they select generic protocol
+adapters, not model developers or verified provider profiles. The caller owns the endpoint and
+exact model selection; the connection's effective service provider must match its mode.
 
 Public model identity stays separate from API-specific naming; provider adapters own wire
 translation. Native and hosted models reuse the same catalogue and integration mechanisms.
@@ -123,6 +151,10 @@ independent generation cap is published. A request's prompt plus requested `max_
 within that combined budget. Exact limits remain registry data, tier boundaries remain pricing
 thresholds, and registered limit values remain positive integers.
 
+When a provider publishes different limits by reasoning mode, its profile
+owns the independent input and output maxima. The native adapter validates
+the requested output bound after resolving the effective reasoning mode.
+
 Every first-party exact-model profile supplies `capability_exceptions`, including `[]` when no
 deviation applies. Exception IDs describe semantic, value-independent behavior, not model values
 or pytest IDs. An absent exception or `pass` retains positive baseline evidence. Legacy third-party
@@ -144,7 +176,8 @@ configuration, with no name inference, discovery request, protocol probe or fall
 
 1. The facade selects the service provider and its adapter.
 2. A native adapter resolves the selected provider's model profile; compatible mode uses its
-   validated root and explicit/default API without a model-profile lookup.
+   validated root and configured/default OpenAI API or fixed Messages, without a model-profile
+   lookup.
 3. The adapter normalizes and validates the request before provider I/O. Native compatibility
    rules apply only through native policy; generic policy retains the common validators.
 4. The adapter serializes a permitted common request to its selected wire protocol.
@@ -158,8 +191,11 @@ the response, delivers completed tool calls, and then invokes completion. No bac
 partial tool-call API, or universal raw-event API is part of the common contract.
 
 Generic Responses uses full caller-supplied history and `store=false`, without native continuation
-IDs, conversation state, opaque replay or an automatic reasoning-summary request. Both generic
-protocols require valid completion evidence; EOF or a stream terminator alone cannot establish
+IDs, conversation state, opaque replay or an automatic reasoning-summary request. Generic Messages
+also accepts but ignores `previous_response`, uses full caller history, and adds no continuation,
+storage or automatic summary/replay request. Valid controls without a verified reasoning
+capability follow warning/omission policy; opt-in capture uses returned data only. Generic streams
+require valid protocol completion evidence; EOF or a stream terminator alone cannot establish
 success. These generic policies do not change native continuation or historical stream behavior.
 
 ## Structured Output, Tools, and Files
@@ -173,10 +209,10 @@ Tool definitions and completed calls are normalized by the shared model. The SDK
 requests and results but never executes application functions. Organization-specific tool wire
 formats and unsupported normalized choices remain outside core behavior.
 
-Image and PDF inputs use shared file-part types, while their supported forms are an organization
-capability boundary. A package may provide explicit preprocessing that is necessary to honor the
-public contract, such as Mistral's PDF OCR path. A package must reject an unsupported file form
-before dispatching an invalid native request.
+Image and PDF inputs use shared file-part types. Native profiles specify
+which forms each model accepts. A package may preprocess a file to honor its
+public contract, as Mistral does for PDF OCR. The adapter rejects unsupported
+forms before dispatch.
 
 ## Usage and Cost Boundary
 
@@ -189,8 +225,8 @@ subsets of inclusive input and their sum cannot exceed it. Organization-owned no
 pricing tier by full input and forwards its rates. Verified native standard prices remain
 registry-owned, while existing caller-local assignment/setter overrides retain their provenance.
 
-Compatible mode defaults to no tariff: calculated costs, currency and calculated breakdowns remain
-unavailable. Callers may explicitly load a registry-format JSON file, supply numeric parameters or
+Both compatible modes default to no tariff: calculated costs, currency and calculated breakdowns
+remain unavailable. Callers may explicitly load a registry-format JSON file, supply numeric parameters or
 use dictionaries in the existing `pricing_tiers` format. Each form normalizes to existing
 `Pricing`/`PricingTier` objects and uses existing assignment/setter and calculation paths, without
 a new facade pricing option or implicit registry lookup. File loading and tariff selection belong
@@ -220,8 +256,9 @@ Omitted input/output counts remain `None`; Google's default applies only to omit
 `thoughtsTokenCount` and `cachedContentTokenCount` when its required base counters are valid. Explicit
 zero remains zero, and wholly absent usage remains absent, while direct `Usage` construction keeps its first
 three positional zero defaults. Existing direct `apply_pricing(input_rate, output_rate, currency)`
-and `apply_cost_breakdown(...)` calls remain compatible. Cache is token input, while other metered
-operations are cost line items. An SDK-calculated total requires every incurred component and a
+and `apply_cost_breakdown(...)` calls remain compatible. Other metered operations,
+such as PDF parsing, are cost line items based on the reported quantity and the
+owning catalogue's rates. An SDK-calculated total requires every incurred component and a
 compatible currency to be known. An authoritative complete provider total, such as xAI's reported
 `cost_in_usd_ticks`, may be present with component costs `None`; absent component costs are not
 fabricated or treated as zero. DeepSeek's conditional rate schedule remains registry-owned, with
@@ -245,13 +282,21 @@ the applicable shared or package-local route. Provider E2E validation is deliber
 organization-specific, and performed only through explicit manual verification or designated
 post-publish CI lanes. Core and organization packages are independently versioned and released.
 
-Compatible behavior is evidenced by controlled both-API/default, four-method and transport tests,
-including its distinct history, terminal, usage and caller-pricing policies. Shared native execution
-provides evidence only for the branches reached by unchanged native scenarios and registered
-model/API selection. It does not certify arbitrary endpoints or unobserved generic branches. This
-addition preserves all existing E2E tests, fixtures, scenario maps, selectors, model selection,
-markers and execution configuration; it creates no separate compatible live case or lane. Local
-source/mock checks do not establish clean installed-artifact behavior or satisfy a release gate.
+OpenAI-compatible behavior is evidenced by controlled both-API/default, four-method and transport
+tests. The approved Messages boundary requires controlled fixed-API, four-method/both-sync-transport
+and true async evidence, including isolation, history, terminal, usage, caller pricing and
+optional-dependency behavior. Native characterization and complete adapter/client ownership
+review protect the distinct provider policies. Shared native execution provides evidence only for
+branches reached by native scenarios and registered model/API selection; it does not certify
+arbitrary endpoints or unobserved generic branches.
+
+Compatible additions/shared execution preserve existing native E2E scenario bodies, assertions,
+fixtures, harness, capability routes, markers, workflows and current-model coverage. Only a
+separately approved exact-model addition may extend its verified profile and necessary inventory/
+selection data inside the existing provider lane, retaining all applicable positive and old-model
+evidence. No separate generic compatible-mode or model-specific paid case/lane is created. Local
+source/mock checks and an authorized manual preflight do not establish final installed-candidate
+acceptance.
 
 The native/provider final release gate remains the designated post-publish lane after staging
 merge to `dev`, using exact TestPyPI candidate artifacts installed in a clean environment, only

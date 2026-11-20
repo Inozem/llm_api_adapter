@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
+from dataclasses import fields
+import inspect
+import logging
 from pathlib import Path
 import sys
+from types import MappingProxyType
 import warnings
 
 import pytest
@@ -533,7 +538,7 @@ def test_qwen_chat_serializes_image_parts_for_every_selected_model(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("model", QWEN_MODELS)
+@pytest.mark.parametrize("model", ["qwen3.7-plus", "qwen3.7-flash"])
 @pytest.mark.parametrize(
     "document",
     [
@@ -774,6 +779,40 @@ def test_qwen_resolves_reasoning_from_registry_metadata(
 
     request_payload = transport.requests[0].payload
     assert {key: request_payload[key] for key in expected_options} == expected_options
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ["qwen3.7-plus", "qwen3.7-flash"])
+def test_qwen_numeric_reasoning_budget_is_not_limited_by_max_tokens(
+    qwen_runtime,
+    model,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    budget = adapter.adapter.model_spec.reasoning_capability.max_budget_tokens
+    transport = FakeSyncTransport(
+        {
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+    )
+    adapter.adapter._sync_transport = transport
+
+    adapter.chat(
+        [{"role": "user", "content": "Think."}],
+        max_tokens=1,
+        reasoning_level=budget,
+        workspace_id="frankfurt-workspace",
+    )
+
+    assert transport.requests[0].payload["max_tokens"] == 1
+    assert transport.requests[0].payload["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": budget,
+    }
 
 
 @pytest.mark.integration
@@ -1115,6 +1154,183 @@ def test_qwen_stream_parser_ignores_malformed_nonterminal_events():
         state,
         model="qwen3.8-max",
     ) == {"content": [], "model": "qwen3.8-max"}
+
+
+@pytest.mark.unit
+def test_qwen_stream_parser_safely_ignores_unhashable_event_kinds_and_uses_empty_name_fallback():
+    state = QwenMessagesStreamParser.new_state(
+        buffer_chars=None,
+        capture_reasoning=False,
+    )
+    malformed_events = (
+        SSEEvent(event=None, data={"type": []}),
+        SSEEvent(event=None, data={"type": {}}),
+    )
+    for event in malformed_events:
+        assert QwenMessagesStreamParser.consume_event(event, state) == (None, None)
+
+    assert QwenMessagesStreamParser.consume_event(
+        SSEEvent(
+            event="",
+            data={
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": "kept"},
+            },
+        ),
+        state,
+    ) == (None, None)
+    assert QwenMessagesStreamParser.finalize(
+        state,
+        model="qwen3.8-max",
+    )["content"] == [{"type": "text", "text": "kept"}]
+
+
+@pytest.mark.unit
+def test_qwen_stream_preserves_malformed_start_usage_for_native_validation():
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+
+    state = QwenMessagesStreamParser.new_state(
+        buffer_chars=None,
+        capture_reasoning=False,
+    )
+    QwenMessagesStreamParser.consume_event(
+        SSEEvent(
+            event="message_start",
+            data={
+                "type": "message_start",
+                "message": {
+                    "id": "synthetic",
+                    "content": [],
+                    "usage": [],
+                },
+            },
+        ),
+        state,
+    )
+
+    response = QwenMessagesStreamParser.finalize(state, model="qwen3.8-max")
+    assert response["usage"] == []
+    with pytest.raises(LLMAPIClientError, match="response.usage must be an object"):
+        QwenAdapter._parse_response(response, capture_reasoning=False)
+
+
+@pytest.mark.unit
+def test_qwen_stream_keeps_prior_valid_usage_when_later_start_usage_is_malformed():
+    state = QwenMessagesStreamParser.new_state(
+        buffer_chars=None,
+        capture_reasoning=False,
+    )
+    for message in (
+        {
+            "id": "synthetic-valid",
+            "content": [],
+            "usage": {"input_tokens": 7, "output_tokens": 0},
+        },
+        {
+            "id": "synthetic-invalid",
+            "content": [],
+            "usage": [],
+        },
+    ):
+        QwenMessagesStreamParser.consume_event(
+            SSEEvent(
+                event="message_start",
+                data={"type": "message_start", "message": message},
+            ),
+            state,
+        )
+
+    response = QwenMessagesStreamParser.finalize(state, model="qwen3.8-max")
+    assert response["usage"] == {"input_tokens": 7, "output_tokens": 0}
+
+
+@pytest.mark.unit
+def test_qwen_reuses_shared_messages_assembly_and_stream_reconstruction(
+    qwen_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter.adapters.anthropic_compatible import payloads, streaming
+    import llm_api_adapter_qwen.adapter as qwen_adapter_module
+    import llm_api_adapter_qwen.streaming as qwen_streaming_module
+
+    assembly_calls = []
+    consume_calls = []
+    finalize_calls = []
+    original_build = qwen_adapter_module.build_messages_payload
+    original_consume = qwen_streaming_module.consume_messages_event
+    original_finalize = qwen_streaming_module.finalize_messages_stream
+
+    def build_spy(**kwargs):
+        assembly_calls.append(kwargs)
+        return original_build(**kwargs)
+
+    def consume_spy(*args, **kwargs):
+        consume_calls.append(args[1])
+        return original_consume(*args, **kwargs)
+
+    def finalize_spy(*args, **kwargs):
+        finalize_calls.append(args[0])
+        return original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(qwen_adapter_module, "build_messages_payload", build_spy)
+    monkeypatch.setattr(qwen_streaming_module, "consume_messages_event", consume_spy)
+    monkeypatch.setattr(qwen_streaming_module, "finalize_messages_stream", finalize_spy)
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport(
+        {}, events=qwen_messages_sse_events("qwen3.8-max")
+    )
+    adapter.adapter._sync_transport = transport
+
+    list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=64,
+            workspace_id="frankfurt-workspace",
+        )
+    )
+
+    assert len(assembly_calls) == 1
+    assert assembly_calls[0]["messages"].items
+    assert consume_calls
+    assert finalize_calls
+    assert payloads.build_messages_payload is original_build
+    assert streaming.consume_messages_event is original_consume
+
+
+@pytest.mark.unit
+def test_qwen_shared_stream_policy_keeps_native_tolerated_edges():
+    state = QwenMessagesStreamParser.new_state(
+        buffer_chars=None,
+        capture_reasoning=False,
+    )
+    events = [
+        SSEEvent(event="content_block_start", data={"index": -1, "content_block": {"type": "text", "text": ""}}),
+        SSEEvent(event="content_block_delta", data={"index": -1, "delta": {"type": "text_delta", "text": "before"}}),
+        SSEEvent(event="content_block_stop", data={"index": -1}),
+        SSEEvent(event="content_block_delta", data={"index": -1, "delta": {"type": "text_delta", "text": "after"}}),
+        SSEEvent(event="content_block_start", data={"index": 1, "content_block": {"type": "tool_use", "name": "lookup", "input": {"keep": True}}}),
+        SSEEvent(event="content_block_delta", data={"index": 1, "delta": {"type": "signature_delta", "signature": "ignored"}}),
+        SSEEvent(event="content_block_delta", data={"index": 1, "delta": {"type": "input_json_delta", "partial_json": ""}}),
+        SSEEvent(event="content_block_stop", data={"index": 1}),
+        SSEEvent(event="message_delta", data={"delta": None, "usage": {"output_tokens": 3}}),
+    ]
+
+    outputs = [QwenMessagesStreamParser.consume_event(event, state) for event in events]
+
+    assert outputs[1] == ("before", None)
+    assert outputs[2] == (None, None)
+    assert outputs[3] == ("after", None)
+    response = QwenMessagesStreamParser.finalize(state, model="qwen3.8-max")
+    assert response["content"] == [
+        {"type": "text", "text": "beforeafter"},
+        {"type": "tool_use", "name": "lookup", "input": {"keep": True}},
+    ]
+    assert response["usage"] == {"output_tokens": 3}
 
 
 @pytest.mark.unit
@@ -1536,6 +1752,7 @@ async def test_qwen_astream_separates_captured_thinking_from_visible_text(
 
 
 @pytest.mark.asyncio
+@pytest.mark.unit
 @pytest.mark.parametrize("workspace_id", [None, "", "wrong/workspace"])
 async def test_qwen_async_operations_reject_workspace_before_transport(
     qwen_runtime,
@@ -1569,14 +1786,1112 @@ async def test_qwen_async_operations_reject_workspace_before_transport(
             max_tokens=64,
             workspace_id=workspace_id,
         )
+    async_stream = adapter.astream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        workspace_id=workspace_id,
+    )
     with pytest.raises(ValueError, match="workspace_id"):
-        adapter.astream_chat(
-            [{"role": "user", "content": "Hello"}],
-            max_tokens=64,
-            workspace_id=workspace_id,
-        )
+        await anext(async_stream)
 
     assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("model", QWEN_MODELS)
+async def test_qwen_streams_prepare_at_compatible_times(
+    qwen_runtime,
+    model,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    transport = FakeSyncTransport({})
+    adapter.adapter._sync_transport = transport
+
+    with pytest.raises(ValueError, match="max_tokens"):
+        adapter.stream_chat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=0,
+            workspace_id="frankfurt-workspace",
+        )
+    async_stream = adapter.astream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=0,
+        workspace_id="frankfurt-workspace",
+    )
+    with pytest.raises(ValueError, match="max_tokens"):
+        await anext(async_stream)
+    assert transport.sse_requests == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", QWEN_MODELS)
+def test_qwen_adapter_preserves_dataclass_construction_and_transport_patch_surface(
+    qwen_runtime,
+    monkeypatch,
+    model,
+):
+    from llm_api_adapter_qwen import adapter as qwen_adapter_module
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+    from llm_api_adapter_qwen.clients.sync_client import QwenMessagesSyncClient
+
+    created_transport = FakeSyncTransport({})
+    factory_calls = []
+    sync_client_instances = []
+    async_client_instances = []
+
+    def fake_create_sync_transport(name):
+        factory_calls.append(name)
+        return created_transport
+
+    class FakeSyncClient(QwenMessagesSyncClient):
+        def __init__(self, transport):
+            super().__init__(transport)
+            sync_client_instances.append(self)
+
+    class FakeAsyncClient:
+        def __init__(self):
+            async_client_instances.append(self)
+
+    monkeypatch.setattr(
+        qwen_adapter_module,
+        "create_sync_transport",
+        fake_create_sync_transport,
+    )
+    monkeypatch.setattr(
+        qwen_adapter_module,
+        "QwenMessagesSyncClient",
+        FakeSyncClient,
+    )
+    monkeypatch.setattr(
+        qwen_adapter_module,
+        "QwenMessagesAsyncClient",
+        FakeAsyncClient,
+    )
+
+    adapter = QwenAdapter(
+        "qwen-test-key",
+        model,
+        "qwen",
+        "requests",
+        None,
+        False,
+        False,
+        "qwen",
+    )
+    equal_adapter = QwenAdapter("qwen-test-key", model, "qwen")
+    assert factory_calls == ["requests", "requests"]
+    assert len(sync_client_instances) == 2
+    assert sync_client_instances[0] is not sync_client_instances[1]
+    assert len(async_client_instances) == 2
+    assert async_client_instances[0] is not async_client_instances[1]
+    assert adapter._client.transport is created_transport
+    assert adapter._async_client is not equal_adapter._async_client
+    assert adapter._sync_transport is created_transport
+    assert adapter == equal_adapter
+
+    model_fields = {item.name: item for item in fields(QwenAdapter)}
+    assert tuple(model_fields) == (
+        "api_key",
+        "model",
+        "company",
+        "transport",
+        "pricing",
+        "is_reasoning",
+        "is_adaptive_thinking",
+        "service_provider",
+        "model_spec",
+        "_client",
+        "_async_client",
+    )
+    assert {
+        name: model_fields[name].default
+        for name in (
+            "company",
+            "transport",
+            "pricing",
+            "is_reasoning",
+            "is_adaptive_thinking",
+            "service_provider",
+        )
+    } == {
+        "company": "qwen",
+        "transport": "requests",
+        "pricing": None,
+        "is_reasoning": False,
+        "is_adaptive_thinking": False,
+        "service_provider": None,
+    }
+    assert not model_fields["model_spec"].init
+    assert not model_fields["model_spec"].repr
+    for name in ("_client", "_async_client"):
+        assert not model_fields[name].init
+        assert not model_fields[name].repr
+        assert not model_fields[name].compare
+
+    chat_parameters = inspect.signature(QwenAdapter.chat).parameters
+    assert list(chat_parameters)[:12] == [
+        "self",
+        "messages",
+        "max_tokens",
+        "temperature",
+        "top_p",
+        "reasoning_level",
+        "timeout_s",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
+        "previous_response",
+        "json_schema",
+    ]
+    assert list(chat_parameters)[12:14] == ["response_model", "workspace_id"]
+    assert chat_parameters["max_tokens"].default is None
+    for method_name in ("chat", "achat", "stream_chat", "astream_chat"):
+        method_parameters = inspect.signature(
+            getattr(QwenAdapter, method_name)
+        ).parameters
+        assert method_parameters["max_tokens"].default is None
+        assert method_parameters["workspace_id"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert method_parameters["capture_reasoning"].kind is inspect.Parameter.KEYWORD_ONLY
+
+    stream_parameters = inspect.signature(QwenAdapter.stream_chat).parameters
+    assert stream_parameters["on_done"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert stream_parameters["buffer_chars"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert stream_parameters["on_chunk"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert stream_parameters["workspace_id"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert stream_parameters["capture_reasoning"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert stream_parameters["on_reasoning"].kind is inspect.Parameter.KEYWORD_ONLY
+    with pytest.raises(ValueError, match="max_tokens"):
+        adapter.chat(
+            [{"role": "user", "content": "Hello"}],
+            workspace_id="frankfurt-workspace",
+        )
+
+    replacement_transport = FakeSyncTransport({})
+    adapter._sync_transport = replacement_transport
+    assert adapter._client.transport is replacement_transport
+    assert "qwen-test-key" not in repr(adapter)
+
+    positional_done = []
+    adapter._sync_transport = FakeSyncTransport({}, events=qwen_messages_sse_events(model))
+    list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "Hello"}],
+            64,
+            1.0,
+            1.0,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            positional_done.append,
+            None,
+            None,
+            workspace_id="frankfurt-workspace",
+        )
+    )
+    assert positional_done[0].content == "Hallo"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_qwen_inherits_and_invokes_all_shared_prepared_runners(
+    qwen_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter.adapters.anthropic_compatible.adapter import (
+        AnthropicCompatibleAdapter,
+    )
+    from llm_api_adapter.adapters.anthropic_compatible.execution import (
+        _MessagesPreparedRunners,
+    )
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    assert QwenAdapter.__bases__ == (AnthropicCompatibleAdapter,)
+    assert QwenAdapter._consume_prepared_event is _MessagesPreparedRunners._consume_prepared_event
+    assert QwenAdapter._consume_prepared_event_async is _MessagesPreparedRunners._consume_prepared_event_async
+    assert QwenAdapter._finalize_prepared_stream is _MessagesPreparedRunners._finalize_prepared_stream
+    adapter = QwenAdapter("qwen-test-key", "qwen3.8-max")
+    prepared_state = adapter._new_messages_stream_state(None, False)
+    prepared_state.common.message_data["content"].append(
+        {"type": "text", "text": "synthetic provider content"}
+    )
+    assert "synthetic provider content" not in repr(prepared_state)
+    adapter._sync_transport = FakeSyncTransport(
+        {
+            "content": [{"type": "text", "text": "sync"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+        events=qwen_messages_sse_events(),
+    )
+    async_requests = []
+
+    async def fake_async_request(url, **kwargs):
+        async_requests.append((url, kwargs))
+        return {
+            "content": [{"type": "text", "text": "async"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    def fake_async_stream_request(url, **kwargs):
+        async_requests.append((url, kwargs))
+
+        async def events():
+            for event in qwen_messages_sse_events():
+                yield event
+
+        return events()
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    calls = []
+
+    original_chat = _MessagesPreparedRunners._run_prepared_chat
+    original_achat = _MessagesPreparedRunners._run_prepared_achat
+    original_stream = _MessagesPreparedRunners._run_prepared_stream
+    original_astream = _MessagesPreparedRunners._run_prepared_astream
+
+    def run_chat(self, *args, **kwargs):
+        calls.append("chat")
+        return original_chat(self, *args, **kwargs)
+
+    async def run_achat(self, *args, **kwargs):
+        calls.append("achat")
+        return await original_achat(self, *args, **kwargs)
+
+    def run_stream(self, *args, **kwargs):
+        calls.append("stream")
+        return original_stream(self, *args, **kwargs)
+
+    def run_astream(self, *args, **kwargs):
+        calls.append("astream")
+        return original_astream(self, *args, **kwargs)
+
+    monkeypatch.setattr(_MessagesPreparedRunners, "_run_prepared_chat", run_chat)
+    monkeypatch.setattr(_MessagesPreparedRunners, "_run_prepared_achat", run_achat)
+    monkeypatch.setattr(_MessagesPreparedRunners, "_run_prepared_stream", run_stream)
+    monkeypatch.setattr(_MessagesPreparedRunners, "_run_prepared_astream", run_astream)
+
+    messages = [{"role": "user", "content": "Hello"}]
+    adapter.chat(messages, max_tokens=64, workspace_id="frankfurt-workspace")
+    await adapter.achat(messages, max_tokens=64, workspace_id="frankfurt-workspace")
+    list(adapter.stream_chat(messages, max_tokens=64, workspace_id="frankfurt-workspace"))
+    [text async for text in adapter.astream_chat(
+        messages, max_tokens=64, workspace_id="frankfurt-workspace"
+    )]
+
+    assert calls == ["chat", "achat", "stream", "astream"]
+    assert len(async_requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_qwen_streams_create_sources_on_first_read(qwen_runtime):
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+
+    adapter = QwenAdapter("qwen-test-key", "qwen3.8-max")
+    sync_calls = []
+
+    def sync_stream(**kwargs):
+        sync_calls.append(kwargs)
+        return iter(qwen_messages_sse_events())
+
+    adapter._client.stream = sync_stream
+    sync_result = adapter.stream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        workspace_id="frankfurt-workspace",
+    )
+    assert sync_calls == []
+    assert list(sync_result) == ["Hal", "lo"]
+    assert len(sync_calls) == 1
+
+    async_calls = []
+
+    def async_stream(**kwargs):
+        async_calls.append(kwargs)
+
+        async def events():
+            for event in qwen_messages_sse_events():
+                yield event
+
+        return events()
+
+    adapter._async_client.stream = async_stream
+    async_result = adapter.astream_chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=64,
+        workspace_id="frankfurt-workspace",
+    )
+    assert async_calls == []
+    assert await anext(async_result) == "Hal"
+    assert len(async_calls) == 1
+    assert [text async for text in async_result] == ["lo"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_qwen_stream_validates_buffer_before_opening_native_sources(qwen_runtime):
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+
+    adapter = QwenAdapter("qwen-test-key", "qwen3.8-max")
+    sync_calls = []
+    async_calls = []
+    adapter._client.stream = lambda **kwargs: sync_calls.append(kwargs)
+    adapter._async_client.stream = lambda **kwargs: async_calls.append(kwargs)
+    messages = [{"role": "user", "content": "Hello"}]
+
+    with pytest.raises(ValueError, match="buffer_chars"):
+        adapter.stream_chat(
+            messages,
+            max_tokens=64,
+            buffer_chars=0,
+            workspace_id="frankfurt-workspace",
+        )
+    async_result = adapter.astream_chat(
+        messages,
+        max_tokens=64,
+        buffer_chars=0,
+        workspace_id="frankfurt-workspace",
+    )
+    with pytest.raises(ValueError, match="buffer_chars"):
+        await anext(async_result)
+
+    assert sync_calls == []
+    assert async_calls == []
+
+
+@pytest.mark.unit
+def test_qwen_shared_runner_preserves_native_error_identity(qwen_runtime):
+    from llm_api_adapter_qwen.adapter import QwenAdapter
+
+    adapter = QwenAdapter("qwen-test-key", "qwen3.8-max")
+    original = LLMAPIClientError(detail="native Qwen failure")
+
+    def fail_chat(**kwargs):
+        raise original
+
+    adapter._client.chat = fail_chat
+    with pytest.raises(LLMAPIClientError) as caught:
+        adapter.chat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=64,
+            workspace_id="frankfurt-workspace",
+        )
+
+    assert caught.value is original
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("model", QWEN_MODELS)
+def test_qwen_chat_and_stream_final_responses_use_first_text_block(
+    qwen_runtime,
+    model,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    response = {
+        "id": "msg-qwen-first-text",
+        "model": model,
+        "content": [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 2},
+    }
+    transport = FakeSyncTransport(response)
+    adapter.adapter._sync_transport = transport
+    assert adapter.chat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=8,
+        workspace_id="frankfurt-workspace",
+    ).content == "first"
+
+    events = qwen_messages_sse_events(model)
+    events[2].data["delta"]["text"] = "first"
+    events[3].data["delta"]["text"] = ""
+    events.insert(
+        -2,
+        SSEEvent(
+            event="content_block_start",
+            data={
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+    )
+    events.insert(
+        -2,
+        SSEEvent(
+            event="content_block_delta",
+            data={
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "second"},
+            },
+        ),
+    )
+    events = events[:-2]
+    transport.events = events
+    completed = []
+    visible = list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=8,
+            workspace_id="frankfurt-workspace",
+            on_done=completed.append,
+        )
+    )
+    assert visible == ["first", "second"]
+    assert len(completed) == 1
+    assert completed[0].content == "first"
+    assert completed[0].finish_reason is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("model", QWEN_MODELS)
+async def test_qwen_async_chat_and_stream_final_responses_use_first_text_block(
+    qwen_runtime,
+    monkeypatch,
+    model,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    response = {
+        "id": "msg-qwen-first-text-async",
+        "model": model,
+        "content": [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 2},
+    }
+
+    async def fake_async_request(*args, **kwargs):
+        return response
+
+    def fake_async_stream_request(*args, **kwargs):
+        async def events():
+            yield SSEEvent(
+                event="message_start",
+                data={
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg-qwen-first-text-async",
+                        "model": model,
+                        "content": [],
+                        "usage": {"input_tokens": 1, "output_tokens": 0},
+                    },
+                },
+            )
+            for index, text in ((0, "first"), (1, "second")):
+                yield SSEEvent(
+                    event="content_block_start",
+                    data={
+                        "type": "content_block_start",
+                        "index": index,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                )
+                yield SSEEvent(
+                    event="content_block_delta",
+                    data={
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {"type": "text_delta", "text": text},
+                    },
+                )
+
+        return events()
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    assert (await adapter.achat(
+        [{"role": "user", "content": "Hello"}],
+        max_tokens=8,
+        workspace_id="frankfurt-workspace",
+    )).content == "first"
+    completed = []
+    visible = [
+        text
+        async for text in adapter.astream_chat(
+            [{"role": "user", "content": "Hello"}],
+            max_tokens=8,
+            workspace_id="frankfurt-workspace",
+            on_done=completed.append,
+        )
+    ]
+    assert visible == ["first", "second"]
+    assert len(completed) == 1
+    assert completed[0].content == "first"
+    assert completed[0].finish_reason is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_qwen_overlapping_async_workspace_chats_and_streams_are_isolated(
+    qwen_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    chat_requests = []
+    both_chats_started = asyncio.Event()
+
+    async def fake_async_request(url, **kwargs):
+        chat_requests.append((url, kwargs))
+        if len(chat_requests) == 2:
+            both_chats_started.set()
+        await both_chats_started.wait()
+        workspace = url.split("//", 1)[1].split(".", 1)[0]
+        return {
+            "id": f"chat-{workspace}",
+            "content": [{"type": "text", "text": workspace}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    stream_requests = []
+
+    def fake_async_stream_request(url, **kwargs):
+        stream_requests.append((url, kwargs))
+        workspace = url.split("//", 1)[1].split(".", 1)[0]
+
+        async def events():
+            yield SSEEvent(
+                event="message_start",
+                data={
+                    "type": "message_start",
+                    "message": {
+                        "id": f"stream-{workspace}",
+                        "model": "qwen3.8-max",
+                        "content": [],
+                        "usage": {"input_tokens": 1, "output_tokens": 0},
+                    },
+                },
+            )
+            yield SSEEvent(
+                event="content_block_start",
+                data={
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            )
+            for delta_text in (workspace, "-end"):
+                yield SSEEvent(
+                    event="content_block_delta",
+                    data={
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": delta_text},
+                    },
+                )
+            yield SSEEvent(
+                event="message_delta",
+                data={"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+            )
+            yield SSEEvent(event="message_stop", data={"type": "message_stop"})
+
+        return events()
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+
+    async def chat(workspace):
+        return await adapter.achat(
+            [{"role": "user", "content": f"Hello {workspace}"}],
+            max_tokens=8,
+            workspace_id=workspace,
+        )
+
+    chat_a, chat_b = await asyncio.wait_for(
+        asyncio.gather(chat("workspace-a"), chat("workspace-b")),
+        timeout=5,
+    )
+    assert (chat_a.response_id, chat_a.content) == (
+        "chat-workspace-a",
+        "workspace-a",
+    )
+    assert (chat_b.response_id, chat_b.content) == (
+        "chat-workspace-b",
+        "workspace-b",
+    )
+    assert {
+        url: kwargs["payload"]["messages"][0]["content"]
+        for url, kwargs in chat_requests
+    } == {
+        "https://workspace-a.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages": "Hello workspace-a",
+        "https://workspace-b.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages": "Hello workspace-b",
+    }
+
+    done = {"workspace-a": [], "workspace-b": []}
+
+    def make_stream(workspace):
+        return adapter.astream_chat(
+            [{"role": "user", "content": f"Hello {workspace}"}],
+            max_tokens=8,
+            workspace_id=workspace,
+            on_done=done[workspace].append,
+        )
+
+    stream_a = make_stream("workspace-a")
+    stream_b = make_stream("workspace-b")
+    assert stream_requests == []
+    first_a, first_b = await asyncio.wait_for(
+        asyncio.gather(stream_a.__anext__(), stream_b.__anext__()),
+        timeout=5,
+    )
+    assert len(stream_requests) == 2
+    assert {
+        url: kwargs["payload"]["messages"][0]["content"]
+        for url, kwargs in stream_requests
+    } == {
+        "https://workspace-a.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages": "Hello workspace-a",
+        "https://workspace-b.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages": "Hello workspace-b",
+    }
+    second_a, second_b = await asyncio.wait_for(
+        asyncio.gather(stream_a.__anext__(), stream_b.__anext__()),
+        timeout=5,
+    )
+    assert (first_a, first_b) == ("workspace-a", "workspace-b")
+    assert (second_a, second_b) == ("-end", "-end")
+    with pytest.raises(StopAsyncIteration):
+        await stream_a.__anext__()
+    with pytest.raises(StopAsyncIteration):
+        await stream_b.__anext__()
+    assert len(done["workspace-a"]) == 1
+    assert len(done["workspace-b"]) == 1
+    assert done["workspace-a"][0].content == "workspace-a-end"
+    assert done["workspace-a"][0].response_id == "stream-workspace-a"
+    assert done["workspace-b"][0].content == "workspace-b-end"
+    assert done["workspace-b"][0].response_id == "stream-workspace-b"
+
+
+@pytest.mark.unit
+def test_qwen_sync_workspace_streams_interleave_request_locally(qwen_runtime):
+    class WorkspaceTransport(FakeSyncTransport):
+        def post_sse(
+            self,
+            request,
+            *,
+            http_error_handler=None,
+            stream_error_handler=None,
+        ):
+            self.sse_requests.append(request)
+            workspace = request.url.split("//", 1)[1].split(".", 1)[0]
+            return iter(
+                [
+                    SSEEvent(
+                        event="message_start",
+                        data={
+                            "type": "message_start",
+                            "message": {
+                                "id": f"sync-{workspace}",
+                                "model": "qwen3.8-max",
+                                "content": [],
+                                "usage": {"input_tokens": 1, "output_tokens": 0},
+                            },
+                        },
+                    ),
+                    SSEEvent(
+                        event="content_block_start",
+                        data={
+                            "type": "content_block_start",
+                            "index": 0,
+                            "content_block": {"type": "text", "text": ""},
+                        },
+                    ),
+                    *[
+                        SSEEvent(
+                            event="content_block_delta",
+                            data={
+                                "type": "content_block_delta",
+                                "index": 0,
+                                "delta": {"type": "text_delta", "text": text},
+                            },
+                        )
+                        for text in (workspace, "-end")
+                    ],
+                    SSEEvent(
+                        event="message_delta",
+                        data={
+                            "type": "message_delta",
+                            "delta": {"stop_reason": "end_turn"},
+                        },
+                    ),
+                    SSEEvent(event="message_stop", data={"type": "message_stop"}),
+                ]
+            )
+
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    transport = WorkspaceTransport({})
+    adapter.adapter._sync_transport = transport
+    done_a = []
+    done_b = []
+    stream_a = adapter.stream_chat(
+        [{"role": "user", "content": "Hello alpha"}],
+        max_tokens=8,
+        workspace_id="workspace-a",
+        on_done=done_a.append,
+    )
+    stream_b = adapter.stream_chat(
+        [{"role": "user", "content": "Hello bravo"}],
+        max_tokens=8,
+        workspace_id="workspace-b",
+        on_done=done_b.append,
+    )
+
+    assert transport.sse_requests == []
+    assert next(stream_a) == "workspace-a"
+    assert next(stream_b) == "workspace-b"
+    assert len(transport.sse_requests) == 2
+    assert {
+        request.url: request.payload["messages"][0]["content"]
+        for request in transport.sse_requests
+    } == {
+        "https://workspace-a.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages": "Hello alpha",
+        "https://workspace-b.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages": "Hello bravo",
+    }
+    assert next(stream_a) == "-end"
+    assert next(stream_b) == "-end"
+    with pytest.raises(StopIteration):
+        next(stream_a)
+    with pytest.raises(StopIteration):
+        next(stream_b)
+
+    assert {request.url for request in transport.sse_requests} == {
+        "https://workspace-a.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages",
+        "https://workspace-b.eu-central-1.maas.aliyuncs.com/apps/anthropic/v1/messages",
+    }
+    assert len(done_a) == len(done_b) == 1
+    assert (done_a[0].response_id, done_a[0].content) == (
+        "sync-workspace-a",
+        "workspace-a-end",
+    )
+    assert (done_b[0].response_id, done_b[0].content) == (
+        "sync-workspace-b",
+        "workspace-b-end",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_qwen_async_stream_prices_cache_reads_at_inclusive_cny_tier(
+    qwen_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+    requests = []
+    current_events = []
+
+    def fake_async_stream_request(url, **kwargs):
+        requests.append((url, kwargs))
+
+        async def stream_events():
+            for event in current_events:
+                yield event
+
+        return stream_events()
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    cases = []
+    for model in ("qwen3.7-plus", "qwen3.7-flash"):
+        spec = resolve_model_spec(qwen_runtime, "qwen", model)
+        for tier in spec.pricing_tiers.tiers:
+            if tier.up_to_prompt_tokens is not None:
+                cases.extend(
+                    (model, total_input)
+                    for total_input in (
+                        tier.up_to_prompt_tokens,
+                        tier.up_to_prompt_tokens + 1,
+                    )
+                )
+
+    results = []
+    for model, total_input in cases:
+        adapter = UniversalLLMAPIAdapter(
+            organization="qwen",
+            model=model,
+            api_key="qwen-test-key",
+        )
+        usage = {
+            "input_tokens": total_input - 1,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 1,
+            "cache_creation_input_tokens": 7,
+        }
+        current_events[:] = qwen_messages_sse_events(model)
+        current_events[0].data["message"]["usage"] = dict(usage)
+        current_events[-2].data["usage"] = dict(usage)
+        completed = []
+        output = [
+            text
+            async for text in adapter.astream_chat(
+                [{"role": "user", "content": "cached"}],
+                max_tokens=16,
+                workspace_id="frankfurt-workspace",
+                on_done=completed.append,
+            )
+        ]
+        assert len(completed) == 1
+        results.append((output, completed[0], usage, model, total_input))
+
+    assert len(cases) == 6
+    assert len(requests) == len(cases)
+    for output, result, usage, model, total_input in results:
+        spec = resolve_model_spec(qwen_runtime, "qwen", model)
+        inclusive_input = usage["input_tokens"] + usage["cache_read_input_tokens"]
+        tier = spec.pricing_tiers.tier_for_prompt_tokens(inclusive_input)
+        expected_input_cost = (
+            usage["input_tokens"] * tier.in_per_token
+            + usage["cache_read_input_tokens"] * tier.cache_read_in_per_token
+        )
+        expected_output_cost = usage["output_tokens"] * tier.out_per_token
+
+        assert inclusive_input == total_input
+        assert output == ["Hal", "lo"]
+        assert result.currency == spec.pricing_tiers.currency == "CNY"
+        assert result.usage.input_tokens == total_input
+        assert result.usage.output_tokens == usage["output_tokens"]
+        assert result.usage.total_tokens == total_input + usage["output_tokens"]
+        assert result.usage.cached_tokens == 1
+        assert result.usage.cache_write_tokens is None
+        assert result.cost_input == pytest.approx(expected_input_cost)
+        assert result.cost_output == pytest.approx(expected_output_cost)
+        assert result.cost_total == pytest.approx(expected_input_cost + expected_output_cost)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ["qwen3.7-plus", "qwen3.7-flash"])
+@pytest.mark.parametrize(
+    "document",
+    [
+        DocumentPart(url="https://example.com/report.pdf"),
+        DocumentPart(data=b"%PDF synthetic", media_type="application/pdf"),
+    ],
+)
+async def test_qwen_async_rejects_documents_before_io(
+    qwen_runtime,
+    monkeypatch,
+    model,
+    document,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    chat_requests = []
+    stream_requests = []
+
+    async def fake_async_request(*args, **kwargs):
+        chat_requests.append((args, kwargs))
+        return {}
+
+    def fake_async_stream_request(*args, **kwargs):
+        stream_requests.append((args, kwargs))
+
+        async def empty_events():
+            if False:
+                yield None
+
+        return empty_events()
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    messages = [
+        {"role": "user", "content": "Read this.", "files": [document]}
+    ]
+    with pytest.raises(ValueError, match="DocumentPart; PDF and OCR are unavailable"):
+        await adapter.achat(
+            messages,
+            max_tokens=8,
+            workspace_id="frankfurt-workspace",
+        )
+    with pytest.raises(ValueError, match="DocumentPart; PDF and OCR are unavailable"):
+        await anext(adapter.astream_chat(
+            messages,
+            max_tokens=8,
+            workspace_id="frankfurt-workspace",
+        ))
+    assert chat_requests == []
+    assert stream_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("model", QWEN_MODELS)
+@pytest.mark.parametrize("parallel_tool_calls", [False, True])
+async def test_qwen_async_rejects_supplied_parallel_control_before_io(
+    qwen_runtime,
+    monkeypatch,
+    model,
+    parallel_tool_calls,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    chat_requests = []
+    stream_requests = []
+
+    async def fake_async_request(*args, **kwargs):
+        chat_requests.append((args, kwargs))
+        return {}
+
+    def fake_async_stream_request(*args, **kwargs):
+        stream_requests.append((args, kwargs))
+
+        async def empty_events():
+            if False:
+                yield None
+
+        return empty_events()
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    message = [{"role": "user", "content": "Hello"}]
+
+    with pytest.raises(NotImplementedError, match="parallel tool-call"):
+        await adapter.achat(
+            message,
+            max_tokens=8,
+            parallel_tool_calls=parallel_tool_calls,
+            workspace_id="frankfurt-workspace",
+        )
+    with pytest.raises(NotImplementedError, match="parallel tool-call"):
+        await anext(adapter.astream_chat(
+            message,
+            max_tokens=8,
+            parallel_tool_calls=parallel_tool_calls,
+            workspace_id="frankfurt-workspace",
+        ))
+
+    assert chat_requests == []
+    assert stream_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("model", QWEN_MODELS)
+async def test_qwen_async_chat_serializes_image_and_portable_schema(
+    qwen_runtime,
+    monkeypatch,
+    model,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    requests = []
+
+    async def fake_async_request(url, **kwargs):
+        requests.append((url, kwargs))
+        return {
+            "id": "msg-qwen-async-image-schema",
+            "model": model,
+            "content": [{"type": "text", "text": '{"answer":"ok"}'}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    image = ImagePart(url="https://example.com/image.png")
+    response = await adapter.achat(
+        [
+            {
+                "role": "user",
+                "content": "Describe this image as JSON.",
+                "files": [image],
+            }
+        ],
+        max_tokens=32,
+        json_schema=FLAT_OBJECT_SCHEMA,
+        workspace_id="frankfurt-workspace",
+    )
+
+    assert response.parsed_json == {"answer": "ok"}
+    assert requests[0][1]["payload"]["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this image as JSON."},
+                {
+                    "type": "image",
+                    "source": {"type": "url", "url": "https://example.com/image.png"},
+                },
+            ],
+        }
+    ]
+    assert requests[0][1]["payload"]["output_config"] == {
+        "format": {"type": "json_schema", "schema": FLAT_OBJECT_SCHEMA}
+    }
 
 
 @pytest.mark.unit
@@ -2180,3 +3495,365 @@ def test_qwen_sync_async_and_stream_share_cache_read_pricing(qwen_runtime, monke
         assert result.cost_total == pytest.approx(
             expected_input_cost + expected_output_cost
         )
+
+
+def _install_forced_tool_modes(adapter, modes, monkeypatch):
+    from llm_api_adapter_qwen import registry as qwen_registry
+
+    policies = dict(qwen_registry.QWEN_MODEL_POLICIES)
+    model = adapter.adapter.model
+    if modes is not None:
+        policies[model] = frozenset(modes)
+    else:
+        policies.pop(model, None)
+    monkeypatch.setattr(qwen_registry, "QWEN_MODEL_POLICIES", MappingProxyType(policies))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    (
+        "model",
+        "modes",
+        "reasoning_level",
+        "tool_choice",
+        "expected_reasoning",
+        "should_warn",
+        "expected_wire_choice",
+    ),
+    [
+        # Missing rule must not borrow the Qwen-wide forced-tool behavior.
+        (
+            "qwen3.8-max",
+            None,
+            "medium",
+            "any",
+            ("output_config", {"effort": "medium"}),
+            False,
+            {"type": "any"},
+        ),
+        # A declared any-only rule does not apply to a named tool choice.
+        (
+            "qwen3.7-plus",
+            ("any",),
+            2048,
+            "get_weather",
+            ("thinking", {"type": "enabled", "budget_tokens": 2048}),
+            False,
+            {"type": "tool", "name": "get_weather"},
+        ),
+        # A declared tool-only rule does not apply to any-tool selection.
+        (
+            "qwen3.8-flash",
+            ("tool",),
+            "medium",
+            "any",
+            ("output_config", {"effort": "medium"}),
+            False,
+            {"type": "any"},
+        ),
+        # Matching any policy changes thinking and warns exactly once.
+        (
+            "qwen3.8-max",
+            ("any",),
+            "medium",
+            "any",
+            ("thinking", {"type": "disabled"}),
+            True,
+            {"type": "any"},
+        ),
+        # Matching named-tool behavior is checked on a second existing profile.
+        (
+            "qwen3.7-flash",
+            ("tool",),
+            2048,
+            "get_weather",
+            ("thinking", {"type": "disabled"}),
+            True,
+            {"type": "tool", "name": "get_weather"},
+        ),
+        # Declared forced-tool behavior leaves automatic and disabled choices alone.
+        (
+            "qwen3.8-flash",
+            ("any", "tool"),
+            "medium",
+            "auto",
+            ("output_config", {"effort": "medium"}),
+            False,
+            {"type": "auto"},
+        ),
+        (
+            "qwen3.8-flash",
+            ("any", "tool"),
+            "medium",
+            "none",
+            ("output_config", {"effort": "medium"}),
+            False,
+            {"type": "none"},
+        ),
+    ],
+)
+def test_qwen_forced_tool_policy_uses_only_declared_exact_modes(
+    qwen_runtime,
+    model,
+    modes,
+    reasoning_level,
+    tool_choice,
+    expected_reasoning,
+    should_warn,
+    expected_wire_choice,
+    caplog,
+    monkeypatch,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model=model,
+        api_key="qwen-test-key",
+    )
+    _install_forced_tool_modes(adapter, modes, monkeypatch)
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-forced-policy",
+            "model": model,
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_qwen_policy",
+                    "name": "get_weather",
+                    "input": {},
+                }
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+    )
+    adapter.adapter._sync_transport = transport
+    caplog.clear()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        adapter.chat(
+            [{"role": "user", "content": "Use the tool."}],
+            max_tokens=64,
+            reasoning_level=reasoning_level,
+            tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+            tool_choice=tool_choice,
+            workspace_id="frankfurt-workspace",
+        )
+
+    assert len(caught) == (1 if should_warn else 0)
+    if should_warn:
+        assert "disabled thinking because forced tool_choice" in str(caught[0].message)
+    payload = transport.requests[0].payload
+    assert payload[expected_reasoning[0]] == expected_reasoning[1]
+    assert payload["tool_choice"] == expected_wire_choice
+    policy_logs = [
+        record
+        for record in caplog.records
+        if record.name == "llm_api_adapter_qwen.adapter"
+        and "disabled thinking because forced tool_choice" in record.message
+    ]
+    assert len(policy_logs) == (1 if should_warn else 0)
+
+
+@pytest.mark.unit
+def test_qwen_bound_forced_tool_policy_preserves_schema_format_and_warns_once(
+    qwen_runtime,
+    caplog,
+    monkeypatch,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="qwen",
+        model="qwen3.8-max",
+        api_key="qwen-test-key",
+    )
+    _install_forced_tool_modes(adapter, ("any", "tool"), monkeypatch)
+    schema_format = deepcopy(
+        {"type": "json_schema", "schema": FLAT_OBJECT_SCHEMA}
+    )
+    expected_format = deepcopy(schema_format)
+    payload = {
+        "thinking": {"type": "enabled", "budget_tokens": 2048},
+        "output_config": {"format": schema_format, "effort": "high"},
+    }
+
+    expected_payload = deepcopy(payload)
+    expected_payload["thinking"] = {"type": "disabled"}
+    expected_payload["output_config"].pop("effort")
+    with caplog.at_level(logging.WARNING, logger="llm_api_adapter_qwen.adapter"):
+        with pytest.warns(
+            UserWarning,
+            match="disabled thinking because forced tool_choice",
+        ) as caught:
+            adapter.adapter._disable_thinking_for_forced_tool_choice(
+                payload,
+                normalized_tool_choice="any",
+            )
+
+    assert len(caught) == 1
+    assert payload == expected_payload
+    assert payload["output_config"]["format"] == expected_format
+    assert len(caplog.records) == 1
+
+    caplog.clear()
+    with warnings.catch_warnings(record=True) as second_warnings:
+        warnings.simplefilter("always")
+        adapter.adapter._disable_thinking_for_forced_tool_choice(
+            payload,
+            normalized_tool_choice="any",
+        )
+    assert second_warnings == []
+    assert caplog.records == []
+    assert payload == expected_payload
+
+
+UNKNOWN_QWEN_MODEL = "qwen-test-unregistered-native-id"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["chat", "stream_chat"])
+def test_qwen_unknown_native_model_keeps_unknown_selection_without_policy(
+    qwen_runtime,
+    method,
+):
+    with pytest.warns(UserWarning, match="is not verified") as selection_warnings:
+        adapter = UniversalLLMAPIAdapter(
+            organization="qwen",
+            model=UNKNOWN_QWEN_MODEL,
+            api_key="qwen-test-key",
+        )
+    assert len(selection_warnings) == 1
+    assert adapter.adapter.model_spec is None
+    transport = FakeSyncTransport(
+        {
+            "id": "msg-qwen-unknown",
+            "model": UNKNOWN_QWEN_MODEL,
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+        events=qwen_messages_sse_events(UNKNOWN_QWEN_MODEL),
+    )
+    adapter.adapter._sync_transport = transport
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        if method == "chat":
+            adapter.chat(
+                [{"role": "user", "content": "Hello"}],
+                max_tokens=64,
+                tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+                tool_choice="any",
+                workspace_id="frankfurt-workspace",
+            )
+            request = transport.requests[0]
+        else:
+            list(
+                adapter.stream_chat(
+                    [{"role": "user", "content": "Hello"}],
+                    max_tokens=64,
+                    tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+                    tool_choice={"type": "tool", "name": "get_weather"},
+                    workspace_id="frankfurt-workspace",
+                )
+            )
+            request = transport.sse_requests[0]
+
+    assert captured == []
+    assert len(transport.requests) + len(transport.sse_requests) == 1
+    assert request.payload["model"] == UNKNOWN_QWEN_MODEL
+    assert "thinking" not in request.payload
+    assert "output_config" not in request.payload
+    assert request.url == (
+        "https://frankfurt-workspace.eu-central-1.maas.aliyuncs.com/"
+        "apps/anthropic/v1/messages"
+    )
+    assert request.headers_dict() == {
+        "x-api-key": "qwen-test-key",
+        "Content-Type": "application/json",
+    }
+    assert "anthropic-version" not in request.headers_dict()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["achat", "astream_chat"])
+async def test_qwen_unknown_native_model_has_no_async_forced_tool_inference(
+    qwen_runtime,
+    monkeypatch,
+    method,
+):
+    from llm_api_adapter_qwen.clients import async_client as async_client_module
+
+    requests = []
+    with pytest.warns(UserWarning, match="is not verified") as selection_warnings:
+        adapter = UniversalLLMAPIAdapter(
+            organization="qwen",
+            model=UNKNOWN_QWEN_MODEL,
+            api_key="qwen-test-key",
+        )
+    assert len(selection_warnings) == 1
+    assert adapter.adapter.model_spec is None
+
+    async def fake_async_request(url, **kwargs):
+        requests.append((url, kwargs))
+        return {
+            "id": "msg-qwen-unknown-async",
+            "model": UNKNOWN_QWEN_MODEL,
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    def fake_async_stream_request(url, **kwargs):
+        requests.append((url, kwargs))
+
+        async def events():
+            for event in qwen_messages_sse_events(UNKNOWN_QWEN_MODEL):
+                yield event
+
+        return events()
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        if method == "achat":
+            await adapter.achat(
+                [{"role": "user", "content": "Hello"}],
+                max_tokens=64,
+                tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+                tool_choice="any",
+                workspace_id="frankfurt-workspace",
+            )
+        else:
+            [
+                text
+                async for text in adapter.astream_chat(
+                    [{"role": "user", "content": "Hello"}],
+                    max_tokens=64,
+                    tools=[ToolSpec(name="get_weather", json_schema={"type": "object"})],
+                    tool_choice={"type": "tool", "name": "get_weather"},
+                    workspace_id="frankfurt-workspace",
+                )
+            ]
+
+    assert captured == []
+    assert len(requests) == 1
+    url, kwargs = requests[0]
+    payload = kwargs["payload"]
+    assert payload["model"] == UNKNOWN_QWEN_MODEL
+    assert "thinking" not in payload
+    assert "output_config" not in payload
+    assert url == (
+        "https://frankfurt-workspace.eu-central-1.maas.aliyuncs.com/"
+        "apps/anthropic/v1/messages"
+    )
+    assert kwargs["headers"] == {
+        "x-api-key": "qwen-test-key",
+        "Content-Type": "application/json",
+    }

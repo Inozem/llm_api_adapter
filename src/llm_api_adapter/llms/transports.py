@@ -9,10 +9,11 @@ defined here.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 import json
 from types import MappingProxyType
-from typing import Any, AsyncIterator, Callable, Iterator, Mapping, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterator, Mapping, Optional
 
 from ..errors.llm_api_error import (
     LLMAPIClientError,
@@ -129,6 +130,69 @@ class JSONResponse:
 HTTPErrorHandler = Callable[[Any], Any]
 StreamErrorHandler = Callable[[SSEEvent], Any]
 SYNC_TRANSPORTS = ("requests", "httpx")
+
+
+@contextmanager
+def _cleanup_preserving_primary(*closers: Callable[[], Any]) -> Iterator[None]:
+    """Attempt every close while preserving an operation's first failure.
+
+    Cleanup-only failures remain visible: the first one is raised after all
+    closers have been attempted.  The exception scope is deliberately local
+    to the operation rather than inferred from ``sys.exc_info()``.
+    """
+    try:
+        yield
+    except BaseException:
+        for close in closers:
+            try:
+                close()
+            except BaseException:
+                pass
+        raise
+    else:
+        first_error: Optional[BaseException] = None
+        first_traceback = None
+        for close in closers:
+            try:
+                close()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+                    first_traceback = exc.__traceback__
+        if first_error is not None:
+            raise first_error.with_traceback(first_traceback)
+
+
+@asynccontextmanager
+async def _async_cleanup_preserving_primary(
+    *closers: Callable[[], Awaitable[Any] | None],
+) -> AsyncIterator[None]:
+    """Async equivalent of :func:`_cleanup_preserving_primary`."""
+    try:
+        yield
+    except BaseException:
+        for close in closers:
+            try:
+                awaitable = close()
+                if awaitable is not None:
+                    await awaitable
+            except BaseException:
+                pass
+        raise
+    else:
+        first_error: Optional[BaseException] = None
+        first_traceback = None
+        for close in closers:
+            try:
+                awaitable = close()
+                if awaitable is not None:
+                    await awaitable
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+                    first_traceback = exc.__traceback__
+        if first_error is not None:
+            raise first_error.with_traceback(first_traceback)
 
 
 def _format_transport_diagnostic(

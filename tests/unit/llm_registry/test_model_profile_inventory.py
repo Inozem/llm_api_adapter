@@ -14,7 +14,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 CORE_SOURCE = REPOSITORY_ROOT / "src"
 KIMI_SOURCE = REPOSITORY_ROOT / "packages" / "organizations" / "kimi" / "src"
 ZAI_SOURCE = REPOSITORY_ROOT / "packages" / "organizations" / "zai" / "src"
-for source in (CORE_SOURCE, KIMI_SOURCE, ZAI_SOURCE):
+QWEN_SOURCE = REPOSITORY_ROOT / "packages" / "organizations" / "qwen" / "src"
+for source in (CORE_SOURCE, KIMI_SOURCE, ZAI_SOURCE, QWEN_SOURCE):
     source_path = str(source)
     if source_path not in sys.path:
         sys.path.insert(0, source_path)
@@ -95,9 +96,17 @@ def _catalogue_specs():
             f"{', '.join(missing_profiles)}"
         )
 
-        request_rule_registry = PACKAGE_REQUEST_RULE_REGISTRIES.get(
-            organization_name
-        )
+        if organization_name == "qwen":
+            # Read the schema from the package metadata owner. Do not fabricate
+            # a fallback schema for inventory parsing.
+            qwen_metadata = importlib.import_module(
+                "llm_api_adapter_qwen.registry"
+            ).MODEL_METADATA
+            request_rule_registry = qwen_metadata.request_rule_registry
+        else:
+            request_rule_registry = PACKAGE_REQUEST_RULE_REGISTRIES.get(
+                organization_name
+            )
         organization_spec = OrganizationSpec.from_dict(
             organization_name,
             organization_data,

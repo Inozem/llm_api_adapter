@@ -21,6 +21,9 @@ from llm_api_adapter.llms.transports import (
     SyncTransport,
     TransportRequest,
 )
+from llm_api_adapter.llms.anthropic_compatible.sync_client import (
+    AnthropicCompatibleSyncClient,
+)
 
 
 FRANKFURT_MESSAGES_URL = (
@@ -49,11 +52,27 @@ def messages_url(workspace_id: object) -> str:
     )
 
 
-class QwenMessagesSyncClient:
+class QwenMessagesSyncClient(AnthropicCompatibleSyncClient):
     """Submit Qwen Messages requests through one Core synchronous transport."""
 
     def __init__(self, transport: SyncTransport) -> None:
         self.transport = transport
+
+    def _get_sync_transport(self) -> SyncTransport:
+        return self.transport
+
+    def __repr__(self) -> str:
+        return object.__repr__(self)
+
+    def _headers(self, api_key: str) -> dict[str, str]:
+        return {"x-api-key": api_key, "Content-Type": "application/json"}
+
+    def _raise_execution_error(self, error: BaseException) -> None:
+        raise error
+
+    @staticmethod
+    def _format_diagnostic(value: object) -> str:
+        return str(value)
 
     def chat(
         self,
@@ -63,17 +82,13 @@ class QwenMessagesSyncClient:
         payload: dict[str, Any],
         timeout_s: float | None,
     ) -> dict[str, Any]:
-        response: JSONResponse = self.transport.post_json(
+        response: JSONResponse = self._execute_prepared_request(
             TransportRequest(
                 url=messages_url(workspace_id),
-                headers={
-                    "x-api-key": api_key,
-                    "Content-Type": "application/json",
-                },
+                headers=self._headers(api_key),
                 payload=payload,
                 timeout=timeout_s,
-            ),
-            http_error_handler=self._handle_http_error,
+            )
         )
         response_data = response.json()
         if not isinstance(response_data, dict):
@@ -93,19 +108,13 @@ class QwenMessagesSyncClient:
         """Open one Qwen Messages SSE response through the Core transport."""
         stream_payload = dict(payload)
         stream_payload["stream"] = True
-        return self.transport.post_sse(
-            TransportRequest(
-                url=messages_url(workspace_id),
-                headers={
-                    "x-api-key": api_key,
-                    "Content-Type": "application/json",
-                },
-                payload=stream_payload,
-                timeout=timeout_s,
-            ),
-            http_error_handler=self._handle_http_error,
-            stream_error_handler=self._handle_stream_error,
+        request = TransportRequest(
+            url=messages_url(workspace_id),
+            headers=self._headers(api_key),
+            payload=stream_payload,
+            timeout=timeout_s,
         )
+        return self._execute_prepared_stream(request)
 
     @classmethod
     def _handle_http_error(cls, http_error: Any) -> None:

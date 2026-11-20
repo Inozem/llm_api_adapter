@@ -10,10 +10,11 @@
 
 **Note:** Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai are installed separately with their optional extras.
 
-Core also provides `organization="openai_compatible"` for a caller-selected
-Chat Completions or Responses endpoint and an arbitrary model ID. This mode
-uses the same public methods without registering or certifying that server's
-models. See [OpenAI-compatible endpoints](#openai-compatible-endpoints).
+Core also provides caller-selected connections with arbitrary model IDs:
+`organization="openai_compatible"` for Chat Completions or Responses, and
+`organization="anthropic_compatible"` for Messages. Both use the same public
+methods without registering or certifying the server's models. See
+[compatible endpoints](#compatible-endpoints).
 
 Supports Python 3.10–3.14.
 
@@ -26,7 +27,7 @@ Supports Python 3.10–3.14.
 - [Getting Started](#getting-started)
 - [Model-specific request compatibility](#model-specific-request-compatibility)
 - [Built-in model exceptions](#built-in-model-exceptions)
-- [OpenAI-compatible endpoints](#openai-compatible-endpoints)
+- [Compatible endpoints](#compatible-endpoints)
 - [Streaming](#streaming)
 - [Async API](#async-api)
 - [Optional HTTPX Sync Transport](#optional-httpx-sync-transport)
@@ -72,7 +73,7 @@ Supports Python 3.10–3.14.
 - **Request Timeouts**: Per-request timeout control via `timeout_s`; raises `LLMAPITimeoutError` on expiry.
 - **Flexible Configuration**: `temperature`, `max_tokens`, `top_p`, and other parameters are translated to a verified provider payload; known unsupported fields are omitted predictably.
 - **Pricing Registry**: Bundled model tiers contain ordinary input/output rates and verified automatic cache rates; ordinary rates are overridable per instance.
-- **OpenAI-Compatible Endpoints**: Select a server root and either Chat Completions (the default) or Responses; optionally supply local token tariffs through the existing pricing API.
+- **Compatible Endpoints**: Use OpenAI-compatible Chat Completions/Responses or Anthropic-compatible Messages with an explicit root, model and key, the same four methods and optional caller tariffs.
 
 ## Installation
 
@@ -82,10 +83,10 @@ To install the SDK, you can use pip:
 pip install llm-api-adapter
 ```
 
-The base installation includes synchronous OpenAI-compatible mode with
-`requests`. Use `[httpx]` for explicit synchronous HTTPX or `[async]` for
-`achat()` and `astream_chat()`; no organization package or provider SDK is
-required for compatible mode.
+The base installation provides synchronous OpenAI-compatible and
+Anthropic-compatible connections with `requests`. Use `[httpx]` for explicit
+synchronous HTTPX or `[async]` for `achat()` and `astream_chat()`.
+Compatible connections need no organization package or provider SDK.
 
 To use Mistral, install its optional organization package:
 
@@ -245,7 +246,8 @@ unknown OpenAI model uses Chat Completions rather than the Responses API. Use a
 listed model or request a verified registry addition when a provider adds a new
 alias or model.
 
-For `gemini-4-carbon`, `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`,
+For `gemini-4-neon`, `gemini-4-hydrogen`, `gemini-4-carbon`, `gemini-4-argon`,
+`gemini-3.8-flash`, `gemini-3.7-flash`,
 `gemini-3.6-flash`, and `gemini-3.5-flash-lite`, Google does not support sampling
 controls. The adapter omits `temperature` and `top_p` from these model requests;
 non-default values produce the compatibility warning described above.
@@ -259,10 +261,11 @@ These introductory rates apply through November 30, 2026; Google announces
 USD 4 / 20 / 0.20 from December 1 in its [pricing documentation](https://aistudio.google.com/docs/pricing#gemini-4-carbon).
 Registry tariffs record prices as of the manifest's `effective_date`.
 
-`gpt-6-astra` and `gpt-6.1-sol` use the OpenAI Responses API and do not support
-`temperature` or `top_p`; the adapter omits both according to the same warning
-policy. Neither model can disable reasoning: `reasoning_level="none"` resolves
-to its lowest supported effort, `low`, with a `UserWarning`.
+`gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6-astra`, and `gpt-6.1-sol` use the
+OpenAI Responses API and do not support `temperature` or `top_p`; the adapter
+omits both according to the same warning policy. These models cannot disable
+reasoning: `reasoning_level="none"` resolves to their lowest supported effort,
+`low`, with a `UserWarning`.
 
 `gpt-6-sol` and `gpt-6-luna` use the Responses API and support
 `reasoning_level="none"`. With any higher reasoning effort, OpenAI does not
@@ -301,11 +304,15 @@ print(response.content)
 > **Note**  
 > The adapter automatically normalizes message input — you can mix custom message classes and OpenAI-style dicts in one list.
 
-## OpenAI-compatible endpoints
+## Compatible endpoints
 
-Use `organization="openai_compatible"` with an explicit API root and any
-nonempty model ID. Chat Completions is the default; select Responses with
-`api_variant="responses"`.
+Both modes use the common SDK methods with an explicit API root, exact model
+ID and key. Choose the connection protocol:
+
+| `organization` | API selection | Details |
+| --- | --- | --- |
+| `openai_compatible` | Chat Completions by default; `api_variant="responses"` selects Responses | [OpenAI-compatible guide](OPENAI_COMPATIBLE.md) |
+| `anthropic_compatible` | Messages only; omit `api_variant` | [Messages guide](ANTHROPIC_COMPATIBLE.md) |
 
 ```python
 import os
@@ -313,18 +320,28 @@ import os
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 
 adapter = UniversalLLMAPIAdapter(
-    organization="openai_compatible",
+    organization="openai_compatible",  # Or "anthropic_compatible" for Messages.
     model=os.environ["COMPATIBLE_MODEL"],
     api_key=os.environ["COMPATIBLE_API_KEY"],
     base_url=os.environ["COMPATIBLE_BASE_URL"],
-    api_variant="responses",  # Omit to use Chat Completions.
 )
+response = adapter.chat(
+    messages=[{"role": "user", "content": "Explain SSE briefly."}],
+    max_tokens=256,
+)
+print(response.content)
 ```
 
-See the [OpenAI-compatible guide](OPENAI_COMPATIBLE.md) for both APIs, all
-four methods, root validation, tools/schemas, stateless history, server
-limitations and caller tariffs. Compatible mode has no verified model profile
-or default prices.
+Set `base_url` to the root before the selected resource; version/proxy
+prefixes are preserved. To use OpenAI-compatible Responses, also pass
+`api_variant="responses"`. Messages requires a positive `max_tokens`.
+Sync calls default to Requests; HTTPX is optional for sync and required for
+async. See the [shared async example](ASYNC_API.md#compatible-endpoints).
+
+Both modes accept arbitrary nonempty model IDs without native profiles or
+default prices. Their guides cover tools/schema/files, full history,
+reasoning, completion, usage/cache and caller tariffs, subject to server
+support.
 
 ## Streaming
 
@@ -463,9 +480,9 @@ The SDK provides a set of standardized errors for easier debugging and integrati
 
 The SDK allows you to easily switch between LLM providers and specify the model you want to use. Currently supported providers are OpenAI, Anthropic, Google, Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai. Mistral, xAI, Qwen, Kimi, DeepSeek, and Z.ai require their corresponding optional extras.
 
-- **OpenAI**: You can use models like `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o`, `gpt-4o-mini`.
+- **OpenAI**: You can use models like `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o`, `gpt-4o-mini`.
 - **Anthropic**: Available models include `claude-fable-5-2`, `claude-haiku-5-5`, `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
-- **Google**: Models such as `gemini-4-carbon`, `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, and `gemini-3-flash-preview` can be used. Gemini 2.5 profiles are no longer bundled; update existing configurations to a supported model such as `gemini-3.8-flash`.
+- **Google**: Models such as `gemini-4-neon`, `gemini-4-hydrogen`, `gemini-4-carbon`, `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, and `gemini-3-flash-preview` can be used. Gemini 2.5 profiles are no longer bundled; update existing configurations to a supported model such as `gemini-3.8-flash`.
 - **Mistral**: Install with `pip install "llm-api-adapter[mistral]"`. Native model IDs are `mistral-large-4`, `mistral-small-2603`, `mistral-medium-3-5`, and `mistral-large-2512`. Hosted `glm-5.3-flash` (`organization="zai"`) and `deepseek-flash` (`organization="deepseek"`) use `service_provider="mistral"` and the Mistral package and key. Their direct-provider packages are optional for these routes. See the [Mistral package README](packages/organizations/mistral/README.md) for examples, fixed wire IDs, and provider-specific limits and prices.
 - **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.7`, `grok-4.6`, and `grok-4.5`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
 - **Qwen**: Install with `pip install "llm-api-adapter[qwen]"`. Fixed model IDs are `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`; every operation requires an explicit Frankfurt `workspace_id`. See the [Qwen package README](packages/organizations/qwen/README.md) for its capability boundary, including unsupported PDF input.
@@ -836,6 +853,10 @@ mode sends `store=false` and never sends `previous_response_id` or opaque
 replay state, even when `previous_response` is supplied. See
 [stateless history](OPENAI_COMPATIBLE.md#stateless-history-and-server-dependent-support).
 
+`anthropic_compatible` also uses full caller history and ignores
+`previous_response`, with no continuation or replay request. See
+[Messages history and reasoning](ANTHROPIC_COMPATIBLE.md#history-and-reasoning).
+
 DeepSeek is also stateless and does not send `previous_response_id`. Its
 package uses `previous_response` only to carry matching opaque reasoning replay
 metadata while the caller continues to send the complete `messages` history.
@@ -991,6 +1012,7 @@ and `parsed_model` remains `None` in those cases as well.
 | **xAI** | Responses `text.format.type=json_schema` with `strict=true` plus xAI's additive local overlay (optional organization package) |
 | **Qwen** | Messages `output_config.format.type=json_schema` (optional organization package) |
 | **OpenAI-compatible** | Selected Chat `response_format` or Responses `text.format`; server support is required, with the same local portable-profile and original-model validation |
+| **Anthropic-compatible** | Messages `output_config.format`; server support is required, with the same local portable-profile and original-model validation |
 
 The same **portable** schema can be reused across these organizations without
 provider-specific request code. Google sends the portable JSON Schema through
@@ -1250,7 +1272,7 @@ counts must be nonnegative integers with a sum no greater than total input.
 
 | Built-in organization | Automatic cache usage and registered pricing |
 | --- | --- |
-| OpenAI | Responses reads `input_tokens_details.cached_tokens` and `cache_write_tokens`; Chat Completions reads the same fields from `prompt_tokens_details`. All registered models have a cache-read rate. `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` also have a separately priced automatic cache-write component. |
+| OpenAI | Responses reads `input_tokens_details.cached_tokens` and `cache_write_tokens`; Chat Completions reads the same fields from `prompt_tokens_details`. All registered models have a cache-read rate. A model's separately priced automatic cache writes use the rate declared in its registry pricing tiers. |
 | Google | Confirmed automatic cache reads appear in `cached_tokens` as a subset of inclusive input and are priced once. Automatic reads have registered rates except for `gemini-3-flash-preview`, whose cache-read rate is unverified. There is no separately priced automatic cache-write component. |
 | Anthropic | The adapter does not enable opt-in prompt caching, and the registry has no automatic cache-read or cache-write rates. Ordinary input/output pricing applies to its supported requests. |
 
@@ -1370,10 +1392,14 @@ billing rules and separately metered-operation rates remain unchanged.
 
 ### Compatible usage and caller tariffs
 
-Compatible mode defaults to unavailable calculated costs. Supply local rates
-through the existing `Pricing`/`PricingTier` types and `adapter.adapter.pricing`;
-see the [caller tariff guide](OPENAI_COMPATIBLE.md#compatible-usage-and-caller-tariffs)
-for dictionary, JSON-file and parameter examples, units and completeness rules.
+Both compatible modes default to unavailable calculated costs. Supply local
+rates through `Pricing`/`PricingTier` and `adapter.adapter.pricing`. The
+[OpenAI-compatible tariff guide](OPENAI_COMPATIBLE.md#compatible-usage-and-caller-tariffs)
+and [Messages usage/tariff guide](ANTHROPIC_COMPATIBLE.md#usage-and-caller-tariffs)
+cover dictionary, JSON-file and numeric forms, units and completeness rules.
+Messages normalizes inclusive input only when ordinary input, cache reads
+and cache writes are all reported as valid counts. Native provider defaults
+do not apply to generic connections.
 
 ## Logging
 

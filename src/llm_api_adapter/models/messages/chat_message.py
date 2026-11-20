@@ -247,6 +247,12 @@ class AIMessage(Message):
                     }
                 }
                 if tc.provider_data:
+                    if (
+                        tc.provider_data.get("googleFunctionCallIdPresent") is True
+                        and isinstance(tc.call_id, str)
+                        and tc.call_id
+                    ):
+                        part["functionCall"]["id"] = tc.call_id
                     thought_signature = tc.provider_data.get("thoughtSignature")
                     if thought_signature is not None:
                         part["thoughtSignature"] = thought_signature
@@ -263,8 +269,8 @@ class ToolMessage(Message):
 
     - OpenAI format: role="tool" + tool_call_id
     - Anthropic format: user turn with tool_result block referencing tool_use_id
-    - Google format: user turn with functionResponse part (name + response object)
-      NOTE: Gemini doesn't have call_id; for Google tool loop we treat tool_call_id as function name.
+    - Google format: user turn with functionResponse part (name + response object), with
+      provider call IDs added when the preceding assistant call supplied one.
     """
     tool_call_id: str
     role: str = field(default="tool", init=False)
@@ -299,22 +305,29 @@ class ToolMessage(Message):
         name = self.tool_call_id
         if not name:
             raise ValueError("Google functionResponse requires tool_call_id to be set (use tool name).")
+        return self._to_google_response(name)
+
+    def _to_google_response(
+        self,
+        name: str,
+        *,
+        call_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         response_obj: Any
         try:
             raw = self.content.strip()
             response_obj = json.loads(raw) if raw else {}
         except Exception:
             response_obj = {"content": self.content}
+        function_response: Dict[str, Any] = {
+            "name": name,
+            "response": response_obj,
+        }
+        if call_id:
+            function_response["id"] = call_id
         return {
             "role": "user",
-            "parts": [
-                {
-                    "functionResponse": {
-                        "name": name,
-                        "response": response_obj,
-                    }
-                }
-            ],
+            "parts": [{"functionResponse": function_response}],
         }
 
 
@@ -572,6 +585,14 @@ class Messages:
     def to_google(self) -> Tuple[str | None, List[Dict[str, Any]]]:
         prompt: Optional[str] = None
         messages: List[Dict[str, Any]] = []
+        google_call_names: Dict[str, str] = {}
+        grouped_result_parts: List[Dict[str, Any]] = []
+
+        def flush_grouped_results() -> None:
+            if grouped_result_parts:
+                messages.append({"role": "user", "parts": grouped_result_parts.copy()})
+                grouped_result_parts.clear()
+
         for m in self.items:
             if isinstance(m, Prompt):
                 if prompt is not None:
@@ -579,13 +600,33 @@ class Messages:
                 prompt = m.to_google()
                 continue
             if isinstance(m, ToolMessage):
-                messages.append(m.to_google())
+                if google_call_names:
+                    name = google_call_names.get(m.tool_call_id)
+                    if name is None:
+                        grouped_result_parts.extend(m.to_google()["parts"])
+                    else:
+                        grouped_result_parts.extend(
+                            m._to_google_response(
+                                name,
+                                call_id=m.tool_call_id,
+                            )["parts"]
+                        )
+                else:
+                    messages.append(m.to_google())
                 continue
+            flush_grouped_results()
+            google_call_names = {}
             if isinstance(m, AIMessage):
-                messages.append(m.to_google())
+                assistant_message = m.to_google()
+                messages.append(assistant_message)
+                for part in assistant_message["parts"]:
+                    function_call = part.get("functionCall")
+                    if isinstance(function_call, dict) and function_call.get("id"):
+                        google_call_names[function_call["id"]] = function_call["name"]
                 continue
             if isinstance(m, UserMessage):
                 messages.append(m.to_google())
             else:
                 messages.append({"role": "user", "parts": [{"text": m.content}]})
+        flush_grouped_results()
         return prompt, messages

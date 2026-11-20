@@ -171,12 +171,15 @@ ORGANIZATION_CASES = [
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("model_name", ("gemini-4-argon", "gemini-4-carbon"))
+@pytest.mark.parametrize(
+    "model_name",
+    ("gemini-4-neon", "gemini-4-hydrogen", "gemini-4-argon", "gemini-4-carbon"),
+)
 @pytest.mark.parametrize(
     ("reasoning_level", "expected_level"),
     [("low", "low"), ("medium", "medium"), ("high", "high")],
 )
-def test_google_argon_serializes_native_reasoning_levels(
+def test_google_gemini_4_reasoning_models_serialize_native_reasoning_levels(
     model_name,
     reasoning_level,
     expected_level,
@@ -199,7 +202,10 @@ def test_google_argon_serializes_native_reasoning_levels(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("model_name", ("gemini-4-argon", "gemini-4-carbon"))
+@pytest.mark.parametrize(
+    "model_name",
+    ("gemini-4-neon", "gemini-4-hydrogen", "gemini-4-argon", "gemini-4-carbon"),
+)
 def test_google_reasoning_models_none_warns_and_falls_back_to_registered_minimum(model_name):
     adapter = GoogleAdapter(api_key="test_api_key", model=model_name)
     registered_minimum = adapter.model_spec.reasoning_capability.allowed_values[0]
@@ -219,6 +225,23 @@ def test_google_reasoning_models_none_warns_and_falls_back_to_registered_minimum
     assert len(caught) == 1
     assert caught[0].category is UserWarning
     assert model_name in str(caught[0].message)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_name", ("gemini-4-neon", "gemini-4-hydrogen"))
+def test_google_gemini_4_models_map_very_high_to_xhigh(model_name):
+    adapter = GoogleAdapter(api_key="test_api_key", model=model_name)
+
+    assert adapter._resolve_reasoning_level("very_high").provider_value == "xhigh"
+    config = adapter._build_generation_config(
+        max_tokens=None,
+        temperature=1.0,
+        top_p=1.0,
+        reasoning_level="very_high",
+        effective_schema=None,
+        capture_reasoning=False,
+    )
+    assert config["thinkingConfig"]["thinkingLevel"] == "xhigh"
 
 
 @pytest.mark.unit

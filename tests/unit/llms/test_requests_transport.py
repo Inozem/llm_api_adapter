@@ -9,6 +9,7 @@ import requests
 
 from src.llm_api_adapter.errors.llm_api_error import (
     LLMAPIRateLimitError,
+    LLMAPIServerError,
     LLMAPITimeoutError,
 )
 from src.llm_api_adapter.llms.anthropic.sync_client import ClaudeSyncClient
@@ -207,6 +208,70 @@ def test_requests_transport_maps_multipart_timeouts():
         side_effect=requests.exceptions.Timeout("timed out"),
     ), pytest.raises(LLMAPITimeoutError):
         RequestsSyncTransport().post_multipart(request, form)
+
+
+@pytest.mark.unit
+def test_requests_json_body_error_survives_response_close_failure():
+    primary = RuntimeError("JSON decode failed")
+    response = FakeResponse(body={"unused": True})
+    response.json = Mock(side_effect=primary)
+    response.close = Mock(side_effect=RuntimeError("response cleanup"))
+
+    with patch(
+        "src.llm_api_adapter.llms.requests_transport.requests.post",
+        return_value=response,
+    ):
+        with pytest.raises(RuntimeError) as raised:
+            RequestsSyncTransport().post_json(
+                TransportRequest(url="https://example.test/messages")
+            )
+
+    assert raised.value is primary
+    response.close.assert_called_once_with()
+
+
+@pytest.mark.unit
+def test_requests_provider_http_error_survives_response_close_failure():
+    response = FakeResponse(status_code=503)
+    response.close = Mock(side_effect=RuntimeError("response cleanup"))
+
+    with patch(
+        "src.llm_api_adapter.llms.requests_transport.requests.post",
+        return_value=response,
+    ):
+        with pytest.raises(LLMAPIServerError):
+            RequestsSyncTransport().post_json(
+                TransportRequest(url="https://example.test/messages")
+            )
+
+    response.close.assert_called_once_with()
+
+
+@pytest.mark.unit
+def test_requests_sse_parser_factory_failure_closes_acquired_response(monkeypatch):
+    response = FakeResponse(lines=['data: {"ok": true}', ""])
+    primary = RuntimeError("parser construction failed")
+
+    def fail_parser(_response):
+        raise primary
+
+    monkeypatch.setattr(
+        "src.llm_api_adapter.llms.requests_transport.iter_sse_events",
+        fail_parser,
+    )
+    with patch(
+        "src.llm_api_adapter.llms.requests_transport.requests.post",
+        return_value=response,
+    ):
+        with pytest.raises(RuntimeError) as raised:
+            list(
+                RequestsSyncTransport().post_sse(
+                    TransportRequest(url="https://example.test/stream")
+                )
+            )
+
+    assert raised.value is primary
+    response.close.assert_called_once_with()
 
 
 @pytest.mark.unit

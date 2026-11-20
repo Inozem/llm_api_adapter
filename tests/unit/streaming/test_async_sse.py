@@ -17,6 +17,7 @@ from src.llm_api_adapter.llms.async_streaming import (
     async_request,
     async_stream_request,
 )
+from src.llm_api_adapter.llms.transports import _async_cleanup_preserving_primary
 from src.llm_api_adapter.adapters.google.adapter import GoogleAdapter
 from src.llm_api_adapter.models.messages.chat_message import UserMessage
 
@@ -165,6 +166,97 @@ async def test_async_request_maps_timeout_and_closes_client():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_async_http_error_read_cancellation_survives_both_cleanup_failures():
+    response = FakeResponse(status_code=503)
+    client = FakeAsyncClient(response=response)
+    started = asyncio.Event()
+    close_attempts = []
+
+    async def blocked_read():
+        started.set()
+        await asyncio.Event().wait()
+
+    async def fail_response_close():
+        close_attempts.append("response")
+        raise RuntimeError("response cleanup")
+
+    async def fail_client_close():
+        close_attempts.append("client")
+        raise RuntimeError("client cleanup")
+
+    response.aread = blocked_read
+    response.aclose = fail_response_close
+    client.aclose = fail_client_close
+
+    task = None
+    cancelled = False
+    with patch.object(httpx, "AsyncClient", return_value=client):
+        try:
+            task = asyncio.create_task(async_request("https://example.test/json"))
+            await asyncio.wait_for(started.wait(), timeout=2)
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=2)
+            except asyncio.CancelledError:
+                cancelled = True
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=2)
+                except BaseException:
+                    pass
+
+    assert cancelled
+    assert close_attempts == ["response", "client"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_async_cleanup_only_failure_attempts_both_response_and_client():
+    response = FakeResponse(json_data={"answer": "ok"})
+    client = FakeAsyncClient(response=response)
+    close_attempts = []
+
+    async def fail_response_close():
+        close_attempts.append("response")
+        raise RuntimeError("first cleanup")
+
+    async def fail_client_close():
+        close_attempts.append("client")
+        raise ValueError("second cleanup")
+
+    response.aclose = fail_response_close
+    client.aclose = fail_client_close
+    with patch.object(httpx, "AsyncClient", return_value=client):
+        with pytest.raises(RuntimeError, match="first cleanup"):
+            await async_request("https://example.test/json")
+
+    assert close_attempts == ["response", "client"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_async_cleanup_guard_skips_unacquired_resource_closer():
+    close_attempts = []
+
+    async def close_acquired_resource():
+        close_attempts.append("acquired")
+
+    try:
+        raise ValueError("caller-side exception is already handled")
+    except ValueError:
+        async with _async_cleanup_preserving_primary(
+            lambda: None,
+            close_acquired_resource,
+        ):
+            pass
+
+    assert close_attempts == ["acquired"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_async_stream_request_parses_sse_and_closes_resources():
     response = FakeResponse(
         [
@@ -228,6 +320,85 @@ async def test_async_stream_request_maps_malformed_sse_and_closes_response():
 
     assert response.closed is True
     assert client.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_async_malformed_sse_error_survives_response_close_failure():
+    response = FakeResponse([b"data: not-json", b""])
+    client = FakeAsyncClient(response=response)
+    close_attempts = []
+
+    async def fail_response_close():
+        close_attempts.append("response")
+        raise RuntimeError("response cleanup")
+
+    response.aclose = fail_response_close
+    with patch.object(httpx, "AsyncClient", return_value=client):
+        with pytest.raises(LLMAPIClientError, match="Malformed SSE JSON data"):
+            [
+                event
+                async for event in async_stream_request(
+                    "https://example.test/stream"
+                )
+            ]
+
+    assert close_attempts == ["response"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_async_stream_body_cancellation_survives_response_and_client_close_failures():
+    started, release = asyncio.Event(), asyncio.Event()
+    close_attempts = []
+
+    class PausedBodyResponse(FakeResponse):
+        async def aiter_lines(self):
+            started.set()
+            await release.wait()
+            yield b'data: {"message":"too late"}'
+
+    response = PausedBodyResponse()
+    client = FakeAsyncClient(response=response)
+
+    async def fail_response_close():
+        close_attempts.append("response")
+        raise RuntimeError("response cleanup")
+
+    async def fail_client_close():
+        close_attempts.append("client")
+        raise RuntimeError("client cleanup")
+
+    response.aclose = fail_response_close
+    client.aclose = fail_client_close
+    stream = async_stream_request("https://example.test/stream")
+    pending = None
+    cancelled = False
+    try:
+        with patch.object(httpx, "AsyncClient", return_value=client):
+            pending = asyncio.create_task(stream.__anext__())
+            await asyncio.wait_for(started.wait(), timeout=2)
+            pending.cancel()
+            try:
+                await asyncio.wait_for(pending, timeout=2)
+            except asyncio.CancelledError:
+                cancelled = True
+    finally:
+        release.set()
+        if pending is not None and not pending.done():
+            pending.cancel()
+            try:
+                await asyncio.wait_for(pending, timeout=2)
+            except BaseException:
+                pass
+        try:
+            await asyncio.wait_for(stream.aclose(), timeout=2)
+        except BaseException:
+            pass
+
+    assert cancelled
+    assert close_attempts == ["response", "client"]
 
 
 @pytest.mark.asyncio

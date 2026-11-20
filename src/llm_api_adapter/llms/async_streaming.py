@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Mapping, Optional
 
 from ..errors.llm_api_error import LLMAPIError, LLMAPIClientError, LLMAPITimeoutError
 from .transports import (
+    _async_cleanup_preserving_primary,
     HTTPErrorHandler,
     MultipartForm,
     SSEEvent,
@@ -69,35 +70,33 @@ async def async_request(
     client = httpx.AsyncClient()
     response: Optional[Any] = None
 
-    try:
-        response = await client.post(
-            url,
-            headers=dict(headers or {}),
-            json=payload,
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        return response.json()
-    except LLMAPIError:
-        raise
-    except httpx.TimeoutException as exc:
-        logger.error("Async request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
-        raise LLMAPITimeoutError(detail=str(exc)) from exc
-    except httpx.HTTPStatusError as exc:
-        logger.error("Async HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
-        await _read_http_error_body(response)
-        handler = http_error_handler or _default_http_error_handler
-        handler(exc)
-        _default_http_error_handler(exc)
-    except httpx.RequestError as exc:
-        logger.error("Async request exception: %s", format_transport_diagnostic(http_error_handler, exc))
-        raise LLMAPIClientError(detail=str(exc)) from exc
-    finally:
+    async with _async_cleanup_preserving_primary(
+        lambda: response.aclose() if response is not None else None,
+        client.aclose,
+    ):
         try:
-            if response is not None:
-                await response.aclose()
-        finally:
-            await client.aclose()
+            response = await client.post(
+                url,
+                headers=dict(headers or {}),
+                json=payload,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except LLMAPIError:
+            raise
+        except httpx.TimeoutException as exc:
+            logger.error("Async request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
+            raise LLMAPITimeoutError(detail=str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            logger.error("Async HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
+            await _read_http_error_body(response)
+            handler = http_error_handler or _default_http_error_handler
+            handler(exc)
+            _default_http_error_handler(exc)
+        except httpx.RequestError as exc:
+            logger.error("Async request exception: %s", format_transport_diagnostic(http_error_handler, exc))
+            raise LLMAPIClientError(detail=str(exc)) from exc
 
 
 async def async_multipart_request(
@@ -171,7 +170,7 @@ async def aiter_sse_events(response: Any) -> AsyncIterator[SSEEvent]:
     """Decode SSE framing from an HTTPX response and close it on exit."""
     decoder = SSEFrameDecoder()
 
-    try:
+    async with _async_cleanup_preserving_primary(response.aclose):
         async for raw_line in response.aiter_lines():
             event = decoder.feed(raw_line)
             if event is not None:
@@ -182,8 +181,6 @@ async def aiter_sse_events(response: Any) -> AsyncIterator[SSEEvent]:
         event = decoder.finish()
         if event is not None:
             yield event
-    finally:
-        await response.aclose()
 
 
 async def async_stream_request(
@@ -207,48 +204,46 @@ async def async_stream_request(
     response: Optional[Any] = None
     parser: Optional[AsyncIterator[SSEEvent]] = None
 
-    try:
-        request = client.build_request(
-            "POST",
-            url,
-            headers=dict(headers or {}),
-            json=payload,
-            timeout=timeout,
-        )
-        response = await client.send(request, stream=True)
-        response.raise_for_status()
-        parser = aiter_sse_events(response)
-
-        async for event in parser:
-            if event.done:
-                return
-            if _is_generic_stream_error(event):
-                handler = stream_error_handler or _default_stream_error_handler
-                handler(event)
-                _default_stream_error_handler(event)
-            yield event
-    except LLMAPIError:
-        raise
-    except httpx.TimeoutException as exc:
-        logger.error("Async streaming request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
-        raise LLMAPITimeoutError(detail=str(exc)) from exc
-    except httpx.HTTPStatusError as exc:
-        logger.error("Async streaming HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
-        await _read_http_error_body(response)
-        handler = http_error_handler or _default_http_error_handler
-        handler(exc)
-        _default_http_error_handler(exc)
-    except httpx.RequestError as exc:
-        logger.error("Async streaming request exception: %s", format_transport_diagnostic(http_error_handler, exc))
-        raise LLMAPIClientError(detail=str(exc)) from exc
-    finally:
+    async with _async_cleanup_preserving_primary(
+        lambda: parser.aclose() if parser is not None else (
+            response.aclose() if response is not None else None
+        ),
+        client.aclose,
+    ):
         try:
-            if parser is not None:
-                await parser.aclose()
-            elif response is not None:
-                await response.aclose()
-        finally:
-            await client.aclose()
+            request = client.build_request(
+                "POST",
+                url,
+                headers=dict(headers or {}),
+                json=payload,
+                timeout=timeout,
+            )
+            response = await client.send(request, stream=True)
+            response.raise_for_status()
+            parser = aiter_sse_events(response)
+
+            async for event in parser:
+                if event.done:
+                    return
+                if _is_generic_stream_error(event):
+                    handler = stream_error_handler or _default_stream_error_handler
+                    handler(event)
+                    _default_stream_error_handler(event)
+                yield event
+        except LLMAPIError:
+            raise
+        except httpx.TimeoutException as exc:
+            logger.error("Async streaming request timed out: %s", format_transport_diagnostic(http_error_handler, exc))
+            raise LLMAPITimeoutError(detail=str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            logger.error("Async streaming HTTP error: %s", format_transport_diagnostic(http_error_handler, exc))
+            await _read_http_error_body(response)
+            handler = http_error_handler or _default_http_error_handler
+            handler(exc)
+            _default_http_error_handler(exc)
+        except httpx.RequestError as exc:
+            logger.error("Async streaming request exception: %s", format_transport_diagnostic(http_error_handler, exc))
+            raise LLMAPIClientError(detail=str(exc)) from exc
 
 
 __all__ = [

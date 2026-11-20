@@ -35,11 +35,15 @@ helpers, registries, and plugin discovery before creating an abstraction. They M
 model-name prefixes, ad-hoc model lists, or one-off provider conditionals when registry metadata
 or a generic handler can express the behavior.
 
+New model entries MUST be placed at the beginning of the `models` mapping in their owning
+organization catalogue. Preserve the relative order of existing entries.
+
 Verified organization/provider model profiles MUST keep their standard tariffs in their owning
-organization registries. The `openai_compatible` connection mode is exempt from requiring an
-organization tariff catalogue: its only tariff source is explicit caller-supplied data, governed
-by the canonical pricing policy below. Existing caller-local organization pricing overrides MUST
-remain supported without turning caller rates into verified registry facts.
+organization registries. The `openai_compatible` and `anthropic_compatible` connection modes are
+exempt from requiring an organization tariff catalogue: their only tariff source is explicit
+caller-supplied data, governed by the canonical pricing policy below. Existing caller-local
+organization pricing overrides MUST remain supported without turning caller rates into verified
+registry facts.
 
 Values with shared meaning MUST use existing configuration, constants, mappings, registry data,
 or a narrowly scoped new abstraction rather than hardcoded duplicates. Registry data changes MUST
@@ -146,10 +150,22 @@ work before the corrected behavior may be used for a release decision.
   identifier without registration. Its optional `api_variant` MUST accept `chat_completions` or
   `responses`; omission or `None` MUST select Chat Completions. Both APIs MUST retain the four
   common execution methods and applicable validation, normalization and lifecycle requirements.
-- Non-`None` `base_url` and `api_variant` inputs MUST be accepted only in compatible mode; supplying
-  them for another organization MUST fail configuration before provider I/O. Omitting them MUST
-  preserve native endpoint and API selection. Compatible selection MUST NOT infer an API from a
-  model name, probe for support, or fall back to another API, endpoint, model or official service.
+- `organization="anthropic_compatible"` is an additional Core connection mode for Messages only,
+  not a verified model developer or provider profile. It MUST require an explicit valid HTTP(S)
+  API root in `base_url` before the Messages resource, preserve version/proxy prefixes, address
+  `/messages` once and transmit the caller's exact nonempty model identifier without registration.
+  Missing/malformed roots, non-HTTP(S) schemes, URL user information/query/fragment, full-resource
+  misuse, invalid common model/key input and conflicting provider/API selection MUST fail before
+  plugin discovery or provider I/O. Local HTTP and valid hosted/proxy roots MUST remain usable.
+- Non-`None` `base_url` MUST be accepted only for `openai_compatible` or `anthropic_compatible`.
+  Non-`None` `api_variant` MUST remain accepted only for `openai_compatible`; Messages requires
+  omission or `None`. Native facade inputs MUST retain their configuration rejection before I/O;
+  omission MUST preserve native endpoint and API selection. Both compatible modes MUST use the
+  matching service-provider identifier, defaulting it when omitted and rejecting a different
+  explicit provider before discovery/I/O. The facade's seven-field positional prefix and native
+  factory calls MUST remain compatible, without another required field or facade pricing option.
+  Compatible selection MUST NOT infer an API from a model name, probe for support, or fall back
+  to another API, endpoint, model or official service.
 - Generic connections MUST NOT require a registered model or API-specific capability profile and
   MUST NOT acquire verified model facts, aliases, rules, limits, reasoning defaults, continuation
   assumptions or tariffs from a matching native model name. They remain unverified connections;
@@ -159,10 +175,38 @@ work before the corrected behavior may be used for a release decision.
   request, reasoning, continuation, usage and pricing behavior. Compatible mode MUST retain common
   SDK invariants, reported-data honesty and the caller-tariff policy below without importing
   provider-specific accounting defaults or disabling an always-on capability.
+- The Messages foundation MUST serve generic connections and native Claude/Qwen across all four
+  common execution methods, both synchronous transports and true async operation. Native adapters
+  and both sync/async client families MUST reuse common request assembly, JSON/SSE execution and
+  response/stream reconstruction, with the existing shared lifecycle as its single owner.
+  Independent native copies of those common engines MUST NOT remain after migration acceptance.
+  Native entry points, constructor/method/import/patch contracts and validation timing MUST remain
+  compatible; native endpoints/authentication/version settings, workspace binding, exact-model
+  rules, reasoning, files, errors, accounting and tariffs MUST remain separately owned policy.
+  Native Qwen MUST remain an optional package with explicit request-local workspace routing.
+- Generic Messages MUST use full caller-supplied history, accept but ignore `previous_response`,
+  and introduce no implicit continuation, storage, opaque replay or reasoning-summary request.
+  Valid reasoning controls without a verified generic capability MUST retain warning/omission
+  behavior after common validation; capture MUST expose only returned reasoning when requested.
+  Generic success MUST require valid Messages completion evidence; EOF or a transport terminator
+  alone MUST NOT establish completion. These generic policies MUST NOT replace native verified
+  reasoning/history or characterized parser/normalization policy.
 - Deterministic protocol evidence and shared implementation MUST NOT be treated as certification
   of an arbitrary endpoint or as a replacement for an existing native/provider release gate.
   Exact-model native profiles, scenario selection and candidate validation remain authoritative
   for their existing native scope.
+- Adding compatible connections or sharing protocol execution MUST preserve existing native E2E
+  scenario bodies, assertions, fixtures, harness, capability routes, markers, workflows and
+  current-model coverage. A separately approved exact-model addition MAY extend only its verified
+  profile and necessary model inventory/selection data within the existing provider lane; it MUST
+  retain applicable baseline-positive evidence and all old-model coverage. No separate generic
+  compatible-mode or model-specific paid case/lane is introduced by this foundation. Final native
+  acceptance MUST retain the existing exact-TestPyPI post-staging-merge provider gates.
+
+Rationale: explicit compatible modes reuse the common SDK contract without fabricating verified
+provider metadata. A neutral Messages owner reduces duplicate execution while native policy and
+provider evidence remain independently accountable. Declaring a contract does not register an
+adapter or establish runtime/release acceptance.
 
 ### Requests, responses, and streaming
 
@@ -237,11 +281,11 @@ work before the corrected behavior may be used for a release decision.
   MUST remain owned by their organization registries. Native integrations MUST retain their
   registry-based default pricing and existing caller-local assignment/setter overrides. An
   unknown model MUST receive no inferred tariff.
-- `organization="openai_compatible"` is an explicit exception to the organization tariff-catalogue
-  requirement. It MUST default to no tariff and MUST use only explicit external caller tariffs
-  for calculated costs. It MUST NOT automatically borrow bundled rates from any organization,
-  including when a model identifier matches a registered model. No model registration or bundled
-  compatible tariff catalogue is required.
+- `organization="openai_compatible"` and `organization="anthropic_compatible"` are explicit
+  exceptions to the organization tariff-catalogue requirement. They MUST default to no tariff and
+  MUST use only explicit external caller tariffs for calculated costs. They MUST NOT automatically
+  borrow bundled rates from any organization, including when a model identifier matches a
+  registered model. No model registration or bundled compatible tariff catalogue is required.
 - External caller tariffs MUST be configurable from an explicitly loaded registry-format JSON
   file, explicit numeric parameters, or dictionary entries in the existing `pricing_tiers`
   structure. File/dictionary input MUST reuse the existing tariff schema; all forms MUST normalize
@@ -336,4 +380,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.8.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-10
+**Version**: 0.9.1 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-20

@@ -3782,3 +3782,177 @@ def test_compatible_responses_optional_httpx_failures_precede_io(method, extra, 
         assert http.call_count == 0
     assert f"llm-api-adapter[{extra}]" in str(error.value)
     assert attempts == []
+
+
+@pytest.mark.unit
+def test_facade_distinguishes_absent_qwen_unknown_organization_and_provider(monkeypatch):
+    """Installed Qwen metadata cannot change Core facade selection policy."""
+    import src.llm_api_adapter.adapters.base_adapter as base_adapter_module
+    import src.llm_api_adapter.organization_registry as organization_registry
+    import src.llm_api_adapter.universal_adapter as universal_adapter_module
+    from src.llm_api_adapter.adapters.anthropic_adapter import AnthropicAdapter
+    from src.llm_api_adapter.adapters.anthropic_compatible.adapter import (
+        AnthropicCompatibleAdapter,
+    )
+    from src.llm_api_adapter.errors import OrganizationNotInstalledError
+    from src.llm_api_adapter.organization_registry import (
+        ORGANIZATION_PLUGIN_API_VERSION,
+        ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP,
+        OrganizationPlugin,
+        OrganizationPluginDiscovery,
+        OrganizationModelMetadata,
+    )
+    from src.llm_api_adapter.llm_registry.llm_registry import (
+        RegistrySpec,
+        resolve_model_spec,
+    )
+    from src.llm_api_adapter.service_provider_registry import ServiceProviderRegistry
+
+    class EntryPoint:
+        name = "qwen"
+        value = "test_qwen_plugin:PLUGIN"
+
+        def __init__(self, plugin):
+            self.plugin = plugin
+            self.load_calls = 0
+
+        def load(self):
+            self.load_calls += 1
+            return self.plugin
+
+    sentinel_adapter = object()
+    entry_points = []
+    factory_calls = []
+    isolated_model_registry = RegistrySpec()
+    metadata = OrganizationModelMetadata(
+        organization="qwen",
+        organization_data={
+            "currency": "USD",
+            "models": {
+                "metadata-fixture": {
+                    "limits": {
+                        "context_window_tokens": 128_000,
+                        "max_output_tokens": 16_384,
+                    },
+                    "pricing_tiers": [
+                        {
+                            "up_to_prompt_tokens": None,
+                            "input_per_1m": 1.0,
+                            "output_per_1m": 2.0,
+                        }
+                    ],
+                }
+            },
+        },
+    )
+
+    def qwen_factory(**kwargs):
+        assert resolve_model_spec(
+            isolated_model_registry, "qwen", "metadata-fixture"
+        ) is not None
+        factory_calls.append(kwargs)
+        return sentinel_adapter
+
+    def register_qwen(registry):
+        registry.register("qwen", qwen_factory)
+
+    plugin = OrganizationPlugin(
+        api_version=ORGANIZATION_PLUGIN_API_VERSION,
+        register=register_qwen,
+        model_metadata=metadata,
+    )
+    qwen_entry_point = EntryPoint(plugin)
+
+    monkeypatch.setattr(
+        organization_registry,
+        "entry_points",
+        lambda *, group: (
+            entry_points
+            if group == ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP
+            else pytest.fail(f"Unexpected entry-point group: {group}")
+        ),
+    )
+    monkeypatch.setattr(
+        universal_adapter_module,
+        "ORGANIZATION_PLUGIN_DISCOVERY",
+        OrganizationPluginDiscovery(),
+    )
+    monkeypatch.setattr(
+        universal_adapter_module,
+        "SERVICE_PROVIDER_REGISTRY",
+        ServiceProviderRegistry({
+            AnthropicAdapter.company: AnthropicAdapter,
+            AnthropicCompatibleAdapter.company: AnthropicCompatibleAdapter,
+        }),
+    )
+    monkeypatch.setattr(
+        universal_adapter_module,
+        "LLM_REGISTRY",
+        isolated_model_registry,
+    )
+    monkeypatch.setattr(
+        base_adapter_module,
+        "LLM_REGISTRY",
+        isolated_model_registry,
+    )
+    assert resolve_model_spec(isolated_model_registry, "qwen", "metadata-fixture") is None
+
+    def assert_core_selections_are_isolated():
+        native = UniversalLLMAPIAdapter(
+            organization="anthropic",
+            model="claude-sonnet-4-5",
+            api_key="key",
+        )
+        assert native.adapter.model_spec is resolve_model_spec(
+            isolated_model_registry, "anthropic", "claude-sonnet-4-5"
+        )
+        assert native.adapter.pricing is not None
+
+        generic = UniversalLLMAPIAdapter(
+            organization="anthropic_compatible",
+            model="metadata-fixture",
+            api_key="key",
+            base_url="https://messages.example.test/v1",
+        )
+        assert generic.adapter.model_spec is None
+        assert generic.adapter.pricing is None
+
+    assert_core_selections_are_isolated()
+    assert entry_points == []
+    assert qwen_entry_point.load_calls == 0
+
+    with pytest.raises(OrganizationNotInstalledError) as absent_qwen:
+        UniversalLLMAPIAdapter(organization="qwen", model="model", api_key="key")
+    assert "pip install llm-api-adapter-qwen" in str(absent_qwen.value)
+    assert resolve_model_spec(isolated_model_registry, "qwen", "metadata-fixture") is None
+    assert_core_selections_are_isolated()
+    assert qwen_entry_point.load_calls == 0
+
+    entry_points.append(qwen_entry_point)
+    installed_qwen = UniversalLLMAPIAdapter(
+        organization="qwen", model="metadata-fixture", api_key="key"
+    )
+    assert installed_qwen.adapter is sentinel_adapter
+    assert qwen_entry_point.load_calls == 1
+    assert factory_calls == [{
+        "company": "qwen",
+        "model": "metadata-fixture",
+        "api_key": "key",
+        "transport": "requests",
+        "service_provider": "qwen",
+    }]
+    assert resolve_model_spec(
+        isolated_model_registry, "qwen", "metadata-fixture"
+    ) is not None
+    assert_core_selections_are_isolated()
+
+    with pytest.raises(ValueError, match="Unsupported organization: qwen-like"):
+        UniversalLLMAPIAdapter(organization="qwen-like", model="model", api_key="key")
+
+    with pytest.raises(ValueError, match="Unsupported service provider: openrouter"):
+        UniversalLLMAPIAdapter(
+            organization="anthropic",
+            service_provider="openrouter",
+            model="claude-sonnet-4-5",
+            api_key="key",
+        )
