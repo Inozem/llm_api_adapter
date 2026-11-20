@@ -1186,6 +1186,42 @@ def test_from_google_response_parses_usage_and_function_call():
 
 
 @pytest.mark.unit
+def test_from_google_response_preserves_function_call_id_and_thought_signature():
+    response = ChatResponse.from_google_response(
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "id": "google-call-1",
+                                    "name": "weather",
+                                    "args": {"city": "Tel Aviv"},
+                                },
+                                "thoughtSignature": "sig-1",
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+
+    assert response.tool_calls == [
+        ToolCall(
+            name="weather",
+            arguments={"city": "Tel Aviv"},
+            call_id="google-call-1",
+            provider_data={
+                "thoughtSignature": "sig-1",
+                "googleFunctionCallIdPresent": True,
+            },
+        )
+    ]
+
+
+@pytest.mark.unit
 def test_from_google_response_uses_function_call_alias():
     api_response = {
         "candidates": [

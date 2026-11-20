@@ -710,6 +710,123 @@ def test_google_tool_call_and_tool_result_protocol(google_tools_mock):
 
 
 @pytest.mark.integration
+def test_google_same_name_calls_round_trip_ids_signatures_and_result_order():
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
+    with requests_mock.Mocker() as mock:
+        mock.post(
+            url,
+            [
+                {
+                    "json": {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "parts": [
+                                        {
+                                            "functionCall": {
+                                                "id": "lookup-call-1",
+                                                "name": "lookup",
+                                                "args": {"key": "first"},
+                                            },
+                                            "thoughtSignature": "signature-1",
+                                        },
+                                        {
+                                            "functionCall": {
+                                                "id": "lookup-call-2",
+                                                "name": "lookup",
+                                                "args": {"key": "second"},
+                                            },
+                                            "thoughtSignature": "signature-2",
+                                        },
+                                    ]
+                                },
+                                "finishReason": "STOP",
+                            }
+                        ]
+                    }
+                },
+                {
+                    "json": {
+                        "candidates": [
+                            {
+                                "content": {"parts": [{"text": "done"}]},
+                                "finishReason": "STOP",
+                            }
+                        ]
+                    }
+                },
+            ],
+        )
+        adapter = UniversalLLMAPIAdapter(
+            organization="google",
+            model="gemini-3.1-pro-preview",
+            api_key="dummy_key",
+        )
+        messages = [UserMessage("Run two lookups.")]
+        first = adapter.chat(
+            messages=messages,
+            tools=[ToolSpec("lookup", {"type": "object"}, "Lookup")],
+        )
+
+        assert first.tool_calls is not None
+        assert [call.call_id for call in first.tool_calls] == [
+            "lookup-call-1",
+            "lookup-call-2",
+        ]
+        messages.extend([AIMessage(content="", tool_calls=first.tool_calls)])
+        messages.extend(
+            [
+                ToolMessage(content='{"value": 2}', tool_call_id="lookup-call-2"),
+                ToolMessage(content='{"value": 1}', tool_call_id="lookup-call-1"),
+            ]
+        )
+        final = adapter.chat(messages=messages)
+
+        assert final.content == "done"
+        replay = mock.request_history[1].json()["contents"]
+        assert replay[1] == {
+            "role": "model",
+            "parts": [
+                {
+                    "functionCall": {
+                        "name": "lookup",
+                        "args": {"key": "first"},
+                        "id": "lookup-call-1",
+                    },
+                    "thoughtSignature": "signature-1",
+                },
+                {
+                    "functionCall": {
+                        "name": "lookup",
+                        "args": {"key": "second"},
+                        "id": "lookup-call-2",
+                    },
+                    "thoughtSignature": "signature-2",
+                },
+            ],
+        }
+        assert replay[2] == {
+            "role": "user",
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": "lookup",
+                        "response": {"value": 2},
+                        "id": "lookup-call-2",
+                    }
+                },
+                {
+                    "functionResponse": {
+                        "name": "lookup",
+                        "response": {"value": 1},
+                        "id": "lookup-call-1",
+                    }
+                },
+            ],
+        }
+
+
+@pytest.mark.integration
 def test_openai_gpt5_multi_tool_round_trip(openai_multi_tools_mock):
     adapter = UniversalLLMAPIAdapter(
         organization="openai",

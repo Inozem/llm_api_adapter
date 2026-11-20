@@ -471,7 +471,10 @@ def test_google_preserves_supported_max_output_tokens_for_current_model(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("client_class", GOOGLE_CLIENTS, ids=("sync", "async"))
-@pytest.mark.parametrize("model_name", ("gemini-4-argon", "gemini-4-carbon"))
+@pytest.mark.parametrize(
+    "model_name",
+    ("gemini-4-neon", "gemini-4-hydrogen", "gemini-4-argon", "gemini-4-carbon"),
+)
 @pytest.mark.parametrize(
     ("sampling", "expected_warnings"),
     [

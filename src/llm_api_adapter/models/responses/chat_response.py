@@ -679,14 +679,17 @@ class ChatResponse:
                 detail=f"Google functionCall args must be dict for tool={name!r}"
             )
         thought_signature = part.get("thoughtSignature")
-        provider_data = None
+        google_call_id = ChatResponse._optional_string(function_call.get("id"))
+        provider_data = {}
         if thought_signature is not None:
-            provider_data = {"thoughtSignature": thought_signature}
+            provider_data["thoughtSignature"] = thought_signature
+        if google_call_id is not None:
+            provider_data["googleFunctionCallIdPresent"] = True
         return ToolCall(
             name=name,
             arguments=args,
-            call_id=name,
-            provider_data=provider_data,
+            call_id=google_call_id if google_call_id is not None else name,
+            provider_data=provider_data or None,
         )
 
     def apply_pricing(
