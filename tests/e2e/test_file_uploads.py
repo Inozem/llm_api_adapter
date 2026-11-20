@@ -28,6 +28,6 @@ def test_document_bytes_returns_non_empty_response(
         _PROMPT,
         DocumentPart(data=pdf_bytes, media_type="application/pdf"),
     )
-    resp = chat_with_retry(adapter, messages=[msg], max_tokens=150)
+    resp = chat_with_retry(adapter, messages=[msg], max_tokens=1024)
     assert isinstance(resp.content, str)
     assert len(resp.content) > 0

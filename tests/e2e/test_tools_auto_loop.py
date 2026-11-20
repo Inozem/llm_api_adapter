@@ -81,13 +81,14 @@ def test_basic_tool_loop_with_previous_response(
         service_provider=e2e_model_case.service_provider,
     )
     messages = [UserMessage(_TOOL_PROMPT)]
+    max_tokens = 2048
 
     first = chat_with_retry(
         adapter,
         messages=messages,
         tools=_TOOLS,
         tool_choice=tool_choice,
-        max_tokens=512,
+        max_tokens=max_tokens,
         timeout_s=60,
     )
 
@@ -115,7 +116,7 @@ def test_basic_tool_loop_with_previous_response(
     final = chat_with_retry(
         adapter,
         messages=messages,
-        max_tokens=512,
+        max_tokens=max_tokens,
         timeout_s=60,
         previous_response=first,
     )
