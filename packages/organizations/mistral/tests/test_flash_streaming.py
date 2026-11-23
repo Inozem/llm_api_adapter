@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,6 +30,7 @@ from llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
 from llm_api_adapter.llms.requests_transport import RequestsSyncTransport
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.models.tools import ToolSpec
+from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from llm_api_adapter_mistral.plugin import PLUGIN
@@ -368,6 +371,64 @@ def test_flash_cancelled_async_stream_discards_pending_text_and_closes_source(
         return completed
 
     assert asyncio.run(run()) == []
+    assert closed == [True]
+    assert len(calls) == 1
+
+
+@pytest.mark.integration
+def test_flash_task_cancellation_closes_waiting_source_before_loop_shutdown(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = new_adapter()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    source_waiting = asyncio.Event()
+    closed: list[bool] = []
+    output: list[str] = []
+    completed: list[ChatResponse] = []
+
+    def source() -> AsyncIterator[SSEEvent]:
+        async def events() -> AsyncIterator[SSEEvent]:
+            try:
+                yield SSEEvent(
+                    event="response.output_text.delta", data={"delta": "ABCDE"}
+                )
+                source_waiting.set()
+                await asyncio.Event().wait()
+            finally:
+                closed.append(True)
+
+        return events()
+
+    install_async_source(monkeypatch, source, calls)
+
+    async def run() -> None:
+        async def collect() -> None:
+            async for text in adapter.astream_chat(
+                MESSAGES,
+                buffer_chars=10,
+                on_done=completed.append,
+            ):
+                output.append(text)
+
+        task = asyncio.create_task(collect())
+        try:
+            await asyncio.wait_for(source_waiting.wait(), timeout=1.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=1.0)
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=1.0)
+                except asyncio.CancelledError:
+                    pass
+        assert closed == [True]
+
+    asyncio.run(run())
+    assert output == []
+    assert completed == []
     assert closed == [True]
     assert len(calls) == 1
 

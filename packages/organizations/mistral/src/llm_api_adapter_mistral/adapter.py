@@ -496,5 +496,9 @@ class MistralAdapter(OpenAICompatibleAdapter):
     def _handle_stream_error(self, event: SSEEvent) -> None:
         self._sync_client._handle_stream_error(event)
 
+    def _format_diagnostic(self, value: object) -> str:
+        """Redact transport diagnostics through the compatible policy."""
+        return self._format_compatible_diagnostic(value)
+
 
 __all__ = ["MistralAdapter"]

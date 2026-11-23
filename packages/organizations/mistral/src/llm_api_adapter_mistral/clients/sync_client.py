@@ -263,11 +263,17 @@ class MistralSyncClient(OpenAICompatibleSyncClient):
         if not isinstance(error, Mapping):
             error = payload
         raw_type = error.get("type") or error.get("code")
-        raw_detail = error.get("message") or str(error)
+        raw_detail = error.get("message")
+        if not isinstance(raw_detail, str) or not raw_detail.strip():
+            raw_detail = (
+                raw_type
+                if isinstance(raw_type, str) and raw_type
+                else "Mistral stream request failed"
+            )
         self._raise_mapped_error(
             status_code=None,
             error_type=raw_type if isinstance(raw_type, str) else None,
-            detail=str(raw_detail),
+            detail=raw_detail,
         )
 
     @staticmethod
@@ -318,6 +324,15 @@ class _NativeRequestView(MistralSyncClient):
 
     def _headers(self) -> dict[str, str]:
         return dict(self._request_headers)
+
+    def _format_diagnostic(self, value: object) -> str:
+        """Use the original native adapter's redaction for transport logs."""
+        handler = self._request_http_error_handler
+        owner = getattr(handler, "__self__", None)
+        formatter = getattr(owner, "_format_diagnostic", None)
+        if callable(formatter):
+            return str(formatter(value))
+        return str(super()._format_diagnostic(value))
 
     def _handle_http_error(self, http_error: Any) -> None:
         handler = self._request_http_error_handler
