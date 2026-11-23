@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Optional, get_type_hints
+from typing import Any, AsyncIterator, Callable, Iterator, Mapping, Optional, get_type_hints
 
 import pytest
 
@@ -26,6 +26,9 @@ from llm_api_adapter.errors.llm_api_error import (
 from llm_api_adapter.llms.openai_compatible.sync_client import (
     OpenAICompatibleSyncClient,
 )
+from llm_api_adapter.llms.openai_compatible.async_client import (
+    OpenAICompatibleAsyncClient,
+)
 from llm_api_adapter.llms.transports import (
     HTTPErrorHandler,
     JSONResponse,
@@ -43,6 +46,12 @@ from llm_api_adapter_mistral.clients.sync_client import (
     _CloseableSyncTransport,
     _model_spec,
     _native_reasoning_effort,
+)
+from llm_api_adapter_mistral.clients.async_client import (
+    MistralAsyncClient,
+    _NativeAsyncRequestView,
+    _CloseableAsyncIterator,
+    _ensure_closeable_async_iterator,
 )
 from llm_api_adapter_mistral.registry import MODEL_METADATA
 
@@ -654,3 +663,536 @@ def test_changed_sync_client_annotations_resolve_and_legacy_callbacks_are_unchan
         _native_reasoning_effort,
     )
     assert all(get_type_hints(target) for target in targets)
+
+
+@pytest.mark.unit
+def test_async_client_inherits_common_async_engine_and_native_sync_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import inspect
+
+    import llm_api_adapter.llms.openai_compatible.sync_client as base_module
+
+    def forbidden_factory(_transport: str) -> SyncTransport:
+        raise AssertionError("native async construction must not create sync transport")
+
+    monkeypatch.setattr(base_module, "create_sync_transport", forbidden_factory)
+    client = MistralAsyncClient()
+    assert not inspect.signature(MistralAsyncClient).parameters
+    assert not inspect.iscoroutinefunction(MistralAsyncClient.stream_chat)
+
+    assert MistralAsyncClient.__bases__ == (
+        OpenAICompatibleAsyncClient,
+        MistralSyncClient,
+    )
+    assert isinstance(client, OpenAICompatibleAsyncClient)
+    assert isinstance(client, MistralSyncClient)
+    assert MistralAsyncClient.complete is OpenAICompatibleAsyncClient.complete
+    assert MistralAsyncClient.stream is OpenAICompatibleAsyncClient.stream
+    assert MistralAsyncClient._send_request is OpenAICompatibleAsyncClient._send_request
+    assert MistralAsyncClient._stream_request is OpenAICompatibleAsyncClient._stream_request
+    assert (
+        MistralAsyncClient._prepare_responses_payload_for_model
+        is MistralSyncClient._prepare_responses_payload_for_model
+    )
+    assert client.endpoint == "https://api.mistral.ai/v1/responses"
+    assert "_sync_transport" not in vars(client)
+
+
+@pytest.mark.unit
+def test_inherited_async_complete_uses_native_payload_and_async_patch_point(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import llm_api_adapter_mistral.clients.async_client as async_client_module
+
+    model, wire_model, effort = _reasoning_model(hosted=True)
+    calls: list[tuple[str, dict[str, Any], Mapping[str, str], Optional[float]]] = []
+    common_calls: list[tuple[OpenAICompatibleAsyncClient, str]] = []
+
+    async def fake_request(
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        payload: dict[str, Any],
+        timeout: Optional[float],
+        http_error_handler: Callable[[Any], None],
+    ) -> dict[str, Any]:
+        calls.append((url, payload, headers, timeout))
+        return {"id": "async_resp_native"}
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_request)
+    original_send = OpenAICompatibleAsyncClient._send_request
+
+    async def trace_send(
+        owner: OpenAICompatibleAsyncClient,
+        url: str,
+        payload: dict[str, Any],
+        timeout: Optional[float] = None,
+    ) -> Any:
+        assert isinstance(owner, MistralAsyncClient)
+        common_calls.append((owner, url))
+        return await original_send(owner, url, payload, timeout)
+
+    monkeypatch.setattr(OpenAICompatibleAsyncClient, "_send_request", trace_send)
+    client = MistralAsyncClient()
+    headers = {"Authorization": "Bearer synthetic-key", "X-Test": "native"}
+    endpoint = "https://proxy.invalid/versioned/v1/responses"
+
+    result = asyncio.run(
+        client.complete(
+            model,
+            endpoint=endpoint,
+            headers=headers,
+            timeout=6.25,
+            messages=[{"role": "user", "content": "synthetic prompt"}],
+            max_tokens=21,
+            reasoning_effort=effort,
+            temperature=1.0,
+            top_p=1.0,
+        )
+    )
+
+    assert result == {"id": "async_resp_native"}
+    assert calls == [
+        (
+            endpoint,
+            {
+                "model": wire_model,
+                "input": [{"role": "user", "content": "synthetic prompt"}],
+                "max_output_tokens": 21,
+                "reasoning": {"effort": effort},
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "store": False,
+            },
+            headers,
+            6.25,
+        )
+    ]
+    assert len(common_calls) == 1
+    assert common_calls[0][1] == endpoint
+
+
+@pytest.mark.unit
+def test_async_low_level_methods_keep_raw_payload_ocr_url_and_error_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import llm_api_adapter_mistral.clients.async_client as async_client_module
+
+    calls: list[tuple[str, dict[str, Any], Mapping[str, str], Optional[float]]] = []
+
+    async def fake_request(
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        payload: dict[str, Any],
+        timeout: Optional[float],
+        http_error_handler: Callable[[Any], None],
+    ) -> dict[str, Any]:
+        calls.append((url, payload, headers, timeout))
+        return {"ok": True}
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_request)
+    client = MistralAsyncClient()
+    payload = {"model": "raw-model", "input": [{"raw": True}]}
+    headers = {"Authorization": "Bearer synthetic-key"}
+
+    async def run() -> tuple[dict[str, Any], dict[str, Any]]:
+        chat = await client.chat(
+            endpoint="https://proxy.invalid/prefix/v1/responses",
+            headers=headers,
+            payload=payload,
+            timeout_s=4,
+            http_error_handler=_no_http_error,
+        )
+        ocr = await client.ocr(
+            headers=headers,
+            payload={"model": _ocr_model()},
+            timeout_s=None,
+            http_error_handler=_no_http_error,
+        )
+        return chat, ocr
+
+    assert asyncio.run(run()) == ({"ok": True}, {"ok": True})
+    assert calls == [
+        ("https://proxy.invalid/prefix/v1/responses", payload, headers, 4),
+        (MISTRAL_OCR_URL, {"model": _ocr_model()}, headers, None),
+    ]
+
+    caller_error = RuntimeError("synthetic callback failure")
+
+    def raise_caller_error(_error: Any) -> None:
+        raise caller_error
+
+    async def failed_request(*_args: Any, **kwargs: Any) -> Any:
+        handler = kwargs.get("http_error_handler")
+        assert handler is raise_caller_error
+        handler(caller_error)
+        raise AssertionError("caller handler should raise")
+
+    monkeypatch.setattr(async_client_module, "async_request", failed_request)
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(
+            client.chat(
+                endpoint="https://api.mistral.ai/v1/responses",
+                headers=headers,
+                payload=payload,
+                timeout_s=None,
+                http_error_handler=raise_caller_error,
+            )
+        )
+    assert caught.value is caller_error
+
+
+@pytest.mark.unit
+def test_async_stream_factory_is_lazy_and_preserves_complete_url_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import llm_api_adapter_mistral.clients.async_client as async_client_module
+
+    model, wire_model, _effort = _reasoning_model()
+    event = SSEEvent(event="response.completed", data={"type": "response.completed"})
+    calls: list[tuple[str, dict[str, Any], Mapping[str, str], Optional[float]]] = []
+    closed: list[bool] = []
+    started: list[bool] = []
+
+    async def source() -> AsyncIterator[SSEEvent]:
+        started.append(True)
+        try:
+            yield event
+        finally:
+            closed.append(True)
+
+    def fake_stream(
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        payload: dict[str, Any],
+        timeout: Optional[float],
+        http_error_handler: Callable[[Any], None],
+        stream_error_handler: Callable[[SSEEvent], None],
+    ) -> AsyncIterator[SSEEvent]:
+        calls.append((url, payload, headers, timeout))
+        return source()
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", fake_stream)
+    client = MistralAsyncClient()
+    headers = {"Authorization": "Bearer synthetic-key"}
+    endpoint = "https://proxy.invalid/prefix/v1/responses"
+    stream = client.stream(
+        model,
+        endpoint=endpoint,
+        headers=headers,
+        timeout=2.75,
+        messages=[{"role": "user", "content": "synthetic prompt"}],
+        max_tokens=12,
+    )
+    assert calls == []
+    assert started == []
+
+    async def consume() -> tuple[SSEEvent, ...]:
+        return tuple([item async for item in stream])
+
+    assert asyncio.run(consume()) == (event,)
+    assert len(calls) == 1
+    assert calls[0][0] == endpoint
+    assert calls[0][2:] == (headers, 2.75)
+    assert started == [True]
+    assert closed == [True]
+    assert calls == [
+        (
+            endpoint,
+            {
+                "model": wire_model,
+                "input": [{"role": "user", "content": "synthetic prompt"}],
+                "max_output_tokens": 12,
+                "reasoning": {"effort": _effort},
+                "store": False,
+                "stream": True,
+            },
+            headers,
+            2.75,
+        )
+    ]
+
+
+@pytest.mark.unit
+def test_async_client_changed_annotations_resolve() -> None:
+    targets = (
+        MistralAsyncClient.__init__,
+        MistralAsyncClient.chat,
+        MistralAsyncClient.ocr,
+        MistralAsyncClient.stream_chat,
+        MistralAsyncClient.responses,
+        MistralAsyncClient.stream_responses,
+        MistralAsyncClient._async_request_view,
+        MistralAsyncClient._get_async_request,
+        MistralAsyncClient._get_async_stream_request,
+        _NativeAsyncRequestView.__init__,
+        _NativeAsyncRequestView._headers,
+        _NativeAsyncRequestView._handle_http_error,
+        _NativeAsyncRequestView._handle_stream_error,
+        _NativeAsyncRequestView._get_async_request,
+        _NativeAsyncRequestView._get_async_stream_request,
+        _CloseableAsyncIterator.__init__,
+        _CloseableAsyncIterator.__aiter__,
+        _CloseableAsyncIterator.__anext__,
+        _CloseableAsyncIterator.aclose,
+        _ensure_closeable_async_iterator,
+    )
+    assert all(get_type_hints(target) for target in targets)
+
+
+@pytest.mark.unit
+def test_async_stream_cancellation_closes_the_inherited_event_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import llm_api_adapter_mistral.clients.async_client as async_client_module
+
+    source_started = asyncio.Event()
+    source_closed: list[bool] = []
+
+    async def source() -> AsyncIterator[SSEEvent]:
+        source_started.set()
+        try:
+            await asyncio.Event().wait()
+            if False:
+                yield SSEEvent(event="unused", data={})
+        finally:
+            source_closed.append(True)
+
+    def fake_stream(
+        _url: str,
+        *,
+        headers: Mapping[str, str],
+        payload: dict[str, Any],
+        timeout: Optional[float],
+        http_error_handler: Callable[[Any], None],
+        stream_error_handler: Callable[[SSEEvent], None],
+    ) -> AsyncIterator[SSEEvent]:
+        return source()
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", fake_stream)
+    client = MistralAsyncClient()
+    stream = client.stream_chat(
+        endpoint="https://api.mistral.ai/v1/responses",
+        headers={"Authorization": "Bearer synthetic-key"},
+        payload={"model": "raw-model", "input": [], "stream": True},
+        timeout_s=None,
+        http_error_handler=_no_http_error,
+        stream_error_handler=_no_stream_error,
+    )
+
+    async def consume_until_cancelled() -> None:
+        async for _event in stream:
+            pass
+
+    async def run() -> None:
+        task = asyncio.create_task(consume_until_cancelled())
+        await source_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert source_closed == [True]
+
+
+@pytest.mark.unit
+def test_async_stream_adapts_legacy_iterator_without_aclose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import llm_api_adapter_mistral.clients.async_client as async_client_module
+
+    event = SSEEvent(event="response.completed", data={"type": "response.completed"})
+
+    class BareEvents:
+        _events: tuple[SSEEvent, ...]
+        _index: int
+
+        def __init__(self, events: tuple[SSEEvent, ...]) -> None:
+            self._events = events
+            self._index = 0
+
+        def __aiter__(self) -> BareEvents:
+            return self
+
+        async def __anext__(self) -> SSEEvent:
+            if self._index >= len(self._events):
+                raise StopAsyncIteration
+            event_value = self._events[self._index]
+            self._index += 1
+            return event_value
+
+    def fake_stream(*_args: Any, **_kwargs: Any) -> AsyncIterator[SSEEvent]:
+        return BareEvents((event,))
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", fake_stream)
+    client = MistralAsyncClient()
+    stream = client.stream_chat(
+        endpoint="https://api.mistral.ai/v1/responses",
+        headers={},
+        payload={"model": "raw-model", "input": [], "stream": True},
+        timeout_s=None,
+        http_error_handler=_no_http_error,
+        stream_error_handler=_no_stream_error,
+    )
+
+    async def consume() -> tuple[SSEEvent, ...]:
+        return tuple([value async for value in stream])
+
+    assert asyncio.run(consume()) == (event,)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("method", "expected_detail"),
+    (
+        ("chat", "Mistral returned a non-object response"),
+        ("ocr", "Mistral OCR returned a non-object response"),
+    ),
+)
+def test_async_legacy_json_calls_reject_non_object_responses(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    expected_detail: str,
+) -> None:
+    import asyncio
+
+    import llm_api_adapter_mistral.clients.async_client as async_client_module
+
+    async def fake_request(*_args: Any, **_kwargs: Any) -> list[str]:
+        return ["not", "an", "object"]
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_request)
+    client = MistralAsyncClient()
+
+    async def call() -> dict[str, Any]:
+        if method == "chat":
+            return await client.chat(
+                endpoint="https://api.mistral.ai/v1/responses",
+                headers={},
+                payload={},
+                timeout_s=None,
+                http_error_handler=_no_http_error,
+            )
+        return await client.ocr(
+            headers={},
+            payload={},
+            timeout_s=None,
+            http_error_handler=_no_http_error,
+        )
+
+    with pytest.raises(LLMAPIClientError, match=expected_detail):
+        asyncio.run(call())
+
+
+@pytest.mark.unit
+def test_async_native_default_http_and_sse_errors_reuse_sync_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import llm_api_adapter_mistral.clients.async_client as async_client_module
+
+    async def forbidden_request(*_args: Any, **kwargs: Any) -> Any:
+        handler = kwargs["http_error_handler"]
+        handler(SyntheticHTTPError(403, {"error": {"message": "forbidden"}}))
+        return {"unused": True}
+
+    monkeypatch.setattr(async_client_module, "async_request", forbidden_request)
+    client = MistralAsyncClient()
+    model = _reasoning_model()[0]
+
+    async def call_http() -> None:
+        await client.complete(
+            model,
+            endpoint="https://api.mistral.ai/v1/responses",
+            headers={"Authorization": "Bearer synthetic-key"},
+            input=[],
+        )
+
+    with pytest.raises(LLMAPIAuthorizationError):
+        asyncio.run(call_http())
+
+    async def failed_events(*_args: Any, **_kwargs: Any) -> AsyncIterator[SSEEvent]:
+        yield SSEEvent(
+            event="response.failed",
+            data={
+                "type": "response.failed",
+                "response": {
+                    "error": {
+                        "type": "authentication_error",
+                        "message": "forbidden",
+                    }
+                },
+            },
+        )
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", failed_events)
+    stream = client.stream(
+        model,
+        endpoint="https://api.mistral.ai/v1/responses",
+        headers={"Authorization": "Bearer synthetic-key"},
+        input=[],
+    )
+
+    async def consume() -> None:
+        async for _event in stream:
+            pass
+
+    with pytest.raises(LLMAPIAuthorizationError):
+        asyncio.run(consume())
+
+
+@pytest.mark.unit
+def test_async_stream_early_close_closes_a_real_async_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import llm_api_adapter_mistral.clients.async_client as async_client_module
+
+    event = SSEEvent(event="message", data={"delta": "one"})
+    closed: list[bool] = []
+
+    async def source() -> AsyncIterator[SSEEvent]:
+        try:
+            yield event
+            await asyncio.Event().wait()
+        finally:
+            closed.append(True)
+
+    def fake_stream(*_args: Any, **_kwargs: Any) -> AsyncIterator[SSEEvent]:
+        return source()
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", fake_stream)
+    client = MistralAsyncClient()
+
+    async def run() -> SSEEvent:
+        stream = client.stream_chat(
+            endpoint="https://api.mistral.ai/v1/responses",
+            headers={},
+            payload={"model": "raw-model", "input": [], "stream": True},
+            timeout_s=None,
+            http_error_handler=_no_http_error,
+            stream_error_handler=_no_stream_error,
+        )
+        first = await stream.__anext__()
+        close = getattr(stream, "aclose", None)
+        assert callable(close)
+        await close()
+        return first
+
+    assert asyncio.run(run()) == event
+    assert closed == [True]
