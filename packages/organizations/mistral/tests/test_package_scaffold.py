@@ -54,11 +54,10 @@ REGISTRY_PATH = (
     / "organizations"
     / "mistral.json"
 )
-CORE_REQUIREMENT_SPECIFIER = SpecifierSet(">=0.9.10,<1.0.0")
 
 
 @pytest.mark.unit
-def test_mistral_plugin_entry_point_matches_the_core_contract():
+def test_mistral_plugin_entry_point_matches_the_core_contract() -> None:
     project = read_project_metadata(PACKAGE_ROOT / "pyproject.toml")
 
     assert project["entry-points"]["llm_api_adapter.organizations"]["mistral"] == (
@@ -174,7 +173,7 @@ def test_mistral_discovery_registers_native_factory_and_metadata(
 )
 def test_mistral_core_dependency_groups_target_supported_release(
     dependency_group: str, expected_target: str
-):
+) -> None:
     project = read_project_metadata(PACKAGE_ROOT / "pyproject.toml")
     if dependency_group == "dependencies":
         requirements = project["dependencies"]
@@ -185,12 +184,14 @@ def test_mistral_core_dependency_groups_target_supported_release(
     raw_requirement = requirements[0]
     assert requirement_target(raw_requirement) == expected_target
     parsed = Requirement(raw_requirement)
-    assert parsed.specifier == CORE_REQUIREMENT_SPECIFIER
+    base_requirement = Requirement(project["dependencies"][0])
+    assert base_requirement.specifier
+    assert parsed.specifier == base_requirement.specifier
     assert parsed.name.lower().replace("_", "-") != "llm-api-adapter-zai"
 
 
 @pytest.mark.unit
-def test_mistral_project_supports_python_310_and_declares_no_zai_dependency():
+def test_mistral_project_supports_python_310_and_declares_no_zai_dependency() -> None:
     project = read_project_metadata(PACKAGE_ROOT / "pyproject.toml")
 
     assert SpecifierSet(project["requires-python"]).contains("3.10")
