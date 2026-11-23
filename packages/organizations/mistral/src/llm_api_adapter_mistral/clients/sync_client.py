@@ -36,7 +36,6 @@ from llm_api_adapter.llms.transports import (
 
 from ..registry import MODEL_METADATA
 
-MISTRAL_CHAT_COMPLETIONS_URL = "https://api.mistral.ai/v1/chat/completions"
 MISTRAL_RESPONSES_URL = "https://api.mistral.ai/v1/responses"
 MISTRAL_OCR_URL = "https://api.mistral.ai/v1/ocr"
 
