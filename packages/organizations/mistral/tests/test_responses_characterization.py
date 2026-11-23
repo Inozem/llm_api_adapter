@@ -7,9 +7,9 @@ import json
 import socket
 import sys
 import warnings
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 
@@ -23,6 +23,7 @@ for source in (str(PACKAGE_ROOT / "src"), str(REPOSITORY_ROOT / "src"), str(REPO
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 import llm_api_adapter_mistral.clients.async_client as mistral_async_client_module
+from llm_api_adapter.adapters.base_adapter import OnDone
 from llm_api_adapter.errors import LLMReasoningLevelError
 from llm_api_adapter.errors.llm_api_error import (
     JSONSchemaError,
@@ -30,12 +31,19 @@ from llm_api_adapter.errors.llm_api_error import (
     ToolChoiceError,
 )
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
+from llm_api_adapter.llm_registry.llm_registry import MeteredOperationSpec
 from llm_api_adapter.llm_registry.llm_registry import resolve_metered_operation_spec
 from llm_api_adapter.llm_registry.reasoning import resolve_reasoning_level
 from llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
 from llm_api_adapter.llms.requests_transport import RequestsSyncTransport
-from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
-from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.llms.transports import (
+    HTTPErrorHandler,
+    JSONResponse,
+    SSEEvent,
+    StreamErrorHandler,
+    TransportRequest,
+)
+from llm_api_adapter.models.messages.chat_message import Message, Messages, UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.responses.stream_chunk import StreamChunk
@@ -48,7 +56,7 @@ from llm_api_adapter_mistral.plugin import PLUGIN
 RESPONSES_URL = "https://api.mistral.ai/v1/responses"
 OCR_URL = "https://api.mistral.ai/v1/ocr"
 MODEL_IDS = tuple(PLUGIN.model_metadata.organization_data["models"])
-MIXED_HISTORY = [
+MIXED_HISTORY: list[Message | dict[str, Any]] = [
     {"role": "system", "content": "Use concise answers."},
     {"role": "user", "content": "Find the report."},
     {"role": "assistant", "content": "I will search."},
@@ -76,7 +84,7 @@ EXECUTION_PATHS = (
 
 
 @pytest.fixture
-def mistral_runtime(monkeypatch):
+def mistral_runtime(monkeypatch: pytest.MonkeyPatch) -> RegistrySpec:
     registry = RegistrySpec()
     assert PLUGIN.model_metadata is not None
     assert registry.register_organization_metadata(PLUGIN.model_metadata)
@@ -89,13 +97,23 @@ def mistral_runtime(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def block_unmocked_network(monkeypatch):
-    def block_dns(*args, **kwargs):
+def block_unmocked_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    def block_dns(
+        host: str | bytes | None,
+        port: str | int | None,
+        family: int = 0,
+        type: int = 0,
+        proto: int = 0,
+        flags: int = 0,
+    ) -> NoReturn:
         raise AssertionError("characterization tests must not perform network I/O")
 
     original_connect = socket.socket.connect
 
-    def block_external_connect(sock, address):
+    def block_external_connect(
+        sock: socket.socket,
+        address: str | bytes | tuple[str, int] | tuple[str, int, int, int],
+    ) -> None:
         # ProactorEventLoop's Windows socketpair fallback connects to loopback
         # while creating its self-pipe; permit that local runtime operation.
         if isinstance(address, tuple) and str(address[0]) in {"127.0.0.1", "::1", "localhost"}:
@@ -188,7 +206,22 @@ def _events_for_response(
 
 
 class RecordingSyncTransport:
-    def __init__(self, *, chat_result=None, events=(), ocr_results=(), timeline=None):
+    chat_result: dict[str, Any]
+    events: list[SSEEvent]
+    ocr_results: list[dict[str, Any]]
+    requests: list[TransportRequest]
+    stream_requests: list[TransportRequest]
+    ocr_requests: list[TransportRequest]
+    timeline: list[tuple[str, TransportRequest | dict[str, Any]]]
+
+    def __init__(
+        self,
+        *,
+        chat_result: dict[str, Any] | None = None,
+        events: Iterable[SSEEvent] = (),
+        ocr_results: Iterable[dict[str, Any]] = (),
+        timeline: list[tuple[str, TransportRequest | dict[str, Any]]] | None = None,
+    ) -> None:
         self.chat_result = chat_result or {}
         self.events = list(events)
         self.ocr_results = list(ocr_results)
@@ -197,7 +230,12 @@ class RecordingSyncTransport:
         self.ocr_requests = []
         self.timeline = timeline if timeline is not None else []
 
-    def post_json(self, request, *, http_error_handler=None):
+    def post_json(
+        self,
+        request: TransportRequest,
+        *,
+        http_error_handler: HTTPErrorHandler | None = None,
+    ) -> JSONResponse:
         if request.url == OCR_URL:
             self.ocr_requests.append(request)
             self.timeline.append(("ocr", request))
@@ -209,7 +247,13 @@ class RecordingSyncTransport:
         self.timeline.append(("model", request))
         return JSONResponse(self.chat_result)
 
-    def post_sse(self, request, *, http_error_handler=None, stream_error_handler=None):
+    def post_sse(
+        self,
+        request: TransportRequest,
+        *,
+        http_error_handler: HTTPErrorHandler | None = None,
+        stream_error_handler: StreamErrorHandler | None = None,
+    ) -> Iterator[SSEEvent]:
         if request.url == OCR_URL:
             self.ocr_requests.append(request)
             raise AssertionError("OCR is submitted as JSON, not a stream")
@@ -218,7 +262,12 @@ class RecordingSyncTransport:
         return iter(self.events)
 
 
-def _new_adapter(model, transport="requests", *, developer=None):
+def _new_adapter(
+    model: str,
+    transport: str | None = "requests",
+    *,
+    developer: str | None = None,
+) -> UniversalLLMAPIAdapter:
     if developer is None:
         developer = "mistral"
     return UniversalLLMAPIAdapter(
@@ -230,11 +279,18 @@ def _new_adapter(model, transport="requests", *, developer=None):
     )
 
 
-def _install_async(monkeypatch, *, model_response, stream_events=(), ocr_results=(), timeline=None):
+def _install_async(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    model_response: dict[str, Any],
+    stream_events: Iterable[SSEEvent] = (),
+    ocr_results: Iterable[dict[str, Any]] = (),
+    timeline: list[tuple[str, TransportRequest | dict[str, Any]]] | None = None,
+) -> dict[str, list[tuple[str, dict[str, Any]]]]:
     calls = {"chat": [], "stream": [], "ocr": []}
     ocr_values = list(ocr_results)
 
-    async def async_request(url, **kwargs):
+    async def async_request(url: str, **kwargs: Any) -> dict[str, Any]:
         bucket = "ocr" if url == OCR_URL else "chat"
         calls[bucket].append((url, kwargs))
         if timeline is not None:
@@ -246,12 +302,12 @@ def _install_async(monkeypatch, *, model_response, stream_events=(), ocr_results
             }
         return model_response
 
-    def async_stream_request(url, **kwargs):
+    def async_stream_request(url: str, **kwargs: Any) -> AsyncIterator[SSEEvent]:
         calls["stream"].append((url, kwargs))
         if timeline is not None:
             timeline.append(("stream", kwargs))
 
-        async def source():
+        async def source() -> AsyncIterator[SSEEvent]:
             for event in stream_events:
                 yield event
 
@@ -262,13 +318,18 @@ def _install_async(monkeypatch, *, model_response, stream_events=(), ocr_results
     return calls
 
 
-def _invoke(adapter, method, messages, **kwargs):
+def _invoke(
+    adapter: UniversalLLMAPIAdapter,
+    method: str,
+    messages: Messages | list[Message | dict[str, Any]],
+    **kwargs: Any,
+) -> ChatResponse | tuple[list[str], ChatResponse]:
     if method == "chat":
         return adapter.chat(messages, **kwargs)
     if method == "stream_chat":
         completed = []
-        callback = kwargs.pop("on_done", None)
-        def done(response):
+        callback: OnDone | None = kwargs.pop("on_done", None)
+        def done(response: ChatResponse) -> None:
             completed.append(response)
             if callback is not None:
                 callback(response)
@@ -276,10 +337,10 @@ def _invoke(adapter, method, messages, **kwargs):
         return visible, completed[0]
     if method == "achat":
         return asyncio.run(adapter.achat(messages, **kwargs))
-    async def collect():
+    async def collect() -> tuple[list[str], ChatResponse]:
         completed = []
-        callback = kwargs.pop("on_done", None)
-        def done(response):
+        callback: OnDone | None = kwargs.pop("on_done", None)
+        def done(response: ChatResponse) -> None:
             completed.append(response)
             if callback is not None:
                 callback(response)
@@ -290,7 +351,25 @@ def _invoke(adapter, method, messages, **kwargs):
     return asyncio.run(collect())
 
 
-def _execute(adapter, method, messages, monkeypatch, *, model_response, stream_events=(), timeout_s=None, ocr_results=(), timeline=None, on_done=None, **kwargs):
+def _execute(
+    adapter: UniversalLLMAPIAdapter,
+    method: str,
+    messages: Messages | list[Message | dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    model_response: dict[str, Any],
+    stream_events: Iterable[SSEEvent] = (),
+    timeout_s: float | None = None,
+    ocr_results: Iterable[dict[str, Any]] = (),
+    timeline: list[tuple[str, TransportRequest | dict[str, Any]]] | None = None,
+    on_done: OnDone | None = None,
+    **kwargs: Any,
+) -> tuple[
+    ChatResponse,
+    list[str] | None,
+    RecordingSyncTransport,
+    dict[str, list[tuple[str, dict[str, Any]]]],
+]:
     recorder = RecordingSyncTransport(
         chat_result=model_response, events=stream_events, ocr_results=ocr_results,
         timeline=timeline,
@@ -397,7 +476,9 @@ def test_every_registered_profile_preserves_four_native_methods_and_transport_me
 
 
 @pytest.mark.integration
-def test_hosted_developers_retain_mistral_service_provider_ownership(mistral_runtime):
+def test_hosted_developers_retain_mistral_service_provider_ownership(
+    mistral_runtime: RegistrySpec,
+) -> None:
     for developer, model in (("zai", "glm-5.3-flash"), ("deepseek", "deepseek-flash")):
         spec = mistral_runtime.organizations["mistral"].models[model]
         adapter = _new_adapter(model, developer=developer)
@@ -437,7 +518,10 @@ def test_previous_response_is_ignored_and_caller_history_is_sent(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("finish", ("stop", "length", "content_filter"))
-def test_native_response_keeps_original_finish_reason_and_terminal_fields(mistral_runtime, finish):
+def test_native_response_keeps_original_finish_reason_and_terminal_fields(
+    mistral_runtime: RegistrySpec,
+    finish: str,
+) -> None:
     model = MODEL_IDS[0]
     adapter = _new_adapter(model)
     recorder = RecordingSyncTransport(chat_result=_response(
@@ -529,8 +613,10 @@ def test_native_structured_incomplete_and_tool_outcomes_remain_distinct(
 @pytest.mark.integration
 @pytest.mark.parametrize("method", ("chat", "achat"))
 def test_native_refusal_keeps_refusal_and_leaves_structured_output_unavailable(
-    mistral_runtime, monkeypatch, method
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
     model = MODEL_IDS[0]
     adapter = _new_adapter(model)
     schema = {
@@ -552,14 +638,17 @@ def test_native_refusal_keeps_refusal_and_leaves_structured_output_unavailable(
 @pytest.mark.integration
 @pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
 def test_usage_and_cost_keep_reported_zero_missing_partial_and_cached_components(
-    mistral_runtime, monkeypatch, method, transport
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+) -> None:
     model = MODEL_IDS[0]
     adapter = _new_adapter(model, transport)
     spec = mistral_runtime.organizations["mistral"].models[model]
     tier = spec.pricing_tiers.tier_for_prompt_tokens(1000)
 
-    def run_usage(usage):
+    def run_usage(usage: dict[str, Any] | None) -> ChatResponse:
         raw = _response(model, usage=usage)
         return _execute(
             adapter, method, [{"role": "user", "content": "cost"}], monkeypatch,
@@ -636,8 +725,11 @@ def test_usage_and_cost_keep_reported_zero_missing_partial_and_cached_components
 @pytest.mark.integration
 @pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
 def test_invalid_reported_cache_count_remains_a_client_error(
-    mistral_runtime, monkeypatch, method, transport
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+) -> None:
     model = MODEL_IDS[0]
     adapter = _new_adapter(model, transport)
     raw = _response(model, usage={
@@ -813,7 +905,11 @@ def test_registry_reasoning_allowed_values_fallback_and_projection(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("method", ("chat", "stream_chat", "achat", "astream_chat"))
-def test_sampling_validation_order_is_temperature_then_top_p(mistral_runtime, monkeypatch, method):
+def test_sampling_validation_order_is_temperature_then_top_p(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
     adapter = _new_adapter(MODEL_IDS[0])
     recorder = RecordingSyncTransport(chat_result={})
     adapter.adapter._sync_transport = recorder
@@ -862,7 +958,7 @@ def test_stream_creation_is_lazy_and_preparation_precedes_ocr(
     async_calls = _install_async(monkeypatch, model_response=_response(model), stream_events=empty_terminal, ocr_results=[{
         "pages": [{"markdown": "synthetic markdown"}], "usage_info": {"pages_processed": 1}
     }])
-    async def check_async_lazy():
+    async def check_async_lazy() -> None:
         iterator = adapter.astream_chat(pdf_history, buffer_chars=0)
         assert async_calls["ocr"] == [] and async_calls["stream"] == []
         with pytest.raises(ValueError, match="buffer"):
@@ -936,7 +1032,10 @@ def test_native_stream_validation_is_lazy_and_async_close_is_immediate(
 
     source = CloseableResponseEvents()
 
-    def async_stream_request(url: str, **kwargs: Any) -> CloseableResponseEvents:
+    def async_stream_request(
+        url: str,
+        **kwargs: Any,
+    ) -> AsyncIterator[SSEEvent]:
         return source
 
     monkeypatch.setattr(
@@ -955,15 +1054,17 @@ def test_native_stream_validation_is_lazy_and_async_close_is_immediate(
 @pytest.mark.integration
 @pytest.mark.parametrize("method", ("stream_chat", "astream_chat"))
 def test_stream_callback_failure_retains_caller_exception_identity(
-    mistral_runtime, monkeypatch, method
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
     model = MODEL_IDS[0]
     adapter = _new_adapter(model)
     raw = _response(model)
     events = _events_for_response(raw)
     caller_error = RuntimeError("synthetic callback failure")
 
-    def fail_on_done(response):
+    def fail_on_done(response: ChatResponse) -> None:
         raise caller_error
 
     with pytest.raises(RuntimeError) as caught:
@@ -977,8 +1078,11 @@ def test_stream_callback_failure_retains_caller_exception_identity(
 @pytest.mark.integration
 @pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
 def test_validation_errors_happen_before_pdf_ocr_in_native_order(
-    mistral_runtime, monkeypatch, method, transport
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+) -> None:
     from llm_api_adapter.errors.llm_api_error import InvalidToolSchemaError
     from llm_api_adapter.errors.llm_api_error import ToolChoiceError
 
@@ -1025,7 +1129,7 @@ def test_validation_errors_happen_before_pdf_ocr_in_native_order(
 
 
 @pytest.mark.integration
-def test_ocr_failure_stops_before_model_dispatch(mistral_runtime):
+def test_ocr_failure_stops_before_model_dispatch(mistral_runtime: RegistrySpec) -> None:
     model = MODEL_IDS[0]
     adapter = _new_adapter(model)
     recorder = RecordingSyncTransport(
@@ -1077,7 +1181,7 @@ def test_multiple_pdfs_are_ocr_processed_in_order_before_one_model_request(
     timeline = []
     callback_snapshots = []
 
-    def snapshot(response):
+    def snapshot(response: ChatResponse) -> None:
         callback_snapshots.append((
             response.cost_total,
             tuple((line.model, line.unit, line.quantity, line.rate, line.currency, line.cost)
@@ -1188,12 +1292,18 @@ def test_multiple_pdfs_are_ocr_processed_in_order_before_one_model_request(
     ids=("invalid-page-count", "missing-page-count", "missing-meter"),
 )
 def test_unknown_ocr_accounting_keeps_known_lines_and_total_unavailable(
-    mistral_runtime, monkeypatch, second_usage, missing_meter
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    second_usage: dict[str, Any],
+    missing_meter: bool,
+) -> None:
     model = MODEL_IDS[0]
     adapter = _new_adapter(model)
     if missing_meter:
-        monkeypatch.setattr(adapter.adapter, "_ocr_meter", lambda: None)
+        def no_meter() -> MeteredOperationSpec | None:
+            return None
+
+        monkeypatch.setattr(adapter.adapter, "_ocr_meter", no_meter)
     token_usage = {
         "prompt_tokens": 10,
         "completion_tokens": 2,
