@@ -38,6 +38,7 @@ from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
+from llm_api_adapter.models.responses.stream_chunk import StreamChunk
 from llm_api_adapter.models.tools import ToolSpec
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
@@ -649,6 +650,126 @@ def test_invalid_reported_cache_count_remains_a_client_error(
             adapter, method, [{"role": "user", "content": "usage"}], monkeypatch,
             model_response=raw, stream_events=_events_for_response(raw),
         )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("method", "transport"), (("stream_chat", "requests"), ("astream_chat", None)))
+@pytest.mark.parametrize(
+    ("usage", "expected_input", "expected_output", "expected_total", "chunk_usage"),
+    (
+        ({"input_tokens": 4, "output_tokens": 2}, 4, 2, 6, True),
+        ({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, 0, 0, 0, True),
+        ({"input_tokens": 4, "output_tokens": 2, "total_tokens": 999}, 4, 2, 999, True),
+        ({"input_tokens": 4}, 4, None, None, True),
+        ({}, None, None, None, False),
+    ),
+    ids=("derived-total", "reported-zero", "reported-nonadditive", "partial", "all-unknown"),
+)
+def test_native_responses_stream_chunk_and_final_usage_match(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+    usage: dict[str, Any],
+    expected_input: int | None,
+    expected_output: int | None,
+    expected_total: int | None,
+    chunk_usage: bool,
+) -> None:
+    model = MODEL_IDS[0]
+    raw = _response(model, content="answer")
+    raw["usage"] = usage
+    events = [
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"delta": "answer", "usage": usage},
+        ),
+        SSEEvent(event="response.completed", data={"response": raw}),
+    ]
+    adapter = _new_adapter(model, transport)
+    chunks: list[StreamChunk] = []
+    completed: list[ChatResponse] = []
+
+    response, visible, _, _ = _execute(
+        adapter,
+        method,
+        [{"role": "user", "content": "usage parity"}],
+        monkeypatch,
+        model_response=raw,
+        stream_events=events,
+        on_chunk=chunks.append,
+        on_done=completed.append,
+    )
+
+    assert visible == ["answer"]
+    assert chunks
+    if chunk_usage:
+        assert chunks[0].usage is not None
+        assert chunks[0].usage.input_tokens == expected_input
+        assert chunks[0].usage.output_tokens == expected_output
+        assert chunks[0].usage.total_tokens == expected_total
+    else:
+        assert chunks[0].usage is None
+    for result in (response, completed[0]):
+        assert result.usage is not None
+        assert result.usage.input_tokens == expected_input
+        assert result.usage.output_tokens == expected_output
+        assert result.usage.total_tokens == expected_total
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("method", "transport"), (("stream_chat", "requests"), ("astream_chat", None)))
+@pytest.mark.parametrize(
+    ("malformed_details", "expected_error"),
+    (
+        ([], "input_tokens_details"),
+        ({"cached_tokens": True}, "cached_tokens"),
+        ({"cached_tokens": -1}, "cached_tokens"),
+        ({"cached_tokens": 1.5}, "cached_tokens"),
+        ({"cached_tokens": "2"}, "cached_tokens"),
+    ),
+    ids=("container", "bool", "negative", "float", "string"),
+)
+def test_native_responses_stream_rejects_malformed_cache_before_visible_text(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+    malformed_details: object,
+    expected_error: str,
+) -> None:
+    model = MODEL_IDS[0]
+    malformed_usage = {
+        "input_tokens": 4,
+        "output_tokens": 2,
+        "input_tokens_details": malformed_details,
+    }
+    adapter = _new_adapter(model, transport)
+    deltas: list[str] = []
+    completed: list[ChatResponse] = []
+    terminal = _response(model, content="valid final", usage={"prompt_tokens": 4, "completion_tokens": 2})
+    events = [
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"delta": "must not escape", "usage": malformed_usage},
+        ),
+        SSEEvent(event="response.completed", data={"response": terminal}),
+    ]
+
+    with pytest.raises(LLMAPIClientError, match=expected_error):
+        _execute(
+            adapter,
+            method,
+            [{"role": "user", "content": "malformed cache"}],
+            monkeypatch,
+            model_response=_response(model),
+            stream_events=events,
+            on_delta=deltas.append,
+            on_done=completed.append,
+        )
+
+    assert deltas == []
+    assert completed == []
 
 
 @pytest.mark.integration

@@ -192,8 +192,6 @@ class MistralSyncClient(OpenAICompatibleSyncClient):
         effort = _native_reasoning_effort(model_spec, kwargs)
         if effort is not None:
             payload["reasoning"] = {"effort": effort}
-        if "parallel_tool_calls" in kwargs:
-            payload["parallel_tool_calls"] = kwargs["parallel_tool_calls"]
         _add_native_image_detail(payload)
         return payload
 
@@ -224,7 +222,7 @@ class MistralSyncClient(OpenAICompatibleSyncClient):
         transport = _CloseableSyncTransport(self._sync_transport)
         return _NativeRequestView(
             transport=transport,
-            headers=dict(headers),
+            headers=headers,
             http_error_handler=http_error_handler,
             stream_error_handler=stream_error_handler,
         )

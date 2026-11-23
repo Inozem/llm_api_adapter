@@ -21,6 +21,7 @@ from llm_api_adapter.adapters.base_adapter import (
     _ChatRequestContext,
 )
 from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
+from llm_api_adapter.adapters.openai_compatible.common.usage import _token_count
 from llm_api_adapter.adapters.openai_compatible.responses.streaming import _ResponsesStreamState
 from llm_api_adapter.adapters.structured_output import validate_core_portable_schema
 from llm_api_adapter.errors.llm_api_error import LLMAPIClientError
@@ -187,15 +188,15 @@ class MistralAdapter(OpenAICompatibleAdapter):
     def _parse_responses_usage(value: object) -> Optional[Usage]:
         if not isinstance(value, Mapping):
             return None
-        input_tokens = _nonnegative_int(value.get("input_tokens"))
-        output_tokens = _nonnegative_int(value.get("output_tokens"))
-        total_tokens = _nonnegative_int(value.get("total_tokens"))
+        input_tokens = _token_count(value.get("input_tokens"))
+        output_tokens = _token_count(value.get("output_tokens"))
+        total_tokens = _token_count(value.get("total_tokens"))
         details = value.get("input_tokens_details")
         if details is not None and not isinstance(details, Mapping):
             raise LLMAPIClientError(detail="Mistral input_tokens_details must be an object")
         cached_tokens = None
         if isinstance(details, Mapping) and "cached_tokens" in details:
-            cached_tokens = _nonnegative_int(details.get("cached_tokens"))
+            cached_tokens = _token_count(details.get("cached_tokens"))
             if cached_tokens is None:
                 raise LLMAPIClientError(detail="Mistral cached_tokens must be a non-negative integer")
         if total_tokens is None and input_tokens is not None and output_tokens is not None:
@@ -206,6 +207,28 @@ class MistralAdapter(OpenAICompatibleAdapter):
             total_tokens=total_tokens,
             cached_tokens=cached_tokens,
         )
+
+    @staticmethod
+    def _normalize_stream_usage(
+        raw_usage: object,
+        *,
+        input_field: str,
+        output_field: str,
+    ) -> Optional[Usage]:
+        """Use native Responses accounting for event and completed usage alike."""
+        usage = MistralAdapter._parse_responses_usage(raw_usage)
+        if usage is not None and all(
+            value is None
+            for value in (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.total_tokens,
+                usage.cached_tokens,
+                usage.cache_write_tokens,
+            )
+        ):
+            return None
+        return usage
 
     def _prepare_document_messages(
         self, messages: List[Message] | Messages, timeout_s: Optional[float]
@@ -382,26 +405,6 @@ class MistralAdapter(OpenAICompatibleAdapter):
             reasoning_collector=StreamReasoningCollector() if capture_reasoning else None,
             reasoning_response=ChatResponse() if capture_reasoning else None,
         )
-        yield from self._stream_chat_prepared(
-            context, messages, max_tokens, temperature, top_p, reasoning_level, timeout_s,
-            tools, parallel_tool_calls, previous_response, response_model, buffer_chars,
-            on_delta, on_tool_call, on_done, on_chunk, capture_reasoning, on_reasoning,
-            state,
-        )
-
-    def _stream_chat_prepared(
-        self, context: _ChatRequestContext, messages: List[Message] | Messages,
-        max_tokens: Optional[int], temperature: float, top_p: float,
-        reasoning_level: Optional[str | int], timeout_s: Optional[float],
-        tools: Optional[List[ToolSpec]], parallel_tool_calls: Optional[bool],
-        previous_response: Optional[ChatResponse], response_model: Optional[Any],
-        buffer_chars: Optional[int], on_delta: Optional[OnDelta],
-        on_tool_call: Optional[OnToolCall], on_done: Optional[OnDone],
-        on_chunk: Optional[OnChunk], capture_reasoning: bool,
-        on_reasoning: Optional[OnReasoning],
-        state: _ResponsesStreamState,
-    ) -> Iterator[str]:
-        reasoning_level = self._resolve_protocol_reasoning_effort(reasoning_level)
         prepared = self._prepare_document_messages(messages, timeout_s)
         context = replace(context, normalized_messages=prepared.messages)
         client = self._create_sync_client()
@@ -434,26 +437,7 @@ class MistralAdapter(OpenAICompatibleAdapter):
             on_reasoning=on_reasoning,
         )
 
-    def astream_chat(
-        self, messages: List[Message] | Messages, max_tokens: Optional[int] = None,
-        temperature: float = 1.0, top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None, timeout_s: Optional[float] = None,
-        tools: Optional[List[ToolSpec]] = None, tool_choice: Any = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None, json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None, on_delta: Optional[AsyncOnDelta] = None,
-        on_tool_call: Optional[AsyncOnToolCall] = None, on_done: Optional[AsyncOnDone] = None,
-        buffer_chars: Optional[int] = None, on_chunk: Optional[AsyncOnChunk] = None, *,
-        capture_reasoning: bool = False, on_reasoning: Optional[AsyncOnReasoning] = None,
-    ) -> AsyncIterator[str]:
-        return self._astream_chat_prepared(
-            messages, max_tokens, temperature, top_p, reasoning_level, timeout_s,
-            tools, tool_choice, parallel_tool_calls, previous_response, json_schema,
-            response_model, on_delta, on_tool_call, on_done, buffer_chars, on_chunk,
-            capture_reasoning, on_reasoning,
-        )
-
-    async def _astream_chat_prepared(
+    async def _astream_chat(
         self, messages: List[Message] | Messages, max_tokens: Optional[int],
         temperature: float, top_p: float, reasoning_level: Optional[str | int],
         timeout_s: Optional[float], tools: Optional[List[ToolSpec]], tool_choice: Any,
@@ -461,7 +445,7 @@ class MistralAdapter(OpenAICompatibleAdapter):
         json_schema: Optional[dict], response_model: Optional[Any],
         on_delta: Optional[AsyncOnDelta], on_tool_call: Optional[AsyncOnToolCall],
         on_done: Optional[AsyncOnDone], buffer_chars: Optional[int],
-        on_chunk: Optional[AsyncOnChunk], capture_reasoning: bool,
+        on_chunk: Optional[AsyncOnChunk], *, capture_reasoning: bool,
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
         temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
@@ -514,7 +498,3 @@ class MistralAdapter(OpenAICompatibleAdapter):
 
 
 __all__ = ["MistralAdapter"]
-
-
-def _nonnegative_int(value: object) -> Optional[int]:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None

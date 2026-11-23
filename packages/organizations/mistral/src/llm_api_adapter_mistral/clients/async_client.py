@@ -18,6 +18,7 @@ from llm_api_adapter.llms.transports import (
 from .sync_client import (
     MISTRAL_OCR_URL,
     MISTRAL_RESPONSES_URL,
+    _NativeRequestView,
     MistralSyncClient,
 )
 
@@ -146,12 +147,8 @@ class MistralAsyncClient(OpenAICompatibleAsyncClient, MistralSyncClient):
         return async_stream_request(*args, **kwargs)
 
 
-class _NativeAsyncRequestView(MistralAsyncClient):
+class _NativeAsyncRequestView(MistralAsyncClient, _NativeRequestView):
     """Snapshot one async request's headers and handlers for Core's runners."""
-
-    _request_headers: dict[str, str]
-    _request_http_error_handler: HTTPErrorHandler
-    _request_stream_error_handler: Optional[StreamErrorHandler]
 
     def __init__(
         self,
@@ -164,19 +161,6 @@ class _NativeAsyncRequestView(MistralAsyncClient):
         self._request_headers = dict(headers)
         self._request_http_error_handler = http_error_handler
         self._request_stream_error_handler = stream_error_handler
-
-    def _headers(self) -> dict[str, str]:
-        return dict(self._request_headers)
-
-    def _handle_http_error(self, http_error: Any) -> None:
-        self._request_http_error_handler(http_error)
-
-    def _handle_stream_error(self, event: SSEEvent) -> None:
-        handler = self._request_stream_error_handler
-        if handler is not None:
-            handler(event)
-            return
-        super()._handle_stream_error(event)
 
     async def _get_async_request(self, *args: Any, **kwargs: Any) -> Any:
         """Keep the caller's HTTP callback identity at the transport boundary."""
