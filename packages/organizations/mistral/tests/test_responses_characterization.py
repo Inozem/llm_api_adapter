@@ -1,8 +1,4 @@
-"""Pre-migration semantic contract for native Mistral execution.
-
-Wire fixtures here intentionally model the current Chat Completions protocol;
-the assertions below describe application-visible meaning and request intent.
-"""
+"""Application-semantic contract for native Mistral Responses execution."""
 
 from __future__ import annotations
 
@@ -11,7 +7,9 @@ import json
 import socket
 import sys
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -46,7 +44,7 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from llm_api_adapter_mistral.plugin import PLUGIN
 
 
-CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
+RESPONSES_URL = "https://api.mistral.ai/v1/responses"
 OCR_URL = "https://api.mistral.ai/v1/ocr"
 MODEL_IDS = tuple(PLUGIN.model_metadata.organization_data["models"])
 MIXED_HISTORY = [
@@ -107,44 +105,85 @@ def block_unmocked_network(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", block_external_connect)
 
 
-def _response(model, *, content="synthetic answer", finish="stop", usage=None, extra=None):
-    message = {"role": "assistant", "content": content}
-    if extra:
-        message.update(extra)
-    result = {"id": "synthetic-response-id", "model": model, "choices": [
-        {"message": message, "finish_reason": finish}
-    ]}
+def _response(
+    model: str,
+    *,
+    content: str | None = "synthetic answer",
+    finish: str = "stop",
+    usage: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    output = []
+    if isinstance(content, str) and content:
+        output.append({"type": "message", "role": "assistant", "status": "completed",
+                       "content": [{"type": "output_text", "text": content}]})
+    if isinstance(extra, dict) and isinstance(extra.get("refusal"), str):
+        output = [{"type": "message", "role": "assistant", "status": "completed",
+                   "content": [{"type": "refusal", "refusal": extra["refusal"]}]}]
+    elif finish == "content_filter":
+        output.append({"type": "message", "role": "assistant", "status": "completed",
+                       "content": [{"type": "refusal", "refusal": "synthetic refusal"}]})
+    if isinstance(extra, dict) and isinstance(extra.get("tool_calls"), list):
+        for call in extra["tool_calls"]:
+            function = call.get("function", {})
+            output.append({"type": "function_call", "call_id": call.get("id"),
+                           "name": function.get("name"),
+                           "arguments": function.get("arguments", "{}")})
+    result = {"object": "response", "id": "synthetic-response-id", "model": model,
+              "status": "incomplete" if finish == "length" else "completed",
+              "output": output}
+    if finish == "length":
+        result["incomplete_details"] = {"reason": "max_output_tokens"}
     if usage is not None:
-        result["usage"] = usage
+        result["usage"] = {
+            key: usage[source]
+            for source, key in (("prompt_tokens", "input_tokens"),
+                                ("completion_tokens", "output_tokens"),
+                                ("total_tokens", "total_tokens"))
+            if source in usage
+        }
+        details = usage.get("prompt_tokens_details")
+        if "prompt_tokens_details" in usage:
+            result["usage"]["input_tokens_details"] = (
+                dict(details) if isinstance(details, dict) else details
+            )
     return result
 
 
-def _terminal_event(model, *, content="synthetic answer", finish="stop", usage=None):
-    data = {
-        "id": "synthetic-stream-id", "model": model,
-        "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": finish}],
-    }
-    if usage is not None:
-        data["usage"] = usage
-    return SSEEvent(event=None, data=data)
+def _terminal_event(
+    model: str,
+    *,
+    content: str | None = "synthetic answer",
+    finish: str = "stop",
+    usage: dict[str, Any] | None = None,
+) -> list[SSEEvent]:
+    events = []
+    if isinstance(content, str) and content:
+        events.append(SSEEvent(event="response.output_text.delta", data={"delta": content}))
+    response = _response(model, content=content, finish=finish, usage=usage)
+    response["id"] = "synthetic-stream-id"
+    terminal = "response.incomplete" if finish == "length" else "response.completed"
+    events.append(SSEEvent(event=terminal, data={"response": response}))
+    return events
 
 
-def _events_for_response(response, *, response_id="synthetic-stream-id"):
-    choice = response["choices"][0]
-    message = choice["message"]
-    delta = {key: message[key] for key in ("content", "tool_calls") if key in message}
-    data = {
-        "id": response_id,
-        "model": response["model"],
-        "choices": [{
-            "index": 0,
-            "delta": delta,
-            "finish_reason": choice.get("finish_reason"),
-        }],
-    }
-    if "usage" in response:
-        data["usage"] = response["usage"]
-    return [SSEEvent(event=None, data=data)]
+def _events_for_response(
+    response: dict[str, Any], *, response_id: str = "synthetic-stream-id"
+) -> list[SSEEvent]:
+    events = []
+    output = response.get("output", [])
+    for item in output if isinstance(output, list) else ():
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "message":
+            for part in item.get("content", []):
+                if isinstance(part, dict) and part.get("type") == "output_text":
+                    events.append(SSEEvent(event="response.output_text.delta", data={"delta": part["text"]}))
+    response = dict(response)
+    response["id"] = response_id
+    terminal = "response.incomplete" if response.get("status") == "incomplete" else "response.completed"
+    events.append(SSEEvent(event=terminal, data={"response": response}))
+    return events
 
 
 class RecordingSyncTransport:
@@ -274,8 +313,12 @@ def _execute(adapter, method, messages, monkeypatch, *, model_response, stream_e
 @pytest.mark.parametrize("model", MODEL_IDS)
 @pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
 def test_every_registered_profile_preserves_four_native_methods_and_transport_meaning(
-    mistral_runtime, monkeypatch, model, method, transport
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    method: str,
+    transport: str | None,
+) -> None:
     """Every exact profile uses its registered identity, request policy and native route."""
     metadata = mistral_runtime.organizations["mistral"]
     assert tuple(metadata.models) == MODEL_IDS  # inventory and order come from PLUGIN metadata
@@ -290,7 +333,7 @@ def test_every_registered_profile_preserves_four_native_methods_and_transport_me
     assert adapter.adapter.pricing.tiers == spec.pricing_tiers.tiers
 
     response = _response(wire_model)
-    stream = [_terminal_event(wire_model)]
+    stream = _terminal_event(wire_model)
     recorder = RecordingSyncTransport(chat_result=response, events=stream)
     if method in {"chat", "stream_chat"}:
         expected_transport = RequestsSyncTransport if transport == "requests" else HttpxSyncTransport
@@ -302,7 +345,7 @@ def test_every_registered_profile_preserves_four_native_methods_and_transport_me
         result = _invoke(adapter, method, MIXED_HISTORY, max_tokens=73, timeout_s=9.5)
         request = recorder.requests[0] if method == "chat" else recorder.stream_requests[0]
         assert not async_calls["chat"] and not async_calls["stream"]
-        assert request.url == CHAT_URL
+        assert request.url == RESPONSES_URL
         assert request.timeout == 9.5
         headers = request.headers_dict()
         payload = request.payload
@@ -312,7 +355,7 @@ def test_every_registered_profile_preserves_four_native_methods_and_transport_me
         calls = async_calls["chat"] if method == "achat" else async_calls["stream"]
         assert len(calls) == 1
         url, kwargs = calls[0]
-        assert url == CHAT_URL
+        assert url == RESPONSES_URL
         assert kwargs["timeout"] == 9.5
         headers = kwargs["headers"]
         payload = kwargs["payload"]
@@ -330,23 +373,26 @@ def test_every_registered_profile_preserves_four_native_methods_and_transport_me
         else "synthetic-response-id"
     )
     assert payload["model"] == wire_model
-    assert payload["max_tokens"] == 73
+    assert payload["max_output_tokens"] == 73
     assert payload["temperature"] == 1.0 and payload["top_p"] == 1.0
-    assert [item["role"] for item in payload["messages"]] == [
-        "system", "user", "assistant", "assistant", "tool", "user"
-    ]
-    assert payload["messages"][0]["content"] == "Use concise answers."
-    assert payload["messages"][1]["content"] == "Find the report."
-    assert payload["messages"][2]["content"] == "I will search."
-    assert payload["messages"][3]["tool_calls"][0]["id"] == "call-synthetic"
-    assert json.loads(payload["messages"][3]["tool_calls"][0]["function"]["arguments"]) == {"key": "report"}
-    assert payload["messages"][4] == {
-        "role": "tool", "tool_call_id": "call-synthetic", "content": "found"
+    assert payload["instructions"] == "Use concise answers."
+    assert payload["input"][0] == {"role": "user", "content": "Find the report."}
+    assert payload["input"][1] == {"role": "assistant", "content": "I will search."}
+    assert payload["input"][2]["type"] == "function_call"
+    assert payload["input"][2]["call_id"] == "call-synthetic"
+    assert payload["input"][2]["name"] == "lookup"
+    assert json.loads(payload["input"][2]["arguments"]) == {"key": "report"}
+    assert payload["input"][3] == {
+        "type": "function_call_output", "call_id": "call-synthetic", "output": "found"
     }
-    assert payload["messages"][5]["content"] == "Summarize it."
+    assert payload["input"][4] == {"role": "user", "content": "Summarize it."}
+    assert len(payload["input"]) == 5
     capability = spec.reasoning_capability
     expected_default = capability.allowed_values[0] if capability and capability.allowed_values else None
-    assert payload.get("reasoning_effort") == expected_default
+    if expected_default is None:
+        assert "reasoning" not in payload
+    else:
+        assert payload["reasoning"]["effort"] == expected_default
 
 
 @pytest.mark.integration
@@ -367,19 +413,23 @@ def test_hosted_developers_retain_mistral_service_provider_ownership(mistral_run
 
 @pytest.mark.integration
 @pytest.mark.parametrize("method", ("chat", "stream_chat", "achat", "astream_chat"))
-def test_previous_response_is_ignored_and_caller_history_is_sent(mistral_runtime, monkeypatch, method):
+def test_previous_response_is_ignored_and_caller_history_is_sent(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
     model = MODEL_IDS[0]
     adapter = _new_adapter(model)
     response = _response(model)
-    events = [_terminal_event(model)]
+    events = _terminal_event(model)
     recorder = RecordingSyncTransport(chat_result=response, events=events)
     adapter.adapter._sync_transport = recorder
     calls = _install_async(monkeypatch, model_response=response, stream_events=events)
     prior = ChatResponse(content="synthetic earlier result", response_id="opaque-synthetic-id")
     _invoke(adapter, method, MIXED_HISTORY, previous_response=prior)
     payload = (recorder.requests[0] if method == "chat" else recorder.stream_requests[0]).payload if method in {"chat", "stream_chat"} else (calls["chat"] if method == "achat" else calls["stream"])[0][1]["payload"]
-    assert payload["messages"][0] == {"role": "system", "content": "Use concise answers."}
-    assert payload["messages"][4]["content"] == "found"
+    assert payload["instructions"] == "Use concise answers."
+    assert payload["input"][3]["output"] == "found"
     assert "opaque-synthetic-id" not in repr(payload)
     assert not any("previous" in key.lower() and "response" in key.lower() for key in payload)
 
@@ -403,8 +453,11 @@ def test_native_response_keeps_original_finish_reason_and_terminal_fields(mistra
 @pytest.mark.integration
 @pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
 def test_native_structured_incomplete_and_tool_outcomes_remain_distinct(
-    mistral_runtime, monkeypatch, method, transport
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+) -> None:
     model = MODEL_IDS[0]
     adapter = _new_adapter(model, transport)
     schema = {
@@ -469,9 +522,7 @@ def test_native_structured_incomplete_and_tool_outcomes_remain_distinct(
     else:
         bucket = "chat" if method == "achat" else "stream"
         tool_payload = calls[bucket][-1][1]["payload"]
-    assert tool_payload["tool_choice"] == {
-        "type": "function", "function": {"name": "lookup"}
-    }
+    assert tool_payload["tool_choice"] == {"type": "function", "name": "lookup"}
 
 
 @pytest.mark.integration
@@ -601,7 +652,9 @@ def test_invalid_reported_cache_count_remains_a_client_error(
 
 
 @pytest.mark.integration
-def test_registry_reasoning_allowed_values_fallback_and_projection(mistral_runtime):
+def test_registry_reasoning_allowed_values_fallback_and_projection(
+    mistral_runtime: RegistrySpec,
+) -> None:
     profiles = mistral_runtime.organizations["mistral"].models.values()
     for spec in profiles:
         if spec.reasoning_capability is None:
@@ -632,9 +685,9 @@ def test_registry_reasoning_allowed_values_fallback_and_projection(mistral_runti
             )
             payload = recorder.requests[0].payload
             if expected.provider_value is None:
-                assert "reasoning_effort" not in payload
+                assert "reasoning" not in payload
             else:
-                assert payload["reasoning_effort"] == expected.provider_value
+                assert payload["reasoning"]["effort"] == expected.provider_value
 
 
 @pytest.mark.integration
@@ -654,7 +707,10 @@ def test_sampling_validation_order_is_temperature_then_top_p(mistral_runtime, mo
 
 
 @pytest.mark.integration
-def test_stream_creation_is_lazy_and_preparation_precedes_ocr(mistral_runtime, monkeypatch):
+def test_stream_creation_is_lazy_and_preparation_precedes_ocr(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     model = MODEL_IDS[0]
     adapter = _new_adapter(model)
     pdf_history = [UserMessage("read", files=[DocumentPart(url="https://example.invalid/a.pdf")])]
@@ -669,7 +725,7 @@ def test_stream_creation_is_lazy_and_preparation_precedes_ocr(mistral_runtime, m
         next(stream)
     assert recorder.ocr_requests == []
 
-    recorder = RecordingSyncTransport(chat_result=_response(model), events=[empty_terminal], ocr_results=[{
+    recorder = RecordingSyncTransport(chat_result=_response(model), events=empty_terminal, ocr_results=[{
         "pages": [{"markdown": "synthetic markdown"}], "usage_info": {"pages_processed": 1}
     }])
     adapter.adapter._sync_transport = recorder
@@ -682,7 +738,7 @@ def test_stream_creation_is_lazy_and_preparation_precedes_ocr(mistral_runtime, m
     assert len(recorder.stream_requests) == 1
     assert len(completed) == 1 and completed[0].finish_reason == "stop"
 
-    async_calls = _install_async(monkeypatch, model_response=_response(model), stream_events=[empty_terminal], ocr_results=[{
+    async_calls = _install_async(monkeypatch, model_response=_response(model), stream_events=empty_terminal, ocr_results=[{
         "pages": [{"markdown": "synthetic markdown"}], "usage_info": {"pages_processed": 1}
     }])
     async def check_async_lazy():
@@ -701,6 +757,78 @@ def test_stream_creation_is_lazy_and_preparation_precedes_ocr(mistral_runtime, m
     asyncio.run(check_async_lazy())
     assert len(async_calls["ocr"]) == 1
     assert len(async_calls["stream"]) == 1
+
+
+@pytest.mark.integration
+def test_native_stream_validation_is_lazy_and_async_close_is_immediate(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model)
+    recorder = RecordingSyncTransport(chat_result=_response(model))
+    adapter.adapter._sync_transport = recorder
+
+    # The native alias returns a generator: argument validation belongs to
+    # iteration and must happen before any model request.
+    stream = adapter.stream_chat(
+        [UserMessage("synthetic")], temperature=2.0
+    )
+    assert recorder.requests == [] and recorder.stream_requests == []
+    with pytest.raises(ValueError, match="temperature"):
+        next(stream)
+    assert recorder.requests == [] and recorder.stream_requests == []
+
+    _install_async(monkeypatch, model_response=_response(model))
+
+    class CloseableResponseEvents:
+        events: Iterator[SSEEvent]
+        closed: bool
+
+        def __init__(self) -> None:
+            self.events = iter((
+                SSEEvent(
+                    event="response.output_text.delta",
+                    data={"type": "response.output_text.delta", "delta": "hello"},
+                ),
+                SSEEvent(
+                    event="response.completed",
+                    data={
+                        "type": "response.completed",
+                        "response": _response(model),
+                    },
+                ),
+            ))
+            self.closed = False
+
+        def __aiter__(self) -> CloseableResponseEvents:
+            return self
+
+        async def __anext__(self) -> SSEEvent:
+            try:
+                return next(self.events)
+            except StopIteration:
+                raise StopAsyncIteration from None
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    source = CloseableResponseEvents()
+
+    def async_stream_request(url: str, **kwargs: Any) -> CloseableResponseEvents:
+        return source
+
+    monkeypatch.setattr(
+        mistral_async_client_module, "async_stream_request", async_stream_request
+    )
+
+    async def assert_closed_before_loop_shutdown() -> None:
+        stream = adapter.astream_chat([UserMessage("synthetic")])
+        assert await anext(stream) == "hello"
+        await stream.aclose()
+        assert source.closed
+
+    asyncio.run(assert_closed_before_loop_shutdown())
 
 
 @pytest.mark.integration
@@ -796,8 +924,12 @@ def test_ocr_failure_stops_before_model_dispatch(mistral_runtime):
 @pytest.mark.parametrize("model", MODEL_IDS)
 @pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
 def test_multiple_pdfs_are_ocr_processed_in_order_before_one_model_request(
-    mistral_runtime, monkeypatch, method, transport, model
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+    model: str,
+) -> None:
     adapter = _new_adapter(model, transport)
     spec = mistral_runtime.organizations["mistral"].models[model]
     meter = resolve_metered_operation_spec(mistral_runtime, "mistral", "ocr")
@@ -858,7 +990,8 @@ def test_multiple_pdfs_are_ocr_processed_in_order_before_one_model_request(
         assert all(request.url == OCR_URL and request.payload["model"] == meter.model for request in recorder.ocr_requests)
         assert [request.timeout for request in recorder.ocr_requests] == [4, 4, 4]
         ocr_payloads = [request.payload for request in recorder.ocr_requests]
-        sent = requests[0].payload["messages"]
+        sent_payload = requests[0].payload
+        sent = sent_payload["input"]
     else:
         assert recorder.ocr_requests == [] and recorder.requests == [] and recorder.stream_requests == []
         bucket = "chat" if method == "achat" else "stream"
@@ -866,7 +999,8 @@ def test_multiple_pdfs_are_ocr_processed_in_order_before_one_model_request(
         assert all(call[0] == OCR_URL for call in async_calls["ocr"])
         assert [call[1]["timeout"] for call in async_calls["ocr"]] == [4, 4, 4]
         ocr_payloads = [call[1]["payload"] for call in async_calls["ocr"]]
-        sent = async_calls[bucket][0][1]["payload"]["messages"]
+        sent_payload = async_calls[bucket][0][1]["payload"]
+        sent = sent_payload["input"]
     model_dispatch = (
         "model" if method in {"chat", "stream_chat"}
         else "chat" if method == "achat"
@@ -880,21 +1014,21 @@ def test_multiple_pdfs_are_ocr_processed_in_order_before_one_model_request(
         "data:application/pdf;base64,c3ludGhldGljLXBkZg==",
         "data:application/pdf;base64,c3ludGhldGlj",
     ]
-    assert sent[0] == {"role": "system", "content": "synthetic system"}
+    assert sent_payload.get("instructions") == "synthetic system"
     serialized_content = " ".join(
         part if isinstance(part, str) else part.get("text", "")
-        for part in sent[1]["content"]
+        for part in sent[0]["content"]
     )
     assert "first OCR" in serialized_content and "second OCR" in serialized_content
     assert serialized_content.index("first OCR") < serialized_content.index("second OCR")
     image_parts = [
-        part for part in sent[1]["content"]
-        if isinstance(part, dict) and part.get("type") == "image_url"
+        part for part in sent[0]["content"]
+        if isinstance(part, dict) and part.get("type") == "input_image"
     ]
     assert len(image_parts) == 1
     assert image_parts[0]["image_url"] == "data:image/png;base64,c3ludGhldGljLWltYWdl"
-    assert sent[2] == {"role": "assistant", "content": "between"}
-    third_content = sent[3]["content"]
+    assert sent[1] == {"role": "assistant", "content": "between"}
+    third_content = sent[2]["content"]
     third_text = third_content if isinstance(third_content, str) else " ".join(
         part if isinstance(part, str) else part.get("text", "") for part in third_content
     )

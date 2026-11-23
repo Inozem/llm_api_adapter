@@ -224,15 +224,15 @@ def _run_mode(adapter, api_kind, monkeypatch, response, content, **kwargs):
     ids=["plain-string", "thinking-and-text-list"],
 )
 def test_glm_flash_all_modes_keep_visible_text_separate_from_opt_in_reasoning(
-    mistral_runtime,
-    monkeypatch,
-    api_kind,
-    streaming,
-    capture_reasoning,
-    content,
-    expected_visible,
-    expected_thinking,
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    api_kind: str,
+    streaming: bool,
+    capture_reasoning: bool,
+    content: str | list[dict[str, object]] | None,
+    expected_visible: str | None,
+    expected_thinking: list[str],
+) -> None:
     adapter = _new_adapter()
     response, reasoning, completed, transport = _run_mode(
         adapter,
@@ -254,7 +254,7 @@ def test_glm_flash_all_modes_keep_visible_text_separate_from_opt_in_reasoning(
     if expected_visible is not None:
         assert all(text not in expected_visible for text in expected_events)
     request = transport.stream_requests[0] if streaming else transport.requests[0]
-    assert request.payload["reasoning_effort"] == "low"
+    assert request.payload["reasoning"]["effort"] == "low"
 
 
 @pytest.mark.integration
@@ -300,11 +300,11 @@ def test_glm_flash_missing_thinking_never_synthesizes_reasoning(
 )
 @pytest.mark.parametrize("api_kind", ["sync-chat", "async-chat"])
 def test_glm_flash_reasoning_effort_uses_shared_resolver(
-    mistral_runtime,
-    monkeypatch,
-    reasoning_level,
-    api_kind,
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    reasoning_level: str,
+    api_kind: str,
+) -> None:
     adapter = _new_adapter()
     expected = resolve_reasoning_level(adapter.adapter.model_spec, reasoning_level)
     with warnings.catch_warnings(record=True) as caught:
@@ -320,16 +320,16 @@ def test_glm_flash_reasoning_effort_uses_shared_resolver(
     assert [str(item.message) for item in caught] == (
         [expected.warning] if expected.warning else []
     )
-    assert transport.requests[0].payload["reasoning_effort"] == expected.provider_value
+    assert transport.requests[0].payload["reasoning"]["effort"] == expected.provider_value
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("api_kind", ["sync-chat", "async-chat", "sync-stream", "async-stream"])
 def test_glm_flash_omitted_reasoning_effort_defaults_to_low(
-    mistral_runtime,
-    monkeypatch,
-    api_kind,
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    api_kind: str,
+) -> None:
     adapter = _new_adapter()
     low = resolve_reasoning_level(adapter.adapter.model_spec, "low")
     _, _, _, transport = _run_mode(
@@ -340,7 +340,7 @@ def test_glm_flash_omitted_reasoning_effort_defaults_to_low(
         "Done.",
     )
     requests = transport.stream_requests if "stream" in api_kind else transport.requests
-    assert requests[0].payload["reasoning_effort"] == low.provider_value == "low"
+    assert requests[0].payload["reasoning"]["effort"] == low.provider_value == "low"
 
 
 @pytest.mark.integration
@@ -376,10 +376,10 @@ def test_glm_flash_invalid_reasoning_controls_fail_before_provider_request(
 @pytest.mark.integration
 @pytest.mark.parametrize("api_kind", ["sync-chat", "async-chat", "sync-stream", "async-stream"])
 def test_glm_flash_ignores_previous_response_and_does_not_replay_reasoning(
-    mistral_runtime,
-    monkeypatch,
-    api_kind,
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    api_kind: str,
+) -> None:
     adapter = _new_adapter()
     content = _thinking_content()
     response = _chat_response(content)
@@ -436,7 +436,7 @@ def test_glm_flash_ignores_previous_response_and_does_not_replay_reasoning(
     else:
         assert len(async_calls) == 1
         payload = async_calls[0][2]
-    assert payload["messages"] == USER_MESSAGES
+    assert payload["input"] == USER_MESSAGES
     serialized = repr(payload)
     assert "cmpl-previous-glm-flash" not in serialized
     assert "Earlier private thought." not in serialized

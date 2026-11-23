@@ -430,6 +430,48 @@ def test_responses_preserves_supported_nested_effort_and_strips_local_fields() -
 
 
 @pytest.mark.unit
+def test_responses_image_detail_does_not_mutate_caller_input() -> None:
+    model = "mistral-small-2603"
+    original_input = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_image", "image_url": "data:image/png;base64,AA=="}
+            ],
+        }
+    ]
+    expected_input = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_image", "image_url": "data:image/png;base64,AA=="}
+            ],
+        }
+    ]
+
+    payload = MistralSyncClient._prepare_responses_payload_for_model(
+        MistralSyncClient(RecordingSyncTransport({})),
+        model,
+        {"input": original_input},
+    )
+
+    assert original_input == expected_input
+    assert payload["input"] == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,AA==",
+                    "detail": "auto",
+                }
+            ],
+        }
+    ]
+    assert payload["input"] is not original_input
+
+
+@pytest.mark.unit
 def test_inherited_stream_dispatches_responses_without_rewriting_full_url() -> None:
     assert MistralSyncClient.stream is OpenAICompatibleSyncClient.stream
     model, wire_model, effort = _reasoning_model()

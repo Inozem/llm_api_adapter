@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
+from copy import deepcopy
 from typing import Any, Optional
 
 from llm_api_adapter.errors.llm_api_error import (
@@ -44,13 +45,20 @@ class MistralSyncClient(OpenAICompatibleSyncClient):
     """Use inherited compatible execution with Mistral-owned request policy."""
 
     def __init__(self, transport: SyncTransport) -> None:
-        # Preserve the historical transport-object constructor without creating
-        # a second default transport through the parent initializer.
+        """Preserve the historical transport-object constructor without creating
+        a second default transport through the parent initializer.
+        """
         self.api_key = ""
         self.endpoint = MISTRAL_RESPONSES_URL
         self.transport = transport
         self._api_variant_override = "responses"
         self._diagnostic_formatter = None
+        self._adapter_post_payload: Optional[
+            Callable[[dict[str, Any], Optional[float]], dict[str, Any]]
+        ] = None
+        self._adapter_stream_payload: Optional[
+            Callable[[dict[str, Any], Optional[float]], Iterator[SSEEvent]]
+        ] = None
 
     @property
     def transport(self) -> SyncTransport:
@@ -126,6 +134,8 @@ class MistralSyncClient(OpenAICompatibleSyncClient):
             "http_error_handler", self._handle_http_error
         )
         payload = self._prepare_responses_payload_for_model(model, kwargs)
+        if self._adapter_post_payload is not None:
+            return self._adapter_post_payload(payload, timeout)
         return self._post_json(
             endpoint,
             headers,
@@ -149,6 +159,8 @@ class MistralSyncClient(OpenAICompatibleSyncClient):
         )
         payload = self._prepare_responses_payload_for_model(model, kwargs)
         payload["stream"] = True
+        if self._adapter_stream_payload is not None:
+            return self._adapter_stream_payload(payload, timeout)
         return self.stream_chat(
             endpoint=endpoint,
             headers=headers,
@@ -164,6 +176,8 @@ class MistralSyncClient(OpenAICompatibleSyncClient):
         """Reuse shared stateless conversion, restoring native wire differences."""
         model_spec = _model_spec(model)
         native_kwargs = dict(kwargs)
+        if isinstance(native_kwargs.get("input"), list):
+            native_kwargs["input"] = deepcopy(native_kwargs["input"])
         for key in ("previous_response", "json_schema", "response_model"):
             native_kwargs.pop(key, None)
         payload = _prepare_compatible_responses_payload(model, native_kwargs)
@@ -178,6 +192,9 @@ class MistralSyncClient(OpenAICompatibleSyncClient):
         effort = _native_reasoning_effort(model_spec, kwargs)
         if effort is not None:
             payload["reasoning"] = {"effort": effort}
+        if "parallel_tool_calls" in kwargs:
+            payload["parallel_tool_calls"] = kwargs["parallel_tool_calls"]
+        _add_native_image_detail(payload)
         return payload
 
     def _post_json(
@@ -430,3 +447,19 @@ def _native_reasoning_effort(
             return effort
 
     return allowed_values[0] if allowed_values else None
+
+
+def _add_native_image_detail(payload: dict[str, Any]) -> None:
+    """Add Mistral's default image detail to fresh Responses input items."""
+    input_items = payload.get("input")
+    if not isinstance(input_items, list):
+        return
+    for item in input_items:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "input_image":
+                part.setdefault("detail", "auto")

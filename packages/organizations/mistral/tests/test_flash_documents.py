@@ -31,7 +31,7 @@ from llm_api_adapter_mistral.plugin import PLUGIN
 
 MODEL = "glm-5.3-flash"
 WIRE_MODEL = "zai-glm-5-3-flash"
-CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
+CHAT_URL = "https://api.mistral.ai/v1/responses"
 OCR_URL = "https://api.mistral.ai/v1/ocr"
 TOKEN_USAGE = {
     "prompt_tokens": 100,

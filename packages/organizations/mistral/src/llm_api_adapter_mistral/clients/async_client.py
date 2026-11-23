@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Callable, Mapping, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Optional
 
 from llm_api_adapter.errors.llm_api_error import LLMAPIClientError
 from llm_api_adapter.llms.async_streaming import async_request, async_stream_request
@@ -31,6 +31,12 @@ class MistralAsyncClient(OpenAICompatibleAsyncClient, MistralSyncClient):
         self.endpoint = MISTRAL_RESPONSES_URL
         self._api_variant_override = "responses"
         self._diagnostic_formatter = None
+        self._adapter_apost_payload: Optional[
+            Callable[[dict[str, Any], Optional[float]], Awaitable[dict[str, Any]]]
+        ] = None
+        self._adapter_astream_payload: Optional[
+            Callable[[dict[str, Any], Optional[float]], AsyncIterator[SSEEvent]]
+        ] = None
 
     async def chat(
         self,
@@ -89,6 +95,8 @@ class MistralAsyncClient(OpenAICompatibleAsyncClient, MistralSyncClient):
             "http_error_handler", self._handle_http_error
         )
         payload = self._prepare_responses_payload_for_model(model, kwargs)
+        if self._adapter_apost_payload is not None:
+            return await self._adapter_apost_payload(payload, timeout)
         view = self._async_request_view(headers, http_error_handler)
         response = await view._send_request(endpoint, payload, timeout)
         return _validated_response(response, "Mistral returned a non-object response")
@@ -107,6 +115,8 @@ class MistralAsyncClient(OpenAICompatibleAsyncClient, MistralSyncClient):
         )
         payload = self._prepare_responses_payload_for_model(model, kwargs)
         payload["stream"] = True
+        if self._adapter_astream_payload is not None:
+            return self._adapter_astream_payload(payload, timeout)
         view = self._async_request_view(
             headers, http_error_handler, stream_error_handler
         )
