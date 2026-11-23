@@ -31,8 +31,8 @@ from llm_api_adapter.llms.transports import (
     SyncTransport,
     TransportRequest,
 )
-from llm_api_adapter.models.messages.chat_message import Messages, UserMessage
-from llm_api_adapter.models.messages.file_parts import ImagePart
+from llm_api_adapter.models.messages.chat_message import AIMessage, Messages, UserMessage
+from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter_mistral.adapter import MistralAdapter
 from llm_api_adapter_mistral.plugin import PLUGIN
 
@@ -255,3 +255,72 @@ def test_native_payload_preserves_explicit_image_detail_without_mutating_raw_inp
     payload = client._prepare_responses_payload_for_model("mistral-large-4", {"input": caller_input})
     assert payload["input"][0]["content"][0]["detail"] == "high"
     assert caller_input == snapshot
+
+
+@pytest.mark.unit
+def test_native_responses_keeps_ocr_page_order_and_resets_document_indexes_per_message(
+    mistral_registry: RegistrySpec,
+) -> None:
+    model = MODELS[0]
+    response = _completed_response(model)
+    ocr_results = [
+        {"pages": [{"markdown": "# First"}, {"markdown": "## Second"}], "usage_info": {"pages_processed": 2}},
+        {"pages": [{"markdown": "# Third"}], "usage_info": {"pages_processed": 1}},
+        {"pages": [{"markdown": "# Fourth"}], "usage_info": {"pages_processed": 1}},
+    ]
+
+    class OCRMediaTransport(MediaTransport):
+        def post_json(
+            self,
+            request: TransportRequest,
+            *,
+            http_error_handler: HTTPErrorHandler | None = None,
+        ) -> JSONResponse:
+            self.requests.append(request)
+            if request.url.endswith("/ocr"):
+                return JSONResponse(ocr_results.pop(0))
+            return JSONResponse(response)
+
+    messages = Messages([
+        UserMessage("First turn", files=[
+            DocumentPart(url="https://docs.example.test/one.pdf"),
+            DocumentPart(data=b"%PDF two", media_type="application/pdf"),
+            ImagePart(data=IMAGE_BYTES, media_type="image/png"),
+        ]),
+        AIMessage("Earlier answer"),
+        UserMessage("Second turn", files=[
+            DocumentPart(url="data:application/pdf;base64,cGRm")
+        ]),
+    ])
+    adapter = MistralAdapter(api_key="synthetic-key", model=model, company="mistral")
+    transport = OCRMediaTransport(model)
+    adapter._sync_transport = transport
+
+    assert adapter.chat(messages).content == "image received"
+
+    assert [request.url for request in transport.requests] == [
+        "https://api.mistral.ai/v1/ocr",
+        "https://api.mistral.ai/v1/ocr",
+        "https://api.mistral.ai/v1/ocr",
+        "https://api.mistral.ai/v1/responses",
+    ]
+    assert [request.payload["model"] for request in transport.requests[:3]] == [
+        "mistral-ocr-4-1",
+    ] * 3
+    assert transport.requests[0].payload["document"]["document_url"] == "https://docs.example.test/one.pdf"
+    assert transport.requests[1].payload["document"]["document_url"] == (
+        "data:application/pdf;base64,JVBERiB0d28="
+    )
+    assert transport.requests[2].payload["document"]["document_url"] == (
+        "data:application/pdf;base64,cGRm"
+    )
+    sent = transport.requests[3].payload["input"]
+    assert sent[0]["content"][0]["text"] == (
+        "First turn\n\n<document index=\"1\">\n# First\n\n---\n\n## Second\n</document>\n\n"
+        "<document index=\"2\">\n# Third\n</document>"
+    )
+    assert sent[0]["content"][1]["image_url"] == IMAGE_BYTES_DATA_URL
+    assert sent[1] == {"role": "assistant", "content": "Earlier answer"}
+    assert sent[2]["content"] == (
+        "Second turn\n\n<document index=\"1\">\n# Fourth\n</document>"
+    )
