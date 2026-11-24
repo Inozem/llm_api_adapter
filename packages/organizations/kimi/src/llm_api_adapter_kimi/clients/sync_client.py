@@ -2,34 +2,54 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 from llm_api_adapter.errors.llm_api_error import (
-    LLMAPIAuthorizationError,
     LLMAPIClientError,
+    LLMAPIAuthorizationError,
     LLMAPIRateLimitError,
     LLMAPIServerError,
     LLMAPITimeoutError,
     LLMAPITokenLimitError,
     LLMAPIUsageLimitError,
 )
+from llm_api_adapter.llms.openai_compatible.sync_client import (
+    OpenAICompatibleSyncClient,
+)
 from llm_api_adapter.llms.transports import (
+    HTTPErrorHandler,
     JSONResponse,
+    MultipartForm,
     SSEEvent,
+    StreamErrorHandler,
     SyncTransport,
     TransportRequest,
 )
 
-
 KIMI_CHAT_COMPLETIONS_URL = "https://api.moonshot.ai/v1/chat/completions"
 
 
-class KimiSyncClient:
-    """Submit Kimi Chat Completions requests through the Core sync transport."""
+class KimiSyncClient(OpenAICompatibleSyncClient):
+    """Use Core's JSON/SSE runners while preserving Kimi's raw client API."""
 
     def __init__(self, transport: SyncTransport) -> None:
+        # Preserve the transport-object constructor without constructing another
+        # transport via the compatible dataclass initializer.
+        self.api_key = ""
+        self.endpoint = KIMI_CHAT_COMPLETIONS_URL
         self.transport = transport
+        self._api_variant_override = None
+        self._diagnostic_formatter = None
+
+    @property
+    def transport(self) -> SyncTransport:
+        """Expose the historical transport injection seam."""
+        return self._sync_transport
+
+    @transport.setter
+    def transport(self, transport: SyncTransport) -> None:
+        self._sync_transport = transport
 
     def chat(
         self,
@@ -38,18 +58,12 @@ class KimiSyncClient:
         payload: dict[str, Any],
         timeout_s: float | None,
     ) -> dict[str, Any]:
-        """Post one JSON request and validate the top-level response envelope."""
-        response: JSONResponse = self.transport.post_json(
-            TransportRequest(
-                url=KIMI_CHAT_COMPLETIONS_URL,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                payload=payload,
-                timeout=timeout_s,
-            ),
-            http_error_handler=self._handle_http_error,
+        """Post one unchanged raw payload and validate its response envelope."""
+        view = self._request_view(api_key)
+        response: JSONResponse = view._send_request(
+            KIMI_CHAT_COMPLETIONS_URL,
+            payload,
+            timeout_s,
         )
         response_data = response.json()
         if not isinstance(response_data, dict):
@@ -64,21 +78,30 @@ class KimiSyncClient:
         api_key: str,
         payload: dict[str, Any],
         timeout_s: float | None,
-    ):
-        """Open one Kimi SSE response and request its terminal usage report."""
-        stream_payload = dict(payload)
-        stream_payload["stream"] = True
-        stream_payload["stream_options"] = {"include_usage": True}
-        return self.transport.post_sse(
-            TransportRequest(
-                url=KIMI_CHAT_COMPLETIONS_URL,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                payload=stream_payload,
-                timeout=timeout_s,
-            ),
+    ) -> Iterator[SSEEvent]:
+        """Return Core's lazy SSE runner with Kimi's terminal-usage options."""
+
+        def run() -> Iterator[SSEEvent]:
+            stream_payload = dict(payload)
+            stream_payload["stream"] = True
+            stream_payload["stream_options"] = {"include_usage": True}
+            view = self._request_view(api_key)
+            yield from view._stream_request(
+                KIMI_CHAT_COMPLETIONS_URL,
+                stream_payload,
+                timeout_s,
+            )
+
+        return run()
+
+    def _request_view(self, api_key: str) -> _KimiRequestView:
+        """Snapshot credentials and transport for one raw invocation."""
+        return _KimiRequestView(
+            transport=self._sync_transport,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
             http_error_handler=self._handle_http_error,
             stream_error_handler=self._handle_stream_error,
         )
@@ -123,6 +146,11 @@ class KimiSyncClient:
         cls._raise_mapped_error(None, error_type, detail)
 
     @staticmethod
+    def _format_diagnostic(value: object) -> str:
+        """Keep transport logs free of raw provider errors and request content."""
+        return f"Kimi transport diagnostic ({type(value).__name__})"
+
+    @staticmethod
     def _raise_mapped_error(
         status_code: int | None,
         error_type: str | None,
@@ -165,6 +193,110 @@ class KimiSyncClient:
         if normalized_type in {"api_error", "internal_error", "overloaded_error"}:
             raise LLMAPIServerError(detail=detail)
         raise LLMAPIClientError(detail=detail)
+
+
+class _KimiRequestView(KimiSyncClient):
+    """Compatible request view with invocation-local credentials and handlers."""
+
+    _request_headers: dict[str, str]
+    _request_http_error_handler: HTTPErrorHandler
+    _request_stream_error_handler: StreamErrorHandler
+
+    def __init__(
+        self,
+        *,
+        transport: SyncTransport,
+        headers: Mapping[str, str],
+        http_error_handler: HTTPErrorHandler,
+        stream_error_handler: StreamErrorHandler,
+    ) -> None:
+        super().__init__(_CloseableSyncTransport(transport))
+        self._request_headers = dict(headers)
+        self._request_http_error_handler = http_error_handler
+        self._request_stream_error_handler = stream_error_handler
+
+    def _headers(self) -> dict[str, str]:
+        return dict(self._request_headers)
+
+    def _handle_http_error(self, http_error: Any) -> None:
+        self._request_http_error_handler(http_error)
+
+    def _handle_stream_error(self, event: SSEEvent) -> None:
+        self._request_stream_error_handler(event)
+
+    @staticmethod
+    def _is_failed_stream_event(event: SSEEvent) -> bool:
+        """Leave Kimi event classification to its native transport callback."""
+        return False
+
+
+class _CloseableSSEIterator:
+    """Supply the lifecycle hook Core expects while forwarding real closure."""
+
+    _events: Iterator[SSEEvent]
+
+    def __init__(self, events: Iterator[SSEEvent]) -> None:
+        self._events = events
+
+    def __iter__(self) -> _CloseableSSEIterator:
+        return self
+
+    def __next__(self) -> SSEEvent:
+        return next(self._events)
+
+    def close(self) -> None:
+        close = getattr(self._events, "close", None)
+        if callable(close):
+            close()
+
+
+class _CloseableSyncTransport(SyncTransport):
+    """Snapshot a transport and adapt accepted SSE sources missing close()."""
+
+    _transport: SyncTransport
+
+    def __init__(self, transport: SyncTransport) -> None:
+        self._transport = transport
+
+    def post_json(
+        self,
+        request: TransportRequest,
+        *,
+        http_error_handler: HTTPErrorHandler | None = None,
+    ) -> JSONResponse:
+        return self._transport.post_json(
+            request,
+            http_error_handler=http_error_handler,
+        )
+
+    def post_multipart(
+        self,
+        request: TransportRequest,
+        form: MultipartForm,
+        *,
+        http_error_handler: HTTPErrorHandler | None = None,
+    ) -> JSONResponse:
+        return self._transport.post_multipart(
+            request,
+            form,
+            http_error_handler=http_error_handler,
+        )
+
+    def post_sse(
+        self,
+        request: TransportRequest,
+        *,
+        http_error_handler: HTTPErrorHandler | None = None,
+        stream_error_handler: StreamErrorHandler | None = None,
+    ) -> Iterator[SSEEvent]:
+        events = self._transport.post_sse(
+            request,
+            http_error_handler=http_error_handler,
+            stream_error_handler=stream_error_handler,
+        )
+        if callable(getattr(events, "close", None)):
+            return events
+        return _CloseableSSEIterator(events)
 
 
 __all__ = ["KIMI_CHAT_COMPLETIONS_URL", "KimiSyncClient"]

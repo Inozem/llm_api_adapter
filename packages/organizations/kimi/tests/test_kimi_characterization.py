@@ -305,14 +305,15 @@ def test_raw_sync_and_async_chat_accept_keyword_only_payloads_without_rewriting(
 
 
 @pytest.mark.unit
-def test_raw_sync_stream_opens_at_factory_and_sets_native_usage_options() -> None:
+def test_raw_sync_stream_opens_on_first_consumption_and_sets_native_usage_options() -> None:
     transport = RecordingTransport({})
     client = KimiSyncClient(transport)
     raw_payload: dict[str, Any] = {"model": "kimi-k3", "stream_options": {"custom": True}}
 
     events = client.stream(api_key="sync-key", payload=raw_payload, timeout_s=9.5)
 
-    # T003 changes this baseline check to assert lazy opening on first consumption.
+    assert transport.stream_requests == []
+    assert list(events) == []
     assert len(transport.stream_requests) == 1
     request = transport.stream_requests[0]
     assert request.payload == {
@@ -320,7 +321,6 @@ def test_raw_sync_stream_opens_at_factory_and_sets_native_usage_options() -> Non
     }
     assert raw_payload == {"model": "kimi-k3", "stream_options": {"custom": True}}
     assert request.timeout == 9.5
-    assert list(events) == []
 
 
 @pytest.mark.unit
