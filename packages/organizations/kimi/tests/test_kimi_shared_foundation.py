@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+import asyncio
+from collections.abc import AsyncIterator, Iterator, Mapping
 from pathlib import Path
 import sys
 from typing import Any
@@ -21,6 +22,9 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPIAuthorizationError,
     LLMAPIRateLimitError,
 )
+from llm_api_adapter.llms.openai_compatible.async_client import (
+    OpenAICompatibleAsyncClient,
+)
 from llm_api_adapter.llms.openai_compatible.sync_client import (
     OpenAICompatibleSyncClient,
 )
@@ -37,6 +41,7 @@ from llm_api_adapter_kimi.clients.sync_client import (
     KIMI_CHAT_COMPLETIONS_URL,
     KimiSyncClient,
 )
+from llm_api_adapter_kimi.clients.async_client import KimiAsyncClient
 
 
 class _RecordingTransport(SyncTransport):
@@ -383,3 +388,294 @@ def test_real_transport_diagnostics_are_safe_and_native_mapping_wins(
     assert secret_key not in caplog.text
     assert "sensitive-reasoning-and-tool-arguments" not in caplog.text
     assert "Kimi transport diagnostic" in caplog.text
+
+
+@pytest.mark.unit
+def test_async_client_uses_compatible_runners_without_sync_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert KimiAsyncClient.__bases__ == (
+        OpenAICompatibleAsyncClient,
+        KimiSyncClient,
+    )
+    transport_construction: list[str] = []
+
+    def create_sync_transport(self: OpenAICompatibleSyncClient, transport: str) -> Any:
+        transport_construction.append(transport)
+        raise AssertionError("async client construction must not create sync transport")
+
+    monkeypatch.setattr(
+        OpenAICompatibleSyncClient,
+        "_create_sync_transport",
+        create_sync_transport,
+    )
+    client = KimiAsyncClient()
+    assert transport_construction == []
+
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    raw_payload = {"model": "raw-model", "native_extension": {"keep": True}}
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def async_request(url: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((url, kwargs))
+        return {"choices": []}
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    reached: list[str] = []
+    inherited_send = OpenAICompatibleAsyncClient._send_request
+    inherited_stream = OpenAICompatibleAsyncClient._stream_request
+
+    async def send(
+        self: OpenAICompatibleAsyncClient,
+        url: str,
+        payload: dict[str, Any],
+        timeout: float | None = None,
+    ) -> Any:
+        reached.append("json")
+        return await inherited_send(self, url, payload, timeout)
+
+    async def stream(
+        self: OpenAICompatibleAsyncClient,
+        url: str,
+        payload: dict[str, Any],
+        timeout: float | None = None,
+    ) -> AsyncIterator[SSEEvent]:
+        reached.append("sse")
+        async for event in inherited_stream(self, url, payload, timeout):
+            yield event
+
+    monkeypatch.setattr(OpenAICompatibleAsyncClient, "_send_request", send)
+    monkeypatch.setattr(OpenAICompatibleAsyncClient, "_stream_request", stream)
+    result = asyncio.run(
+        client.chat(api_key="async-key", payload=raw_payload, timeout_s=2.75)
+    )
+    assert result == {"choices": []}
+    assert calls[0][0] == KIMI_CHAT_COMPLETIONS_URL
+    assert calls[0][1]["payload"] == raw_payload
+    assert calls[0][1]["headers"] == {
+        "Authorization": "Bearer async-key",
+        "Content-Type": "application/json",
+    }
+    assert calls[0][1]["timeout"] == 2.75
+    assert raw_payload == {"model": "raw-model", "native_extension": {"keep": True}}
+
+    stream_calls: list[tuple[str, dict[str, Any]]] = []
+
+    def async_stream_request(url: str, **kwargs: Any) -> AsyncIterator[SSEEvent]:
+        stream_calls.append((url, kwargs))
+
+        async def events() -> AsyncIterator[SSEEvent]:
+            yield SSEEvent(event=None, data={"event": "one"})
+
+        return events()
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream_request)
+    stream_payload = {"model": "raw-stream-model", "stream_options": {"custom": True}}
+    raw_events = client.stream(
+        api_key="async-stream-key",
+        payload=stream_payload,
+        timeout_s=4.25,
+    )
+    assert stream_calls == []
+
+    async def collect() -> list[SSEEvent]:
+        return [event async for event in raw_events]
+
+    events = asyncio.run(collect())
+    assert [event.data for event in events] == [{"event": "one"}]
+    assert reached == ["json", "sse"]
+    assert stream_calls[0][0] == KIMI_CHAT_COMPLETIONS_URL
+    assert stream_calls[0][1]["payload"] == {
+        "model": "raw-stream-model",
+        "stream_options": {"include_usage": True},
+        "stream": True,
+    }
+    assert stream_calls[0][1]["headers"]["Authorization"] == "Bearer async-stream-key"
+    assert stream_calls[0][1]["timeout"] == 4.25
+    assert len(stream_calls) == 1
+    assert stream_payload == {
+        "model": "raw-stream-model",
+        "stream_options": {"custom": True},
+    }
+    assert stream_payload["stream_options"] == {"custom": True}
+
+
+@pytest.mark.unit
+def test_async_stream_resolves_alias_after_creation_and_binds_interleaved_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    client = KimiAsyncClient()
+    first = client.stream(api_key="first-async-key", payload={"model": "m"}, timeout_s=None)
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def async_stream_request(url: str, **kwargs: Any) -> AsyncIterator[SSEEvent]:
+        calls.append((url, kwargs))
+
+        async def events() -> AsyncIterator[SSEEvent]:
+            try:
+                yield SSEEvent(event=None, data={"index": 1})
+                yield SSEEvent(event=None, data={"index": 2})
+            finally:
+                completed.append(kwargs["headers"]["Authorization"])
+
+        return events()
+
+    completed: list[str] = []
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream_request)
+    second = client.stream(api_key="second-async-key", payload={"model": "m"}, timeout_s=None)
+
+    async def consume_interleaved() -> None:
+        first_iterator = first.__aiter__()
+        assert (await first_iterator.__anext__()).data == {"index": 1}
+        second_iterator = second.__aiter__()
+        assert (await second_iterator.__anext__()).data == {"index": 1}
+        assert (await first_iterator.__anext__()).data == {"index": 2}
+        assert (await second_iterator.__anext__()).data == {"index": 2}
+        await first_iterator.aclose()
+        await second_iterator.aclose()
+
+    asyncio.run(consume_interleaved())
+    assert [call[1]["headers"]["Authorization"] for call in calls] == [
+        "Bearer first-async-key",
+        "Bearer second-async-key",
+    ]
+    assert [call[0] for call in calls] == [KIMI_CHAT_COMPLETIONS_URL] * 2
+    assert completed == ["Bearer first-async-key", "Bearer second-async-key"]
+
+
+@pytest.mark.unit
+def test_async_request_view_preserves_native_handler_dispatch_and_error_classes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_api_adapter.errors.llm_api_error import LLMAPIAuthorizationError
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    calls: list[tuple[str, object]] = []
+
+    class CustomKimiAsyncClient(KimiAsyncClient):
+        @classmethod
+        def _handle_http_error(cls, error: Any) -> None:
+            calls.append(("http", error))
+
+        @classmethod
+        def _handle_stream_error(cls, event: SSEEvent) -> None:
+            calls.append(("stream", event))
+
+    client = CustomKimiAsyncClient()
+    error = object()
+
+    async def async_request(url: str, **kwargs: Any) -> dict[str, Any]:
+        kwargs["http_error_handler"](error)
+        return {"choices": []}
+
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    assert asyncio.run(client.chat(api_key="key", payload={}, timeout_s=None)) == {
+        "choices": [],
+    }
+
+    class FakeResponse:
+        status_code = 401
+
+        def json(self) -> dict[str, Any]:
+            return {"error": {"type": "invalid_api_key", "message": "denied"}}
+
+    class FakeHTTPError(Exception):
+        response = FakeResponse()
+
+    async def failing_request(url: str, **kwargs: Any) -> Any:
+        kwargs["http_error_handler"](FakeHTTPError("no secret diagnostic"))
+
+    monkeypatch.setattr(async_client_module, "async_request", failing_request)
+    with pytest.raises(LLMAPIAuthorizationError, match="denied"):
+        asyncio.run(KimiAsyncClient().chat(api_key="key", payload={}, timeout_s=None))
+    assert calls == [("http", error)]
+
+
+@pytest.mark.unit
+def test_async_kimi_sse_passes_through_responses_only_failure_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    event = SSEEvent(event="response.failed", data={"type": "response.failed"})
+
+    async def events() -> AsyncIterator[SSEEvent]:
+        yield event
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        lambda *args, **kwargs: events(),
+    )
+    stream = KimiAsyncClient().stream(
+        api_key="key",
+        payload={"model": "m"},
+        timeout_s=None,
+    )
+
+    async def collect() -> list[SSEEvent]:
+        return [item async for item in stream]
+
+    assert asyncio.run(collect()) == [event]
+
+
+@pytest.mark.unit
+def test_async_stream_adapts_missing_aclose_and_closes_real_source_on_early_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    client = KimiAsyncClient()
+
+    class NoCloseIterator:
+        def __init__(self) -> None:
+            self._events = iter((SSEEvent(event=None, data={"accepted": True}),))
+
+        def __aiter__(self) -> NoCloseIterator:
+            return self
+
+        async def __anext__(self) -> SSEEvent:
+            try:
+                return next(self._events)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    no_close = NoCloseIterator()
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        lambda *args, **kwargs: no_close,
+    )
+    no_close_stream = client.stream(api_key="key", payload={"model": "m"}, timeout_s=None)
+
+    async def consume_no_close() -> list[SSEEvent]:
+        return [event async for event in no_close_stream]
+
+    assert asyncio.run(consume_no_close())[0].data == {"accepted": True}
+
+    closed: list[bool] = []
+
+    async def closeable_events() -> AsyncIterator[SSEEvent]:
+        try:
+            yield SSEEvent(event=None, data={"index": 1})
+            yield SSEEvent(event=None, data={"index": 2})
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        lambda *args, **kwargs: closeable_events(),
+    )
+    stream = client.stream(api_key="key", payload={"model": "m"}, timeout_s=None)
+
+    async def consume_one_then_close() -> None:
+        iterator = stream.__aiter__()
+        assert (await iterator.__anext__()).data == {"index": 1}
+        await iterator.aclose()
+
+    asyncio.run(consume_one_then_close())
+    assert closed == [True]

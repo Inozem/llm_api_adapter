@@ -324,12 +324,16 @@ def test_raw_sync_stream_opens_on_first_consumption_and_sets_native_usage_option
 
 
 @pytest.mark.unit
-def test_raw_async_stream_opens_at_factory_and_sets_native_usage_options(
+def test_raw_async_stream_opens_on_first_consumption_and_sets_native_usage_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from llm_api_adapter_kimi.clients import async_client as async_client_module
 
     calls: list[tuple[str, dict[str, Any]]] = []
+    client = KimiAsyncClient()
+    raw_payload: dict[str, Any] = {"model": "kimi-k3", "stream_options": {"custom": True}}
+
+    stream = client.stream(api_key="async-key", payload=raw_payload, timeout_s=4.0)
 
     def async_stream_request(url: str, **kwargs: Any) -> AsyncIterator[SSEEvent]:
         calls.append((url, kwargs))
@@ -340,24 +344,25 @@ def test_raw_async_stream_opens_at_factory_and_sets_native_usage_options(
         return events()
 
     monkeypatch.setattr(async_client_module, "async_stream_request", async_stream_request)
-    client = KimiAsyncClient()
-    raw_payload: dict[str, Any] = {"model": "kimi-k3", "stream_options": {"custom": True}}
-
-    stream = client.stream(api_key="async-key", payload=raw_payload, timeout_s=4.0)
-
-    # T004 changes this baseline check to assert lazy opening on first consumption.
-    assert len(calls) == 1
-    assert calls[0][0] == KIMI_CHAT_COMPLETIONS_URL
-    assert calls[0][1]["payload"] == {
-        "model": "kimi-k3", "stream_options": {"include_usage": True}, "stream": True,
-    }
-    assert calls[0][1]["headers"]["Authorization"] == "Bearer async-key"
-    assert raw_payload == {"model": "kimi-k3", "stream_options": {"custom": True}}
+    assert calls == []
+    raw_payload["model"] = "kimi-k3-updated-before-consumption"
 
     async def collect() -> list[SSEEvent]:
         return [event async for event in stream]
 
     assert asyncio.run(collect())[0].done is True
+    assert len(calls) == 1
+    assert calls[0][0] == KIMI_CHAT_COMPLETIONS_URL
+    assert calls[0][1]["payload"] == {
+        "model": "kimi-k3-updated-before-consumption",
+        "stream_options": {"include_usage": True},
+        "stream": True,
+    }
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer async-key"
+    assert raw_payload == {
+        "model": "kimi-k3-updated-before-consumption",
+        "stream_options": {"custom": True},
+    }
 
 
 @pytest.mark.unit
