@@ -106,6 +106,10 @@ class KimiSyncClient(OpenAICompatibleSyncClient):
             stream_error_handler=self._handle_stream_error,
         )
 
+    def _adapter_binding(self, api_key: str) -> _KimiAdapterClientBinding:
+        """Expose native raw calls through the adapter's inherited dispatch."""
+        return _KimiAdapterClientBinding(self, api_key)
+
     @classmethod
     def _handle_http_error(cls, http_error: Any) -> None:
         response = getattr(http_error, "response", None)
@@ -228,6 +232,43 @@ class _KimiRequestView(KimiSyncClient):
     def _is_failed_stream_event(event: SSEEvent) -> bool:
         """Leave Kimi event classification to its native transport callback."""
         return False
+
+
+class _KimiAdapterClientBinding:
+    """Thin adapter-facing dispatch that preserves native payload semantics."""
+
+    _native: KimiSyncClient
+    _api_key: str
+
+    def __init__(self, native: KimiSyncClient, api_key: str) -> None:
+        self._native = native
+        self._api_key = api_key
+
+    @staticmethod
+    def _should_use_responses_api(model: str) -> bool:
+        _ = model
+        return False
+
+    def complete(self, model: str, timeout: float | None = None, **payload: Any) -> dict[str, Any]:
+        payload.setdefault("model", model)
+        return self._native.chat(
+            api_key=self._api_key,
+            payload=payload,
+            timeout_s=timeout,
+        )
+
+    def stream(
+        self,
+        model: str,
+        timeout: float | None = None,
+        **payload: Any,
+    ) -> Iterator[SSEEvent]:
+        payload.setdefault("model", model)
+        return self._native.stream(
+            api_key=self._api_key,
+            payload=payload,
+            timeout_s=timeout,
+        )
 
 
 class _CloseableSSEIterator:

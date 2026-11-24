@@ -1,10 +1,12 @@
-"""Synchronous adapter for Kimi's official Chat Completions API."""
+"""Native Kimi policy over Core's OpenAI-compatible Chat Completions flow."""
 
 from __future__ import annotations
 
+import copy
+import logging
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 from llm_api_adapter.adapters.base_adapter import (
     AsyncOnChunk,
@@ -18,166 +20,483 @@ from llm_api_adapter.adapters.base_adapter import (
     OnDone,
     OnReasoning,
     OnToolCall,
-    _StreamState,
+    _ChatRequestContext,
 )
+from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
 from llm_api_adapter.adapters.structured_output import validate_core_portable_schema
-from llm_api_adapter.errors.llm_api_error import (
-    LLMAPIClientError,
-    LLMAPIError,
-    ToolChoiceError,
-)
+from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, ToolChoiceError
 from llm_api_adapter.llm_registry.llm_registry import CategoricalReasoningCapability
 from llm_api_adapter.llm_registry.request_rules import apply_request_rules
-from llm_api_adapter.llms.streaming import (
-    StreamChunkBuffer,
-    StreamReasoningCollector,
-    StreamUsageTracker,
-)
-from llm_api_adapter.llms.transports import (
-    SSEEvent,
-    SyncTransport,
-    create_sync_transport,
-)
+from llm_api_adapter.llms.streaming import StreamReasoningCollector
+from llm_api_adapter.llms.transports import SSEEvent, SyncTransport, create_sync_transport
 from llm_api_adapter.models.messages.chat_message import Message, Messages, UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
-from llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
-from llm_api_adapter.models.tools.tool_spec import ToolSpec
+from llm_api_adapter.models.tools import ToolSpec
 
 from .clients import KimiAsyncClient, KimiSyncClient
+from .clients.async_client import _KimiAsyncAdapterClientBinding
+from .clients.sync_client import _KimiAdapterClientBinding
+from .streaming import (
+    _KimiStreamInvocation,
+    close_async_layers,
+    close_sync_consumer,
+    observe_async_events,
+    observe_sync_events,
+)
+from .usage import KimiUsage, parse_kimi_usage
 
-
-@dataclass
-class KimiUsage(Usage):
-    """Normalized Kimi usage retaining the cache-hit split used for pricing."""
-
-    cached_tokens: int | None = None
-
-
-@dataclass
-class _KimiStreamState(_StreamState):
-    """Provider state retained while reconstructing a Kimi SSE response."""
-
-    response_metadata: dict[str, Any] = field(default_factory=dict)
-    usage: dict[str, Any] = field(default_factory=dict)
-    text_parts: list[str] = field(default_factory=list)
-    tool_calls: dict[int, dict[str, Any]] = field(default_factory=dict)
-    finish_reason: str | None = None
+logger = logging.getLogger(__name__)
 
 
 @dataclass(repr=False)
-class KimiAdapter(LLMAdapterBase):
-    """Map the shared text-chat contract to Kimi Chat Completions."""
+class KimiAdapter(OpenAICompatibleAdapter):
+    """Keep Kimi's registered policy while inheriting shared execution."""
 
     company: str = "kimi"
+    base_url: ClassVar[str] = ""
+    api_variant: ClassVar[str | None] = None
     _client: KimiSyncClient = field(init=False, repr=False, compare=False)
     _async_client: KimiAsyncClient = field(init=False, repr=False, compare=False)
+    _kimi_stream_invocation: _KimiStreamInvocation | None = field(
+        init=False,
+        repr=False,
+        compare=False,
+        default=None,
+    )
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        """Initialize native registry facts before creating native clients."""
+        LLMAdapterBase.__post_init__(self)
         self._client = KimiSyncClient(create_sync_transport(self.transport))
         self._async_client = KimiAsyncClient()
 
     @property
     def _sync_transport(self) -> SyncTransport:
-        """Compatibility hook for deterministic transport tests."""
+        """Retain the native deterministic transport injection seam."""
         return self._client.transport
 
     @_sync_transport.setter
     def _sync_transport(self, transport: SyncTransport) -> None:
         self._client.transport = transport
 
-    def chat(
-        self,
-        messages: list[Message] | Messages,
-        max_tokens: Optional[int] = None,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None,
-        timeout_s: Optional[float] = None,
-        tools: Optional[list[ToolSpec]] = None,
-        tool_choice: Any = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None,
-        json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None,
-        *,
-        capture_reasoning: bool = False,
-    ) -> ChatResponse:
-        """Create one Kimi response through ``POST /v1/chat/completions``."""
-        _ = previous_response
-        request_context, payload = self._prepare_request_payload(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_level=reasoning_level,
-            tools=tools,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            json_schema=json_schema,
-            response_model=response_model,
-        )
-        try:
-            response = self._client.chat(
-                api_key=self.api_key,
-                payload=payload,
-                timeout_s=timeout_s,
-            )
-            return self._finalize_kimi_chat_response(
-                response,
-                capture_reasoning=capture_reasoning,
-                effective_schema=request_context.effective_schema,
-                response_model=request_context.response_model,
-            )
-        except LLMAPIError as error:
-            self.handle_error(error)
+    def _create_sync_client(self) -> _KimiAdapterClientBinding:
+        return self._client._adapter_binding(self.api_key)
 
-    async def achat(
+    def _create_async_client(self) -> _KimiAsyncAdapterClientBinding:
+        return self._async_client._adapter_binding(self.api_key)
+
+    def _prepare_chat_request(
         self,
         messages: list[Message] | Messages,
-        max_tokens: Optional[int] = None,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None,
-        timeout_s: Optional[float] = None,
-        tools: Optional[list[ToolSpec]] = None,
-        tool_choice: Any = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None,
-        json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None,
+        tools: Optional[list[ToolSpec]],
+        tool_choice: Any,
+        json_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> _ChatRequestContext:
+        """Reuse common normalization, then enforce native file/schema policy."""
+        context = super()._prepare_chat_request(
+            messages,
+            tools,
+            tool_choice,
+            json_schema,
+            response_model,
+        )
+        self._reject_unsupported_file_parts(context.normalized_messages)
+        return context
+
+    def _build_chat_params(
+        self,
         *,
-        capture_reasoning: bool = False,
-    ) -> ChatResponse:
-        """Create one Kimi response without blocking the event loop."""
-        _ = previous_response
-        request_context, payload = self._prepare_request_payload(
-            messages=messages,
+        normalized_messages: Messages,
+        use_responses_api: bool,
+        max_tokens: Optional[int],
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        tools: Optional[list[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        parallel_tool_calls: Optional[bool],
+        previous_response: Optional[ChatResponse],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> dict[str, Any]:
+        """Build common Chat Completions fields, then apply native rules once."""
+        self._validate_native_dispatch(use_responses_api, parallel_tool_calls)
+        payload = super()._build_chat_params(
+            normalized_messages=normalized_messages,
+            use_responses_api=False,
+            max_tokens=self._validate_max_tokens(max_tokens),
+            temperature=temperature,
+            top_p=top_p,
+            reasoning_level=None,
+            tools=tools,
+            normalized_tool_choice=normalized_tool_choice,
+            parallel_tool_calls=None,
+            previous_response=None,
+            effective_schema=effective_schema,
+            capture_reasoning=capture_reasoning,
+        )
+        self._apply_reasoning_options(payload, reasoning_level)
+        if self.model_spec is None:
+            return payload
+        transformed, _ = apply_request_rules(
+            payload,
+            self.model_spec.request_rules,
+            model=self.model,
+        )
+        return transformed
+
+    def _build_stream_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        use_responses_api: bool,
+        max_tokens: Optional[int],
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        tools: Optional[list[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        parallel_tool_calls: Optional[bool],
+        previous_response: Optional[ChatResponse],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> dict[str, Any]:
+        """Use the same native request policy for shared stream execution."""
+        return self._build_chat_params(
+            normalized_messages=normalized_messages,
+            use_responses_api=use_responses_api,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
             reasoning_level=reasoning_level,
             tools=tools,
-            tool_choice=tool_choice,
+            normalized_tool_choice=normalized_tool_choice,
             parallel_tool_calls=parallel_tool_calls,
-            json_schema=json_schema,
+            previous_response=previous_response,
+            effective_schema=effective_schema,
+            capture_reasoning=capture_reasoning,
+        )
+
+    @staticmethod
+    def _validate_native_dispatch(
+        use_responses_api: bool,
+        parallel_tool_calls: Optional[bool],
+    ) -> None:
+        if use_responses_api:
+            raise NotImplementedError("Kimi uses Chat Completions only")
+        if parallel_tool_calls is not None:
+            raise NotImplementedError(
+                "Kimi parallel_tool_calls control is not implemented because "
+                "the Chat Completions API has no documented parameter for it",
+            )
+
+    def _resolve_protocol_reasoning_effort(
+        self,
+        reasoning_level: str | int | None,
+    ) -> str | None:
+        """Leave native reasoning resolution to the native payload policy."""
+        _ = reasoning_level
+        return None
+
+    def _apply_reasoning_options(
+        self,
+        payload: dict[str, Any],
+        reasoning_level: Optional[str | int],
+    ) -> None:
+        if reasoning_level is None:
+            return
+        provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
+        if provider_value is None:
+            return
+        if not isinstance(provider_value, str):
+            raise TypeError("Kimi reasoning resolution must produce a string")
+        capability = self.model_spec.reasoning_capability if self.model_spec else None
+        if not isinstance(capability, CategoricalReasoningCapability):
+            return
+        if provider_value == "none":
+            payload["thinking"] = {"type": "disabled"}
+        elif "enabled" not in capability.allowed_values:
+            payload["reasoning_effort"] = provider_value
+
+    def _map_tool_choice_to_openai(self, tool_choice: Optional[str]) -> Any:
+        if tool_choice is None:
+            return None
+        mode = tool_choice if tool_choice in {"auto", "none", "any"} else "tool"
+        allowed_modes = (
+            self.model_spec.request_rules.allowed_tool_choice_modes
+            if self.model_spec is not None
+            else None
+        )
+        if allowed_modes is not None and mode not in allowed_modes:
+            allowed = ", ".join(sorted(allowed_modes))
+            raise ToolChoiceError(
+                detail=(
+                    f"Model {self.model!r} does not support tool_choice mode "
+                    f"{mode!r}; allowed modes: {allowed}."
+                ),
+            )
+        if tool_choice in {"auto", "none"}:
+            return tool_choice
+        if tool_choice == "any":
+            return "required"
+        return {"type": "function", "function": {"name": tool_choice}}
+
+    @staticmethod
+    def _to_openai_structured_output_schema(schema: dict) -> dict:
+        return validate_core_portable_schema(schema, provider="kimi")
+
+    @staticmethod
+    def _reject_unsupported_file_parts(messages: Messages) -> None:
+        for message in messages.items:
+            if not isinstance(message, UserMessage) or not message.files:
+                continue
+            for file_part in message.files:
+                if isinstance(file_part, ImagePart) and file_part._is_url():
+                    raise ValueError(
+                        "Kimi does not support public ImagePart URLs; pass image "
+                        "bytes or a data URI instead",
+                    )
+                if isinstance(file_part, DocumentPart):
+                    raise ValueError(
+                        "Kimi does not support DocumentPart because its Files API "
+                        "cannot attach PDF bytes and public URLs through the same "
+                        "Chat Completions contract",
+                    )
+
+    def _validate_max_tokens(self, max_tokens: Optional[int]) -> Optional[int]:
+        if max_tokens is None:
+            return None
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+            raise ValueError("max_tokens must be a positive integer for Kimi")
+        if (
+            self.model_spec is not None
+            and max_tokens > self.model_spec.limits.max_output_tokens
+        ):
+            raise ValueError(
+                f"max_tokens must not exceed {self.model_spec.limits.max_output_tokens} "
+                f"for Kimi model {self.model!r}",
+            )
+        return max_tokens
+
+    def _parse_chat_response(
+        self,
+        response: dict,
+        *,
+        use_responses_api: bool,
+        capture_reasoning: bool,
+    ) -> ChatResponse:
+        if use_responses_api:
+            raise NotImplementedError("Kimi uses Chat Completions only")
+        return self._parse_response(response, capture_reasoning=capture_reasoning)
+
+    def _normalize_chat_completions_response(self, response: dict) -> ChatResponse:
+        return self._parse_response(response)
+
+    def _normalize_stream_usage(
+        self,
+        raw_usage: object,
+        *,
+        input_field: str,
+        output_field: str,
+    ) -> Usage | None:
+        _ = input_field, output_field
+        try:
+            return parse_kimi_usage(raw_usage)
+        except LLMAPIClientError:
+            return None
+
+    def _validate_chat_completions_stream_event(self, event: object) -> None:
+        """Retain Kimi's tolerant treatment of malformed/interim SSE frames."""
+        _ = event
+
+    def _update_legacy_stream_metadata(
+        self,
+        payload: Mapping[str, Any],
+        legacy_response: dict[str, Any],
+    ) -> None:
+        for field_name in ("id", "model", "created"):
+            if field_name in payload:
+                legacy_response[field_name] = payload[field_name]
+        usage = payload.get("usage")
+        if isinstance(usage, Mapping):
+            existing = legacy_response.get("usage")
+            merged = dict(existing) if isinstance(existing, Mapping) else {}
+            merged.update(usage)
+            if merged:
+                legacy_response["usage"] = merged
+
+    def _consume_legacy_stream_choice(
+        self,
+        choice: Any,
+        text_parts: list[str],
+        refusal_parts: list[str],
+        tool_calls: dict[int, dict[str, Any]],
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Filter Kimi's native ignored refusal and malformed finish fields."""
+        if not isinstance(choice, Mapping):
+            return super()._consume_legacy_stream_choice(
+                choice, text_parts, refusal_parts, tool_calls
+            )
+        native_choice = dict(choice)
+        finish_reason = native_choice.get("finish_reason")
+        if finish_reason is not None and not isinstance(finish_reason, str):
+            native_choice["finish_reason"] = None
+        delta = native_choice.get("delta")
+        if isinstance(delta, Mapping) and "refusal" in delta:
+            native_delta = dict(delta)
+            native_delta.pop("refusal", None)
+            native_choice["delta"] = native_delta
+        return super()._consume_legacy_stream_choice(
+            native_choice,
+            text_parts,
+            refusal_parts,
+            tool_calls,
+        )
+
+    @staticmethod
+    def _accumulate_legacy_tool_calls(
+        raw_tool_calls: list[Any],
+        tool_calls: dict[int, dict[str, Any]],
+    ) -> None:
+        """Ignore invalid indices and retain native Mapping arguments."""
+        normalized_calls: list[dict[str, Any]] = []
+        for raw_call in raw_tool_calls:
+            if not isinstance(raw_call, Mapping):
+                continue
+            index = raw_call.get("index")
+            if isinstance(index, bool) or not isinstance(index, int):
+                continue
+            call = dict(raw_call)
+            function = call.get("function")
+            if isinstance(function, Mapping):
+                normalized_function = dict(function)
+                arguments = normalized_function.get("arguments")
+                if isinstance(arguments, Mapping):
+                    normalized_function["arguments"] = dict(arguments)
+                call["function"] = normalized_function
+            normalized_calls.append(call)
+        super(KimiAdapter, KimiAdapter)._accumulate_legacy_tool_calls(
+            normalized_calls,
+            tool_calls,
+        )
+
+    def _build_legacy_stream_response(
+        self,
+        legacy_response: dict[str, Any],
+        text_parts: list[str],
+        refusal_parts: list[str],
+        tool_calls: dict[int, dict[str, Any]],
+        finish_reason: Optional[str],
+    ) -> ChatResponse:
+        if not legacy_response.get("model"):
+            legacy_response["model"] = self.model
+        if not legacy_response.get("usage"):
+            legacy_response.pop("usage", None)
+        return super()._build_legacy_stream_response(
+            legacy_response,
+            text_parts,
+            refusal_parts,
+            tool_calls,
+            finish_reason,
+        )
+
+    def _finalize_stream_response(
+        self,
+        chat_response: ChatResponse,
+        *,
+        reasoning_collector: StreamReasoningCollector | None = None,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        invocation = self._kimi_stream_invocation
+        if invocation is not None:
+            reasoning_collector = invocation.collector
+        return super()._finalize_stream_response(
+            chat_response,
+            reasoning_collector=reasoning_collector,
+            effective_schema=effective_schema,
             response_model=response_model,
         )
-        try:
-            response = await self._async_client.chat(
-                api_key=self.api_key,
-                payload=payload,
-                timeout_s=timeout_s,
-            )
-            return self._finalize_kimi_chat_response(
-                response,
-                capture_reasoning=capture_reasoning,
-                effective_schema=request_context.effective_schema,
-                response_model=request_context.response_model,
-            )
-        except LLMAPIError as error:
-            self.handle_error(error)
+
+    def _iter_provider_stream_events(
+        self,
+        events: Iterator[SSEEvent],
+    ) -> Iterator[SSEEvent]:
+        invocation = self._kimi_stream_invocation
+        if invocation is None:
+            return super()._iter_provider_stream_events(events)
+        inherited = super()._iter_provider_stream_events(events)
+        observed = observe_sync_events(self, inherited, invocation)
+        invocation.provider_events = observed
+        return observed
+
+    def _aiter_provider_stream_events(
+        self,
+        events: AsyncIterator[SSEEvent],
+    ) -> AsyncIterator[SSEEvent]:
+        invocation = self._kimi_stream_invocation
+        if invocation is None:
+            return super()._aiter_provider_stream_events(events)
+        inherited = super()._aiter_provider_stream_events(events)
+        observed = observe_async_events(self, inherited, invocation)
+        invocation.async_provider_events = observed
+        return observed
+
+    def _consume_chat_completions_stream(
+        self,
+        events: Iterator[Any],
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+        on_delta: Optional[OnDelta],
+        on_tool_call: Optional[OnToolCall],
+        on_done: Optional[OnDone],
+        buffer_chars: Optional[int],
+        on_chunk: Optional[OnChunk],
+    ) -> Iterator[str]:
+        consumer = super()._consume_chat_completions_stream(
+            events,
+            effective_schema,
+            response_model,
+            on_delta,
+            on_tool_call,
+            on_done,
+            buffer_chars,
+            on_chunk,
+        )
+        invocation = self._kimi_stream_invocation
+        yield from close_sync_consumer(
+            events,
+            consumer,
+            invocation,
+        )
+
+    def _consume_chat_completions_stream_async(
+        self,
+        events: AsyncIterator[SSEEvent],
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+        on_delta: Optional[AsyncOnDelta],
+        on_tool_call: Optional[AsyncOnToolCall],
+        on_done: Optional[AsyncOnDone],
+        buffer_chars: Optional[int],
+        on_chunk: Optional[AsyncOnChunk],
+    ) -> AsyncIterator[str]:
+        consumer = super()._consume_chat_completions_stream_async(
+            events,
+            effective_schema,
+            response_model,
+            on_delta,
+            on_tool_call,
+            on_done,
+            buffer_chars,
+            on_chunk,
+        )
+        invocation = self._kimi_stream_invocation
+        if invocation is not None:
+            invocation.async_consumer = consumer
+        return consumer
 
     def stream_chat(
         self,
@@ -202,69 +521,14 @@ class KimiAdapter(LLMAdapterBase):
         capture_reasoning: bool = False,
         on_reasoning: Optional[OnReasoning] = None,
     ) -> Iterator[str]:
-        """Stream Kimi visible deltas through the shared lifecycle."""
-        _ = previous_response
-        request_context, payload = self._prepare_request_payload(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_level=reasoning_level,
-            tools=tools,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            json_schema=json_schema,
-            response_model=response_model,
-        )
-        state = self._new_stream_state(
-            buffer_chars=buffer_chars,
-            capture_reasoning=capture_reasoning,
-        )
-        events = self._client.stream(
-            api_key=self.api_key,
-            payload=payload,
-            timeout_s=timeout_s,
-        )
-        return self._run_sync_stream(
-            events,
-            state,
-            consume_event=self._consume_stream_event,
-            finalize_response=self._finalize_stream,
-            effective_schema=request_context.effective_schema,
-            response_model=request_context.response_model,
-            on_delta=on_delta,
-            on_tool_call=on_tool_call,
-            on_done=on_done,
-            on_chunk=on_chunk,
+        invocation = _new_stream_invocation(
             capture_reasoning=capture_reasoning,
             on_reasoning=on_reasoning,
         )
-
-    def astream_chat(
-        self,
-        messages: list[Message] | Messages,
-        max_tokens: Optional[int] = None,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None,
-        timeout_s: Optional[float] = None,
-        tools: Optional[list[ToolSpec]] = None,
-        tool_choice: Any = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None,
-        json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None,
-        on_delta: Optional[AsyncOnDelta] = None,
-        on_tool_call: Optional[AsyncOnToolCall] = None,
-        on_done: Optional[AsyncOnDone] = None,
-        buffer_chars: Optional[int] = None,
-        on_chunk: Optional[AsyncOnChunk] = None,
-        *,
-        capture_reasoning: bool = False,
-        on_reasoning: Optional[AsyncOnReasoning] = None,
-    ) -> AsyncIterator[str]:
-        """Return Kimi's asynchronous SSE iterator."""
-        return self._astream_chat(
+        view = copy.copy(self)
+        view._kimi_stream_invocation = invocation
+        yield from OpenAICompatibleAdapter.stream_chat(
+            view,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -309,447 +573,70 @@ class KimiAdapter(LLMAdapterBase):
         capture_reasoning: bool,
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
-        """Run one asynchronous Kimi stream without server-side continuation."""
-        _ = previous_response
-        request_context, payload = self._prepare_request_payload(
+        invocation = _new_stream_invocation(
+            capture_reasoning=capture_reasoning,
+            on_async_reasoning=on_reasoning,
+        )
+        view = copy.copy(self)
+        view._kimi_stream_invocation = invocation
+        delegated = OpenAICompatibleAdapter._astream_chat(
+            view,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
             reasoning_level=reasoning_level,
+            timeout_s=timeout_s,
             tools=tools,
             tool_choice=tool_choice,
             parallel_tool_calls=parallel_tool_calls,
+            previous_response=previous_response,
             json_schema=json_schema,
             response_model=response_model,
-        )
-        state = self._new_stream_state(
-            buffer_chars=buffer_chars,
-            capture_reasoning=capture_reasoning,
-        )
-        events = self._async_client.stream(
-            api_key=self.api_key,
-            payload=payload,
-            timeout_s=timeout_s,
-        )
-        async for text in self._run_async_stream(
-            events,
-            state,
-            consume_event=self._consume_stream_event_async,
-            finalize_response=self._finalize_stream,
-            effective_schema=request_context.effective_schema,
-            response_model=request_context.response_model,
             on_delta=on_delta,
             on_tool_call=on_tool_call,
             on_done=on_done,
+            buffer_chars=buffer_chars,
             on_chunk=on_chunk,
             capture_reasoning=capture_reasoning,
             on_reasoning=on_reasoning,
-        ):
-            yield text
-
-    @staticmethod
-    def _new_stream_state(
-        *,
-        buffer_chars: Optional[int],
-        capture_reasoning: bool,
-    ) -> _KimiStreamState:
-        return _KimiStreamState(
-            chunk_buffer=StreamChunkBuffer(buffer_chars),
-            usage_tracker=StreamUsageTracker(),
-            reasoning_collector=(
-                StreamReasoningCollector() if capture_reasoning else None
-            ),
-            reasoning_response=ChatResponse() if capture_reasoning else None,
         )
-
-    def _consume_stream_event(
-        self,
-        event: SSEEvent,
-        state: _KimiStreamState,
-        *,
-        on_chunk: Optional[OnChunk],
-        on_delta: Optional[OnDelta],
-        on_reasoning: Optional[OnReasoning],
-    ) -> Iterator[str]:
-        visible_text, reasoning_text = self._consume_stream_payload(event, state)
-        self._record_stream_reasoning(
-            state,
-            reasoning_text,
-            on_reasoning=on_reasoning,
-        )
-        for text in visible_text:
-            yield from self._emit_stream_chunks(
-                state.chunk_buffer.add(text),
-                on_chunk,
-                on_delta,
-            )
-
-    async def _consume_stream_event_async(
-        self,
-        event: SSEEvent,
-        state: _KimiStreamState,
-        *,
-        on_chunk: Optional[AsyncOnChunk],
-        on_delta: Optional[AsyncOnDelta],
-        on_reasoning: Optional[AsyncOnReasoning],
-    ) -> AsyncIterator[str]:
-        visible_text, reasoning_text = self._consume_stream_payload(event, state)
-        await self._record_stream_reasoning_async(
-            state,
-            reasoning_text,
-            on_reasoning=on_reasoning,
-        )
-        for text in visible_text:
-            async for emitted_text in self._emit_async_stream_chunks(
-                state.chunk_buffer.add(text),
-                on_chunk,
-                on_delta,
-            ):
-                yield emitted_text
-
-    def _consume_stream_payload(
-        self,
-        event: SSEEvent,
-        state: _KimiStreamState,
-    ) -> tuple[list[str], list[str]]:
-        """Accumulate one OpenAI-compatible Kimi chunk without exposing reasoning."""
-        payload = event.data if isinstance(event.data, Mapping) else {}
-        for field in ("id", "model", "created"):
-            if field in payload:
-                state.response_metadata[field] = payload[field]
-        usage = payload.get("usage")
-        if isinstance(usage, Mapping):
-            state.usage.update(usage)
-        state.usage_tracker.record(
-            state.chunk_buffer,
-            self._stream_usage(usage),
-        )
-
-        visible_text: list[str] = []
-        reasoning_text: list[str] = []
-        choices = payload.get("choices")
-        if not isinstance(choices, list):
-            return visible_text, reasoning_text
-        for choice in choices:
-            if not isinstance(choice, Mapping) or choice.get("index", 0) != 0:
-                continue
-            delta = choice.get("delta")
-            if isinstance(delta, Mapping):
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    visible_text.append(content)
-                reasoning_content = delta.get("reasoning_content")
-                if isinstance(reasoning_content, str) and reasoning_content:
-                    reasoning_text.append(reasoning_content)
-                raw_tool_calls = delta.get("tool_calls")
-                if isinstance(raw_tool_calls, list):
-                    self._accumulate_stream_tool_calls(raw_tool_calls, state.tool_calls)
-            finish_reason = choice.get("finish_reason")
-            if isinstance(finish_reason, str):
-                state.finish_reason = finish_reason
-
-        state.text_parts.extend(visible_text)
-        return visible_text, reasoning_text
-
-    @staticmethod
-    def _stream_usage(raw_usage: Any) -> Optional[Usage]:
         try:
-            return KimiAdapter._parse_usage(raw_usage)
-        except LLMAPIClientError:
-            return None
-
-    def _record_stream_reasoning(
-        self,
-        state: _KimiStreamState,
-        reasoning_text: list[str],
-        *,
-        on_reasoning: Optional[OnReasoning],
-    ) -> None:
-        if state.reasoning_collector is None or state.reasoning_response is None:
-            return
-        for text in reasoning_text:
-            self._record_reasoning_event(
-                state.reasoning_response,
-                state.reasoning_collector,
-                text,
-                capture_reasoning=True,
-                on_reasoning=on_reasoning,
+            async with view._closing_async_source(delegated):
+                async for text in delegated:
+                    yield text
+        except BaseException:
+            await close_async_layers(
+                view,
+                invocation.async_consumer,
+                invocation.async_provider_events,
+                suppress_errors=True,
+            )
+            raise
+        else:
+            await close_async_layers(
+                view,
+                invocation.async_consumer,
+                invocation.async_provider_events,
+                suppress_errors=False,
             )
 
-    async def _record_stream_reasoning_async(
+    def _apply_response_pricing(self, chat_response: ChatResponse) -> None:
+        LLMAdapterBase._apply_response_pricing(self, chat_response)
+
+    def handle_error(
         self,
-        state: _KimiStreamState,
-        reasoning_text: list[str],
-        *,
-        on_reasoning: Optional[AsyncOnReasoning],
+        error: Exception,
+        error_message: Optional[str] = None,
     ) -> None:
-        if state.reasoning_collector is None or state.reasoning_response is None:
-            return
-        for text in reasoning_text:
-            await self._record_async_reasoning_event(
-                state.reasoning_response,
-                state.reasoning_collector,
-                text,
-                capture_reasoning=True,
-                on_reasoning=on_reasoning,
-            )
+        """Preserve native error identity while keeping diagnostics content-free."""
+        _ = error_message
+        logger.error("Kimi operation failed (%s)", type(error).__name__)
+        raise error from None
 
     @staticmethod
-    def _accumulate_stream_tool_calls(
-        raw_tool_calls: list[Any],
-        tool_calls: dict[int, dict[str, Any]],
-    ) -> None:
-        """Retain OpenAI-style function fragments for stream finalization."""
-        for raw_tool_call in raw_tool_calls:
-            if not isinstance(raw_tool_call, Mapping):
-                continue
-            index = raw_tool_call.get("index")
-            if isinstance(index, bool) or not isinstance(index, int):
-                continue
-            target = tool_calls.setdefault(index, {"function": {"arguments": ""}})
-            for field in ("id", "type"):
-                if raw_tool_call.get(field) is not None:
-                    target[field] = raw_tool_call[field]
-            function = raw_tool_call.get("function")
-            if not isinstance(function, Mapping):
-                continue
-            target_function = target["function"]
-            if function.get("name") is not None:
-                target_function["name"] = function["name"]
-            arguments = function.get("arguments")
-            if isinstance(arguments, str):
-                target_function["arguments"] = (
-                    f"{target_function.get('arguments', '')}{arguments}"
-                )
-            elif isinstance(arguments, Mapping):
-                target_function["arguments"] = dict(arguments)
-
-    def _finalize_stream(
-        self,
-        state: _KimiStreamState,
-        *,
-        capture_reasoning: bool,
-        effective_schema: Optional[dict],
-        response_model: Optional[Any],
-    ) -> ChatResponse:
-        """Reconstruct and normalize the terminal Kimi Chat Completions response."""
-        _ = capture_reasoning
-        response_data = dict(state.response_metadata)
-        response_data["model"] = response_data.get("model") or self.model
-        if state.usage:
-            response_data["usage"] = dict(state.usage)
-        message: dict[str, Any] = {"content": "".join(state.text_parts) or None}
-        if state.tool_calls:
-            message["tool_calls"] = [
-                state.tool_calls[index] for index in sorted(state.tool_calls)
-            ]
-        response_data["choices"] = [
-            {"message": message, "finish_reason": state.finish_reason},
-        ]
-        chat_response = self._finalize_stream_response(
-            self._parse_response(response_data),
-            reasoning_collector=state.reasoning_collector,
-            effective_schema=effective_schema,
-            response_model=response_model,
-        )
-        return chat_response
-
-    def _prepare_request_payload(
-        self,
-        *,
-        messages: list[Message] | Messages,
-        max_tokens: Optional[int],
-        temperature: float,
-        top_p: float,
-        reasoning_level: Optional[str | int],
-        tools: Optional[list[ToolSpec]],
-        tool_choice: Any,
-        parallel_tool_calls: Optional[bool],
-        json_schema: Optional[dict],
-        response_model: Optional[Any],
-    ) -> tuple[Any, dict[str, Any]]:
-        """Validate the Chat Completions request and apply metadata rules."""
-        self._reject_deferred_features(
-            parallel_tool_calls=parallel_tool_calls,
-        )
-        request_context = self._prepare_chat_request(
-            messages,
-            tools,
-            tool_choice,
-            json_schema,
-            response_model,
-        )
-        self._reject_unsupported_file_parts(request_context.normalized_messages)
-        validated_max_tokens = self._validate_max_tokens(max_tokens)
-        temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": request_context.normalized_messages.to_openai(),
-            "temperature": temperature,
-            "top_p": top_p,
-        }
-        if validated_max_tokens is not None:
-            payload["max_tokens"] = validated_max_tokens
-        mapped_tools = self._map_tools(tools)
-        if mapped_tools is not None:
-            payload["tools"] = mapped_tools
-        mapped_tool_choice = self._map_tool_choice(
-            request_context.normalized_tool_choice,
-        )
-        if mapped_tool_choice is not None:
-            payload["tool_choice"] = mapped_tool_choice
-        if request_context.effective_schema is not None:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "response",
-                    "strict": True,
-                    "schema": self._to_kimi_structured_output_schema(
-                        request_context.effective_schema,
-                    ),
-                },
-            }
-        self._apply_reasoning_options(payload, reasoning_level)
-        if self.model_spec is None:
-            return request_context, payload
-        transformed_payload, _ = apply_request_rules(
-            payload,
-            self.model_spec.request_rules,
-            model=self.model,
-        )
-        return request_context, transformed_payload
-
-    @staticmethod
-    def _reject_deferred_features(
-        *,
-        parallel_tool_calls: Optional[bool],
-    ) -> None:
-        if parallel_tool_calls is not None:
-            raise NotImplementedError(
-                "Kimi parallel_tool_calls control is not implemented because "
-                "the Chat Completions API has no documented parameter for it",
-            )
-
-    def _apply_reasoning_options(
-        self,
-        payload: dict[str, Any],
-        reasoning_level: Optional[str | int],
-    ) -> None:
-        """Serialize only registry-resolved Kimi reasoning controls.
-
-        Kimi keeps no adapter-managed server state.  The common registry resolves
-        the native value; this adapter only selects Kimi's documented wire shape
-        and never synthesizes or logs readable reasoning history.
-        """
-        if reasoning_level is None:
-            return
-
-        provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
-        if provider_value is None:
-            return
-        if not isinstance(provider_value, str):
-            raise TypeError("Kimi reasoning resolution must produce a string")
-        reasoning_capability = (
-            self.model_spec.reasoning_capability if self.model_spec else None
-        )
-        if not isinstance(reasoning_capability, CategoricalReasoningCapability):
-            return
-        if provider_value == "none":
-            payload["thinking"] = {"type": "disabled"}
-        elif "enabled" not in reasoning_capability.allowed_values:
-            payload["reasoning_effort"] = provider_value
-
-    @staticmethod
-    def _to_kimi_structured_output_schema(schema: dict) -> dict:
-        """Validate the shared portable profile without changing its meaning."""
-        return validate_core_portable_schema(schema, provider="kimi")
-
-    @staticmethod
-    def _map_tools(tools: Optional[list[ToolSpec]]) -> Optional[list[dict[str, Any]]]:
-        """Serialize provider-neutral tools as Kimi's OpenAI-compatible format."""
-        if not tools:
-            return None
-        mapped_tools: list[dict[str, Any]] = []
-        for tool in tools:
-            function: dict[str, Any] = {
-                "name": tool.name,
-                "parameters": tool.json_schema,
-            }
-            if tool.description:
-                function["description"] = tool.description
-            mapped_tools.append({"type": "function", "function": function})
-        return mapped_tools
-
-    def _map_tool_choice(self, tool_choice: Optional[str]) -> Any:
-        """Translate the canonical selection modes to Kimi's wire values."""
-        if tool_choice is None:
-            return None
-        allowed_modes = (
-            self.model_spec.request_rules.allowed_tool_choice_modes
-            if self.model_spec is not None
-            else None
-        )
-        choice_mode = (
-            tool_choice if tool_choice in {"auto", "none", "any"} else "tool"
-        )
-        if allowed_modes is not None and choice_mode not in allowed_modes:
-            allowed = ", ".join(sorted(allowed_modes))
-            raise ToolChoiceError(
-                detail=(
-                    f"Model {self.model!r} does not support tool_choice mode "
-                    f"{choice_mode!r}; allowed modes: {allowed}."
-                )
-            )
-        if tool_choice in {"auto", "none"}:
-            return tool_choice
-        if tool_choice == "any":
-            return "required"
-        return {
-            "type": "function",
-            "function": {"name": tool_choice},
-        }
-
-    @staticmethod
-    def _reject_unsupported_file_parts(messages: Messages) -> None:
-        """Preserve the shared file contract without fetching caller URLs.
-
-        Kimi accepts image data URIs, including ones created by ``ImagePart``
-        from bytes, but does not fetch public image URLs.  Its Files API exposes
-        extracted PDF text rather than a Chat Completions document attachment, so
-        accepting either ``DocumentPart`` form would make bytes and URLs behave
-        differently.
-        """
-        for message in messages.items:
-            if not isinstance(message, UserMessage) or not message.files:
-                continue
-            for file_part in message.files:
-                if isinstance(file_part, ImagePart) and file_part._is_url():
-                    raise ValueError(
-                        "Kimi does not support public ImagePart URLs; pass image "
-                        "bytes or a data URI instead",
-                    )
-                if isinstance(file_part, DocumentPart):
-                    raise ValueError(
-                        "Kimi does not support DocumentPart because its Files API "
-                        "cannot attach PDF bytes and public URLs through the same "
-                        "Chat Completions contract",
-                    )
-
-    def _validate_max_tokens(self, max_tokens: Optional[int]) -> Optional[int]:
-        if max_tokens is None:
-            return None
-        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
-            raise ValueError("max_tokens must be a positive integer for Kimi")
-        if (
-            self.model_spec is not None
-            and max_tokens > self.model_spec.limits.max_output_tokens
-        ):
-            raise ValueError(
-                f"max_tokens must not exceed {self.model_spec.limits.max_output_tokens} "
-                f"for Kimi model {self.model!r}",
-            )
-        return max_tokens
+    def _parse_usage(raw_usage: Any) -> KimiUsage | None:
+        return parse_kimi_usage(raw_usage)
 
     @staticmethod
     def _parse_response(
@@ -767,105 +654,50 @@ class KimiAdapter(LLMAdapterBase):
             raise LLMAPIClientError(
                 detail="Kimi Chat Completions response.choices[0].message must be an object",
             )
-        content = choice["message"].get("content")
+        message = choice["message"]
+        content = message.get("content")
         if content is not None and not isinstance(content, str):
             raise LLMAPIClientError(
                 detail="Kimi Chat Completions response content must be a string or null",
             )
-
         chat_response = ChatResponse.from_openai_response(dict(response))
-        reasoning_content = choice["message"].get("reasoning_content")
-        if capture_reasoning and isinstance(reasoning_content, str) and reasoning_content:
+        reasoning = message.get("reasoning_content")
+        if capture_reasoning and isinstance(reasoning, str) and reasoning:
+            from llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
+
             chat_response.reasoning_events = [
                 ReasoningEvent(
-                    text=reasoning_content,
+                    text=reasoning,
                     kind="summary",
                     index=0,
                     elapsed_s=0.0,
                     delta_s=0.0,
                 ),
             ]
-        usage = response.get("usage")
-        if usage is None:
-            return chat_response
-        if not isinstance(usage, Mapping):
-            raise LLMAPIClientError(
-                detail="Kimi Chat Completions response.usage must be an object",
-            )
-        chat_response.usage = KimiAdapter._parse_usage(usage)
+        raw_usage = response.get("usage")
+        if raw_usage is not None:
+            if not isinstance(raw_usage, Mapping):
+                raise LLMAPIClientError(
+                    detail="Kimi Chat Completions response.usage must be an object",
+                )
+            chat_response.usage = parse_kimi_usage(raw_usage)
         return chat_response
 
-    @staticmethod
-    def _parse_usage(raw_usage: Any) -> Optional[KimiUsage]:
-        """Normalize only counts reported by Kimi, retaining omitted values."""
-        if not isinstance(raw_usage, Mapping):
-            return None
 
-        def read_count(value: Any, field_name: str) -> int | None:
-            if value is None:
-                return None
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise LLMAPIClientError(
-                    detail=(
-                        "Kimi Chat Completions usage token counts: "
-                        f"{field_name} must be a non-negative integer"
-                    ),
-                )
-            return value
-
-        input_tokens = read_count(raw_usage.get("prompt_tokens"), "prompt_tokens")
-        output_tokens = read_count(raw_usage.get("completion_tokens"), "completion_tokens")
-        total_tokens = read_count(raw_usage.get("total_tokens"), "total_tokens")
-        if input_tokens is None and output_tokens is None and total_tokens is None:
-            raise LLMAPIClientError(
-                detail="Kimi Chat Completions usage token counts must include a count",
-            )
-        if input_tokens is not None and output_tokens is not None:
-            total_tokens = total_tokens if total_tokens is not None else input_tokens + output_tokens
-
-        prompt_details = raw_usage.get("prompt_tokens_details")
-        details = prompt_details if isinstance(prompt_details, Mapping) else {}
-        cached_tokens = read_count(
-            details.get("cached_tokens")
-            if details.get("cached_tokens") is not None
-            else raw_usage.get("cached_tokens"),
-            "cached_tokens",
-        )
-        cache_write_tokens = read_count(details.get("cache_write_tokens"), "cache_write_tokens")
-        if input_tokens is not None:
-            cache_components = sum(
-                count for count in (cached_tokens, cache_write_tokens) if count is not None
-            )
-            if cache_components > input_tokens:
-                raise LLMAPIClientError(
-                    detail=(
-                        "Kimi Chat Completions cached and cache-write tokens "
-                        "must not exceed prompt_tokens"
-                    ),
-                )
-
-        return KimiUsage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=total_tokens,
-            cached_tokens=cached_tokens,
-            cache_write_tokens=cache_write_tokens,
-        )
-
-    def _finalize_kimi_chat_response(
-        self,
-        response: Mapping[str, Any],
-        *,
-        capture_reasoning: bool,
-        effective_schema: Optional[dict],
-        response_model: Optional[Any],
-    ) -> ChatResponse:
-        chat_response = self._finalize_chat_response(
-            self._parse_response(response, capture_reasoning=capture_reasoning),
-            effective_schema=effective_schema,
-            response_model=response_model,
-        )
-        return chat_response
+def _new_stream_invocation(
+    *,
+    capture_reasoning: bool,
+    on_reasoning: Optional[OnReasoning] = None,
+    on_async_reasoning: Optional[AsyncOnReasoning] = None,
+) -> _KimiStreamInvocation:
+    enabled = capture_reasoning
+    return _KimiStreamInvocation(
+        capture_reasoning=enabled,
+        collector=StreamReasoningCollector() if enabled else None,
+        response=ChatResponse() if enabled else None,
+        on_reasoning=on_reasoning,
+        on_async_reasoning=on_async_reasoning,
+    )
 
 
 __all__ = ["KimiAdapter", "KimiUsage"]

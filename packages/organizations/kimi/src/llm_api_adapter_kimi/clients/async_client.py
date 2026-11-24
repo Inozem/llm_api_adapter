@@ -96,6 +96,10 @@ class KimiAsyncClient(OpenAICompatibleAsyncClient, KimiSyncClient):
             stream_error_handler=self._handle_stream_error,
         )
 
+    def _adapter_binding(self, api_key: str) -> _KimiAsyncAdapterClientBinding:
+        """Expose native raw calls through the inherited adapter dispatch."""
+        return _KimiAsyncAdapterClientBinding(self, api_key)
+
     async def _get_async_request(self, *args: Any, **kwargs: Any) -> Any:
         """Resolve Kimi's module alias at the start of each JSON operation."""
         return await async_request(*args, **kwargs)
@@ -142,6 +146,48 @@ class _KimiAsyncRequestView(KimiAsyncClient):
 
     def _handle_stream_error(self, event: SSEEvent) -> None:
         self._request_stream_error_handler(event)
+
+
+class _KimiAsyncAdapterClientBinding:
+    """Thin adapter-facing dispatch that preserves native payload semantics."""
+
+    _native: KimiAsyncClient
+    _api_key: str
+
+    def __init__(self, native: KimiAsyncClient, api_key: str) -> None:
+        self._native = native
+        self._api_key = api_key
+
+    @staticmethod
+    def _should_use_responses_api(model: str) -> bool:
+        _ = model
+        return False
+
+    async def complete(
+        self,
+        model: str,
+        timeout: float | None = None,
+        **payload: Any,
+    ) -> dict[str, Any]:
+        payload.setdefault("model", model)
+        return await self._native.chat(
+            api_key=self._api_key,
+            payload=payload,
+            timeout_s=timeout,
+        )
+
+    def stream(
+        self,
+        model: str,
+        timeout: float | None = None,
+        **payload: Any,
+    ) -> AsyncIterator[SSEEvent]:
+        payload.setdefault("model", model)
+        return self._native.stream(
+            api_key=self._api_key,
+            payload=payload,
+            timeout_s=timeout,
+        )
 
 
 class _CloseableAsyncIterator:

@@ -366,31 +366,93 @@ def test_raw_async_stream_opens_on_first_consumption_and_sets_native_usage_optio
 
 
 @pytest.mark.unit
-def test_public_chat_parallel_error_precedes_sampling(
+def test_public_chat_sampling_error_precedes_parallel(
     discovered_kimi: UniversalLLMAPIAdapter,
 ) -> None:
     transport = RecordingTransport({})
     discovered_kimi.adapter._sync_transport = transport
 
-    # T005 changes this baseline: inherited validation reports sampling ValueError first.
-    with pytest.raises(NotImplementedError, match="parallel_tool_calls"):
+    with pytest.raises(ValueError, match="temperature"):
         discovered_kimi.chat(
             [UserMessage("Hi")], temperature=-1, parallel_tool_calls=False,
         )
+    with pytest.raises(NotImplementedError, match="parallel_tool_calls"):
+        discovered_kimi.chat([UserMessage("Hi")], parallel_tool_calls=False)
     assert transport.requests == []
     assert transport.stream_requests == []
 
 
 @pytest.mark.unit
-def test_public_sync_stream_validates_eagerly(
+def test_public_sync_stream_validates_on_first_consumption(
     discovered_kimi: UniversalLLMAPIAdapter,
 ) -> None:
     transport = RecordingTransport({})
     discovered_kimi.adapter._sync_transport = transport
 
-    # T005 changes this baseline to lazy validation on first stream consumption.
     with pytest.raises(ValueError, match="max_tokens"):
-        discovered_kimi.stream_chat([UserMessage("Hi")], max_tokens=0)
+        stream = discovered_kimi.stream_chat([UserMessage("Hi")], max_tokens=0)
+        next(stream)
+    assert transport.requests == []
+    assert transport.stream_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_registered_adapter_inherited_errors_precede_all_provider_io(
+    discovered_kimi: UniversalLLMAPIAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Check common sampling order and lazy native rejection on every path."""
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    transport = RecordingTransport({})
+    discovered_kimi.adapter._sync_transport = transport
+
+    async def forbidden_request(url: str, **kwargs: Any) -> Any:
+        raise AssertionError("invalid request reached async JSON transport")
+
+    def forbidden_stream(url: str, **kwargs: Any) -> AsyncIterator[SSEEvent]:
+        raise AssertionError("invalid request reached async SSE transport")
+
+    monkeypatch.setattr(async_client_module, "async_request", forbidden_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", forbidden_stream)
+
+    with pytest.raises(ValueError, match="temperature"):
+        discovered_kimi.chat(
+            [UserMessage("Hi")], temperature=-1, parallel_tool_calls=False,
+        )
+    with pytest.raises(NotImplementedError, match="parallel_tool_calls"):
+        discovered_kimi.chat([UserMessage("Hi")], parallel_tool_calls=False)
+
+    sync_combined = discovered_kimi.stream_chat(
+        [UserMessage("Hi")], temperature=-1, parallel_tool_calls=False,
+    )
+    with pytest.raises(ValueError, match="temperature"):
+        next(sync_combined)
+    sync_parallel = discovered_kimi.stream_chat(
+        [UserMessage("Hi")], parallel_tool_calls=False,
+    )
+    with pytest.raises(NotImplementedError, match="parallel_tool_calls"):
+        next(sync_parallel)
+
+    with pytest.raises(ValueError, match="temperature"):
+        await discovered_kimi.achat(
+            [UserMessage("Hi")], temperature=-1, parallel_tool_calls=False,
+        )
+    with pytest.raises(NotImplementedError, match="parallel_tool_calls"):
+        await discovered_kimi.achat([UserMessage("Hi")], parallel_tool_calls=False)
+
+    async_combined = discovered_kimi.astream_chat(
+        [UserMessage("Hi")], temperature=-1, parallel_tool_calls=False,
+    )
+    with pytest.raises(ValueError, match="temperature"):
+        await anext(async_combined)
+    async_parallel = discovered_kimi.astream_chat(
+        [UserMessage("Hi")], parallel_tool_calls=False,
+    )
+    with pytest.raises(NotImplementedError, match="parallel_tool_calls"):
+        await anext(async_parallel)
+
     assert transport.requests == []
     assert transport.stream_requests == []
 

@@ -1,6 +1,7 @@
 """Installed-distribution checks for Kimi inputs intentionally rejected locally."""
 
 from importlib.metadata import PackageNotFoundError, version
+from collections.abc import Callable
 from unittest.mock import patch
 
 import pytest
@@ -13,7 +14,7 @@ from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 def _assert_unsupported_file_inputs_do_not_start_chat_completions(
     *,
     adapter: UniversalLLMAPIAdapter,
-    transport_call_count,
+    transport_call_count: Callable[[], int],
 ) -> None:
     """Keep the public-URL and PDF contract local after plugin installation."""
     unsupported_parts = (
@@ -22,17 +23,16 @@ def _assert_unsupported_file_inputs_do_not_start_chat_completions(
         DocumentPart(data=b"%PDF-kimi", media_type="application/pdf"),
     )
     baseline_calls = transport_call_count()
-    operations = {
-        "chat": lambda message: adapter.chat([message], max_tokens=64),
-        "stream_chat": lambda message: adapter.stream_chat([message], max_tokens=64),
-    }
+    for file_part in unsupported_parts:
+        message = UserMessage("Read this file.", files=[file_part])
+        with pytest.raises(ValueError):
+            adapter.chat([message], max_tokens=64)
+        assert transport_call_count() == baseline_calls, "chat"
 
-    for operation_name, operation in operations.items():
-        for file_part in unsupported_parts:
-            message = UserMessage("Read this file.", files=[file_part])
-            with pytest.raises(ValueError):
-                operation(message)
-            assert transport_call_count() == baseline_calls, operation_name
+        with pytest.raises(ValueError):
+            stream = adapter.stream_chat([message], max_tokens=64)
+            next(stream)
+        assert transport_call_count() == baseline_calls, "stream_chat"
 
 
 @pytest.mark.e2e
@@ -44,18 +44,25 @@ def test_kimi_file_contract_rejects_unsupported_parts_before_transport():
     except PackageNotFoundError:
         pytest.skip("llm-api-adapter-kimi is not installed")
 
-    from llm_api_adapter_kimi.clients.sync_client import KimiSyncClient
-
     adapter = UniversalLLMAPIAdapter(
         organization="kimi",
         model="kimi-k3",
         api_key="kimi-e2e-non-live-key",
     )
+    transport = adapter._sync_transport
     with (
-        patch.object(KimiSyncClient, "chat") as chat,
-        patch.object(KimiSyncClient, "stream") as stream,
+        patch.object(
+            transport,
+            "post_json",
+            side_effect=AssertionError("unexpected JSON request"),
+        ) as post_json,
+        patch.object(
+            transport,
+            "post_sse",
+            side_effect=AssertionError("unexpected SSE request"),
+        ) as post_sse,
     ):
         _assert_unsupported_file_inputs_do_not_start_chat_completions(
             adapter=adapter,
-            transport_call_count=lambda: chat.call_count + stream.call_count,
+            transport_call_count=lambda: post_json.call_count + post_sse.call_count,
         )

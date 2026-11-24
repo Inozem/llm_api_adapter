@@ -22,6 +22,11 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPIAuthorizationError,
     LLMAPIRateLimitError,
 )
+import llm_api_adapter.adapters.base_adapter as base_adapter_module
+from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
+from llm_api_adapter.adapters.openai_compatible.chat_completions.streaming import (
+    _ChatCompletionsStreamingMixin,
+)
 from llm_api_adapter.llms.openai_compatible.async_client import (
     OpenAICompatibleAsyncClient,
 )
@@ -37,11 +42,15 @@ from llm_api_adapter.llms.transports import (
     SyncTransport,
     TransportRequest,
 )
+from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
 from llm_api_adapter_kimi.clients.sync_client import (
     KIMI_CHAT_COMPLETIONS_URL,
     KimiSyncClient,
 )
 from llm_api_adapter_kimi.clients.async_client import KimiAsyncClient
+from llm_api_adapter_kimi.adapter import KimiAdapter
+from llm_api_adapter_kimi.plugin import PLUGIN
+from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 
 
 class _RecordingTransport(SyncTransport):
@@ -679,3 +688,171 @@ def test_async_stream_adapts_missing_aclose_and_closes_real_source_on_early_clos
 
     asyncio.run(consume_one_then_close())
     assert closed == [True]
+
+
+@pytest.mark.unit
+def test_registered_adapter_reaches_compatible_execution_and_native_runners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Instrument the actual registered type while each inherited layer calls through."""
+    registry = ServiceProviderRegistry()
+    model_registry = RegistrySpec()
+    assert PLUGIN.model_metadata is not None
+    model_registry.register_organization_metadata(PLUGIN.model_metadata)
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", model_registry)
+    PLUGIN.register(registry)
+    factory = registry.get("kimi")
+    assert factory is KimiAdapter
+    adapter = factory(api_key="registered-test-key", model="kimi-k3")
+
+    assert KimiAdapter.__bases__ == (OpenAICompatibleAdapter,)
+    assert type(adapter) is KimiAdapter
+    assert type(adapter._client) is KimiSyncClient
+    assert type(adapter._async_client) is KimiAsyncClient
+    assert KimiAdapter.chat is OpenAICompatibleAdapter.chat
+    assert KimiAdapter.achat is OpenAICompatibleAdapter.achat
+    assert KimiAdapter.astream_chat is OpenAICompatibleAdapter.astream_chat
+
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    response = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    event = SSEEvent(
+        event=None,
+        data={"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]},
+    )
+    class _RegisteredTransport(_SingleEventTransport):
+        def post_json(
+            self,
+            request: TransportRequest,
+            *,
+            http_error_handler: HTTPErrorHandler | None = None,
+        ) -> JSONResponse:
+            self.json_requests.append(request)
+            return JSONResponse(response)
+
+    transport = _RegisteredTransport(event)
+    adapter._sync_transport = transport
+    reached: list[str] = []
+
+    inherited_chat = OpenAICompatibleAdapter.chat
+    inherited_achat = OpenAICompatibleAdapter.achat
+    inherited_stream_chat = OpenAICompatibleAdapter.stream_chat
+    inherited_astream = OpenAICompatibleAdapter._astream_chat
+    inherited_send = OpenAICompatibleSyncClient._send_request
+    inherited_sync_stream = OpenAICompatibleSyncClient._stream_request
+    inherited_async_send = OpenAICompatibleAsyncClient._send_request
+    inherited_async_stream = OpenAICompatibleAsyncClient._stream_request
+    inherited_consume = _ChatCompletionsStreamingMixin._consume_chat_completions_stream
+    inherited_async_consume = _ChatCompletionsStreamingMixin._consume_chat_completions_stream_async
+
+    def spy(name: str, function: Any):
+        def call_through(self: Any, *args: Any, **kwargs: Any) -> Any:
+            reached.append(name)
+            return function(self, *args, **kwargs)
+        return call_through
+
+    async def async_send(self: Any, *args: Any, **kwargs: Any) -> Any:
+        reached.append("async-json-runner")
+        return await inherited_async_send(self, *args, **kwargs)
+
+    async def async_stream(self: Any, *args: Any, **kwargs: Any) -> AsyncIterator[SSEEvent]:
+        reached.append("async-sse-runner")
+        async for item in inherited_async_stream(self, *args, **kwargs):
+            yield item
+
+    async def async_request(url: str, **kwargs: Any) -> dict[str, Any]:
+        return response
+
+    def async_stream_request(url: str, **kwargs: Any) -> AsyncIterator[SSEEvent]:
+        async def events() -> AsyncIterator[SSEEvent]:
+            yield event
+        return events()
+
+    monkeypatch.setattr(OpenAICompatibleAdapter, "chat", spy("chat", inherited_chat))
+    monkeypatch.setattr(OpenAICompatibleAdapter, "achat", spy("achat", inherited_achat))
+    monkeypatch.setattr(
+        OpenAICompatibleAdapter,
+        "stream_chat",
+        spy("stream_chat", inherited_stream_chat),
+    )
+    monkeypatch.setattr(OpenAICompatibleAdapter, "_astream_chat", spy("_astream_chat", inherited_astream))
+    monkeypatch.setattr(OpenAICompatibleSyncClient, "_send_request", spy("sync-json-runner", inherited_send))
+    monkeypatch.setattr(OpenAICompatibleSyncClient, "_stream_request", spy("sync-sse-runner", inherited_sync_stream))
+    monkeypatch.setattr(OpenAICompatibleAsyncClient, "_send_request", async_send)
+    monkeypatch.setattr(OpenAICompatibleAsyncClient, "_stream_request", async_stream)
+    monkeypatch.setattr(
+        _ChatCompletionsStreamingMixin,
+        "_consume_chat_completions_stream",
+        spy("sync-consumer", inherited_consume),
+    )
+    monkeypatch.setattr(
+        _ChatCompletionsStreamingMixin,
+        "_consume_chat_completions_stream_async",
+        spy("async-consumer", inherited_async_consume),
+    )
+    monkeypatch.setattr(async_client_module, "async_request", async_request)
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream_request)
+
+    assert adapter.chat([{"role": "user", "content": "hi"}]).content == "ok"
+    assert list(adapter.stream_chat([{"role": "user", "content": "hi"}])) == ["ok"]
+    assert asyncio.run(adapter.achat([{"role": "user", "content": "hi"}])).content == "ok"
+
+    async def consume_async_stream() -> list[str]:
+        return [
+            text
+            async for text in adapter.astream_chat([{"role": "user", "content": "hi"}])
+        ]
+
+    assert asyncio.run(consume_async_stream()) == ["ok"]
+    assert reached.count("chat") == 1
+    assert reached.count("achat") == 1
+    assert reached.count("stream_chat") == 1
+    assert reached.count("_astream_chat") == 1
+    assert reached.count("sync-json-runner") == 1
+    assert reached.count("sync-sse-runner") == 1
+    assert reached.count("async-json-runner") == 1
+    assert reached.count("async-sse-runner") == 1
+    assert reached.count("sync-consumer") == 1
+    assert reached.count("async-consumer") == 1
+
+
+@pytest.mark.unit
+def test_adapter_bindings_snapshot_distinct_keys_without_client_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    sync_transport = _RecordingTransport()
+    sync_client = KimiSyncClient(sync_transport)
+    first_sync = sync_client._adapter_binding("first-key")
+    second_sync = sync_client._adapter_binding("second-key")
+
+    first_sync.complete("kimi-k3", messages=[])
+    second_sync.complete("kimi-k3", messages=[])
+    assert [request.headers["Authorization"] for request in sync_transport.json_requests] == [
+        "Bearer first-key",
+        "Bearer second-key",
+    ]
+    assert sync_client.api_key == ""
+
+    async_client = KimiAsyncClient()
+    async_calls: list[dict[str, Any]] = []
+
+    async def fake_request(url: str, **kwargs: Any) -> dict[str, Any]:
+        async_calls.append(kwargs)
+        return {"choices": []}
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_request)
+    first_async = async_client._adapter_binding("first-async-key")
+    second_async = async_client._adapter_binding("second-async-key")
+
+    async def run_requests() -> None:
+        await first_async.complete("kimi-k3", messages=[])
+        await second_async.complete("kimi-k3", messages=[])
+
+    asyncio.run(run_requests())
+    assert [call["headers"]["Authorization"] for call in async_calls] == [
+        "Bearer first-async-key",
+        "Bearer second-async-key",
+    ]
+    assert async_client.api_key == ""

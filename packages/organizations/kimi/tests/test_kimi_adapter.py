@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 import sys
@@ -21,6 +22,7 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
         sys.path.insert(0, source)
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
+import llm_api_adapter_kimi.adapter as kimi_adapter_module
 import llm_api_adapter.organization_registry as organization_registry_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.errors.llm_api_error import (
@@ -1474,6 +1476,117 @@ def test_kimi_stream_reconstructs_chat_completion_and_callback_order(
 
 
 @pytest.mark.integration
+def test_kimi_stream_retains_native_malformed_interim_frame_tolerance(kimi_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        {},
+        events=[
+            SSEEvent(event=None, data="malformed interim frame"),
+            SSEEvent(
+                event=None,
+                data={
+                    "model": "",
+                    "usage": {},
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "content": "a",
+                                "refusal": "ignored refusal",
+                                "tool_calls": [
+                                    {
+                                        "index": True,
+                                        "id": "ignored-bool-index",
+                                        "function": {"name": "ignored", "arguments": "{}"},
+                                    },
+                                    {
+                                        "index": "invalid",
+                                        "id": "ignored-string-index",
+                                        "function": {"name": "ignored", "arguments": "{}"},
+                                    },
+                                    {
+                                        "index": 0,
+                                        "id": "call-mapping-args",
+                                        "function": {
+                                            "name": "native_mapping",
+                                            "arguments": {"answer": 42},
+                                        },
+                                    },
+                                ],
+                            },
+                            "finish_reason": 7,
+                        },
+                    ],
+                },
+            ),
+            SSEEvent(
+                event=None,
+                data={
+                    "choices": [
+                        {"index": 0, "delta": {"content": "b"}, "finish_reason": "stop"},
+                    ],
+                },
+            ),
+        ],
+    )
+    completed = []
+    assert list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "Hi"}],
+            on_done=completed.append,
+        ),
+    ) == ["a", "b"]
+    response = completed[0]
+    assert response.model == "kimi-k3"
+    assert response.refusal is None
+    assert response.finish_reason == "stop"
+    assert response.usage is None
+    assert response.tool_calls is not None
+    assert [(call.name, call.arguments) for call in response.tool_calls] == [
+        ("native_mapping", {"answer": 42}),
+    ]
+
+
+@pytest.mark.integration
+def test_kimi_sync_early_close_explicitly_closes_late_bound_observer(
+    kimi_runtime,
+    monkeypatch,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport({}, events=kimi_chat_sse_events())
+    adapter.adapter._sync_transport = transport
+    inherited_observer = kimi_adapter_module.observe_sync_events
+    observer_closed: list[bool] = []
+
+    def tracking_observer(adapter_arg, inherited, invocation):
+        observer = inherited_observer(adapter_arg, inherited, invocation)
+
+        def observe():
+            try:
+                yield from observer
+            finally:
+                observer_closed.append(True)
+
+        return observe()
+
+    monkeypatch.setattr(kimi_adapter_module, "observe_sync_events", tracking_observer)
+    stream = adapter.stream_chat([{"role": "user", "content": "Hello"}])
+    assert next(stream) == "Hello "
+    stream.close()
+
+    assert observer_closed == [True]
+    assert transport.sse_closed is True
+
+
+@pytest.mark.integration
 def test_kimi_stream_keeps_reasoning_out_of_visible_text_without_capture(kimi_runtime):
     adapter = UniversalLLMAPIAdapter(
         organization="kimi",
@@ -1967,6 +2080,84 @@ async def test_kimi_async_stream_cancellation_closes_resources(
         await pending_chunk
 
     assert stream_closed is True
+    assert completed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kimi_async_early_close_explicitly_closes_late_bound_observer(
+    kimi_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_kimi import adapter as kimi_adapter_module
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    closed: list[str] = []
+    retained_observers: list[AsyncIterator[SSEEvent]] = []
+    inherited_observer = kimi_adapter_module.observe_async_events
+
+    def tracking_observer(
+        adapter_arg: Any,
+        inherited: AsyncIterator[SSEEvent],
+        invocation: Any,
+    ) -> AsyncIterator[SSEEvent]:
+        observer = inherited_observer(adapter_arg, inherited, invocation)
+
+        async def watch() -> AsyncIterator[SSEEvent]:
+            try:
+                async for event in observer:
+                    yield event
+            finally:
+                closed.append("observer")
+
+        tracked = watch()
+        retained_observers.append(tracked)
+        return tracked
+
+    def fake_stream_request(url: str, **kwargs: Any) -> AsyncIterator[SSEEvent]:
+        async def events() -> AsyncIterator[SSEEvent]:
+            try:
+                yield SSEEvent(
+                    event=None,
+                    data={
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": "Hello "},
+                                "finish_reason": None,
+                            }
+                        ],
+                    },
+                )
+                await asyncio.Event().wait()
+            finally:
+                closed.append("source")
+
+        return events()
+
+    monkeypatch.setattr(kimi_adapter_module, "observe_async_events", tracking_observer)
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    completed = []
+    stream = adapter.astream_chat(
+        [{"role": "user", "content": "Hello"}],
+        on_done=completed.append,
+    )
+
+    assert await anext(stream) == "Hello "
+    assert len(retained_observers) == 1
+    await stream.aclose()
+
+    assert closed == ["source", "observer"]
+    assert retained_observers[0].ag_frame is None
     assert completed == []
 
 
