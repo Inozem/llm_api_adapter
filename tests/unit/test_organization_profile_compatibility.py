@@ -500,8 +500,16 @@ def test_mistral_only_discovery_keeps_native_catalogue_request_independent_of_za
 
 def _mistral_response(content: str) -> dict[str, Any]:
     return {
+        "object": "response",
+        "id": "resp-mistral-structured-output",
         "model": "mistral-small-2603",
-        "choices": [{"message": {"content": content}}],
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": content}],
+        }],
     }
 
 
@@ -549,12 +557,12 @@ def _expected_structured_output_format(
 ) -> dict[str, Any]:
     if organization == "mistral":
         return {
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
+            "text": {
+                "format": {
+                    "type": "json_schema",
                     "name": "response",
-                    "strict": True,
                     "schema": schema,
+                    "strict": True,
                 },
             }
         }
@@ -674,7 +682,10 @@ def test_organization_packages_skip_structured_parsing_for_native_truncation(
 ):
     adapter, transport = _structured_adapter(organization, '{"answer": ')
     if organization == "mistral":
-        transport.response["choices"][0]["finish_reason"] = "length"
+        transport.response["status"] = "incomplete"
+        transport.response["incomplete_details"] = {
+            "reason": "max_output_tokens",
+        }
         expected_reason = "length"
     else:
         transport.response["status"] = "incomplete"
@@ -747,14 +758,16 @@ def test_mistral_stream_finalizes_a_truncated_structured_result(
     adapter, transport = _structured_adapter("mistral", '{"answer": ')
     transport.stream_events = [
         SSEEvent(
-            event=None,
-            data={
-                "choices": [{
-                    "index": 0,
-                    "delta": {"content": '{"answer": '},
-                    "finish_reason": "length",
-                }],
-            },
+            event="response.output_text.delta",
+            data={"delta": '{"answer": '},
+        ),
+        SSEEvent(
+            event="response.incomplete",
+            data={"response": {
+                **_mistral_response('{"answer": '),
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+            }},
         ),
     ]
     completed = []

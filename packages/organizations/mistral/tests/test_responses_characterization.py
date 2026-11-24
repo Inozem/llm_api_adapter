@@ -1,0 +1,1332 @@
+"""Application-semantic contract for native Mistral Responses execution."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import socket
+import sys
+import warnings
+from collections.abc import AsyncIterator, Iterable, Iterator
+from pathlib import Path
+from typing import Any, NoReturn
+
+import pytest
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
+for source in (str(PACKAGE_ROOT / "src"), str(REPOSITORY_ROOT / "src"), str(REPOSITORY_ROOT)):
+    if source not in sys.path:
+        sys.path.insert(0, source)
+
+import llm_api_adapter.adapters.base_adapter as base_adapter_module
+import llm_api_adapter.universal_adapter as universal_module
+import llm_api_adapter_mistral.clients.async_client as mistral_async_client_module
+from llm_api_adapter.adapters.base_adapter import OnDone
+from llm_api_adapter.errors import LLMReasoningLevelError
+from llm_api_adapter.errors.llm_api_error import (
+    JSONSchemaError,
+    LLMAPIClientError,
+    ToolChoiceError,
+)
+from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
+from llm_api_adapter.llm_registry.llm_registry import MeteredOperationSpec
+from llm_api_adapter.llm_registry.llm_registry import resolve_metered_operation_spec
+from llm_api_adapter.llm_registry.reasoning import resolve_reasoning_level
+from llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
+from llm_api_adapter.llms.requests_transport import RequestsSyncTransport
+from llm_api_adapter.llms.transports import (
+    HTTPErrorHandler,
+    JSONResponse,
+    SSEEvent,
+    StreamErrorHandler,
+    TransportRequest,
+)
+from llm_api_adapter.models.messages.chat_message import Message, Messages, UserMessage
+from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
+from llm_api_adapter.models.responses.chat_response import ChatResponse
+from llm_api_adapter.models.responses.stream_chunk import StreamChunk
+from llm_api_adapter.models.tools import ToolSpec
+from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
+from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+from llm_api_adapter_mistral.plugin import PLUGIN
+
+
+RESPONSES_URL = "https://api.mistral.ai/v1/responses"
+OCR_URL = "https://api.mistral.ai/v1/ocr"
+MODEL_IDS = tuple(PLUGIN.model_metadata.organization_data["models"])
+MIXED_HISTORY: list[Message | dict[str, Any]] = [
+    {"role": "system", "content": "Use concise answers."},
+    {"role": "user", "content": "Find the report."},
+    {"role": "assistant", "content": "I will search."},
+    {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "call-synthetic",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"key":"report"}'},
+        }],
+    },
+    {"role": "tool", "tool_call_id": "call-synthetic", "content": "found"},
+    UserMessage("Summarize it."),
+]
+LOOKUP = ToolSpec(name="lookup", description="Lookup", json_schema={"type": "object"})
+EXECUTION_PATHS = (
+    ("chat", "requests"),
+    ("chat", "httpx"),
+    ("stream_chat", "requests"),
+    ("stream_chat", "httpx"),
+    ("achat", None),
+    ("astream_chat", None),
+)
+
+
+@pytest.fixture
+def mistral_runtime(monkeypatch: pytest.MonkeyPatch) -> RegistrySpec:
+    registry = RegistrySpec()
+    assert PLUGIN.model_metadata is not None
+    assert registry.register_organization_metadata(PLUGIN.model_metadata)
+    providers = ServiceProviderRegistry()
+    PLUGIN.register(providers)
+    monkeypatch.setattr(universal_module, "LLM_REGISTRY", registry)
+    monkeypatch.setattr(universal_module, "SERVICE_PROVIDER_REGISTRY", providers)
+    monkeypatch.setattr(base_adapter_module, "LLM_REGISTRY", registry)
+    return registry
+
+
+@pytest.fixture(autouse=True)
+def block_unmocked_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    def block_dns(
+        host: str | bytes | None,
+        port: str | int | None,
+        family: int = 0,
+        type: int = 0,
+        proto: int = 0,
+        flags: int = 0,
+    ) -> NoReturn:
+        raise AssertionError("characterization tests must not perform network I/O")
+
+    original_connect = socket.socket.connect
+
+    def block_external_connect(
+        sock: socket.socket,
+        address: str | bytes | tuple[str, int] | tuple[str, int, int, int],
+    ) -> None:
+        # ProactorEventLoop's Windows socketpair fallback connects to loopback
+        # while creating its self-pipe; permit that local runtime operation.
+        if isinstance(address, tuple) and str(address[0]) in {"127.0.0.1", "::1", "localhost"}:
+            return original_connect(sock, address)
+        raise AssertionError("characterization tests must not connect externally")
+
+    monkeypatch.setattr(socket, "getaddrinfo", block_dns)
+    monkeypatch.setattr(socket.socket, "connect", block_external_connect)
+
+
+def _response(
+    model: str,
+    *,
+    content: str | None = "synthetic answer",
+    finish: str = "stop",
+    usage: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    output = []
+    if isinstance(content, str) and content:
+        output.append({"type": "message", "role": "assistant", "status": "completed",
+                       "content": [{"type": "output_text", "text": content}]})
+    if isinstance(extra, dict) and isinstance(extra.get("refusal"), str):
+        output = [{"type": "message", "role": "assistant", "status": "completed",
+                   "content": [{"type": "refusal", "refusal": extra["refusal"]}]}]
+    elif finish == "content_filter":
+        output.append({"type": "message", "role": "assistant", "status": "completed",
+                       "content": [{"type": "refusal", "refusal": "synthetic refusal"}]})
+    if isinstance(extra, dict) and isinstance(extra.get("tool_calls"), list):
+        for call in extra["tool_calls"]:
+            function = call.get("function", {})
+            output.append({"type": "function_call", "call_id": call.get("id"),
+                           "name": function.get("name"),
+                           "arguments": function.get("arguments", "{}")})
+    result = {"object": "response", "id": "synthetic-response-id", "model": model,
+              "status": "incomplete" if finish == "length" else "completed",
+              "output": output}
+    if finish == "length":
+        result["incomplete_details"] = {"reason": "max_output_tokens"}
+    if usage is not None:
+        result["usage"] = {
+            key: usage[source]
+            for source, key in (("prompt_tokens", "input_tokens"),
+                                ("completion_tokens", "output_tokens"),
+                                ("total_tokens", "total_tokens"))
+            if source in usage
+        }
+        details = usage.get("prompt_tokens_details")
+        if "prompt_tokens_details" in usage:
+            result["usage"]["input_tokens_details"] = (
+                dict(details) if isinstance(details, dict) else details
+            )
+    return result
+
+
+def _terminal_event(
+    model: str,
+    *,
+    content: str | None = "synthetic answer",
+    finish: str = "stop",
+    usage: dict[str, Any] | None = None,
+) -> list[SSEEvent]:
+    events = []
+    if isinstance(content, str) and content:
+        events.append(SSEEvent(event="response.output_text.delta", data={"delta": content}))
+    response = _response(model, content=content, finish=finish, usage=usage)
+    response["id"] = "synthetic-stream-id"
+    terminal = "response.incomplete" if finish == "length" else "response.completed"
+    events.append(SSEEvent(event=terminal, data={"response": response}))
+    return events
+
+
+def _events_for_response(
+    response: dict[str, Any], *, response_id: str = "synthetic-stream-id"
+) -> list[SSEEvent]:
+    events = []
+    output = response.get("output", [])
+    for item in output if isinstance(output, list) else ():
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "message":
+            for part in item.get("content", []):
+                if isinstance(part, dict) and part.get("type") == "output_text":
+                    events.append(SSEEvent(event="response.output_text.delta", data={"delta": part["text"]}))
+    response = dict(response)
+    response["id"] = response_id
+    terminal = "response.incomplete" if response.get("status") == "incomplete" else "response.completed"
+    events.append(SSEEvent(event=terminal, data={"response": response}))
+    return events
+
+
+class RecordingSyncTransport:
+    chat_result: dict[str, Any]
+    events: list[SSEEvent]
+    ocr_results: list[dict[str, Any]]
+    requests: list[TransportRequest]
+    stream_requests: list[TransportRequest]
+    ocr_requests: list[TransportRequest]
+    timeline: list[tuple[str, TransportRequest | dict[str, Any]]]
+
+    def __init__(
+        self,
+        *,
+        chat_result: dict[str, Any] | None = None,
+        events: Iterable[SSEEvent] = (),
+        ocr_results: Iterable[dict[str, Any]] = (),
+        timeline: list[tuple[str, TransportRequest | dict[str, Any]]] | None = None,
+    ) -> None:
+        self.chat_result = chat_result or {}
+        self.events = list(events)
+        self.ocr_results = list(ocr_results)
+        self.requests = []
+        self.stream_requests = []
+        self.ocr_requests = []
+        self.timeline = timeline if timeline is not None else []
+
+    def post_json(
+        self,
+        request: TransportRequest,
+        *,
+        http_error_handler: HTTPErrorHandler | None = None,
+    ) -> JSONResponse:
+        if request.url == OCR_URL:
+            self.ocr_requests.append(request)
+            self.timeline.append(("ocr", request))
+            return JSONResponse(self.ocr_results.pop(0) if self.ocr_results else {
+                "pages": [{"markdown": "synthetic extracted text"}],
+                "usage_info": {"pages_processed": 2},
+            })
+        self.requests.append(request)
+        self.timeline.append(("model", request))
+        return JSONResponse(self.chat_result)
+
+    def post_sse(
+        self,
+        request: TransportRequest,
+        *,
+        http_error_handler: HTTPErrorHandler | None = None,
+        stream_error_handler: StreamErrorHandler | None = None,
+    ) -> Iterator[SSEEvent]:
+        if request.url == OCR_URL:
+            self.ocr_requests.append(request)
+            raise AssertionError("OCR is submitted as JSON, not a stream")
+        self.stream_requests.append(request)
+        self.timeline.append(("model", request))
+        return iter(self.events)
+
+
+def _new_adapter(
+    model: str,
+    transport: str | None = "requests",
+    *,
+    developer: str | None = None,
+) -> UniversalLLMAPIAdapter:
+    if developer is None:
+        developer = "mistral"
+    return UniversalLLMAPIAdapter(
+        organization=developer,
+        service_provider="mistral",
+        model=model,
+        api_key="synthetic-test-key",
+        transport=transport or "requests",
+    )
+
+
+def _install_async(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    model_response: dict[str, Any],
+    stream_events: Iterable[SSEEvent] = (),
+    ocr_results: Iterable[dict[str, Any]] = (),
+    timeline: list[tuple[str, TransportRequest | dict[str, Any]]] | None = None,
+) -> dict[str, list[tuple[str, dict[str, Any]]]]:
+    calls = {"chat": [], "stream": [], "ocr": []}
+    ocr_values = list(ocr_results)
+
+    async def async_request(url: str, **kwargs: Any) -> dict[str, Any]:
+        bucket = "ocr" if url == OCR_URL else "chat"
+        calls[bucket].append((url, kwargs))
+        if timeline is not None:
+            timeline.append((bucket, kwargs))
+        if bucket == "ocr":
+            return ocr_values.pop(0) if ocr_values else {
+                "pages": [{"markdown": "synthetic extracted text"}],
+                "usage_info": {"pages_processed": 2},
+            }
+        return model_response
+
+    def async_stream_request(url: str, **kwargs: Any) -> AsyncIterator[SSEEvent]:
+        calls["stream"].append((url, kwargs))
+        if timeline is not None:
+            timeline.append(("stream", kwargs))
+
+        async def source() -> AsyncIterator[SSEEvent]:
+            for event in stream_events:
+                yield event
+
+        return source()
+
+    monkeypatch.setattr(mistral_async_client_module, "async_request", async_request)
+    monkeypatch.setattr(mistral_async_client_module, "async_stream_request", async_stream_request)
+    return calls
+
+
+def _invoke(
+    adapter: UniversalLLMAPIAdapter,
+    method: str,
+    messages: Messages | list[Message | dict[str, Any]],
+    **kwargs: Any,
+) -> ChatResponse | tuple[list[str], ChatResponse]:
+    if method == "chat":
+        return adapter.chat(messages, **kwargs)
+    if method == "stream_chat":
+        completed = []
+        callback: OnDone | None = kwargs.pop("on_done", None)
+        def done(response: ChatResponse) -> None:
+            completed.append(response)
+            if callback is not None:
+                callback(response)
+        visible = list(adapter.stream_chat(messages, on_done=done, **kwargs))
+        return visible, completed[0]
+    if method == "achat":
+        return asyncio.run(adapter.achat(messages, **kwargs))
+    async def collect() -> tuple[list[str], ChatResponse]:
+        completed = []
+        callback: OnDone | None = kwargs.pop("on_done", None)
+        def done(response: ChatResponse) -> None:
+            completed.append(response)
+            if callback is not None:
+                callback(response)
+        visible = [item async for item in adapter.astream_chat(
+            messages, on_done=done, **kwargs
+        )]
+        return visible, completed[0]
+    return asyncio.run(collect())
+
+
+def _execute(
+    adapter: UniversalLLMAPIAdapter,
+    method: str,
+    messages: Messages | list[Message | dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    model_response: dict[str, Any],
+    stream_events: Iterable[SSEEvent] = (),
+    timeout_s: float | None = None,
+    ocr_results: Iterable[dict[str, Any]] = (),
+    timeline: list[tuple[str, TransportRequest | dict[str, Any]]] | None = None,
+    on_done: OnDone | None = None,
+    **kwargs: Any,
+) -> tuple[
+    ChatResponse,
+    list[str] | None,
+    RecordingSyncTransport,
+    dict[str, list[tuple[str, dict[str, Any]]]],
+]:
+    recorder = RecordingSyncTransport(
+        chat_result=model_response, events=stream_events, ocr_results=ocr_results,
+        timeline=timeline,
+    )
+    adapter.adapter._sync_transport = recorder
+    async_calls = _install_async(
+        monkeypatch, model_response=model_response, stream_events=stream_events,
+        ocr_results=ocr_results, timeline=timeline,
+    )
+    if timeout_s is not None:
+        kwargs["timeout_s"] = timeout_s
+    if on_done is not None:
+        kwargs["on_done"] = on_done
+    result = _invoke(adapter, method, messages, **kwargs)
+    semantic = result[1] if method in {"stream_chat", "astream_chat"} else result
+    visible = result[0] if method in {"stream_chat", "astream_chat"} else None
+    return semantic, visible, recorder, async_calls
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("model", MODEL_IDS)
+@pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
+def test_every_registered_profile_preserves_four_native_methods_and_transport_meaning(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    method: str,
+    transport: str | None,
+) -> None:
+    """Every exact profile uses its registered identity, request policy and native route."""
+    metadata = mistral_runtime.organizations["mistral"]
+    assert tuple(metadata.models) == MODEL_IDS  # inventory and order come from PLUGIN metadata
+    spec = metadata.models[model]
+    wire_model = spec.provider_model or model
+    adapter = _new_adapter(model, transport, developer="mistral")
+    assert adapter.organization == "mistral"
+    assert adapter.service_provider == adapter.adapter.service_provider == "mistral"
+    assert adapter.adapter.model_spec is spec
+    assert adapter.adapter.model_spec.limits == spec.limits
+    assert adapter.adapter.pricing.currency == spec.pricing_tiers.currency
+    assert adapter.adapter.pricing.tiers == spec.pricing_tiers.tiers
+
+    response = _response(wire_model)
+    stream = _terminal_event(wire_model)
+    recorder = RecordingSyncTransport(chat_result=response, events=stream)
+    if method in {"chat", "stream_chat"}:
+        expected_transport = RequestsSyncTransport if transport == "requests" else HttpxSyncTransport
+        assert isinstance(adapter.adapter._sync_transport, expected_transport)
+    adapter.adapter._sync_transport = recorder
+    async_calls = _install_async(monkeypatch, model_response=response, stream_events=stream)
+
+    if method in {"chat", "stream_chat"}:
+        result = _invoke(adapter, method, MIXED_HISTORY, max_tokens=73, timeout_s=9.5)
+        request = recorder.requests[0] if method == "chat" else recorder.stream_requests[0]
+        assert not async_calls["chat"] and not async_calls["stream"]
+        assert request.url == RESPONSES_URL
+        assert request.timeout == 9.5
+        headers = request.headers_dict()
+        payload = request.payload
+    else:
+        result = _invoke(adapter, method, MIXED_HISTORY, max_tokens=73, timeout_s=9.5)
+        assert recorder.requests == [] and recorder.stream_requests == []
+        calls = async_calls["chat"] if method == "achat" else async_calls["stream"]
+        assert len(calls) == 1
+        url, kwargs = calls[0]
+        assert url == RESPONSES_URL
+        assert kwargs["timeout"] == 9.5
+        headers = kwargs["headers"]
+        payload = kwargs["payload"]
+    assert headers["Authorization"] == "Bearer synthetic-test-key"
+    assert headers["Content-Type"] == "application/json"
+    assert recorder.ocr_requests == [] and async_calls["ocr"] == []
+
+    semantic_response = result[1] if method in {"stream_chat", "astream_chat"} else result
+    if method in {"stream_chat", "astream_chat"}:
+        assert result[0] == ["synthetic answer"]
+    assert semantic_response.content == "synthetic answer"
+    assert semantic_response.finish_reason == "stop"
+    assert semantic_response.response_id == (
+        "synthetic-stream-id" if method in {"stream_chat", "astream_chat"}
+        else "synthetic-response-id"
+    )
+    assert payload["model"] == wire_model
+    assert payload["max_output_tokens"] == 73
+    assert payload["temperature"] == 1.0 and payload["top_p"] == 1.0
+    assert payload["instructions"] == "Use concise answers."
+    assert payload["input"][0] == {"role": "user", "content": "Find the report."}
+    assert payload["input"][1] == {"role": "assistant", "content": "I will search."}
+    assert payload["input"][2]["type"] == "function_call"
+    assert payload["input"][2]["call_id"] == "call-synthetic"
+    assert payload["input"][2]["name"] == "lookup"
+    assert json.loads(payload["input"][2]["arguments"]) == {"key": "report"}
+    assert payload["input"][3] == {
+        "type": "function_call_output", "call_id": "call-synthetic", "output": "found"
+    }
+    assert payload["input"][4] == {"role": "user", "content": "Summarize it."}
+    assert len(payload["input"]) == 5
+    capability = spec.reasoning_capability
+    expected_default = capability.allowed_values[0] if capability and capability.allowed_values else None
+    if expected_default is None:
+        assert "reasoning" not in payload
+    else:
+        assert payload["reasoning"]["effort"] == expected_default
+
+
+@pytest.mark.integration
+def test_hosted_developers_retain_mistral_service_provider_ownership(
+    mistral_runtime: RegistrySpec,
+) -> None:
+    for developer, model in (("zai", "glm-5.3-flash"), ("deepseek", "deepseek-flash")):
+        spec = mistral_runtime.organizations["mistral"].models[model]
+        adapter = _new_adapter(model, developer=developer)
+        assert adapter.organization == developer
+        assert adapter.service_provider == adapter.adapter.service_provider == "mistral"
+        assert adapter.adapter.model_spec is spec
+        recorder = RecordingSyncTransport(
+            chat_result=_response(spec.provider_model or spec.name)
+        )
+        adapter.adapter._sync_transport = recorder
+        adapter.chat([{"role": "user", "content": "synthetic hosted request"}])
+        assert recorder.requests[0].payload["model"] == spec.provider_model
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("method", ("chat", "stream_chat", "achat", "astream_chat"))
+def test_previous_response_is_ignored_and_caller_history_is_sent(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model)
+    response = _response(model)
+    events = _terminal_event(model)
+    recorder = RecordingSyncTransport(chat_result=response, events=events)
+    adapter.adapter._sync_transport = recorder
+    calls = _install_async(monkeypatch, model_response=response, stream_events=events)
+    prior = ChatResponse(content="synthetic earlier result", response_id="opaque-synthetic-id")
+    _invoke(adapter, method, MIXED_HISTORY, previous_response=prior)
+    payload = (recorder.requests[0] if method == "chat" else recorder.stream_requests[0]).payload if method in {"chat", "stream_chat"} else (calls["chat"] if method == "achat" else calls["stream"])[0][1]["payload"]
+    assert payload["instructions"] == "Use concise answers."
+    assert payload["input"][3]["output"] == "found"
+    assert "opaque-synthetic-id" not in repr(payload)
+    assert not any("previous" in key.lower() and "response" in key.lower() for key in payload)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("finish", ("stop", "length", "content_filter"))
+def test_native_response_keeps_original_finish_reason_and_terminal_fields(
+    mistral_runtime: RegistrySpec,
+    finish: str,
+) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model)
+    recorder = RecordingSyncTransport(chat_result=_response(
+        model, content="synthetic terminal", finish=finish
+    ))
+    adapter.adapter._sync_transport = recorder
+    response = adapter.chat([{"role": "user", "content": "synthetic request"}])
+    assert response.finish_reason == finish
+    assert response.response_id == "synthetic-response-id"
+    assert response.content == "synthetic terminal"
+    assert response.incomplete_reason == ("length" if finish == "length" else None)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
+def test_native_structured_incomplete_and_tool_outcomes_remain_distinct(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model, transport)
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    raw = _response(model, content='{"answer":"ready"}')
+    parsed, visible, recorder, calls = _execute(
+        adapter, method, [{"role": "user", "content": "structured"}], monkeypatch,
+        model_response=raw, stream_events=_events_for_response(raw), json_schema=schema,
+    )
+    assert parsed.parsed_json == {"answer": "ready"}
+    assert parsed.parsed_model is None
+    if visible is not None:
+        assert visible == ['{"answer":"ready"}']
+
+    from pydantic import BaseModel
+
+    class AnswerModel(BaseModel):
+        answer: str
+        model_config = {"extra": "forbid"}
+
+    raw = _response(model, content='{"answer":"typed"}')
+    typed, _, recorder, calls = _execute(
+        adapter, method, [{"role": "user", "content": "typed structured"}], monkeypatch,
+        model_response=raw, stream_events=_events_for_response(raw), response_model=AnswerModel,
+    )
+    assert typed.parsed_json == {"answer": "typed"}
+    assert typed.parsed_model == AnswerModel(answer="typed")
+
+    raw = _response(model, content=None, finish="length")
+    incomplete, visible, _, _ = _execute(
+        adapter, method, [{"role": "user", "content": "short output"}], monkeypatch,
+        model_response=raw, stream_events=_events_for_response(raw), json_schema=schema,
+    )
+    assert incomplete.finish_reason == "length" and incomplete.incomplete_reason == "length"
+    assert incomplete.parsed_json is None and incomplete.parsed_model is None
+    if visible is not None:
+        assert visible == []
+
+    raw = _response(model, content=None, finish="tool_calls", extra={
+        "tool_calls": [{
+            "id": "call-result",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"key":"value"}'},
+        }],
+    })
+    tool_result, _, recorder, calls = _execute(
+        adapter, method, [{"role": "user", "content": "lookup"}], monkeypatch,
+        model_response=raw, stream_events=_events_for_response(raw),
+        tools=[LOOKUP], tool_choice="lookup",
+    )
+    assert tool_result.tool_calls[0].name == "lookup"
+    assert tool_result.tool_calls[0].arguments == {"key": "value"}
+    assert tool_result.tool_calls[0].call_id == "call-result"
+    if method == "chat":
+        tool_payload = recorder.requests[-1].payload
+    elif method == "stream_chat":
+        tool_payload = recorder.stream_requests[-1].payload
+    else:
+        bucket = "chat" if method == "achat" else "stream"
+        tool_payload = calls[bucket][-1][1]["payload"]
+    assert tool_payload["tool_choice"] == {"type": "function", "name": "lookup"}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("method", ("chat", "achat"))
+def test_native_refusal_keeps_refusal_and_leaves_structured_output_unavailable(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model)
+    schema = {
+        "type": "object", "properties": {"answer": {"type": "string"}},
+        "required": ["answer"], "additionalProperties": False,
+    }
+    raw = _response(model, content=None, finish="content_filter", extra={
+        "refusal": "synthetic refusal"
+    })
+    refused, _, _, _ = _execute(
+        adapter, method, [{"role": "user", "content": "decline"}], monkeypatch,
+        model_response=raw, json_schema=schema,
+    )
+    assert refused.finish_reason == "content_filter"
+    assert refused.refusal == "synthetic refusal"
+    assert refused.parsed_json is None and refused.parsed_model is None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
+def test_usage_and_cost_keep_reported_zero_missing_partial_and_cached_components(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model, transport)
+    spec = mistral_runtime.organizations["mistral"].models[model]
+    tier = spec.pricing_tiers.tier_for_prompt_tokens(1000)
+
+    def run_usage(usage: dict[str, Any] | None) -> ChatResponse:
+        raw = _response(model, usage=usage)
+        return _execute(
+            adapter, method, [{"role": "user", "content": "cost"}], monkeypatch,
+            model_response=raw, stream_events=_events_for_response(raw),
+        )[0]
+
+    complete = {
+        "prompt_tokens": 1000,
+        "completion_tokens": 500,
+        "total_tokens": 1500,
+        "prompt_tokens_details": {"cached_tokens": 200},
+    }
+    cached = run_usage(complete)
+    assert cached.usage.input_tokens == 1000 and cached.usage.cached_tokens == 200
+    expected_input = 800 * tier.in_per_token + 200 * tier.cache_read_in_per_token
+    assert cached.cost_input == pytest.approx(expected_input)
+    assert cached.cost_output == pytest.approx(500 * tier.out_per_token)
+    assert cached.cost_total == pytest.approx(cached.cost_input + cached.cost_output)
+    assert cached.currency == spec.pricing_tiers.currency
+
+    adapter.adapter.pricing.set_in_per_1m(2.0)
+    caller_priced = run_usage(complete)
+    assert caller_priced.cost_input == pytest.approx(
+        800 * 2.0 / 1_000_000 + 200 * tier.cache_read_in_per_token
+    )
+    assert tier.in_per_token != 2.0 / 1_000_000
+
+    zero = run_usage({
+        "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+        "prompt_tokens_details": {"cached_tokens": 0},
+    })
+    assert zero.usage.input_tokens == zero.usage.output_tokens == zero.usage.total_tokens == 0
+    assert zero.cost_input == zero.cost_output == zero.cost_total == 0
+
+    partial = run_usage({"prompt_tokens": 1000})
+    assert partial.usage.input_tokens == 1000
+    assert partial.usage.output_tokens is None and partial.usage.total_tokens is None
+    assert partial.cost_input is None and partial.cost_output is None and partial.cost_total is None
+
+    missing = run_usage(None)
+    assert missing.usage is None
+    assert missing.cost_input is None and missing.cost_output is None and missing.cost_total is None
+
+    derived = run_usage({"prompt_tokens": 4, "completion_tokens": 2})
+    assert derived.usage.input_tokens == 4 and derived.usage.output_tokens == 2
+    assert derived.usage.total_tokens == 6
+    malformed_total = run_usage({
+        "prompt_tokens": 4, "completion_tokens": 2, "total_tokens": "malformed",
+        "prompt_tokens_details": {"cached_tokens": 0},
+    })
+    assert malformed_total.usage.input_tokens == 4 and malformed_total.usage.output_tokens == 2
+    assert malformed_total.usage.total_tokens == 6
+    malformed_component = run_usage({
+        "prompt_tokens": "malformed", "completion_tokens": 2,
+        "prompt_tokens_details": {"cached_tokens": 0},
+    })
+    assert malformed_component.usage.input_tokens is None
+    assert malformed_component.usage.output_tokens == 2
+    assert malformed_component.usage.total_tokens is None
+    assert malformed_component.cost_input is None
+    assert malformed_component.cost_total is None
+    contradictory = run_usage({
+        "prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 999,
+        "prompt_tokens_details": {"cached_tokens": 0},
+    })
+    assert contradictory.usage.input_tokens == 4 and contradictory.usage.output_tokens == 2
+    assert contradictory.usage.total_tokens == 999
+    assert contradictory.cost_input is not None and contradictory.cost_output is not None
+    assert contradictory.cost_total == pytest.approx(
+        contradictory.cost_input + contradictory.cost_output
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
+def test_invalid_reported_cache_count_remains_a_client_error(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model, transport)
+    raw = _response(model, usage={
+        "prompt_tokens": 10,
+        "completion_tokens": 1,
+        "prompt_tokens_details": {"cached_tokens": "not-a-count"},
+    })
+    with pytest.raises(LLMAPIClientError, match="cached_tokens"):
+        _execute(
+            adapter, method, [{"role": "user", "content": "usage"}], monkeypatch,
+            model_response=raw, stream_events=_events_for_response(raw),
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("method", "transport"), (("stream_chat", "requests"), ("astream_chat", None)))
+@pytest.mark.parametrize(
+    ("usage", "expected_input", "expected_output", "expected_total", "chunk_usage"),
+    (
+        ({"input_tokens": 4, "output_tokens": 2}, 4, 2, 6, True),
+        ({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, 0, 0, 0, True),
+        ({"input_tokens": 4, "output_tokens": 2, "total_tokens": 999}, 4, 2, 999, True),
+        ({"input_tokens": 4}, 4, None, None, True),
+        ({}, None, None, None, False),
+    ),
+    ids=("derived-total", "reported-zero", "reported-nonadditive", "partial", "all-unknown"),
+)
+def test_native_responses_stream_chunk_and_final_usage_match(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+    usage: dict[str, Any],
+    expected_input: int | None,
+    expected_output: int | None,
+    expected_total: int | None,
+    chunk_usage: bool,
+) -> None:
+    model = MODEL_IDS[0]
+    raw = _response(model, content="answer")
+    raw["usage"] = usage
+    events = [
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"delta": "answer", "usage": usage},
+        ),
+        SSEEvent(event="response.completed", data={"response": raw}),
+    ]
+    adapter = _new_adapter(model, transport)
+    chunks: list[StreamChunk] = []
+    completed: list[ChatResponse] = []
+
+    response, visible, _, _ = _execute(
+        adapter,
+        method,
+        [{"role": "user", "content": "usage parity"}],
+        monkeypatch,
+        model_response=raw,
+        stream_events=events,
+        on_chunk=chunks.append,
+        on_done=completed.append,
+    )
+
+    assert visible == ["answer"]
+    assert chunks
+    if chunk_usage:
+        assert chunks[0].usage is not None
+        assert chunks[0].usage.input_tokens == expected_input
+        assert chunks[0].usage.output_tokens == expected_output
+        assert chunks[0].usage.total_tokens == expected_total
+    else:
+        assert chunks[0].usage is None
+    for result in (response, completed[0]):
+        assert result.usage is not None
+        assert result.usage.input_tokens == expected_input
+        assert result.usage.output_tokens == expected_output
+        assert result.usage.total_tokens == expected_total
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("method", "transport"), (("stream_chat", "requests"), ("astream_chat", None)))
+@pytest.mark.parametrize(
+    ("malformed_details", "expected_error"),
+    (
+        ([], "input_tokens_details"),
+        ({"cached_tokens": True}, "cached_tokens"),
+        ({"cached_tokens": -1}, "cached_tokens"),
+        ({"cached_tokens": 1.5}, "cached_tokens"),
+        ({"cached_tokens": "2"}, "cached_tokens"),
+    ),
+    ids=("container", "bool", "negative", "float", "string"),
+)
+def test_native_responses_stream_rejects_malformed_cache_before_visible_text(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+    malformed_details: object,
+    expected_error: str,
+) -> None:
+    model = MODEL_IDS[0]
+    malformed_usage = {
+        "input_tokens": 4,
+        "output_tokens": 2,
+        "input_tokens_details": malformed_details,
+    }
+    adapter = _new_adapter(model, transport)
+    deltas: list[str] = []
+    completed: list[ChatResponse] = []
+    terminal = _response(model, content="valid final", usage={"prompt_tokens": 4, "completion_tokens": 2})
+    events = [
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"delta": "must not escape", "usage": malformed_usage},
+        ),
+        SSEEvent(event="response.completed", data={"response": terminal}),
+    ]
+
+    with pytest.raises(LLMAPIClientError, match=expected_error):
+        _execute(
+            adapter,
+            method,
+            [{"role": "user", "content": "malformed cache"}],
+            monkeypatch,
+            model_response=_response(model),
+            stream_events=events,
+            on_delta=deltas.append,
+            on_done=completed.append,
+        )
+
+    assert deltas == []
+    assert completed == []
+
+
+@pytest.mark.integration
+def test_registry_reasoning_allowed_values_fallback_and_projection(
+    mistral_runtime: RegistrySpec,
+) -> None:
+    profiles = mistral_runtime.organizations["mistral"].models.values()
+    for spec in profiles:
+        if spec.reasoning_capability is None:
+            requested_values = ("unrecognized",)
+        else:
+            requested_values = tuple(dict.fromkeys((
+                *spec.reasoning_capability.allowed_values,
+                "none",
+                "minimal",
+                0,
+                spec.limits.context_window_tokens,
+            )))
+        for requested in requested_values:
+            expected = resolve_reasoning_level(spec, requested)
+            adapter = _new_adapter(spec.name)
+            recorder = RecordingSyncTransport(
+                chat_result=_response(spec.provider_model or spec.name)
+            )
+            adapter.adapter._sync_transport = recorder
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                adapter.chat(
+                    [{"role": "user", "content": "reasoning"}],
+                    reasoning_level=requested,
+                )
+            assert [str(item.message) for item in caught] == (
+                [expected.warning] if expected.warning else []
+            )
+            payload = recorder.requests[0].payload
+            if expected.provider_value is None:
+                assert "reasoning" not in payload
+            else:
+                assert payload["reasoning"]["effort"] == expected.provider_value
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("method", ("chat", "stream_chat", "achat", "astream_chat"))
+def test_sampling_validation_order_is_temperature_then_top_p(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    adapter = _new_adapter(MODEL_IDS[0])
+    recorder = RecordingSyncTransport(chat_result={})
+    adapter.adapter._sync_transport = recorder
+    _install_async(monkeypatch, model_response={})
+    for kwargs, expected in [
+        ({"temperature": 2, "top_p": -1}, "temperature"),
+        ({"temperature": 1, "top_p": 2}, "top_p"),
+    ]:
+        with pytest.raises(ValueError, match=expected):
+            _invoke(adapter, method, [{"role": "user", "content": "synthetic"}], **kwargs)
+    assert recorder.requests == [] and recorder.stream_requests == []
+
+
+@pytest.mark.integration
+def test_stream_creation_is_lazy_and_preparation_precedes_ocr(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model)
+    pdf_history = [UserMessage("read", files=[DocumentPart(url="https://example.invalid/a.pdf")])]
+    empty_terminal = _terminal_event(model, content="")
+    recorder = RecordingSyncTransport(chat_result=_response(model), events=(), ocr_results=[{
+        "pages": [{"markdown": "synthetic markdown"}], "usage_info": {"pages_processed": 1}
+    }])
+    adapter.adapter._sync_transport = recorder
+    stream = adapter.stream_chat(pdf_history, buffer_chars=0)
+    assert recorder.ocr_requests == []
+    with pytest.raises(ValueError, match="buffer"):
+        next(stream)
+    assert recorder.ocr_requests == []
+
+    recorder = RecordingSyncTransport(chat_result=_response(model), events=empty_terminal, ocr_results=[{
+        "pages": [{"markdown": "synthetic markdown"}], "usage_info": {"pages_processed": 1}
+    }])
+    adapter.adapter._sync_transport = recorder
+    completed = []
+    stream = adapter.stream_chat(pdf_history, on_done=completed.append)
+    assert recorder.ocr_requests == []
+    with pytest.raises(StopIteration):
+        next(stream)
+    assert len(recorder.ocr_requests) == 1
+    assert len(recorder.stream_requests) == 1
+    assert len(completed) == 1 and completed[0].finish_reason == "stop"
+
+    async_calls = _install_async(monkeypatch, model_response=_response(model), stream_events=empty_terminal, ocr_results=[{
+        "pages": [{"markdown": "synthetic markdown"}], "usage_info": {"pages_processed": 1}
+    }])
+    async def check_async_lazy() -> None:
+        iterator = adapter.astream_chat(pdf_history, buffer_chars=0)
+        assert async_calls["ocr"] == [] and async_calls["stream"] == []
+        with pytest.raises(ValueError, match="buffer"):
+            await anext(iterator)
+        assert async_calls["ocr"] == [] and async_calls["stream"] == []
+
+        completed_async = []
+        iterator = adapter.astream_chat(pdf_history, on_done=completed_async.append)
+        assert async_calls["ocr"] == [] and async_calls["stream"] == []
+        with pytest.raises(StopAsyncIteration):
+            await anext(iterator)
+        assert len(completed_async) == 1 and completed_async[0].finish_reason == "stop"
+    asyncio.run(check_async_lazy())
+    assert len(async_calls["ocr"]) == 1
+    assert len(async_calls["stream"]) == 1
+
+
+@pytest.mark.integration
+def test_native_stream_validation_is_lazy_and_async_close_is_immediate(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model)
+    recorder = RecordingSyncTransport(chat_result=_response(model))
+    adapter.adapter._sync_transport = recorder
+
+    # The native alias returns a generator: argument validation belongs to
+    # iteration and must happen before any model request.
+    stream = adapter.stream_chat(
+        [UserMessage("synthetic")], temperature=2.0
+    )
+    assert recorder.requests == [] and recorder.stream_requests == []
+    with pytest.raises(ValueError, match="temperature"):
+        next(stream)
+    assert recorder.requests == [] and recorder.stream_requests == []
+
+    _install_async(monkeypatch, model_response=_response(model))
+
+    class CloseableResponseEvents:
+        events: Iterator[SSEEvent]
+        closed: bool
+
+        def __init__(self) -> None:
+            self.events = iter((
+                SSEEvent(
+                    event="response.output_text.delta",
+                    data={"type": "response.output_text.delta", "delta": "hello"},
+                ),
+                SSEEvent(
+                    event="response.completed",
+                    data={
+                        "type": "response.completed",
+                        "response": _response(model),
+                    },
+                ),
+            ))
+            self.closed = False
+
+        def __aiter__(self) -> CloseableResponseEvents:
+            return self
+
+        async def __anext__(self) -> SSEEvent:
+            try:
+                return next(self.events)
+            except StopIteration:
+                raise StopAsyncIteration from None
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    source = CloseableResponseEvents()
+
+    def async_stream_request(
+        url: str,
+        **kwargs: Any,
+    ) -> AsyncIterator[SSEEvent]:
+        return source
+
+    monkeypatch.setattr(
+        mistral_async_client_module, "async_stream_request", async_stream_request
+    )
+
+    async def assert_closed_before_loop_shutdown() -> None:
+        stream = adapter.astream_chat([UserMessage("synthetic")])
+        assert await anext(stream) == "hello"
+        await stream.aclose()
+        assert source.closed
+
+    asyncio.run(assert_closed_before_loop_shutdown())
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("method", ("stream_chat", "astream_chat"))
+def test_stream_callback_failure_retains_caller_exception_identity(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model)
+    raw = _response(model)
+    events = _events_for_response(raw)
+    caller_error = RuntimeError("synthetic callback failure")
+
+    def fail_on_done(response: ChatResponse) -> None:
+        raise caller_error
+
+    with pytest.raises(RuntimeError) as caught:
+        _execute(
+            adapter, method, [{"role": "user", "content": "callback"}], monkeypatch,
+            model_response=raw, stream_events=events, on_done=fail_on_done,
+        )
+    assert caught.value is caller_error
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
+def test_validation_errors_happen_before_pdf_ocr_in_native_order(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+) -> None:
+    from llm_api_adapter.errors.llm_api_error import InvalidToolSchemaError
+    from llm_api_adapter.errors.llm_api_error import ToolChoiceError
+
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model, transport)
+    history = [UserMessage("read", files=[DocumentPart(url="https://example.invalid/a.pdf")])]
+    recorder = RecordingSyncTransport(chat_result=_response(model))
+    adapter.adapter._sync_transport = recorder
+    async_calls = _install_async(monkeypatch, model_response=_response(model))
+    cases = [
+        ({"json_schema": {"type": "object", "required": ["missing"]}}, JSONSchemaError),
+        ({"tools": [LOOKUP], "tool_choice": "absent"}, ToolChoiceError),
+        ({"reasoning_level": True}, LLMReasoningLevelError),
+    ]
+    for kwargs, error in cases:
+        with pytest.raises(error):
+            _invoke(adapter, method, history, **kwargs)
+        assert recorder.ocr_requests == [] and recorder.requests == []
+
+    # Sampling precedes portable schema validation; schema validation precedes
+    # named-tool selection; reasoning is resolved only after those requests.
+    with pytest.raises(ValueError, match="temperature"):
+        _invoke(adapter, method, history, temperature=2, json_schema={"type": "invalid"})
+    with pytest.raises(JSONSchemaError):
+        _invoke(
+            adapter, method, history,
+            json_schema={"type": "object", "required": ["missing"]},
+            tools=[LOOKUP],
+            tool_choice="absent",
+            reasoning_level=True,
+        )
+    with pytest.raises(ToolChoiceError):
+        _invoke(adapter, method, history, tools=[LOOKUP], tool_choice="absent", reasoning_level=True)
+    with pytest.raises(InvalidToolSchemaError):
+        _invoke(
+            adapter, method, history,
+            tools=[None], json_schema={"type": "invalid"},
+            tool_choice="absent", reasoning_level=True,
+        )
+    if method in {"chat", "stream_chat"}:
+        assert recorder.ocr_requests == [] and recorder.requests == [] and recorder.stream_requests == []
+    else:
+        assert async_calls["ocr"] == [] and async_calls["chat"] == [] and async_calls["stream"] == []
+
+
+@pytest.mark.integration
+def test_ocr_failure_stops_before_model_dispatch(mistral_runtime: RegistrySpec) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model)
+    recorder = RecordingSyncTransport(
+        chat_result=_response(model),
+        ocr_results=[{"pages": [], "usage_info": {"pages_processed": 1}}],
+    )
+    adapter.adapter._sync_transport = recorder
+    with pytest.raises(LLMAPIClientError, match="no document text"):
+        adapter.chat([UserMessage(
+            "synthetic PDF", files=[DocumentPart(url="https://example.invalid/file.pdf")]
+        )])
+    assert len(recorder.ocr_requests) == 1
+    assert recorder.requests == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("model", MODEL_IDS)
+@pytest.mark.parametrize(("method", "transport"), EXECUTION_PATHS)
+def test_multiple_pdfs_are_ocr_processed_in_order_before_one_model_request(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transport: str | None,
+    model: str,
+) -> None:
+    adapter = _new_adapter(model, transport)
+    spec = mistral_runtime.organizations["mistral"].models[model]
+    meter = resolve_metered_operation_spec(mistral_runtime, "mistral", "ocr")
+    assert meter is not None
+    history = [
+        {"role": "system", "content": "synthetic system"},
+        UserMessage("first", files=[
+            DocumentPart(url="https://example.invalid/one.pdf"),
+            DocumentPart(data=b"synthetic-pdf", media_type="application/pdf"),
+            ImagePart(data=b"synthetic-image", media_type="image/png"),
+        ]),
+        {"role": "assistant", "content": "between"},
+        UserMessage("second", files=[DocumentPart(url="data:application/pdf;base64,c3ludGhldGlj")]),
+    ]
+    token_usage = {
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        "total_tokens": 12,
+        "prompt_tokens_details": {"cached_tokens": 0},
+    }
+    wire_model = spec.provider_model or model
+    raw = _response(wire_model, usage=token_usage)
+    events = _events_for_response(raw)
+    timeline = []
+    callback_snapshots = []
+
+    def snapshot(response: ChatResponse) -> None:
+        callback_snapshots.append((
+            response.cost_total,
+            tuple((line.model, line.unit, line.quantity, line.rate, line.currency, line.cost)
+                  for line in response.cost_breakdown),
+        ))
+
+    ocr_results = [
+        {"pages": [{"markdown": "first OCR"}], "usage_info": {"pages_processed": 2}},
+        {"pages": [{"markdown": "second OCR"}], "usage_info": {"pages_processed": 3}},
+        {"pages": [{"markdown": "third OCR"}], "usage_info": {"pages_processed": 1}},
+    ]
+    async_calls = _install_async(
+        monkeypatch,
+        model_response=raw,
+        stream_events=events,
+        ocr_results=ocr_results,
+        timeline=timeline,
+    )
+    recorder = RecordingSyncTransport(
+        chat_result=raw, events=events, ocr_results=ocr_results, timeline=timeline
+    )
+    adapter.adapter._sync_transport = recorder
+    invoke_kwargs = {"timeout_s": 4}
+    if method in {"stream_chat", "astream_chat"}:
+        invoke_kwargs["on_done"] = snapshot
+    result = _invoke(adapter, method, history, **invoke_kwargs)
+    if method in {"chat", "stream_chat"}:
+        requests = recorder.requests if method == "chat" else recorder.stream_requests
+        assert len(recorder.ocr_requests) == 3 and len(requests) == 1
+        assert not async_calls["ocr"] and not async_calls["chat"] and not async_calls["stream"]
+        assert all(request.url == OCR_URL and request.payload["model"] == meter.model for request in recorder.ocr_requests)
+        assert [request.timeout for request in recorder.ocr_requests] == [4, 4, 4]
+        ocr_payloads = [request.payload for request in recorder.ocr_requests]
+        sent_payload = requests[0].payload
+        sent = sent_payload["input"]
+    else:
+        assert recorder.ocr_requests == [] and recorder.requests == [] and recorder.stream_requests == []
+        bucket = "chat" if method == "achat" else "stream"
+        assert len(async_calls["ocr"]) == 3 and len(async_calls[bucket]) == 1
+        assert all(call[0] == OCR_URL for call in async_calls["ocr"])
+        assert [call[1]["timeout"] for call in async_calls["ocr"]] == [4, 4, 4]
+        ocr_payloads = [call[1]["payload"] for call in async_calls["ocr"]]
+        sent_payload = async_calls[bucket][0][1]["payload"]
+        sent = sent_payload["input"]
+    model_dispatch = (
+        "model" if method in {"chat", "stream_chat"}
+        else "chat" if method == "achat"
+        else "stream"
+    )
+    expected_chronology = ["ocr", "ocr", "ocr", model_dispatch]
+    assert [kind for kind, _ in timeline] == expected_chronology
+    assert [item["model"] for item in ocr_payloads] == [meter.model] * 3
+    assert [item["document"]["document_url"] for item in ocr_payloads] == [
+        "https://example.invalid/one.pdf",
+        "data:application/pdf;base64,c3ludGhldGljLXBkZg==",
+        "data:application/pdf;base64,c3ludGhldGlj",
+    ]
+    assert sent_payload.get("instructions") == "synthetic system"
+    serialized_content = " ".join(
+        part if isinstance(part, str) else part.get("text", "")
+        for part in sent[0]["content"]
+    )
+    assert "first OCR" in serialized_content and "second OCR" in serialized_content
+    assert serialized_content.index("first OCR") < serialized_content.index("second OCR")
+    image_parts = [
+        part for part in sent[0]["content"]
+        if isinstance(part, dict) and part.get("type") == "input_image"
+    ]
+    assert len(image_parts) == 1
+    assert image_parts[0]["image_url"] == "data:image/png;base64,c3ludGhldGljLWltYWdl"
+    assert sent[1] == {"role": "assistant", "content": "between"}
+    third_content = sent[2]["content"]
+    third_text = third_content if isinstance(third_content, str) else " ".join(
+        part if isinstance(part, str) else part.get("text", "") for part in third_content
+    )
+    assert "third OCR" in third_text
+    semantic_result = result[1] if method in {"stream_chat", "astream_chat"} else result
+    token_tier = spec.pricing_tiers.tier_for_prompt_tokens(10)
+    expected_total = 10 * token_tier.in_per_token + 2 * token_tier.out_per_token + 6 * meter.rate
+    assert semantic_result.cost_total == pytest.approx(expected_total)
+    assert semantic_result.currency == meter.currency == spec.pricing_tiers.currency
+    ocr = [item for item in semantic_result.cost_breakdown if item.operation == "ocr"]
+    assert [
+        (item.operation, item.model, item.unit, item.quantity, item.rate, item.currency, item.cost)
+        for item in ocr
+    ] == [
+        (meter.name, meter.model, meter.unit, quantity, meter.rate, meter.currency, quantity * meter.rate)
+        for quantity in (2, 3, 1)
+    ]
+    if method in {"stream_chat", "astream_chat"}:
+        assert len(callback_snapshots) == 1
+        callback_total, callback_lines = callback_snapshots[0]
+        assert callback_total == pytest.approx(expected_total)
+        assert callback_lines == tuple(
+            (meter.model, meter.unit, quantity, meter.rate, meter.currency, quantity * meter.rate)
+            for quantity in (2, 3, 1)
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("second_usage", "missing_meter"),
+    [
+        ({"pages_processed": "unknown"}, False),
+        ({}, False),
+        ({"pages_processed": 2}, True),
+    ],
+    ids=("invalid-page-count", "missing-page-count", "missing-meter"),
+)
+def test_unknown_ocr_accounting_keeps_known_lines_and_total_unavailable(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    second_usage: dict[str, Any],
+    missing_meter: bool,
+) -> None:
+    model = MODEL_IDS[0]
+    adapter = _new_adapter(model)
+    if missing_meter:
+        def no_meter() -> MeteredOperationSpec | None:
+            return None
+
+        monkeypatch.setattr(adapter.adapter, "_ocr_meter", no_meter)
+    token_usage = {
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        "total_tokens": 12,
+        "prompt_tokens_details": {"cached_tokens": 0},
+    }
+    recorder = RecordingSyncTransport(
+        chat_result=_response(model, usage=token_usage),
+        ocr_results=[
+            {"pages": [{"markdown": "known PDF"}], "usage_info": {"pages_processed": 3}},
+            {"pages": [{"markdown": "unknown PDF"}], "usage_info": second_usage},
+        ],
+    )
+    adapter.adapter._sync_transport = recorder
+    response = adapter.chat([UserMessage("two PDFs", files=[
+        DocumentPart(url="https://example.invalid/known.pdf"),
+        DocumentPart(url="https://example.invalid/unknown.pdf"),
+    ])])
+    assert len(recorder.ocr_requests) == 2 and len(recorder.requests) == 1
+    assert response.cost_input is not None and response.cost_output is not None
+    assert response.cost_total is None
+    lines = [line for line in response.cost_breakdown if line.operation == "ocr"]
+    if missing_meter:
+        assert lines == []
+    else:
+        assert [line.quantity for line in lines] == [3]

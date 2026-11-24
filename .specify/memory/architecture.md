@@ -62,6 +62,15 @@ contract for the supported organizations.
 
 ### Compatible connection utilities
 
+Core compatible foundations evolve only for officially documented changes to their upstream
+API/protocol, under the constitution's Compatible Foundation Evolution Boundary. Onboarding or
+migrating a provider/model uses existing Core interfaces without changing the shared adapters,
+clients, protocol helpers, validators, transports or public types to accommodate it. Native
+differences and any thin compatibility bindings belong to the owning adapter/client or optional
+organization package. A seemingly neutral hook or missing-field fix motivated by that integration
+does not change this ownership. Plans must expose package-local limitations rather than silently
+widening Core scope or weakening compatibility evidence.
+
 Compatible modes share URL validation, safe diagnostics and caller-tariff validation in
 `adapters/compatible_connection.py`, reusing existing pricing types. Protocol selection and
 resource paths belong to each protocol integration; these utilities perform no model lookup.

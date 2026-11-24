@@ -41,7 +41,7 @@ from tests.fixtures.structured_output import (
 
 MODEL = "glm-5.3-flash"
 WIRE_MODEL = "zai-glm-5-3-flash"
-CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
+CHAT_URL = "https://api.mistral.ai/v1/responses"
 OCR_URL = "https://api.mistral.ai/v1/ocr"
 
 
@@ -149,7 +149,9 @@ def configure_async(monkeypatch, response=None, events=()):
 
 
 @pytest.mark.integration
-def test_flash_mixed_typed_and_dict_history_and_application_owned_tool_loop(mistral_runtime):
+def test_flash_mixed_typed_and_dict_history_and_application_owned_tool_loop(
+    mistral_runtime: RegistrySpec,
+) -> None:
     tool = ToolSpec(name="lookup", description="Look up a value", json_schema={
         "type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]
     })
@@ -168,8 +170,8 @@ def test_flash_mixed_typed_and_dict_history_and_application_owned_tool_loop(mist
     expected_choices = {
         "auto": "auto",
         "none": "none",
-        "any": "any",
-        "lookup": {"type": "function", "function": {"name": "lookup"}},
+        "any": "required",
+        "lookup": {"type": "function", "name": "lookup"},
     }
     for choice, expected_wire_choice in expected_choices.items():
         response = adapter.chat(messages, tools=[tool], tool_choice=choice)
@@ -200,22 +202,21 @@ def test_flash_mixed_typed_and_dict_history_and_application_owned_tool_loop(mist
     }
     response = adapter.chat(followup)
     assert response.content == "The value is found."
-    serialized = transport.chat_requests[-1].payload["messages"]
+    serialized = transport.chat_requests[-1].payload["input"]
     assert serialized[-2] == {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [{
-            "id": "call-1",
-            "type": "function",
-            "function": {"name": "lookup", "arguments": '{"key": "alpha"}'},
-        }],
+        "type": "function_call", "call_id": "call-1", "name": "lookup",
+        "arguments": '{"key": "alpha"}',
     }
-    assert serialized[-1] == {"role": "tool", "content": "Found it", "tool_call_id": "call-1"}
     assert "index" not in serialized[-2]
+    assert serialized[-1] == {
+        "type": "function_call_output", "call_id": "call-1", "output": "Found it"
+    }
 
 
 @pytest.mark.integration
-def test_flash_portable_nested_schema_and_pydantic_response_model(mistral_runtime):
+def test_flash_portable_nested_schema_and_pydantic_response_model(
+    mistral_runtime: RegistrySpec,
+) -> None:
     content = '{"contact":{"name":"Ada"}}'
     response_payload = {
         "id": "flash-structured", "model": WIRE_MODEL,
@@ -225,12 +226,12 @@ def test_flash_portable_nested_schema_and_pydantic_response_model(mistral_runtim
     transport = RecordingSyncTransport(response=response_payload)
     set_sync_recorder(adapter, transport)
     response = adapter.chat([{"role": "user", "content": "Return contact"}], json_schema=INLINE_NESTED_OBJECT_SCHEMA)
-    schema_payload = transport.chat_requests[-1].payload["response_format"]["json_schema"]["schema"]
+    schema_payload = transport.chat_requests[-1].payload["text"]["format"]["schema"]
     assert schema_payload == INLINE_NESTED_OBJECT_SCHEMA
     assert response.parsed_json == {"contact": {"name": "Ada"}}
 
     response = adapter.chat([{"role": "user", "content": "Return contact"}], response_model=NestedPydanticResponse)
-    model_schema = transport.chat_requests[-1].payload["response_format"]["json_schema"]["schema"]
+    model_schema = transport.chat_requests[-1].payload["text"]["format"]["schema"]
     assert "$defs" not in repr(model_schema) and "$ref" not in repr(model_schema)
     assert response.parsed_json == {"contact": {"name": "Ada"}}
     assert isinstance(response.parsed_model, NestedPydanticResponse)
@@ -259,7 +260,9 @@ def test_flash_refusal_and_incomplete_leave_structured_output_unset(mistral_runt
 
 
 @pytest.mark.integration
-def test_flash_serializes_image_url_bytes_and_data_url(mistral_runtime):
+def test_flash_serializes_image_url_bytes_and_data_url(
+    mistral_runtime: RegistrySpec,
+) -> None:
     adapter = new_adapter()
     transport = RecordingSyncTransport()
     set_sync_recorder(adapter, transport)
@@ -268,17 +271,19 @@ def test_flash_serializes_image_url_bytes_and_data_url(mistral_runtime):
         ImagePart(data=b"png", media_type="image/png"),
         ImagePart(url="data:image/jpeg;base64,anBn"),
     ])])
-    content = transport.chat_requests[0].payload["messages"][0]["content"]
+    content = transport.chat_requests[0].payload["input"][0]["content"]
     assert content == [
-        {"type": "text", "text": "Inspect"},
-        {"type": "image_url", "image_url": "https://example.com/image.png"},
-        {"type": "image_url", "image_url": "data:image/png;base64,cG5n"},
-        {"type": "image_url", "image_url": "data:image/jpeg;base64,anBn"},
+        {"type": "input_text", "text": "Inspect"},
+        {"type": "input_image", "image_url": "https://example.com/image.png", "detail": "auto"},
+        {"type": "input_image", "image_url": "data:image/png;base64,cG5n", "detail": "auto"},
+        {"type": "input_image", "image_url": "data:image/jpeg;base64,anBn", "detail": "auto"},
     ]
 
 
 @pytest.mark.integration
-def test_flash_pdf_url_and_bytes_are_ocr_preprocessed_before_chat(mistral_runtime):
+def test_flash_pdf_url_and_bytes_are_ocr_preprocessed_before_chat(
+    mistral_runtime: RegistrySpec,
+) -> None:
     adapter = new_adapter()
     transport = RecordingSyncTransport()
     set_sync_recorder(adapter, transport)
@@ -292,10 +297,10 @@ def test_flash_pdf_url_and_bytes_are_ocr_preprocessed_before_chat(mistral_runtim
         {"type": "document_url", "document_url": "https://example.com/report.pdf"},
         {"type": "document_url", "document_url": "data:application/pdf;base64,JVBERg=="},
     ]
-    chat_messages = transport.chat_requests[0].payload["messages"]
-    assert "# OCR text" in chat_messages[0]["content"]
-    assert "<document index=\"1\">" in chat_messages[0]["content"]
-    assert "<document index=\"2\">" in chat_messages[0]["content"]
+    chat_input = transport.chat_requests[0].payload["input"]
+    assert "# OCR text" in chat_input[0]["content"]
+    assert "<document index=\"1\">" in chat_input[0]["content"]
+    assert "<document index=\"2\">" in chat_input[0]["content"]
 
 
 @pytest.mark.integration
@@ -356,7 +361,10 @@ def test_flash_pdf_invalid_options_fail_before_ocr_or_chat(mistral_runtime, monk
 
 
 @pytest.mark.integration
-def test_flash_async_pdf_url_and_bytes_use_separate_ocr_and_chat_recorders(mistral_runtime, monkeypatch):
+def test_flash_async_pdf_url_and_bytes_use_separate_ocr_and_chat_recorders(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     adapter = new_adapter()
     calls = configure_async(monkeypatch)
     response = asyncio.run(adapter.achat([UserMessage("Summarize", files=[
@@ -369,7 +377,7 @@ def test_flash_async_pdf_url_and_bytes_use_separate_ocr_and_chat_recorders(mistr
         {"type": "document_url", "document_url": "https://example.com/one.pdf"},
         {"type": "document_url", "document_url": "data:application/pdf;base64,JVBERg=="},
     ]
-    chat_messages = calls["chat"][0][1]["payload"]["messages"]
-    assert "# OCR text" in chat_messages[0]["content"]
-    assert "<document index=\"1\">" in chat_messages[0]["content"]
-    assert "<document index=\"2\">" in chat_messages[0]["content"]
+    chat_input = calls["chat"][0][1]["payload"]["input"]
+    assert "# OCR text" in chat_input[0]["content"]
+    assert "<document index=\"1\">" in chat_input[0]["content"]
+    assert "<document index=\"2\">" in chat_input[0]["content"]

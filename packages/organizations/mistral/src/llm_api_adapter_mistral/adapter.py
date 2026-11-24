@@ -1,11 +1,9 @@
-"""Synchronous adapter for Mistral's official Chat Completions API."""
+"""Mistral's native policy over the shared OpenAI Responses foundation."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-import json
-from typing import Any, AsyncIterator, Iterator, List, Mapping, Optional
-import warnings
+from typing import Any, AsyncIterator, ClassVar, Iterator, List, Mapping, Optional
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 from llm_api_adapter.adapters.base_adapter import (
@@ -20,476 +18,293 @@ from llm_api_adapter.adapters.base_adapter import (
     OnDone,
     OnReasoning,
     OnToolCall,
-    _StreamState,
+    _ChatRequestContext,
 )
-from llm_api_adapter.adapters.structured_output import (
-    validate_core_portable_schema,
-)
-from llm_api_adapter.errors.llm_api_error import (
-    InvalidToolArgumentsError,
-    LLMAPIAuthorizationError,
-    LLMAPIClientError,
-    LLMAPIError,
-    LLMAPIRateLimitError,
-    LLMAPIServerError,
-    LLMAPITimeoutError,
-    LLMAPITokenLimitError,
-    LLMAPIUsageLimitError,
-)
+from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
+from llm_api_adapter.adapters.openai_compatible.common.usage import _token_count
+from llm_api_adapter.adapters.openai_compatible.responses.streaming import _ResponsesStreamState
+from llm_api_adapter.adapters.structured_output import validate_core_portable_schema
+from llm_api_adapter.errors.llm_api_error import LLMAPIClientError
 from llm_api_adapter.llm_registry.llm_registry import (
     MeteredOperationSpec,
+    Pricing,
     resolve_metered_operation_spec,
 )
+from llm_api_adapter.llms.streaming import StreamChunkBuffer, StreamReasoningCollector, StreamUsageTracker
 from llm_api_adapter.llms.transports import SSEEvent, SyncTransport, create_sync_transport
-from llm_api_adapter.llms.streaming import (
-    StreamChunkBuffer,
-    StreamReasoningCollector,
-    StreamUsageTracker,
-)
-from llm_api_adapter.models.messages.chat_message import (
-    Message,
-    Messages,
-    UserMessage,
-)
-from llm_api_adapter.models.responses.chat_response import (
-    ChatResponse,
-    CostLineItem,
-    Usage,
-)
-from llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
-from llm_api_adapter.models.tools import ToolCall, ToolSpec
+from llm_api_adapter.models.messages.chat_message import Message, Messages
+from llm_api_adapter.models.responses.chat_response import ChatResponse, CostLineItem, Usage
+from llm_api_adapter.models.tools import ToolSpec
 
-from .clients import MistralAsyncClient, MistralSyncClient
-from .clients.sync_client import MISTRAL_CHAT_COMPLETIONS_URL
 from . import documents
-
-
-
-
-@dataclass
-class _MistralStreamState(_StreamState):
-    """Mistral-specific state retained while consuming one SSE response."""
-
-    response_metadata: dict[str, Any] = field(default_factory=dict)
-    text_parts: list[str] = field(default_factory=list)
-    tool_calls: dict[int, dict[str, Any]] = field(default_factory=dict)
-    finish_reason: Optional[str] = None
-    ocr_operations: tuple[documents.PreparedOCROperation, ...] = ()
+from .clients import MistralAsyncClient, MistralSyncClient
+from .clients.sync_client import MISTRAL_RESPONSES_URL
 
 
 @dataclass(repr=False)
-class MistralAdapter(LLMAdapterBase):
-    """Call Mistral Chat Completions and expand PDF inputs through OCR."""
+class MistralAdapter(OpenAICompatibleAdapter):
+    """Native Mistral adapter using inherited Responses execution and lifecycle."""
 
     company: str = "mistral"
-    endpoint: str = MISTRAL_CHAT_COMPLETIONS_URL
+    base_url: ClassVar[str] = ""
+    api_variant: ClassVar[str | None] = None
+    endpoint: str = MISTRAL_RESPONSES_URL
     _sync_client: MistralSyncClient = field(init=False, repr=False, compare=False)
     _async_client: MistralAsyncClient = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        """Initialize the established native registry contract and clients."""
+        LLMAdapterBase.__post_init__(self)
         self._sync_client = MistralSyncClient(create_sync_transport(self.transport))
         self._async_client = MistralAsyncClient()
 
     @property
     def _sync_transport(self) -> SyncTransport:
-        """Compatibility hook for deterministic transport tests."""
+        """Retain the historical transport injection hook."""
         return self._sync_client.transport
 
     @_sync_transport.setter
     def _sync_transport(self, transport: SyncTransport) -> None:
         self._sync_client.transport = transport
 
-    def chat(
+    def _create_sync_client(self) -> MistralSyncClient:
+        self._sync_client.api_key = self.api_key
+        self._sync_client.endpoint = self.endpoint
+        self._sync_client._set_api_variant("responses")
+        self._sync_client._adapter_post_payload = self._post_payload
+        self._sync_client._adapter_stream_payload = self._stream_payload
+        return self._sync_client
+
+    def _create_async_client(self) -> MistralAsyncClient:
+        self._async_client.api_key = self.api_key
+        self._async_client.endpoint = self.endpoint
+        self._async_client._set_api_variant("responses")
+        self._async_client._adapter_apost_payload = self._apost_payload
+        self._async_client._adapter_astream_payload = self._astream_payload
+        return self._async_client
+
+    def _validate_sampling_parameters(
+        self, temperature: float, top_p: float
+    ) -> tuple[float, float]:
+        """Keep Mistral's established 1.5 temperature ceiling and order."""
+        return (
+            self._validate_parameter("temperature", temperature, 0, 1.5),
+            self._validate_parameter("top_p", top_p, 0, 1),
+        )
+
+    def _prepare_chat_request(
         self,
-        messages: List[Message] | Messages,
-        max_tokens: Optional[int] = None,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None,
-        timeout_s: Optional[float] = None,
-        tools: Optional[List[ToolSpec]] = None,
-        tool_choice: Any = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None,
-        json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None,
-        *,
-        capture_reasoning: bool = False,
-    ) -> ChatResponse:
-        """Generate one response through ``POST /v1/chat/completions``."""
-        request_context, temperature, top_p, reasoning_effort = (
-            self._prepare_request_context(
-                messages,
-                temperature=temperature,
-                top_p=top_p,
-                reasoning_level=reasoning_level,
-                tools=tools,
-                tool_choice=tool_choice,
-                previous_response=previous_response,
-                json_schema=json_schema,
-                response_model=response_model,
-            )
-        )
-        prepared_documents = self._prepare_document_messages(messages, timeout_s)
-        request_context = replace(
-            request_context,
-            normalized_messages=prepared_documents.messages,
-        )
-        payload = self._build_request_payload(
-            request_context,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_effort=reasoning_effort,
-            tools=tools,
-            parallel_tool_calls=parallel_tool_calls,
-        )
-
-        try:
-            response = self._post_payload(payload, timeout_s)
-            chat_response = self._parse_response(
-                response,
-                capture_reasoning=capture_reasoning,
-            )
-            return self._finalize_ocr_chat_response(
-                chat_response,
-                effective_schema=request_context.effective_schema,
-                response_model=response_model,
-                ocr_operations=prepared_documents.ocr_operations,
-            )
-        except LLMAPIError as error:
-            self.handle_error(error)
-        except Exception as error:
-            error_message = getattr(error, "text", None) or str(error)
-            self.handle_error(error=error, error_message=error_message)
-
-    async def achat(
-        self,
-        messages: List[Message] | Messages,
-        max_tokens: Optional[int] = None,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None,
-        timeout_s: Optional[float] = None,
-        tools: Optional[List[ToolSpec]] = None,
-        tool_choice: Any = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None,
-        json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None,
-        *,
-        capture_reasoning: bool = False,
-    ) -> ChatResponse:
-        """Generate one response without blocking the event loop."""
-        request_context, temperature, top_p, reasoning_effort = (
-            self._prepare_request_context(
-                messages,
-                temperature=temperature,
-                top_p=top_p,
-                reasoning_level=reasoning_level,
-                tools=tools,
-                tool_choice=tool_choice,
-                previous_response=previous_response,
-                json_schema=json_schema,
-                response_model=response_model,
-            )
-        )
-        prepared_documents = await self._prepare_document_messages_async(
-            messages,
-            timeout_s,
-        )
-        request_context = replace(
-            request_context,
-            normalized_messages=prepared_documents.messages,
-        )
-        payload = self._build_request_payload(
-            request_context,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_effort=reasoning_effort,
-            tools=tools,
-            parallel_tool_calls=parallel_tool_calls,
-        )
-
-        try:
-            response = await self._apost_payload(payload, timeout_s)
-            chat_response = self._parse_response(
-                response,
-                capture_reasoning=capture_reasoning,
-            )
-            return self._finalize_ocr_chat_response(
-                chat_response,
-                effective_schema=request_context.effective_schema,
-                response_model=response_model,
-                ocr_operations=prepared_documents.ocr_operations,
-            )
-        except LLMAPIError as error:
-            self.handle_error(error)
-        except Exception as error:
-            error_message = getattr(error, "text", None) or str(error)
-            self.handle_error(error=error, error_message=error_message)
-
-    def stream_chat(
-        self,
-        messages: List[Message] | Messages,
-        max_tokens: Optional[int] = None,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None,
-        timeout_s: Optional[float] = None,
-        tools: Optional[List[ToolSpec]] = None,
-        tool_choice: Any = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None,
-        json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None,
-        on_delta: Optional[OnDelta] = None,
-        on_tool_call: Optional[OnToolCall] = None,
-        on_done: Optional[OnDone] = None,
-        buffer_chars: Optional[int] = None,
-        on_chunk: Optional[OnChunk] = None,
-        *,
-        capture_reasoning: bool = False,
-        on_reasoning: Optional[OnReasoning] = None,
-    ) -> Iterator[str]:
-        """Stream normalized visible deltas from Mistral's SSE endpoint."""
-        request_context, temperature, top_p, reasoning_effort = (
-            self._prepare_request_context(
-                messages,
-                temperature=temperature,
-                top_p=top_p,
-                reasoning_level=reasoning_level,
-                tools=tools,
-                tool_choice=tool_choice,
-                previous_response=previous_response,
-                json_schema=json_schema,
-                response_model=response_model,
-            )
-        )
-        state = self._new_stream_state(
-            buffer_chars=buffer_chars,
-            capture_reasoning=capture_reasoning,
-        )
-        prepared_documents = self._prepare_document_messages(messages, timeout_s)
-        request_context = replace(
-            request_context,
-            normalized_messages=prepared_documents.messages,
-        )
-        payload = self._build_request_payload(
-            request_context,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_effort=reasoning_effort,
-            tools=tools,
-            parallel_tool_calls=parallel_tool_calls,
-        )
-        state.ocr_operations = prepared_documents.ocr_operations
-        events = self._stream_payload(payload, timeout_s)
-        yield from self._run_sync_stream(
-            events,
-            state,
-            consume_event=self._consume_stream_event,
-            finalize_response=self._finalize_stream,
-            effective_schema=request_context.effective_schema,
-            response_model=response_model,
-            on_delta=on_delta,
-            on_tool_call=on_tool_call,
-            on_done=on_done,
-            on_chunk=on_chunk,
-            capture_reasoning=capture_reasoning,
-            on_reasoning=on_reasoning,
-        )
-
-    def astream_chat(
-        self,
-        messages: List[Message] | Messages,
-        max_tokens: Optional[int] = None,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
-        reasoning_level: Optional[str | int] = None,
-        timeout_s: Optional[float] = None,
-        tools: Optional[List[ToolSpec]] = None,
-        tool_choice: Any = None,
-        parallel_tool_calls: Optional[bool] = None,
-        previous_response: Optional[ChatResponse] = None,
-        json_schema: Optional[dict] = None,
-        response_model: Optional[Any] = None,
-        on_delta: Optional[AsyncOnDelta] = None,
-        on_tool_call: Optional[AsyncOnToolCall] = None,
-        on_done: Optional[AsyncOnDone] = None,
-        buffer_chars: Optional[int] = None,
-        on_chunk: Optional[AsyncOnChunk] = None,
-        *,
-        capture_reasoning: bool = False,
-        on_reasoning: Optional[AsyncOnReasoning] = None,
-    ) -> AsyncIterator[str]:
-        """Return the asynchronous streaming iterator for Mistral."""
-        return self._astream_chat(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_level=reasoning_level,
-            timeout_s=timeout_s,
-            tools=tools,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            previous_response=previous_response,
-            json_schema=json_schema,
-            response_model=response_model,
-            on_delta=on_delta,
-            on_tool_call=on_tool_call,
-            on_done=on_done,
-            buffer_chars=buffer_chars,
-            on_chunk=on_chunk,
-            capture_reasoning=capture_reasoning,
-            on_reasoning=on_reasoning,
-        )
-
-    async def _astream_chat(
-        self,
-        *,
-        messages: List[Message] | Messages,
-        max_tokens: Optional[int],
-        temperature: float,
-        top_p: float,
-        reasoning_level: Optional[str | int],
-        timeout_s: Optional[float],
+        messages: Any,
         tools: Optional[List[ToolSpec]],
         tool_choice: Any,
-        parallel_tool_calls: Optional[bool],
-        previous_response: Optional[ChatResponse],
         json_schema: Optional[dict],
         response_model: Optional[Any],
-        on_delta: Optional[AsyncOnDelta],
-        on_tool_call: Optional[AsyncOnToolCall],
-        on_done: Optional[AsyncOnDone],
-        buffer_chars: Optional[int],
-        on_chunk: Optional[AsyncOnChunk],
+    ) -> _ChatRequestContext:
+        """Validate Mistral's portable schema before any OCR dispatch."""
+        context = super()._prepare_chat_request(
+            messages, tools, tool_choice, json_schema, response_model
+        )
+        if context.effective_schema is None:
+            return context
+        return replace(
+            context,
+            effective_schema=validate_core_portable_schema(
+                context.effective_schema, provider="mistral"
+            ),
+        )
+
+    def _build_chat_params(
+        self, *, normalized_messages: Messages, use_responses_api: bool,
+        max_tokens: Optional[int], temperature: float, top_p: float,
+        reasoning_level: Optional[str | int], tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str], parallel_tool_calls: Optional[bool],
+        previous_response: Optional[ChatResponse], effective_schema: Optional[dict],
         capture_reasoning: bool,
-        on_reasoning: Optional[AsyncOnReasoning],
-    ) -> AsyncIterator[str]:
-        request_context, temperature, top_p, reasoning_effort = (
-            self._prepare_request_context(
-                messages,
-                temperature=temperature,
-                top_p=top_p,
-                reasoning_level=reasoning_level,
-                tools=tools,
-                tool_choice=tool_choice,
-                previous_response=previous_response,
-                json_schema=json_schema,
-                response_model=response_model,
-            )
-        )
-        state = self._new_stream_state(
-            buffer_chars=buffer_chars,
-            capture_reasoning=capture_reasoning,
-        )
-        prepared_documents = await self._prepare_document_messages_async(
-            messages,
-            timeout_s,
-        )
-        request_context = replace(
-            request_context,
-            normalized_messages=prepared_documents.messages,
-        )
-        payload = self._build_request_payload(
-            request_context,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_effort=reasoning_effort,
-            tools=tools,
-            parallel_tool_calls=parallel_tool_calls,
-        )
-        state.ocr_operations = prepared_documents.ocr_operations
-        events = self._astream_payload(payload, timeout_s)
-        async for text in self._run_async_stream(
-            events,
-            state,
-            consume_event=self._consume_stream_event_async,
-            finalize_response=self._finalize_stream,
-            effective_schema=request_context.effective_schema,
-            response_model=response_model,
-            on_delta=on_delta,
-            on_tool_call=on_tool_call,
-            on_done=on_done,
-            on_chunk=on_chunk,
-            capture_reasoning=capture_reasoning,
-            on_reasoning=on_reasoning,
-        ):
-            yield text
-
-    def _prepare_request_context(
-        self,
-        messages: List[Message] | Messages,
-        *,
-        temperature: float,
-        top_p: float,
-        reasoning_level: Optional[str | int],
-        tools: Optional[List[ToolSpec]],
-        tool_choice: Any,
-        previous_response: Optional[ChatResponse],
-        json_schema: Optional[dict],
-        response_model: Optional[Any],
-    ) -> tuple[Any, float, float, Optional[str]]:
-        # Mistral Chat Completions is stateless.  Conversation history is
-        # represented by ``messages``; match the Anthropic and Google adapters
-        # by accepting the common argument without serializing it.
-        _ = previous_response
-        temperature = self._validate_parameter("temperature", temperature, 0, 1.5)
-        top_p = self._validate_parameter("top_p", top_p, 0, 1)
-        request_context = self._prepare_chat_request(
-            messages,
-            tools,
-            tool_choice,
-            json_schema,
-            response_model,
-        )
-        if request_context.effective_schema is not None:
-            request_context = replace(
-                request_context,
-                effective_schema=validate_core_portable_schema(
-                    request_context.effective_schema,
-                    provider="mistral",
-                ),
-            )
-        reasoning_effort = self._resolve_reasoning_effort(reasoning_level)
-        return request_context, temperature, top_p, reasoning_effort
-
-    def _build_request_payload(
-        self,
-        request_context: Any,
-        *,
-        max_tokens: Optional[int],
-        temperature: float,
-        top_p: float,
-        reasoning_effort: Optional[str],
-        tools: Optional[List[ToolSpec]],
-        parallel_tool_calls: Optional[bool],
     ) -> dict[str, Any]:
-        return self._build_payload(
-            messages=request_context.normalized_messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            reasoning_effort=reasoning_effort,
-            tools=tools,
-            tool_choice=request_context.normalized_tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            json_schema=request_context.effective_schema,
+        params = super()._build_chat_params(
+            normalized_messages=normalized_messages, use_responses_api=use_responses_api,
+            max_tokens=max_tokens, temperature=temperature, top_p=top_p,
+            reasoning_level=reasoning_level, tools=tools,
+            normalized_tool_choice=normalized_tool_choice,
+            parallel_tool_calls=parallel_tool_calls, previous_response=previous_response,
+            effective_schema=effective_schema, capture_reasoning=capture_reasoning,
         )
+        if use_responses_api and parallel_tool_calls is not None:
+            params["parallel_tool_calls"] = parallel_tool_calls
+        return params
+
+    def _build_stream_params(
+        self, *, normalized_messages: Messages, use_responses_api: bool,
+        max_tokens: Optional[int], temperature: float, top_p: float,
+        reasoning_level: Optional[str | int], tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str], parallel_tool_calls: Optional[bool],
+        previous_response: Optional[ChatResponse], effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> dict[str, Any]:
+        params = super()._build_stream_params(
+            normalized_messages=normalized_messages, use_responses_api=use_responses_api,
+            max_tokens=max_tokens, temperature=temperature, top_p=top_p,
+            reasoning_level=reasoning_level, tools=tools,
+            normalized_tool_choice=normalized_tool_choice,
+            parallel_tool_calls=parallel_tool_calls, previous_response=previous_response,
+            effective_schema=effective_schema, capture_reasoning=capture_reasoning,
+        )
+        if use_responses_api and parallel_tool_calls is not None:
+            params["parallel_tool_calls"] = parallel_tool_calls
+        return params
+
+    def _normalize_responses_response(
+        self, response: dict[str, Any], *, capture_reasoning: bool
+    ) -> ChatResponse:
+        """Retain Mistral's established reported-total and cache validation."""
+        chat_response = super()._normalize_responses_response(
+            response, capture_reasoning=capture_reasoning
+        )
+        compatible_usage = chat_response.usage
+        native_usage = self._parse_responses_usage(response.get("usage"))
+        if native_usage is not None and compatible_usage is not None:
+            if not getattr(compatible_usage, "_compatible_cache_usage_valid", True):
+                native_usage._compatible_cache_usage_valid = False
+        chat_response.usage = native_usage
+        status = response.get("status")
+        if status == "incomplete":
+            details = response.get("incomplete_details")
+            reason = details.get("reason") if isinstance(details, Mapping) else None
+            chat_response.finish_reason = "length" if reason == "max_output_tokens" else "incomplete"
+            chat_response.incomplete_reason = chat_response.finish_reason
+        else:
+            output = response.get("output")
+            has_tool_call = isinstance(output, list) and any(
+                isinstance(item, Mapping) and item.get("type") in {"function_call", "tool_call"}
+                for item in output
+            )
+            chat_response.finish_reason = (
+                "content_filter" if chat_response.refusal else
+                "tool_calls" if has_tool_call else "stop"
+            )
+        return chat_response
+
+    @staticmethod
+    def _parse_responses_usage(value: object) -> Optional[Usage]:
+        if not isinstance(value, Mapping):
+            return None
+        input_tokens = _token_count(value.get("input_tokens"))
+        output_tokens = _token_count(value.get("output_tokens"))
+        total_tokens = _token_count(value.get("total_tokens"))
+        details = value.get("input_tokens_details")
+        if details is not None and not isinstance(details, Mapping):
+            raise LLMAPIClientError(detail="Mistral input_tokens_details must be an object")
+        cached_tokens = None
+        if isinstance(details, Mapping) and "cached_tokens" in details:
+            cached_tokens = _token_count(details.get("cached_tokens"))
+            if cached_tokens is None:
+                raise LLMAPIClientError(detail="Mistral cached_tokens must be a non-negative integer")
+        if total_tokens is None and input_tokens is not None and output_tokens is not None:
+            total_tokens = input_tokens + output_tokens
+        return Usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
+        )
+
+    @staticmethod
+    def _normalize_stream_usage(
+        raw_usage: object,
+        *,
+        input_field: str,
+        output_field: str,
+    ) -> Optional[Usage]:
+        """Use native Responses accounting for event and completed usage alike."""
+        usage = MistralAdapter._parse_responses_usage(raw_usage)
+        if usage is not None and all(
+            value is None
+            for value in (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.total_tokens,
+                usage.cached_tokens,
+                usage.cache_write_tokens,
+            )
+        ):
+            return None
+        return usage
 
     def _prepare_document_messages(
-        self,
-        messages: List[Message] | Messages,
-        timeout_s: Optional[float],
+        self, messages: List[Message] | Messages, timeout_s: Optional[float]
     ) -> documents.PreparedDocuments:
         return documents.prepare_document_messages(self, messages, timeout_s)
+
+    async def _prepare_document_messages_async(
+        self, messages: List[Message] | Messages, timeout_s: Optional[float]
+    ) -> documents.PreparedDocuments:
+        return await documents.prepare_document_messages_async(self, messages, timeout_s)
+
+    def _post_ocr_payload(
+        self, payload: dict[str, Any], timeout_s: Optional[float]
+    ) -> dict[str, Any]:
+        return self._create_sync_client().ocr(
+            headers=self._sync_client._headers(),
+            payload=payload,
+            timeout_s=timeout_s,
+            http_error_handler=self._handle_http_error,
+        )
+
+    async def _apost_ocr_payload(
+        self, payload: dict[str, Any], timeout_s: Optional[float]
+    ) -> dict[str, Any]:
+        return await self._create_async_client().ocr(
+            headers=self._async_client._headers(),
+            payload=payload,
+            timeout_s=timeout_s,
+            http_error_handler=self._handle_http_error,
+        )
+
+    def _post_payload(
+        self, payload: dict[str, Any], timeout_s: Optional[float]
+    ) -> dict[str, Any]:
+        """Retain the native full-resource JSON submission compatibility hook."""
+        client = self._create_sync_client()
+        return client.chat(
+            endpoint=self.endpoint, headers=client._headers(), payload=payload,
+            timeout_s=timeout_s, http_error_handler=self._handle_http_error,
+        )
+
+    async def _apost_payload(
+        self, payload: dict[str, Any], timeout_s: Optional[float]
+    ) -> dict[str, Any]:
+        """Retain the native async full-resource JSON submission compatibility hook."""
+        client = self._create_async_client()
+        return await client.chat(
+            endpoint=self.endpoint, headers=client._headers(), payload=payload,
+            timeout_s=timeout_s, http_error_handler=self._handle_http_error,
+        )
+
+    def _stream_payload(
+        self, payload: dict[str, Any], timeout_s: Optional[float]
+    ) -> Iterator[SSEEvent]:
+        """Retain the native full-resource synchronous event submission hook."""
+        client = self._create_sync_client()
+        stream_payload = dict(payload)
+        stream_payload["stream"] = True
+        return client.stream_chat(
+            endpoint=self.endpoint, headers=client._headers(), payload=stream_payload,
+            timeout_s=timeout_s, http_error_handler=self._handle_http_error,
+            stream_error_handler=self._handle_stream_error,
+        )
+
+    def _astream_payload(
+        self, payload: dict[str, Any], timeout_s: Optional[float]
+    ) -> AsyncIterator[SSEEvent]:
+        """Retain the native full-resource asynchronous event submission hook."""
+        client = self._create_async_client()
+        stream_payload = dict(payload)
+        stream_payload["stream"] = True
+        return client.stream_chat(
+            endpoint=self.endpoint, headers=client._headers(), payload=stream_payload,
+            timeout_s=timeout_s, http_error_handler=self._handle_http_error,
+            stream_error_handler=self._handle_stream_error,
+        )
 
     def _ocr_meter(self) -> Optional[MeteredOperationSpec]:
         meter = resolve_metered_operation_spec(
@@ -501,739 +316,189 @@ class MistralAdapter(LLMAdapterBase):
             return None
         return meter
 
-    async def _prepare_document_messages_async(
-        self,
-        messages: List[Message] | Messages,
-        timeout_s: Optional[float],
-    ) -> documents.PreparedDocuments:
-        return await documents.prepare_document_messages_async(self, messages, timeout_s)
-
     @staticmethod
     def _apply_ocr_costs(
-        chat_response: ChatResponse,
-        ocr_operations: tuple[documents.PreparedOCROperation, ...],
+        response: ChatResponse,
+        operations: tuple[documents.PreparedOCROperation, ...],
     ) -> None:
-        if not ocr_operations:
+        if not operations:
             return
-
-        accounting_complete = True
-        cost_breakdown: list[CostLineItem] = []
-        for operation in ocr_operations:
+        complete = True
+        costs: list[CostLineItem] = []
+        for operation in operations:
             if operation.pages_processed is None or operation.meter is None:
-                accounting_complete = False
+                complete = False
                 continue
-            cost_breakdown.append(
-                CostLineItem(
-                    operation=operation.meter.name,
-                    model=operation.model,
-                    unit=operation.meter.unit,
-                    quantity=operation.pages_processed,
-                    rate=operation.meter.rate,
-                    currency=operation.meter.currency,
-                )
-            )
+            costs.append(CostLineItem(
+                operation=operation.meter.name,
+                model=operation.model,
+                unit=operation.meter.unit,
+                quantity=operation.pages_processed,
+                rate=operation.meter.rate,
+                currency=operation.meter.currency,
+            ))
+        response.apply_cost_breakdown(costs, accounting_complete=complete)
 
-        chat_response.apply_cost_breakdown(
-            cost_breakdown,
-            accounting_complete=accounting_complete,
+    def _apply_response_pricing(self, chat_response: ChatResponse) -> None:
+        """Retain native Base pricing errors and tier-boundary behavior."""
+        LLMAdapterBase._apply_response_pricing(self, chat_response)
+
+    def chat(self, messages: List[Message] | Messages, max_tokens: Optional[int] = None,
+             temperature: float = 1.0, top_p: float = 1.0,
+             reasoning_level: Optional[str | int] = None, timeout_s: Optional[float] = None,
+             tools: Optional[List[ToolSpec]] = None, tool_choice: Any = None,
+             parallel_tool_calls: Optional[bool] = None,
+             previous_response: Optional[ChatResponse] = None,
+             json_schema: Optional[dict] = None, response_model: Optional[Any] = None,
+             *, capture_reasoning: bool = False) -> ChatResponse:
+        temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
+        context = self._prepare_chat_request(messages, tools, tool_choice, json_schema, response_model)
+        reasoning_level = self._resolve_protocol_reasoning_effort(reasoning_level)
+        prepared = self._prepare_document_messages(messages, timeout_s)
+        response = super().chat(
+            prepared.messages, max_tokens, temperature, top_p, reasoning_level, timeout_s,
+            tools, tool_choice, parallel_tool_calls, previous_response, json_schema,
+            response_model, capture_reasoning=capture_reasoning,
         )
+        _ = context
+        self._apply_ocr_costs(response, prepared.ocr_operations)
+        return response
 
-    def _finalize_ocr_chat_response(
-        self,
-        chat_response: ChatResponse,
-        *,
-        effective_schema: Optional[dict],
-        response_model: Optional[Any],
-        ocr_operations: tuple[documents.PreparedOCROperation, ...],
-    ) -> ChatResponse:
-        chat_response = self._finalize_chat_response(
-            chat_response,
-            effective_schema=effective_schema,
-            response_model=response_model,
+    async def achat(self, messages: List[Message] | Messages, max_tokens: Optional[int] = None,
+                    temperature: float = 1.0, top_p: float = 1.0,
+                    reasoning_level: Optional[str | int] = None,
+                    timeout_s: Optional[float] = None, tools: Optional[List[ToolSpec]] = None,
+                    tool_choice: Any = None, parallel_tool_calls: Optional[bool] = None,
+                    previous_response: Optional[ChatResponse] = None,
+                    json_schema: Optional[dict] = None, response_model: Optional[Any] = None,
+                    *, capture_reasoning: bool = False) -> ChatResponse:
+        temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
+        context = self._prepare_chat_request(messages, tools, tool_choice, json_schema, response_model)
+        reasoning_level = self._resolve_protocol_reasoning_effort(reasoning_level)
+        prepared = await self._prepare_document_messages_async(messages, timeout_s)
+        response = await super().achat(
+            prepared.messages, max_tokens, temperature, top_p, reasoning_level, timeout_s,
+            tools, tool_choice, parallel_tool_calls, previous_response, json_schema,
+            response_model, capture_reasoning=capture_reasoning,
         )
-        self._apply_ocr_costs(chat_response, ocr_operations)
-        return chat_response
+        _ = context
+        self._apply_ocr_costs(response, prepared.ocr_operations)
+        return response
 
-    def _new_stream_state(
-        self,
-        *,
-        buffer_chars: Optional[int],
-        capture_reasoning: bool,
-    ) -> _MistralStreamState:
-        return _MistralStreamState(
-            chunk_buffer=StreamChunkBuffer(buffer_chars),
-            usage_tracker=StreamUsageTracker(),
-            reasoning_collector=(
-                StreamReasoningCollector() if capture_reasoning else None
-            ),
+    def stream_chat(
+        self, messages: List[Message] | Messages, max_tokens: Optional[int] = None,
+        temperature: float = 1.0, top_p: float = 1.0,
+        reasoning_level: Optional[str | int] = None, timeout_s: Optional[float] = None,
+        tools: Optional[List[ToolSpec]] = None, tool_choice: Any = None,
+        parallel_tool_calls: Optional[bool] = None,
+        previous_response: Optional[ChatResponse] = None, json_schema: Optional[dict] = None,
+        response_model: Optional[Any] = None, on_delta: Optional[OnDelta] = None,
+        on_tool_call: Optional[OnToolCall] = None, on_done: Optional[OnDone] = None,
+        buffer_chars: Optional[int] = None, on_chunk: Optional[OnChunk] = None, *,
+        capture_reasoning: bool = False, on_reasoning: Optional[OnReasoning] = None,
+    ) -> Iterator[str]:
+        temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
+        context = self._prepare_chat_request(messages, tools, tool_choice, json_schema, response_model)
+        reasoning_level = self._resolve_protocol_reasoning_effort(reasoning_level)
+        state = _ResponsesStreamState(
+            chunk_buffer=StreamChunkBuffer(buffer_chars), usage_tracker=StreamUsageTracker(),
+            reasoning_collector=StreamReasoningCollector() if capture_reasoning else None,
             reasoning_response=ChatResponse() if capture_reasoning else None,
         )
-
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-    async def _apost_payload(
-        self,
-        payload: dict[str, Any],
-        timeout_s: Optional[float],
-    ) -> dict[str, Any]:
-        return await self._async_client.chat(
-            endpoint=self.endpoint,
-            headers=self._headers(),
-            payload=payload,
-            timeout_s=timeout_s,
-            http_error_handler=self._handle_http_error,
+        prepared = self._prepare_document_messages(messages, timeout_s)
+        context = replace(context, normalized_messages=prepared.messages)
+        client = self._create_sync_client()
+        params = self._build_stream_params(
+            normalized_messages=context.normalized_messages, use_responses_api=True,
+            max_tokens=max_tokens, temperature=temperature, top_p=top_p,
+            reasoning_level=reasoning_level, tools=tools,
+            normalized_tool_choice=context.normalized_tool_choice,
+            parallel_tool_calls=parallel_tool_calls, previous_response=previous_response,
+            effective_schema=context.effective_schema, capture_reasoning=capture_reasoning,
         )
+        params["endpoint"] = self.endpoint
+        events = client.stream(timeout=timeout_s, **params)
+        def finalize_response(
+            current: _ResponsesStreamState, *, capture_reasoning: bool,
+            effective_schema: Optional[dict], response_model: Optional[Any],
+        ) -> ChatResponse:
+            response = super(MistralAdapter, self)._finalize_responses_stream(
+                current, capture_reasoning=capture_reasoning,
+                effective_schema=effective_schema, response_model=response_model,
+            )
+            self._apply_ocr_costs(response, prepared.ocr_operations)
+            return response
 
-    async def _apost_ocr_payload(
-        self,
-        payload: dict[str, Any],
-        timeout_s: Optional[float],
-    ) -> dict[str, Any]:
-        return await self._async_client.ocr(
-            headers=self._headers(),
-            payload=payload,
-            timeout_s=timeout_s,
-            http_error_handler=self._handle_http_error,
-        )
-
-    def _stream_payload(
-        self,
-        payload: dict[str, Any],
-        timeout_s: Optional[float],
-    ) -> Iterator[SSEEvent]:
-        return self._sync_client.stream_chat(
-            endpoint=self.endpoint,
-            headers=self._headers(),
-            payload=self._with_stream_options(payload),
-            timeout_s=timeout_s,
-            http_error_handler=self._handle_http_error,
-            stream_error_handler=self._handle_stream_error,
-        )
-
-    def _astream_payload(
-        self,
-        payload: dict[str, Any],
-        timeout_s: Optional[float],
-    ) -> AsyncIterator[SSEEvent]:
-        return self._async_client.stream_chat(
-            endpoint=self.endpoint,
-            headers=self._headers(),
-            payload=self._with_stream_options(payload),
-            timeout_s=timeout_s,
-            http_error_handler=self._handle_http_error,
-            stream_error_handler=self._handle_stream_error,
-        )
-
-    @staticmethod
-    def _with_stream_options(payload: Mapping[str, Any]) -> dict[str, Any]:
-        stream_payload = dict(payload)
-        stream_payload["stream"] = True
-        stream_payload["stream_options"] = {"include_usage": True}
-        return stream_payload
-
-    def _consume_stream_event(
-        self,
-        event: SSEEvent,
-        state: _MistralStreamState,
-        *,
-        on_chunk: Optional[OnChunk],
-        on_delta: Optional[OnDelta],
-        on_reasoning: Optional[OnReasoning],
-    ) -> Iterator[str]:
-        payload = event.data if isinstance(event.data, Mapping) else {}
-        visible_text, reasoning_text = self._consume_stream_payload(payload, state)
-        self._record_stream_reasoning(
-            state,
-            reasoning_text,
+        yield from self._run_sync_stream(
+            events, state, consume_event=self._consume_responses_stream_event,
+            finalize_response=finalize_response, effective_schema=context.effective_schema,
+            response_model=response_model, on_delta=on_delta, on_tool_call=on_tool_call,
+            on_done=on_done, on_chunk=on_chunk, capture_reasoning=capture_reasoning,
             on_reasoning=on_reasoning,
         )
-        for text in visible_text:
-            yield from self._emit_stream_chunks(
-                state.chunk_buffer.add(text),
-                on_chunk,
-                on_delta,
-            )
 
-    async def _consume_stream_event_async(
-        self,
-        event: SSEEvent,
-        state: _MistralStreamState,
-        *,
-        on_chunk: Optional[AsyncOnChunk],
-        on_delta: Optional[AsyncOnDelta],
+    async def _astream_chat(
+        self, messages: List[Message] | Messages, max_tokens: Optional[int],
+        temperature: float, top_p: float, reasoning_level: Optional[str | int],
+        timeout_s: Optional[float], tools: Optional[List[ToolSpec]], tool_choice: Any,
+        parallel_tool_calls: Optional[bool], previous_response: Optional[ChatResponse],
+        json_schema: Optional[dict], response_model: Optional[Any],
+        on_delta: Optional[AsyncOnDelta], on_tool_call: Optional[AsyncOnToolCall],
+        on_done: Optional[AsyncOnDone], buffer_chars: Optional[int],
+        on_chunk: Optional[AsyncOnChunk], *, capture_reasoning: bool,
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
-        payload = event.data if isinstance(event.data, Mapping) else {}
-        visible_text, reasoning_text = self._consume_stream_payload(payload, state)
-        await self._record_stream_reasoning_async(
-            state,
-            reasoning_text,
-            on_reasoning=on_reasoning,
+        temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
+        context = self._prepare_chat_request(messages, tools, tool_choice, json_schema, response_model)
+        reasoning_level = self._resolve_protocol_reasoning_effort(reasoning_level)
+        state = _ResponsesStreamState(
+            chunk_buffer=StreamChunkBuffer(buffer_chars), usage_tracker=StreamUsageTracker(),
+            reasoning_collector=StreamReasoningCollector() if capture_reasoning else None,
+            reasoning_response=ChatResponse() if capture_reasoning else None,
         )
-        for text in visible_text:
-            async for emitted_text in self._emit_async_stream_chunks(
-                state.chunk_buffer.add(text),
-                on_chunk,
-                on_delta,
-            ):
-                yield emitted_text
-
-    def _consume_stream_payload(
-        self,
-        payload: Mapping[str, Any],
-        state: _MistralStreamState,
-    ) -> tuple[list[str], list[str]]:
-        self._raise_stream_payload_error(payload)
-        for field in ("id", "model", "created", "usage"):
-            if field in payload:
-                state.response_metadata[field] = payload[field]
-        state.usage_tracker.record(
-            state.chunk_buffer,
-            self._parse_usage(payload.get("usage")),
+        prepared = await self._prepare_document_messages_async(messages, timeout_s)
+        context = replace(context, normalized_messages=prepared.messages)
+        client = self._create_async_client()
+        params = self._build_stream_params(
+            normalized_messages=context.normalized_messages, use_responses_api=True,
+            max_tokens=max_tokens, temperature=temperature, top_p=top_p,
+            reasoning_level=reasoning_level, tools=tools,
+            normalized_tool_choice=context.normalized_tool_choice,
+            parallel_tool_calls=parallel_tool_calls, previous_response=previous_response,
+            effective_schema=context.effective_schema, capture_reasoning=capture_reasoning,
         )
+        params["endpoint"] = self.endpoint
+        events = client.stream(timeout=timeout_s, **params)
+        def finalize_response(
+            current: _ResponsesStreamState, *, capture_reasoning: bool,
+            effective_schema: Optional[dict], response_model: Optional[Any],
+        ) -> ChatResponse:
+            response = super(MistralAdapter, self)._finalize_responses_stream(
+                current, capture_reasoning=capture_reasoning,
+                effective_schema=effective_schema, response_model=response_model,
+            )
+            self._apply_ocr_costs(response, prepared.ocr_operations)
+            return response
 
-        visible_text: list[str] = []
-        reasoning_text: list[str] = []
-        choices = payload.get("choices")
-        if not isinstance(choices, list):
-            return visible_text, reasoning_text
-
-        for choice in choices:
-            if not isinstance(choice, Mapping) or choice.get("index", 0) != 0:
-                continue
-            delta = choice.get("delta")
-            if isinstance(delta, Mapping):
-                visible, reasoning = self._parse_stream_content(delta.get("content"))
-                visible_text.extend(visible)
-                reasoning_text.extend(reasoning)
-                raw_tool_calls = delta.get("tool_calls")
-                if isinstance(raw_tool_calls, list):
-                    self._accumulate_stream_tool_calls(raw_tool_calls, state.tool_calls)
-            finish_reason = choice.get("finish_reason")
-            if isinstance(finish_reason, str):
-                state.finish_reason = finish_reason
-
-        state.text_parts.extend(visible_text)
-        return visible_text, reasoning_text
-
-    @staticmethod
-    def _parse_stream_content(value: Any) -> tuple[list[str], list[str]]:
-        if isinstance(value, str):
-            return ([value] if value else []), []
-        if isinstance(value, Mapping):
-            chunks = [value]
-        elif isinstance(value, list):
-            chunks = value
-        else:
-            return [], []
-
-        visible_text: list[str] = []
-        reasoning_text: list[str] = []
-        for chunk in chunks:
-            if not isinstance(chunk, Mapping):
-                continue
-            if chunk.get("type") == "text":
-                text = chunk.get("text")
-                if isinstance(text, str) and text:
-                    visible_text.append(text)
-                continue
-            if chunk.get("type") != "thinking":
-                continue
-            thinking = chunk.get("thinking")
-            if isinstance(thinking, str):
-                if thinking:
-                    reasoning_text.append(thinking)
-                continue
-            if not isinstance(thinking, list):
-                continue
-            for thinking_chunk in thinking:
-                if not isinstance(thinking_chunk, Mapping):
-                    continue
-                text = thinking_chunk.get("text")
-                if isinstance(text, str) and text:
-                    reasoning_text.append(text)
-        return visible_text, reasoning_text
-
-    def _record_stream_reasoning(
-        self,
-        state: _MistralStreamState,
-        reasoning_text: list[str],
-        *,
-        on_reasoning: Optional[OnReasoning],
-    ) -> None:
-        if state.reasoning_collector is None or state.reasoning_response is None:
-            return
-        for text in reasoning_text:
-            self._record_reasoning_event(
-                state.reasoning_response,
-                state.reasoning_collector,
-                text,
-                capture_reasoning=True,
-                kind="content",
+        async with self._closing_async_source(events):
+            async for text in self._run_async_stream(
+                events, state, consume_event=self._consume_responses_stream_event_async,
+                finalize_response=finalize_response, effective_schema=context.effective_schema,
+                response_model=response_model, on_delta=on_delta, on_tool_call=on_tool_call,
+                on_done=on_done, on_chunk=on_chunk, capture_reasoning=capture_reasoning,
                 on_reasoning=on_reasoning,
-            )
-
-    async def _record_stream_reasoning_async(
-        self,
-        state: _MistralStreamState,
-        reasoning_text: list[str],
-        *,
-        on_reasoning: Optional[AsyncOnReasoning],
-    ) -> None:
-        if state.reasoning_collector is None or state.reasoning_response is None:
-            return
-        for text in reasoning_text:
-            await self._record_async_reasoning_event(
-                state.reasoning_response,
-                state.reasoning_collector,
-                text,
-                capture_reasoning=True,
-                kind="content",
-                on_reasoning=on_reasoning,
-            )
-
-    @staticmethod
-    def _accumulate_stream_tool_calls(
-        raw_tool_calls: list[Any],
-        tool_calls: dict[int, dict[str, Any]],
-    ) -> None:
-        for raw_tool_call in raw_tool_calls:
-            if not isinstance(raw_tool_call, Mapping):
-                continue
-            index = raw_tool_call.get("index")
-            if not isinstance(index, int):
-                index = len(tool_calls)
-            tool_call = tool_calls.setdefault(index, {"function": {"arguments": ""}})
-            for field in ("id", "type"):
-                if raw_tool_call.get(field) is not None:
-                    tool_call[field] = raw_tool_call[field]
-            function = raw_tool_call.get("function")
-            if not isinstance(function, Mapping):
-                continue
-            target = tool_call["function"]
-            if function.get("name") is not None:
-                target["name"] = function["name"]
-            arguments = function.get("arguments")
-            if isinstance(arguments, str):
-                target["arguments"] = f"{target.get('arguments', '')}{arguments}"
-            elif isinstance(arguments, Mapping):
-                target["arguments"] = dict(arguments)
-
-    def _finalize_stream(
-        self,
-        state: _MistralStreamState,
-        *,
-        capture_reasoning: bool,
-        effective_schema: Optional[dict],
-        response_model: Optional[Any],
-    ) -> ChatResponse:
-        response_data = dict(state.response_metadata)
-        response_data["model"] = response_data.get("model") or self.model
-        message: dict[str, Any] = {"content": "".join(state.text_parts) or None}
-        if state.tool_calls:
-            message["tool_calls"] = [
-                state.tool_calls[index] for index in sorted(state.tool_calls)
-            ]
-        response_data["choices"] = [
-            {"message": message, "finish_reason": state.finish_reason}
-        ]
-        chat_response = self._parse_response(
-            response_data,
-            capture_reasoning=False,
-        )
-        chat_response = self._finalize_stream_response(
-            chat_response,
-            reasoning_collector=state.reasoning_collector,
-            effective_schema=effective_schema,
-            response_model=response_model,
-        )
-        self._apply_ocr_costs(chat_response, state.ocr_operations)
-        return chat_response
-
-    def _build_payload(
-        self,
-        *,
-        messages: Messages,
-        max_tokens: Optional[int],
-        temperature: float,
-        top_p: float,
-        reasoning_effort: Optional[str],
-        tools: Optional[List[ToolSpec]],
-        tool_choice: Optional[str],
-        parallel_tool_calls: Optional[bool],
-        json_schema: Optional[dict],
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": (
-                self.model_spec.provider_model
-                if self.model_spec is not None
-                and self.model_spec.provider_model is not None
-                else self.model
-            ),
-            "messages": self._to_mistral_messages(messages),
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-            "reasoning_effort": reasoning_effort,
-            "tools": self._map_tools(tools),
-            "tool_choice": self._map_tool_choice(tool_choice),
-            "parallel_tool_calls": parallel_tool_calls,
-        }
-        if json_schema is not None:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "response",
-                    "strict": True,
-                    "schema": json_schema,
-                },
-            }
-        return {key: value for key, value in payload.items() if value is not None}
-
-    @staticmethod
-    def _to_mistral_messages(messages: Messages) -> list[dict[str, Any]]:
-        """Convert the shared OpenAI-like message shape to Mistral's variant."""
-        serialized_messages = messages.to_openai()
-        for message in serialized_messages:
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            for part in content:
-                if not isinstance(part, dict) or part.get("type") != "image_url":
-                    continue
-                image_url = part.get("image_url")
-                if isinstance(image_url, Mapping):
-                    url = image_url.get("url")
-                    if not isinstance(url, str):
-                        raise ValueError(
-                            "Mistral image_url must contain a string URL"
-                        )
-                    part["image_url"] = url
-        return serialized_messages
-
-    def _resolve_reasoning_effort(
-        self,
-        reasoning_level: Optional[str | int],
-    ) -> Optional[str]:
-        if reasoning_level is None:
-            capability = (
-                self.model_spec.reasoning_capability
-                if self.model_spec is not None
-                else None
-            )
-            allowed_values = getattr(capability, "allowed_values", None)
-            if allowed_values:
-                return allowed_values[0]
-            return None
-        provider_value = self._resolve_reasoning_level(reasoning_level).provider_value
-        if provider_value is None:
-            return None
-        if not isinstance(provider_value, str):
-            raise TypeError("Mistral reasoning resolution must produce a string")
-        return provider_value
-
-    @staticmethod
-    def _map_tools(tools: Optional[List[ToolSpec]]) -> Optional[list[dict[str, Any]]]:
-        if not tools:
-            return None
-        result: list[dict[str, Any]] = []
-        for tool in tools:
-            function: dict[str, Any] = {
-                "name": tool.name,
-                "parameters": tool.json_schema,
-            }
-            if tool.description:
-                function["description"] = tool.description
-            result.append({"type": "function", "function": function})
-        return result
-
-    @staticmethod
-    def _map_tool_choice(tool_choice: Optional[str]) -> Any:
-        if tool_choice is None or tool_choice in {"auto", "none"}:
-            return tool_choice
-        if tool_choice == "any":
-            return "any"
-        return {"type": "function", "function": {"name": tool_choice}}
-
-    def _post_payload(
-        self,
-        payload: dict[str, Any],
-        timeout_s: Optional[float],
-    ) -> dict[str, Any]:
-        return self._sync_client.chat(
-            endpoint=self.endpoint,
-            headers=self._headers(),
-            payload=payload,
-            timeout_s=timeout_s,
-            http_error_handler=self._handle_http_error,
-        )
-
-    def _post_ocr_payload(
-        self,
-        payload: dict[str, Any],
-        timeout_s: Optional[float],
-    ) -> dict[str, Any]:
-        return self._sync_client.ocr(
-            headers=self._headers(),
-            payload=payload,
-            timeout_s=timeout_s,
-            http_error_handler=self._handle_http_error,
-        )
-
-    def _handle_stream_error(self, event: SSEEvent) -> None:
-        payload = event.data if isinstance(event.data, Mapping) else {}
-        self._raise_stream_payload_error(payload)
-        raise LLMAPIClientError(detail="Mistral returned an invalid SSE error event")
-
-    def _raise_stream_payload_error(self, payload: Mapping[str, Any]) -> None:
-        is_error = payload.get("type") == "error" or payload.get("object") == "error"
-        if not is_error:
-            return
-        error_data = payload.get("error", payload)
-        if not isinstance(error_data, Mapping):
-            error_data = {}
-        error_type = error_data.get("type") or error_data.get("code")
-        detail = error_data.get("message") or "Mistral returned an SSE error"
-        self._raise_mapped_error(
-            status_code=None,
-            error_type=str(error_type) if error_type else None,
-            detail=str(detail),
-        )
-
-    @classmethod
-    def _parse_response(
-        cls,
-        response: Mapping[str, Any],
-        *,
-        capture_reasoning: bool,
-    ) -> ChatResponse:
-        choice = ((response.get("choices") or [None])[0]) or {}
-        if not isinstance(choice, Mapping):
-            raise LLMAPIClientError(detail="Mistral response choice is malformed")
-        message = choice.get("message") or {}
-        if not isinstance(message, Mapping):
-            raise LLMAPIClientError(detail="Mistral response message is malformed")
-
-        content, reasoning_events = cls._parse_content(
-            message.get("content"),
-            capture_reasoning=capture_reasoning,
-        )
-        tool_calls = cls._parse_tool_calls(message.get("tool_calls"))
-        if content is None and not tool_calls:
-            warnings.warn("Mistral returned empty content and no tool calls.", UserWarning)
-
-        finish_reason = _as_optional_str(choice.get("finish_reason"))
-        return ChatResponse(
-            model=_as_optional_str(response.get("model")),
-            response_id=_as_optional_str(response.get("id")),
-            timestamp=_as_optional_int(response.get("created")),
-            usage=cls._parse_usage(response.get("usage")),
-            content=content,
-            tool_calls=tool_calls,
-            finish_reason=finish_reason,
-            incomplete_reason=(
-                finish_reason if finish_reason == "length" else None
-            ),
-            refusal=_as_optional_str(message.get("refusal")),
-            reasoning_events=reasoning_events,
-        )
-
-    @staticmethod
-    def _parse_usage(value: Any) -> Optional[Usage]:
-        if not isinstance(value, Mapping):
-            return None
-        input_tokens = _as_optional_non_negative_int(value.get("prompt_tokens"))
-        output_tokens = _as_optional_non_negative_int(value.get("completion_tokens"))
-        total_tokens = _as_optional_non_negative_int(value.get("total_tokens"))
-        cache_details = value.get("prompt_tokens_details")
-        if cache_details is not None and not isinstance(cache_details, Mapping):
-            raise LLMAPIClientError(
-                detail="Mistral prompt_tokens_details must be an object",
-            )
-        cached_tokens = None
-        if isinstance(cache_details, Mapping) and "cached_tokens" in cache_details:
-            cached_tokens = cache_details.get("cached_tokens")
-            if (
-                isinstance(cached_tokens, bool)
-                or not isinstance(cached_tokens, int)
-                or cached_tokens < 0
             ):
-                raise LLMAPIClientError(
-                    detail="Mistral cached_tokens must be a non-negative integer",
-                )
-        if (
-            total_tokens is None
-            and input_tokens is not None
-            and output_tokens is not None
-        ):
-            total_tokens = input_tokens + output_tokens
-        return Usage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=total_tokens,
-            cached_tokens=cached_tokens,
-        )
-
-    @classmethod
-    def _parse_content(
-        cls,
-        value: Any,
-        *,
-        capture_reasoning: bool,
-    ) -> tuple[Optional[str], list[ReasoningEvent]]:
-        if value is None:
-            return None, []
-        if isinstance(value, str):
-            return value, []
-        if not isinstance(value, list):
-            raise LLMAPIClientError(detail="Mistral response content is malformed")
-
-        text_parts: list[str] = []
-        reasoning_events: list[ReasoningEvent] = []
-        for chunk in value:
-            if not isinstance(chunk, Mapping):
-                continue
-            if chunk.get("type") == "text":
-                text = chunk.get("text")
-                if isinstance(text, str):
-                    text_parts.append(text)
-                continue
-            if chunk.get("type") == "thinking" and capture_reasoning:
-                for thinking_chunk in chunk.get("thinking") or []:
-                    if not isinstance(thinking_chunk, Mapping):
-                        continue
-                    text = thinking_chunk.get("text")
-                    if isinstance(text, str) and text:
-                        reasoning_events.append(
-                            ReasoningEvent(
-                                text=text,
-                                kind="content",
-                                index=len(reasoning_events),
-                                elapsed_s=0.0,
-                                delta_s=0.0,
-                            )
-                        )
-        return ("".join(text_parts) if text_parts else None), reasoning_events
-
-    @staticmethod
-    def _parse_tool_calls(value: Any) -> Optional[list[ToolCall]]:
-        if value is None:
-            return None
-        if not isinstance(value, list):
-            raise LLMAPIClientError(detail="Mistral response tool_calls is malformed")
-
-        tool_calls: list[ToolCall] = []
-        for raw_tool_call in value:
-            if not isinstance(raw_tool_call, Mapping):
-                raise LLMAPIClientError(detail="Mistral tool call is malformed")
-            function = raw_tool_call.get("function") or {}
-            if not isinstance(function, Mapping):
-                raise LLMAPIClientError(detail="Mistral tool function is malformed")
-            name = function.get("name")
-            if not isinstance(name, str) or not name:
-                raise InvalidToolArgumentsError(
-                    detail="Mistral tool function.name must be a non-empty string"
-                )
-            raw_arguments = function.get("arguments", "{}")
-            try:
-                if isinstance(raw_arguments, str):
-                    arguments = json.loads(raw_arguments) if raw_arguments.strip() else {}
-                elif isinstance(raw_arguments, Mapping):
-                    arguments = dict(raw_arguments)
-                else:
-                    arguments = {}
-            except (TypeError, ValueError, json.JSONDecodeError) as error:
-                raise InvalidToolArgumentsError(
-                    detail=(
-                        "Mistral tool arguments JSON parse failed for "
-                        f"tool={name!r}: {error}"
-                    )
-                ) from error
-            if not isinstance(arguments, dict):
-                raise InvalidToolArgumentsError(
-                    detail=f"Mistral tool arguments must decode to an object for tool={name!r}"
-                )
-            tool_calls.append(
-                ToolCall(
-                    name=name,
-                    arguments=arguments,
-                    call_id=_as_optional_str(raw_tool_call.get("id")),
-                )
-            )
-        return tool_calls or None
+                yield text
 
     def _handle_http_error(self, error: Any) -> None:
-        response = getattr(error, "response", None)
-        status_code = getattr(response, "status_code", None)
-        payload: Mapping[str, Any] = {}
-        if response is not None:
-            try:
-                candidate = response.json()
-                if isinstance(candidate, Mapping):
-                    payload = candidate
-            except Exception:
-                pass
-        error_data = payload.get("error", payload)
-        if not isinstance(error_data, Mapping):
-            error_data = {}
-        error_type = error_data.get("type") or error_data.get("code")
-        detail = error_data.get("message") or str(error)
-        self._raise_mapped_error(
-            status_code=status_code,
-            error_type=str(error_type) if error_type else None,
-            detail=str(detail),
-        )
+        self._sync_client._handle_http_error(error)
 
-    @staticmethod
-    def _raise_mapped_error(
-        *,
-        status_code: Optional[int],
-        error_type: Optional[str],
-        detail: str,
-    ) -> None:
-        normalized_type = (error_type or "").lower()
-        if status_code in {401, 403} or normalized_type in {
-            "authentication_error",
-            "authorization_error",
-            "invalid_api_key",
-        }:
-            raise LLMAPIAuthorizationError(detail=detail)
-        if status_code == 429 or normalized_type in {
-            "rate_limit_error",
-            "rate_limit_exceeded",
-        }:
-            raise LLMAPIRateLimitError(detail=detail)
-        if normalized_type in {
-            "context_length_exceeded",
-            "input_too_long",
-            "max_tokens_exceeded",
-        }:
-            raise LLMAPITokenLimitError(detail=detail)
-        if normalized_type in {"insufficient_quota", "usage_limit_exceeded"}:
-            raise LLMAPIUsageLimitError(detail=detail)
-        if status_code in {408, 504} or normalized_type in {"timeout", "timeout_error"}:
-            raise LLMAPITimeoutError(detail=detail)
-        if status_code is not None and 500 <= status_code < 600:
-            raise LLMAPIServerError(detail=detail)
-        raise LLMAPIClientError(detail=detail)
+    def _handle_stream_error(self, event: SSEEvent) -> None:
+        self._sync_client._handle_stream_error(event)
 
-
-def _as_optional_str(value: Any) -> Optional[str]:
-    return value if isinstance(value, str) else None
-
-
-def _as_optional_int(value: Any) -> Optional[int]:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _as_optional_non_negative_int(value: Any) -> Optional[int]:
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-        return value
-    return None
+    def _format_diagnostic(self, value: object) -> str:
+        """Redact transport diagnostics through the compatible policy."""
+        return self._format_compatible_diagnostic(value)
 
 
 __all__ = ["MistralAdapter"]

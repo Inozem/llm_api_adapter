@@ -43,13 +43,15 @@ from llm_api_adapter.llms.google.async_client import GeminiAsyncClient
 from llm_api_adapter.llms.google.sync_client import GeminiSyncClient
 from llm_api_adapter.llms.openai.async_client import OpenAIAsyncClient
 from llm_api_adapter.llms.openai.sync_client import OpenAISyncClient
-from llm_api_adapter.llms.transports import SSEEvent
+from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
 from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from llm_api_adapter_mistral.adapter import MistralAdapter
 from llm_api_adapter_mistral.plugin import PLUGIN as MISTRAL_PLUGIN
+from llm_api_adapter_mistral.clients.sync_client import MistralSyncClient
+from llm_api_adapter_mistral.clients.async_client import MistralAsyncClient
 from llm_api_adapter_xai.adapter import XAIAdapter
 from llm_api_adapter_xai.plugin import PLUGIN as XAI_PLUGIN
 from tests.fixtures.structured_output import (
@@ -126,8 +128,14 @@ def _mistral_response(
     model: str,
 ) -> dict[str, Any]:
     return {
+        "object": "response",
+        "id": "resp_mistral_test",
         "model": model,
-        "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+        "status": "completed",
+        "output": [{
+            "type": "message", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": content}] if content else [],
+        }],
     }
 
 
@@ -262,10 +270,10 @@ def _sync_payload_mock(
             new=transport,
         )
     if case.provider == "mistral":
-        transport = Mock(return_value=response)
+        transport = Mock(return_value=JSONResponse(response))
         return transport, patch.object(
-            MistralAdapter,
-            "_post_payload",
+            facade.adapter._sync_client.__class__,
+            "_send_request",
             new=transport,
         )
     transport = Mock(return_value=response)
@@ -277,7 +285,7 @@ def _sync_payload(case: PortableProfileCase, transport: Mock) -> dict[str, Any]:
     if case.sync_client_class is not None:
         return transport.call_args.args[1]
     if case.provider == "mistral":
-        return transport.call_args.args[0]
+        return transport.call_args.args[1]
     return {
         "model": transport.call_args.kwargs["model"],
         **transport.call_args.kwargs,
@@ -298,7 +306,11 @@ def _async_payload_mock(
         )
     transport = AsyncMock(return_value=response)
     if case.provider == "mistral":
-        facade.adapter._apost_payload = transport
+        return transport, patch.object(
+            facade.adapter._async_client.__class__,
+            "_get_async_request",
+            new=transport,
+        )
     else:
         facade.adapter._async_client.create = transport
     return transport, None
@@ -308,7 +320,7 @@ def _async_payload(case: PortableProfileCase, transport: AsyncMock) -> dict[str,
     if case.async_client_class is not None:
         return transport.call_args.args[1]
     if case.provider == "mistral":
-        return transport.call_args.args[0]
+        return transport.call_args.kwargs["payload"]
     return {
         "model": transport.call_args.kwargs["model"],
         **transport.call_args.kwargs,
@@ -326,7 +338,7 @@ def _schema_from_payload(
     if organization == "google":
         return payload["generationConfig"]["responseJsonSchema"]
     if organization == "mistral":
-        return payload["response_format"]["json_schema"]["schema"]
+        return payload["text"]["format"]["schema"]
     raise AssertionError(f"No schema path for {organization!r}")
 
 
@@ -350,6 +362,11 @@ def _assert_native_format(
         assert payload["output_config"]["format"]["type"] == "json_schema"
     elif organization == "google":
         assert payload["generationConfig"]["responseMimeType"] == "application/json"
+    elif organization == "mistral":
+        fmt = payload["text"]["format"]
+        assert fmt["type"] == "json_schema"
+        assert fmt["name"] == "response"
+        assert fmt["strict"] is True
     else:
         fmt = payload["response_format"]
         assert fmt["type"] == "json_schema"
@@ -513,14 +530,10 @@ def _stream_events(case: PortableProfileCase, content: str) -> list[SSEEvent]:
             data=_google_response(content),
         )]
     if case.provider == "mistral":
-        return [SSEEvent(
-            event=None,
-            data={"choices": [{
-                "index": 0,
-                "delta": {"content": content},
-                "finish_reason": "stop",
-            }]},
-        )]
+        return [
+            SSEEvent(event="response.output_text.delta", data={"delta": content}),
+            SSEEvent(event="response.completed", data={"response": _response(case, content)}),
+        ]
     return [
         SSEEvent(event="response.output_text.delta", data={"delta": content}),
         SSEEvent(
@@ -539,7 +552,7 @@ def _install_sync_stream(
     if case.sync_client_class is not None:
         return patch.object(case.sync_client_class, "stream", new=stream)
     if case.provider == "mistral":
-        facade.adapter._stream_payload = stream
+        return patch.object(facade.adapter._sync_client.__class__, "_stream_request", new=stream)
     else:
         facade.adapter._client.stream = stream
     return None
@@ -571,13 +584,19 @@ def _mistral_ocr_response(pages_processed: int | None) -> dict[str, Any]:
 
 def _mistral_metered_chat_response() -> dict[str, Any]:
     return {
+        "object": "response",
+        "id": "resp_mistral_metered",
+        "status": "completed",
         "model": "mistral-small-2603",
-        "choices": [{"message": {"content": "Summary."}}],
+        "output": [{
+            "type": "message", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": "Summary."}],
+        }],
         "usage": {
-            "prompt_tokens": 2,
-            "completion_tokens": 3,
+            "input_tokens": 2,
+            "output_tokens": 3,
             "total_tokens": 5,
-            "prompt_tokens_details": {"cached_tokens": 0},
+            "input_tokens_details": {"cached_tokens": 0},
         },
     }
 
@@ -585,22 +604,18 @@ def _mistral_metered_chat_response() -> dict[str, Any]:
 def _mistral_metered_stream_events() -> list[SSEEvent]:
     return [
         SSEEvent(
-            event=None,
+            event="response.output_text.delta",
             data={
-                "model": "mistral-small-2603",
-                "choices": [{
-                    "index": 0,
-                    "delta": {"content": "Summary."},
-                    "finish_reason": "stop",
-                }],
+                "delta": "Summary.",
                 "usage": {
-                    "prompt_tokens": 2,
-                    "completion_tokens": 3,
+                    "input_tokens": 2,
+                    "output_tokens": 3,
                     "total_tokens": 5,
-                    "prompt_tokens_details": {"cached_tokens": 0},
+                    "input_tokens_details": {"cached_tokens": 0},
                 },
             },
-        )
+        ),
+        SSEEvent(event="response.completed", data={"response": _mistral_metered_chat_response()}),
     ]
 
 
@@ -645,7 +660,7 @@ def _install_async_stream(
     if case.async_client_class is not None:
         return patch.object(case.async_client_class, "stream", new=stream)
     if case.provider == "mistral":
-        facade.adapter._astream_payload = stream
+        return patch.object(facade.adapter._async_client.__class__, "_get_async_stream_request", new=stream)
     else:
         facade.adapter._async_client.stream = stream
     return None
@@ -710,8 +725,8 @@ async def test_portable_profile_streams_finalize_through_on_done_in_both_modes(
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_mistral_metered_ocr_pricing_matches_across_facade_modes(
-    installed_organization_plugins,
-):
+    installed_organization_plugins: RegistrySpec,
+) -> None:
     sync_facade = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-small-2603",
@@ -720,10 +735,9 @@ async def test_mistral_metered_ocr_pricing_matches_across_facade_modes(
     sync_facade.adapter._post_ocr_payload = Mock(
         return_value=_mistral_ocr_response(2)
     )
-    sync_facade.adapter._post_payload = Mock(
-        return_value=_mistral_metered_chat_response()
-    )
-    sync_response = sync_facade.chat(_mistral_metered_messages())
+    sync_request = Mock(return_value=JSONResponse(_mistral_metered_chat_response()))
+    with patch.object(MistralSyncClient, "_send_request", new=sync_request):
+        sync_response = sync_facade.chat(_mistral_metered_messages())
 
     async_facade = UniversalLLMAPIAdapter(
         organization="mistral",
@@ -733,10 +747,9 @@ async def test_mistral_metered_ocr_pricing_matches_across_facade_modes(
     async_facade.adapter._apost_ocr_payload = AsyncMock(
         return_value=_mistral_ocr_response(2)
     )
-    async_facade.adapter._apost_payload = AsyncMock(
-        return_value=_mistral_metered_chat_response()
-    )
-    async_response = await async_facade.achat(_mistral_metered_messages())
+    async_request = AsyncMock(return_value=_mistral_metered_chat_response())
+    with patch.object(MistralAsyncClient, "_get_async_request", new=async_request):
+        async_response = await async_facade.achat(_mistral_metered_messages())
 
     sync_stream_facade = UniversalLLMAPIAdapter(
         organization="mistral",
@@ -746,16 +759,12 @@ async def test_mistral_metered_ocr_pricing_matches_across_facade_modes(
     sync_stream_facade.adapter._post_ocr_payload = Mock(
         return_value=_mistral_ocr_response(2)
     )
-    sync_stream_facade.adapter._stream_payload = Mock(
-        return_value=iter(_mistral_metered_stream_events())
-    )
+    sync_stream = Mock(return_value=iter(_mistral_metered_stream_events()))
     sync_completed: list[Any] = []
-    assert list(
-        sync_stream_facade.stream_chat(
-            _mistral_metered_messages(),
-            on_done=sync_completed.append,
-        )
-    ) == ["Summary."]
+    with patch.object(MistralSyncClient, "_stream_request", new=sync_stream):
+        assert list(sync_stream_facade.stream_chat(
+            _mistral_metered_messages(), on_done=sync_completed.append,
+        )) == ["Summary."]
 
     async_stream_facade = UniversalLLMAPIAdapter(
         organization="mistral",
@@ -765,17 +774,12 @@ async def test_mistral_metered_ocr_pricing_matches_across_facade_modes(
     async_stream_facade.adapter._apost_ocr_payload = AsyncMock(
         return_value=_mistral_ocr_response(2)
     )
-    async_stream_facade.adapter._astream_payload = Mock(
-        return_value=_as_async_iter(_mistral_metered_stream_events())
-    )
+    async_stream = Mock(return_value=_as_async_iter(_mistral_metered_stream_events()))
     async_completed: list[Any] = []
-    assert [
-        text
-        async for text in async_stream_facade.astream_chat(
-            _mistral_metered_messages(),
-            on_done=async_completed.append,
-        )
-    ] == ["Summary."]
+    with patch.object(MistralAsyncClient, "_get_async_stream_request", new=async_stream):
+        assert [text async for text in async_stream_facade.astream_chat(
+            _mistral_metered_messages(), on_done=async_completed.append,
+        )] == ["Summary."]
 
     for response in (
         sync_response,
@@ -788,8 +792,8 @@ async def test_mistral_metered_ocr_pricing_matches_across_facade_modes(
 
 @pytest.mark.unit
 def test_mistral_zero_page_ocr_cost_is_a_known_zero_line_item(
-    installed_organization_plugins,
-):
+    installed_organization_plugins: RegistrySpec,
+) -> None:
     facade = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-small-2603",
@@ -798,19 +802,17 @@ def test_mistral_zero_page_ocr_cost_is_a_known_zero_line_item(
     facade.adapter._post_ocr_payload = Mock(
         return_value=_mistral_ocr_response(0)
     )
-    facade.adapter._post_payload = Mock(
-        return_value=_mistral_metered_chat_response()
-    )
-
-    response = facade.chat(_mistral_metered_messages())
+    request = Mock(return_value=JSONResponse(_mistral_metered_chat_response()))
+    with patch.object(MistralSyncClient, "_send_request", new=request):
+        response = facade.chat(_mistral_metered_messages())
 
     _assert_mistral_metered_ocr_cost(response, quantity=0.0)
 
 
 @pytest.mark.unit
 def test_mistral_incomplete_ocr_usage_preserves_known_cost_components(
-    installed_organization_plugins,
-):
+    installed_organization_plugins: RegistrySpec,
+) -> None:
     facade = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-small-2603",
@@ -822,12 +824,10 @@ def test_mistral_incomplete_ocr_usage_preserves_known_cost_components(
             _mistral_ocr_response(None),
         ]
     )
-    facade.adapter._post_payload = Mock(
-        return_value=_mistral_metered_chat_response()
-    )
-
-    response = facade.chat(
-        [
+    request = Mock(return_value=JSONResponse(_mistral_metered_chat_response()))
+    with patch.object(MistralSyncClient, "_send_request", new=request):
+        response = facade.chat(
+            [
             UserMessage(
                 "Summarize these documents.",
                 files=[
@@ -835,8 +835,8 @@ def test_mistral_incomplete_ocr_usage_preserves_known_cost_components(
                     DocumentPart(url="https://example.com/unknown.pdf"),
                 ],
             )
-        ]
-    )
+            ]
+        )
 
     _assert_mistral_metered_ocr_cost(
         response,
@@ -887,13 +887,9 @@ def _terminal_response(
         if case.provider == "mistral":
             return {
                 **_response(case, ""),
-                "choices": [{
-                    "message": {
-                        "content": None,
-                        "refusal": "I can't help with that.",
-                    },
-                    "finish_reason": "stop",
-                }],
+                "output": [{"type": "message", "role": "assistant",
+                            "content": [{"type": "refusal",
+                                         "refusal": "I can't help with that."}]}],
             }
         return {
             **_xai_response("unused"),
@@ -929,10 +925,8 @@ def _terminal_response(
     if case.provider == "mistral":
         return {
             **_response(case, '{"answer": '),
-            "choices": [{
-                "message": {"content": '{"answer": '},
-                "finish_reason": "length",
-            }],
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
         }
     return {
         **_xai_response('{"answer": '),

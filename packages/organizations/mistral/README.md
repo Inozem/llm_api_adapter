@@ -4,22 +4,20 @@ An optional Mistral organization package for
 [LLM API Adapter](https://github.com/Inozem/llm_api_adapter/), a Python SDK with
 one shared interface for calling LLM APIs.
 
-Uses the official Mistral API directly.
-
 ## Installation
 
-Install through the core package extra (recommended):
+Install the package through the Core extra:
 
 ```bash
 pip install "llm-api-adapter[mistral]"
 ```
 
-Direct installation remains supported when the core package is already managed
-separately:
+Direct installation is also available with `pip install llm-api-adapter-mistral`.
 
-```bash
-pip install llm-api-adapter-mistral
-```
+Synchronous calls use `requests` by default. Install the `[httpx]` extra and set
+`transport="httpx"` to use HTTPX for synchronous calls. Install the `[async]`
+extra for asynchronous methods. The package manifest lists Core constraints and
+extras in [`pyproject.toml`](pyproject.toml).
 
 ## Quick start
 
@@ -39,149 +37,54 @@ response = adapter.chat(messages=[UserMessage("Explain retrieval-augmented gener
 print(response.content)
 ```
 
-## Capabilities
+Generation now defaults to `https://api.mistral.ai/v1/responses`, replacing the
+previous `https://api.mistral.ai/v1/chat/completions` default. To customize the
+native `MistralAdapter`, pass the complete Responses resource URL as `endpoint`.
+The adapter uses that URL as supplied.
 
-- Chat, tool calling, structured JSON output, and image input.
-- Synchronous and asynchronous chat and streaming.
-- PDF URLs and bytes through Mistral OCR.
-- Tool loops use explicit message history: append the assistant tool calls and
-  `ToolMessage` results before the next request. The `previous_response` parameter
-  is accepted for the shared API contract but is not sent to Mistral, whose Chat
-  Completions API is stateless.
+## Supported models and routing
 
-See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
-for the shared API contract and examples.
-
-Sync uses `requests` by default; install `[httpx]` and set `transport="httpx"`
-to select HTTPX. Install `[async]` for async methods, or combine extras with
-`pip install "llm-api-adapter[mistral,async,httpx]"`.
-
-## Structured-output portability
-
-The package uses the Core portable profile for `json_schema` and Pydantic
-`response_model`. See the main [Structured Output guide](https://github.com/Inozem/llm_api_adapter/#structured-output)
-for schema validation, parsed results, refusal, and incomplete responses.
-
-## Supported models
-
-- `mistral-large-4` (Public Preview)
-- `mistral-small-2603`
-- `mistral-medium-3-5`
-- `mistral-large-2512`
-- `glm-5.3-flash` through Mistral
-- `deepseek-flash` through Mistral (Public Preview)
-
-For Mistral's native models listed above, the output limit is an upper bound
-under the shared context budget; Mistral publishes no independent generation
-maximum.
-
-`mistral-large-2512` has no reasoning control: a supplied `reasoning_level`
-emits a warning and is not sent to Mistral.
-
-The [Mistral registry](src/llm_api_adapter_mistral/registry/organizations/mistral.json)
-records capabilities, reasoning levels, request rules, limits, tariffs, and exceptions.
-
-## Models from other developers
-
-Both routes use the Mistral package and `MISTRAL_API_KEY`. Set
-`service_provider="mistral"` and choose `organization` and `model` from the table:
-
-| `organization` | `model` | Mistral API model ID |
+| Model | `organization` | `service_provider` |
 | --- | --- | --- |
-| `zai` | `glm-5.3-flash` | `zai-glm-5-3-flash` |
-| `deepseek` | `deepseek-flash` | `deepseek-v4-1-flash-1017` |
+| `mistral-large-4` (Public Preview) | `mistral` | default |
+| `mistral-small-2603` | `mistral` | default |
+| `mistral-medium-3-5` | `mistral` | default |
+| `mistral-large-2512` | `mistral` | default |
+| `glm-5.3-flash` | `zai` | `mistral` |
+| `deepseek-flash` (Public Preview) | `deepseek` | `mistral` |
 
-```python
-import os
-from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
+For hosted GLM and DeepSeek, use the developer's `organization` with
+`service_provider="mistral"` and your Mistral API key. Omitting
+`service_provider` selects the developer's direct integration. Native Mistral
+profiles, reasoning behavior, limits, and tariffs are listed in the
+[Mistral registry](src/llm_api_adapter_mistral/registry/organizations/mistral.json).
 
-adapter = UniversalLLMAPIAdapter(
-    organization="zai",
-    service_provider="mistral",
-    model="glm-5.3-flash",
-    api_key=os.environ["MISTRAL_API_KEY"],
-)
-```
+## Supported behavior
 
-The mappings above use fixed Mistral IDs and Mistral-owned profiles. Omitting
-`service_provider` selects the developer's direct integration and its package and key.
+The package supports `chat`, `achat`, `stream_chat`, and `astream_chat`.
+Features include portable JSON Schema and Pydantic `response_model` output,
+application tool calls, reasoning controls, opt-in reasoning capture, images,
+and PDFs. The SDK returns tool calls for the application to handle. For a tool
+loop, include the assistant tool calls and matching `ToolMessage` results in
+message history. Set `capture_reasoning=True` to collect reasoning returned by
+the provider. Captured reasoning remains separate from visible text.
 
-GLM Flash cannot disable reasoning: `reasoning_level="none"` warns and uses
-its registered minimum effort. Hosted output profiles conservatively interpret
-Mistral's published 128k label. Other model values are recorded in the registry above.
+Pass the full message history on every request. Mistral ignores
+`previous_response`. Reasoning behavior and supported values vary by model and
+are recorded in the registry.
+
+See the shared [API guide](https://github.com/Inozem/llm_api_adapter/#readme),
+[structured output guide](https://github.com/Inozem/llm_api_adapter/#structured-output),
+and [usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
 
 ## PDF input
 
-`DocumentPart` supports PDF URLs and bytes. The selected Mistral chat model
-does not receive PDF `DocumentPart` directly; the package OCRs each PDF first
-with Mistral OCR 4.1 (`mistral-ocr-4-1`) and supplies the resulting Markdown to
-the selected chat model. This creates a separate OCR API request. The adapter
-reads `usage_info.pages_processed` from each OCR response and records an `ocr`
-page line in `ChatResponse.cost_breakdown` at the registered standard rate.
+`DocumentPart` accepts PDF URLs, bytes, and data URLs. The package uses the
+separate Mistral OCR operation with model `mistral-ocr-4-1`. Reported page
+charges appear in `response.cost_breakdown` at the registry rate.
 
-For every currently registered Mistral model, PDF URLs and bytes are declared
-`pass` exceptions: the OCR adaptation preserves the public PDF contract.
-
-```python
-from llm_api_adapter.models.messages.chat_message import UserMessage
-from llm_api_adapter.models.messages.file_parts import DocumentPart
-
-# `adapter` is configured as shown in Quick start.
-response = adapter.chat(
-    messages=[
-        UserMessage(
-            "Compare these reports.",
-            files=[
-                DocumentPart(url="https://example.com/report-a.pdf"),
-                DocumentPart(url="https://example.com/report-b.pdf"),
-            ],
-        )
-    ]
-)
-
-print(response.content)
-ocr_line_items = [
-    item
-    for item in response.cost_breakdown or ()
-    if item.operation == "ocr"
-]
-if ocr_line_items:
-    for document_number, item in enumerate(ocr_line_items, start=1):
-        print(f"PDF {document_number}: {item.cost} {item.currency}")
-    ocr_cost = sum(item.cost for item in ocr_line_items)
-    print(f"All PDFs: {ocr_cost} {ocr_line_items[0].currency}")
-```
-
-Each PDF produces an `ocr` line item. `ocr_cost` is the OCR-only estimate for
-all PDFs; `response.cost_total`, when available, includes both the selected
-chat model's token cost and OCR cost.
-
-`ChatResponse.usage`, `cost_input`, and `cost_output` remain the selected chat
-model's token values. `cost_total` combines those token costs and OCR lines
-only when token pricing is complete, every OCR response has a valid page count,
-and the OCR meter uses the same currency. Otherwise known OCR lines remain
-visible but `cost_total` is `None`; page counts are never inferred from Markdown
-or document bytes. These are standard-rate estimates, not an invoice, and apply
-consistently to sync, async, and streaming calls.
-
-## Automatic cache usage and pricing
-
-`usage.prompt_tokens_details.cached_tokens` becomes `Usage.cached_tokens`,
-a subset of total `Usage.input_tokens`. Every currently registered Mistral
-model uses ordinary and cache-read rates from its registry tiers. There is no
-separately priced automatic cache write, so `cache_write_tokens` remains
-`None`.
-
-An omitted cache-read count leaves `cost_input` and `cost_total` unknown;
-known output and OCR costs can still be exposed. The package accounts for
-provider-managed automatic reads without enabling opt-in cache modes, TTLs,
-or storage pricing. Cache hits are provider-reported and not guaranteed. See
-the shared [usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
-
-## Multi-turn requests
-
-Mistral's `previous_response` parameter is accepted for Core API compatibility
-but ignored. The package sends no provider continuation ID, so callers supply the
-message history they want the next request to use. Captured native thinking is
-not automatically replayed. Leaving out prior messages or thinking may reduce
-quality on later turns.
+When available, `cost_total` includes both the selected model's token costs and
+the separate OCR costs. Incomplete pricing, missing or invalid page counts, and
+currency mismatches leave `cost_total` at `None`. Known OCR lines remain visible.
+Page counts are not inferred from document content. These standard-rate
+estimates apply to synchronous, asynchronous, and streaming calls.
