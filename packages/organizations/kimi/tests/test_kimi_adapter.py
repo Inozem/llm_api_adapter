@@ -38,9 +38,14 @@ from llm_api_adapter.errors.llm_api_error import (
 from llm_api_adapter.errors.llm_api_error import JSONSchemaError
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
-from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.models.messages.chat_message import (
+    AIMessage,
+    ToolMessage,
+    UserMessage,
+)
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
+from llm_api_adapter.models.tools.tool_call import ToolCall
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter.organization_registry import (
     ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP,
@@ -797,6 +802,139 @@ def test_kimi_uses_explicit_tool_history_and_ignores_previous_response(
         "tool_call_id": "call_kimi_weather",
         "content": "Sunny, 25 C",
     }
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("model", KIMI_MODELS)
+def test_typed_dict_and_mixed_tool_histories_normalize_equally(
+    kimi_runtime,
+    model,
+):
+    user_dict = {"role": "user", "content": "What is the weather?"}
+    assistant_dict = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_history",
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "arguments": '{"city":"Tel Aviv"}',
+                },
+            },
+        ],
+    }
+    tool_dict = {
+        "role": "tool",
+        "tool_call_id": "call_history",
+        "content": "Sunny, 25 C",
+    }
+    typed_user = UserMessage("What is the weather?")
+    typed_assistant = AIMessage(
+        content="",
+        tool_calls=[
+            ToolCall(
+                name="get_weather",
+                arguments={"city": "Tel Aviv"},
+                call_id="call_history",
+            ),
+        ],
+    )
+    typed_tool = ToolMessage(content="Sunny, 25 C", tool_call_id="call_history")
+    histories = (
+        (user_dict, assistant_dict, tool_dict),
+        (typed_user, typed_assistant, typed_tool),
+        (typed_user, assistant_dict, typed_tool),
+    )
+    normalized_payloads = []
+
+    for history in histories:
+        adapter = UniversalLLMAPIAdapter(
+            organization="kimi",
+            model=model,
+            api_key="kimi-test-key",
+        )
+        transport = FakeSyncTransport(kimi_response(model))
+        adapter.adapter._sync_transport = transport
+        adapter.chat(
+            list(history),
+            tools=[WEATHER_TOOL],
+            previous_response=ChatResponse(response_id="ignored-history-token"),
+        )
+        payload = transport.requests[0].payload
+        assert "previous_response" not in payload
+        assert "previous_response_id" not in payload
+        normalized_payloads.append(payload["messages"])
+
+    assert normalized_payloads[0] == normalized_payloads[1] == normalized_payloads[2]
+    assert normalized_payloads[0][1] == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_history",
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "arguments": '{"city": "Tel Aviv"}',
+                },
+            },
+        ],
+    }
+    assert normalized_payloads[0][2] == tool_dict
+
+
+@pytest.mark.integration
+def test_generic_openai_compatible_mode_does_not_borrow_kimi_profile(
+    kimi_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
+
+    native = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="native-profile-key",
+    )
+    native_transport = FakeSyncTransport(kimi_response("kimi-k3"))
+    native.adapter._sync_transport = native_transport
+    native_response = native.chat([UserMessage("Native request")], max_tokens=32)
+
+    native_request = native_transport.requests[0]
+    assert native.adapter.model_spec is not None
+    assert native.adapter.model_spec.limits is not None
+    assert native_request.url == "https://api.moonshot.ai/v1/chat/completions"
+    assert native_request.headers_dict()["Authorization"] == "Bearer native-profile-key"
+    assert native_request.payload["model"] == "kimi-k3"
+    assert native_response.cost_total is not None
+
+    universal_module.SERVICE_PROVIDER_REGISTRY.register(
+        "openai_compatible",
+        OpenAICompatibleAdapter,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="kimi-k3",
+        api_key="generic-test-key",
+        base_url="https://generic.example/v1",
+    )
+    transport = FakeSyncTransport(kimi_response("kimi-k3"))
+    client = adapter.adapter._create_sync_client()
+    client._sync_transport = transport
+    adapter.adapter._create_sync_client = lambda: client
+
+    response = adapter.chat([UserMessage("Hello")], max_tokens=32)
+
+    request = transport.requests[0]
+    assert adapter.adapter.model_spec is None
+    assert adapter.adapter.pricing is None
+    assert request.url == "https://generic.example/v1/chat/completions"
+    assert request.headers_dict()["Authorization"] == "Bearer generic-test-key"
+    assert request.payload["model"] == "kimi-k3"
+    assert request.payload["max_completion_tokens"] == 32
+    assert "reasoning_effort" not in request.payload
+    assert response.cost_total is None
 
 
 @pytest.mark.integration
