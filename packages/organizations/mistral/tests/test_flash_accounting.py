@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import socket
 import sys
 from pathlib import Path
 
@@ -29,6 +31,36 @@ MODEL = "glm-5.3-flash"
 WIRE_MODEL = "zai-glm-5-3-flash"
 MESSAGES = [{"role": "user", "content": "Answer briefly."}]
 API_KINDS = ("chat", "achat", "stream_chat", "astream_chat")
+
+
+@pytest.fixture(autouse=True)
+def deny_external_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep accounting tests offline while allowing Windows loopback sockets."""
+    original_getaddrinfo = socket.getaddrinfo
+    original_connect = socket.socket.connect
+
+    def is_loopback(host: object) -> bool:
+        if host in {"localhost", b"localhost"}:
+            return True
+        if isinstance(host, bytes):
+            host = host.decode("ascii", "ignore")
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except (ValueError, TypeError):
+            return False
+
+    def guarded_getaddrinfo(host: object, *args: object, **kwargs: object) -> list[tuple[object, ...]]:
+        if not is_loopback(host):
+            raise AssertionError("Flash accounting test attempted external DNS")
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    def guarded_connect(connection: socket.socket, address: object) -> None:
+        if isinstance(address, tuple) and address and not is_loopback(address[0]):
+            raise AssertionError("Flash accounting test attempted external network")
+        original_connect(connection, address)
+
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
 
 
 @pytest.fixture

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 import warnings
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,6 +25,7 @@ import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 import llm_api_adapter_mistral.adapter as mistral_adapter_module
 import llm_api_adapter_mistral.clients.async_client as mistral_async_client_module
+import llm_api_adapter_mistral.clients.sync_client as mistral_sync_client_module
 from llm_api_adapter.errors.llm_api_error import (
     LLMAPIClientError,
     LLMAPIAuthorizationError,
@@ -134,14 +137,14 @@ def _assert_mistral_large_4_recognized(adapter, caught_warnings, caplog):
 
 
 def _assert_large_4_reasoning_payload_parity(
-    sync_transport,
-    async_calls,
-    expected_provider_value,
-):
+    sync_transport: FakeSyncTransport,
+    async_calls: list[tuple[str, dict[str, Any]]],
+    expected_provider_value: str | None,
+) -> None:
     sync_payload = sync_transport.requests[0].payload
     async_payload = async_calls[0][1]["payload"]
     assert sync_payload == async_payload
-    assert sync_payload["reasoning_effort"] == expected_provider_value
+    assert sync_payload["reasoning"]["effort"] == expected_provider_value
 
 
 def _assert_hosted_glm_5_3_flash_uses_mistral_profile(adapter, model_registry):
@@ -288,8 +291,11 @@ def _assert_hosted_deepseek_flash_usage_and_cost(response):
     ids=["requests-chat", "requests-stream", "httpx-chat", "httpx-stream"],
 )
 def test_hosted_deepseek_flash_uses_mistral_sync_route(
-    mistral_runtime, transport, transport_class, streaming
-):
+    mistral_runtime: RegistrySpec,
+    transport: str,
+    transport_class: type[RequestsSyncTransport] | type[HttpxSyncTransport],
+    streaming: bool,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="deepseek",
         service_provider="mistral",
@@ -353,20 +359,20 @@ def test_hosted_deepseek_flash_uses_mistral_sync_route(
             )
         ) == ["Hosted stream."]
         request = fake_transport.stream_requests[0]
-        assert request.payload["reasoning_effort"] == "none"
+        assert request.payload["reasoning"]["effort"] == "none"
         assert completed[0].response_id == "cmpl-hosted-deepseek-stream"
         _assert_hosted_deepseek_flash_usage_and_cost(completed[0])
     else:
         response = adapter.chat([{"role": "user", "content": "Say hello."}])
         request = fake_transport.requests[0]
         assert response.response_id == "cmpl-hosted-deepseek-sync"
-        assert request.payload["reasoning_effort"] == "none"
+        assert request.payload["reasoning"]["effort"] == "none"
         _assert_hosted_deepseek_flash_usage_and_cost(response)
 
     assert adapter.organization == "deepseek"
     assert adapter.service_provider == adapter.adapter.service_provider == "mistral"
     assert adapter.model == adapter.adapter.model == "deepseek-flash"
-    assert request.url == "https://api.mistral.ai/v1/chat/completions"
+    assert request.url == "https://api.mistral.ai/v1/responses"
     assert request.headers_dict()["Authorization"] == "Bearer mistral-test-key"
     assert request.payload["model"] == wire_model
     assert adapter.adapter.model_spec is resolve_model_spec(
@@ -375,7 +381,10 @@ def test_hosted_deepseek_flash_uses_mistral_sync_route(
 
 
 @pytest.mark.integration
-def test_hosted_deepseek_flash_uses_mistral_async_routes(mistral_runtime, monkeypatch):
+def test_hosted_deepseek_flash_uses_mistral_async_routes(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="deepseek",
         service_provider="mistral",
@@ -463,17 +472,18 @@ def test_hosted_deepseek_flash_uses_mistral_async_routes(mistral_runtime, monkey
     _assert_hosted_deepseek_flash_usage_and_cost(response)
     _assert_hosted_deepseek_flash_usage_and_cost(completed[0])
     for url, kwargs in (request_calls[0], stream_calls[0]):
-        assert url == "https://api.mistral.ai/v1/chat/completions"
+        assert url == "https://api.mistral.ai/v1/responses"
         assert kwargs["headers"]["Authorization"] == "Bearer mistral-test-key"
         assert kwargs["payload"]["model"] == "deepseek-v4-1-flash-1017"
-        assert kwargs["payload"]["reasoning_effort"] == "none"
+        assert kwargs["payload"]["reasoning"]["effort"] == "none"
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("reasoning_level", ("none", "low", "high", "max"))
 def test_hosted_deepseek_flash_reasoning_values_use_mistral_metadata(
-    mistral_runtime, reasoning_level
-):
+    mistral_runtime: RegistrySpec,
+    reasoning_level: str,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="deepseek",
         service_provider="mistral",
@@ -494,7 +504,7 @@ def test_hosted_deepseek_flash_reasoning_values_use_mistral_metadata(
         reasoning_level=reasoning_level,
     )
 
-    assert transport.requests[0].payload["reasoning_effort"] == reasoning_level
+    assert transport.requests[0].payload["reasoning"]["effort"] == reasoning_level
     assert adapter.adapter.model_spec.reasoning_capability.allowed_values == (
         "none", "low", "high", "max"
     )
@@ -578,9 +588,9 @@ def mistral_runtime(monkeypatch):
 
 @pytest.mark.integration
 def test_direct_zai_only_model_stays_unverified_through_mistral(
-    mistral_runtime,
-    caplog,
-):
+    mistral_runtime: RegistrySpec,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     model = "glm-5.5-direct-only"
     zai_metadata = OrganizationModelMetadata(
         organization="zai",
@@ -636,7 +646,7 @@ def test_direct_zai_only_model_stays_unverified_through_mistral(
         and f"Unverified model used: {model}" in record.getMessage()
         for record in caplog.records
     )
-    assert transport.requests[0].url == "https://api.mistral.ai/v1/chat/completions"
+    assert transport.requests[0].url == "https://api.mistral.ai/v1/responses"
     assert transport.requests[0].headers_dict()["Authorization"] == (
         "Bearer mistral-test-key"
     )
@@ -660,11 +670,11 @@ def test_direct_zai_only_model_stays_unverified_through_mistral(
     ids=["requests-chat", "requests-stream", "httpx-chat", "httpx-stream"],
 )
 def test_hosted_glm_5_3_flash_uses_mistral_sync_route_and_wire_id(
-    mistral_runtime,
-    transport,
-    transport_class,
-    streaming,
-):
+    mistral_runtime: RegistrySpec,
+    transport: str,
+    transport_class: type[RequestsSyncTransport] | type[HttpxSyncTransport],
+    streaming: bool,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="zai",
         service_provider="mistral",
@@ -720,7 +730,7 @@ def test_hosted_glm_5_3_flash_uses_mistral_sync_route_and_wire_id(
     assert adapter.model == "glm-5.3-flash"
     assert adapter.adapter.service_provider == "mistral"
     assert adapter.adapter.model == "glm-5.3-flash"
-    assert request.url == "https://api.mistral.ai/v1/chat/completions"
+    assert request.url == "https://api.mistral.ai/v1/responses"
     assert request.headers_dict()["Authorization"] == "Bearer mistral-test-key"
     assert request.payload["model"] == "zai-glm-5-3-flash"
     _assert_hosted_glm_5_3_flash_uses_mistral_profile(adapter, mistral_runtime)
@@ -728,9 +738,9 @@ def test_hosted_glm_5_3_flash_uses_mistral_sync_route_and_wire_id(
 
 @pytest.mark.integration
 def test_hosted_glm_5_3_flash_uses_mistral_async_routes_and_wire_id(
-    mistral_runtime,
-    monkeypatch,
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="zai",
         service_provider="mistral",
@@ -807,7 +817,7 @@ def test_hosted_glm_5_3_flash_uses_mistral_async_routes_and_wire_id(
     assert adapter.adapter.service_provider == "mistral"
     assert adapter.adapter.model == "glm-5.3-flash"
     for url, kwargs in (request_calls[0], stream_calls[0]):
-        assert url == "https://api.mistral.ai/v1/chat/completions"
+        assert url == "https://api.mistral.ai/v1/responses"
         assert kwargs["headers"]["Authorization"] == "Bearer mistral-test-key"
         assert kwargs["payload"]["model"] == "zai-glm-5-3-flash"
     _assert_hosted_glm_5_3_flash_uses_mistral_profile(adapter, mistral_runtime)
@@ -822,12 +832,12 @@ def test_hosted_glm_5_3_flash_uses_mistral_async_routes_and_wire_id(
     ],
 )
 def test_mistral_large_4_sync_chat_recognition_and_transport(
-    mistral_runtime,
-    monkeypatch,
-    caplog,
-    transport,
-    transport_class,
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    transport: str,
+    transport_class: type[RequestsSyncTransport] | type[HttpxSyncTransport],
+) -> None:
     caplog.set_level(logging.WARNING)
     response_payload = {
         "id": "cmpl-mistral-large-4-sync",
@@ -854,7 +864,7 @@ def test_mistral_large_4_sync_chat_recognition_and_transport(
     assert response.usage.total_tokens == 11
     request = fake_transport.requests[0]
     assert request.payload["model"] == "mistral-large-4"
-    assert request.payload["messages"] == _mistral_large_4_expected_messages()
+    assert request.payload["input"] == _mistral_large_4_expected_messages()
     _assert_mistral_large_4_recognized(adapter, caught_warnings, caplog)
 
 
@@ -1155,11 +1165,11 @@ def _mistral_large_4_reasoning_stream_events():
 @pytest.mark.parametrize("api_kind", ["sync", "async"])
 @pytest.mark.parametrize("capture_reasoning", [False, True])
 def test_mistral_large_4_stream_keeps_reasoning_out_of_visible_text(
-    mistral_runtime,
-    monkeypatch,
-    api_kind,
-    capture_reasoning,
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    api_kind: str,
+    capture_reasoning: bool,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-4",
@@ -1247,12 +1257,10 @@ def test_mistral_large_4_stream_keeps_reasoning_out_of_visible_text(
     )
     if api_kind == "sync":
         assert adapter.adapter._sync_transport.stream_requests[0].payload[
-            "reasoning_effort"
-        ] == "low"
+            "reasoning"
+        ]["effort"] == "low"
     else:
-        assert async_stream_request["payload"][
-            "reasoning_effort"
-        ] == "low"
+        assert async_stream_request["payload"]["reasoning"]["effort"] == "low"
     for visible_fragments in (streamed, deltas, [chunk.text for chunk in chunks]):
         assert all(
             reasoning_text not in fragment
@@ -1344,9 +1352,9 @@ def test_mistral_large_4_text_only_stream_does_not_synthesize_reasoning(
 
 @pytest.mark.integration
 def test_mistral_large_4_sync_stream_preserves_response_metadata(
-    mistral_runtime,
-    caplog,
-):
+    mistral_runtime: RegistrySpec,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     caplog.set_level(logging.WARNING)
     stream_event = SSEEvent(
         event=None,
@@ -1387,16 +1395,16 @@ def test_mistral_large_4_sync_stream_preserves_response_metadata(
     assert completed[0].usage.total_tokens == 8
     payload = fake_transport.stream_requests[0].payload
     assert payload["model"] == "mistral-large-4"
-    assert payload["messages"] == _mistral_large_4_expected_messages()
+    assert payload["input"] == _mistral_large_4_expected_messages()
     _assert_mistral_large_4_recognized(adapter, caught_warnings, caplog)
 
 
 @pytest.mark.integration
 def test_mistral_large_4_async_chat_and_stream_preserve_request_and_response(
-    mistral_runtime,
-    monkeypatch,
-    caplog,
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     caplog.set_level(logging.WARNING)
     request_calls = []
     stream_calls = []
@@ -1482,11 +1490,11 @@ def test_mistral_large_4_async_chat_and_stream_preserve_request_and_response(
     assert completed[0].usage is not None
     assert completed[0].usage.total_tokens == 13
     assert request_calls[0][1]["payload"]["model"] == "mistral-large-4"
-    assert request_calls[0][1]["payload"]["messages"] == (
+    assert request_calls[0][1]["payload"]["input"] == (
         _mistral_large_4_expected_messages()
     )
     assert stream_calls[0][1]["payload"]["model"] == "mistral-large-4"
-    assert stream_calls[0][1]["payload"]["messages"] == (
+    assert stream_calls[0][1]["payload"]["input"] == (
         _mistral_large_4_expected_messages()
     )
     _assert_mistral_large_4_recognized(adapter, caught_warnings, caplog)
@@ -1494,8 +1502,8 @@ def test_mistral_large_4_async_chat_and_stream_preserve_request_and_response(
 
 @pytest.mark.integration
 def test_mistral_large_4_tool_result_history_is_sent_without_tool_execution(
-    mistral_runtime,
-):
+    mistral_runtime: RegistrySpec,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-4",
@@ -1544,16 +1552,16 @@ def test_mistral_large_4_tool_result_history_is_sent_without_tool_execution(
     assert response.content == "It is sunny."
     payload = transport.requests[0].payload
     assert payload["model"] == "mistral-large-4"
-    assert payload["messages"][2] == {
-        "role": "tool",
-        "tool_call_id": "call_weather_1",
-        "content": '{"temperature_c":21}',
+    assert payload["input"][2] == {
+        "type": "function_call_output",
+        "call_id": "call_weather_1",
+        "output": '{"temperature_c":21}',
     }
     assert len(transport.requests) == 1
 
 
 @pytest.mark.integration
-def test_mistral_large_4_normalizes_provider_tool_calls(mistral_runtime):
+def test_mistral_large_4_normalizes_provider_tool_calls(mistral_runtime: RegistrySpec) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-4",
@@ -1596,7 +1604,7 @@ def test_mistral_large_4_normalizes_provider_tool_calls(mistral_runtime):
     assert response.tool_calls[0].arguments == {"city": "Paris"}
     assert response.tool_calls[0].call_id == "call_large_4"
     assert transport.requests[0].payload["model"] == "mistral-large-4"
-    assert transport.requests[0].payload["tool_choice"] == "any"
+    assert transport.requests[0].payload["tool_choice"] == "required"
 
 
 @pytest.mark.integration
@@ -1606,13 +1614,13 @@ def test_mistral_large_4_normalizes_provider_tool_calls(mistral_runtime):
         ("none", "none"),
         (
             "get_weather",
-            {"type": "function", "function": {"name": "get_weather"}},
+            {"type": "function", "name": "get_weather"},
         ),
     ],
 )
 def test_mistral_large_4_accepts_none_and_valid_named_tool_choices(
-    mistral_runtime, tool_choice, expected_payload
-):
+    mistral_runtime: RegistrySpec, tool_choice: object, expected_payload: dict[str, object]
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-4",
@@ -1660,7 +1668,7 @@ def test_mistral_large_4_rejects_unknown_named_tool_before_transport(mistral_run
 
 
 @pytest.mark.integration
-def test_mistral_large_4_structured_output_schema_and_response_model(mistral_runtime):
+def test_mistral_large_4_structured_output_schema_and_response_model(mistral_runtime: RegistrySpec) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-4",
@@ -1699,10 +1707,8 @@ def test_mistral_large_4_structured_output_schema_and_response_model(mistral_run
     )
     for request in transport.requests:
         assert request.payload["model"] == "mistral-large-4"
-        assert request.payload["response_format"]["type"] == "json_schema"
-    assert transport.requests[0].payload["response_format"]["json_schema"]["schema"] == (
-        FLAT_OBJECT_SCHEMA
-    )
+        assert request.payload["text"]["format"]["type"] == "json_schema"
+    assert transport.requests[0].payload["text"]["format"]["schema"] == FLAT_OBJECT_SCHEMA
 
 
 @pytest.mark.integration
@@ -1770,8 +1776,8 @@ def test_mistral_large_4_incomplete_response_has_no_parsed_result(mistral_runtim
 
 @pytest.mark.integration
 def test_mistral_large_4_images_and_pdf_documents_use_existing_adaptations(
-    mistral_runtime,
-):
+    mistral_runtime: RegistrySpec,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-4",
@@ -1827,15 +1833,15 @@ def test_mistral_large_4_images_and_pdf_documents_use_existing_adaptations(
 
     assert image_response.content == "Image ok"
     assert transport.requests[0].payload["model"] == "mistral-large-4"
-    assert transport.requests[0].payload["messages"][0]["content"][1:] == [
-        {"type": "image_url", "image_url": "data:image/png;base64,cG5n"},
-        {"type": "image_url", "image_url": "https://example.com/image.jpg"},
+    assert transport.requests[0].payload["input"][0]["content"][1:] == [
+        {"type": "input_image", "image_url": "data:image/png;base64,cG5n", "detail": "auto"},
+        {"type": "input_image", "image_url": "https://example.com/image.jpg", "detail": "auto"},
     ]
     assert pdf_response.content == "PDF ok"
     assert [request.url for request in transport.requests[1:]] == [
         "https://api.mistral.ai/v1/ocr",
         "https://api.mistral.ai/v1/ocr",
-        "https://api.mistral.ai/v1/chat/completions",
+        "https://api.mistral.ai/v1/responses",
     ]
     assert [request.payload["model"] for request in transport.requests[1:]] == [
         "mistral-ocr-4-1",
@@ -1848,9 +1854,14 @@ def test_mistral_large_4_images_and_pdf_documents_use_existing_adaptations(
     assert transport.requests[2].payload["document"]["document_url"] == (
         "https://example.com/file.pdf"
     )
-    assert "# One" in transport.requests[3].payload["messages"][0]["content"]
-    assert "# Two" in transport.requests[3].payload["messages"][0]["content"]
-    assert "# Three" in transport.requests[3].payload["messages"][0]["content"]
+    assert transport.requests[3].payload["input"] == [{
+        "role": "user",
+        "content": (
+            "Summarize PDFs.\n\n"
+            "<document index=\"1\">\n# One\n\n---\n\n# Two\n</document>\n\n"
+            "<document index=\"2\">\n# Three\n</document>"
+        ),
+    }]
 
 
 @pytest.mark.integration
@@ -2117,11 +2128,11 @@ def test_existing_mistral_models_retain_baseline_profile(
     ids=["small-2603", "medium-3-5", "large-2512"],
 )
 def test_existing_mistral_models_preserve_history_pdf_and_continuation_behavior(
-    mistral_runtime,
-    caplog,
-    model,
-    rates_per_million,
-):
+    mistral_runtime: RegistrySpec,
+    caplog: pytest.LogCaptureFixture,
+    model: str,
+    rates_per_million: tuple[float, float, float],
+) -> None:
     caplog.set_level(logging.WARNING)
     history = [
         {"role": "user", "content": "Weather in Paris?"},
@@ -2202,16 +2213,28 @@ def test_existing_mistral_models_preserve_history_pdf_and_continuation_behavior(
     assert history_response.content == "It is sunny."
     history_payload = transport.requests[0].payload
     assert history_payload["model"] == model
-    assert history_payload["messages"] == history
+    assert "instructions" not in history_payload
+    assert history_payload["input"][0] == {
+        "role": "user", "content": "Weather in Paris?"
+    }
+    assert len(history_payload["input"]) == 3
+    assert history_payload["input"][1]["type"] == "function_call"
+    assert history_payload["input"][1]["call_id"] == "call_weather_1"
+    assert history_payload["input"][1]["name"] == "get_weather"
+    assert json.loads(history_payload["input"][1]["arguments"]) == {"city": "Paris"}
+    assert history_payload["input"][2] == {
+        "type": "function_call_output", "call_id": "call_weather_1",
+        "output": '{"temperature_c":21}',
+    }
     _assert_no_continuation_fields(history_payload, "cmpl-previous")
     if model == "mistral-large-2512":
-        assert "reasoning_effort" not in history_payload
+        assert "reasoning" not in history_payload
         assert any(
             "does not support reasoning" in str(item.message)
             for item in caught_warnings
         )
     else:
-        assert history_payload["reasoning_effort"] == "high"
+        assert history_payload["reasoning"]["effort"] == "high"
         assert not any(
             "reasoning" in str(item.message).lower()
             for item in caught_warnings
@@ -2229,7 +2252,7 @@ def test_existing_mistral_models_preserve_history_pdf_and_continuation_behavior(
     assert [request.url for request in transport.requests[1:]] == [
         "https://api.mistral.ai/v1/ocr",
         "https://api.mistral.ai/v1/ocr",
-        "https://api.mistral.ai/v1/chat/completions",
+        "https://api.mistral.ai/v1/responses",
     ]
     assert [
         transport.requests[index].payload["document"]["document_url"]
@@ -2240,8 +2263,14 @@ def test_existing_mistral_models_preserve_history_pdf_and_continuation_behavior(
     ]
     final_pdf_payload = transport.requests[3].payload
     assert final_pdf_payload["model"] == model
-    assert "# Bytes PDF" in final_pdf_payload["messages"][0]["content"]
-    assert "# URL PDF" in final_pdf_payload["messages"][0]["content"]
+    assert final_pdf_payload["input"] == [{
+        "role": "user",
+        "content": (
+            "Summarize PDFs.\n\n"
+            "<document index=\"1\">\n# Bytes PDF\n</document>\n\n"
+            "<document index=\"2\">\n# URL PDF\n</document>"
+        ),
+    }]
     assert pdf_response.cost_input == pytest.approx(
         10 * rates_per_million[0] / 1_000_000
     )
@@ -2253,10 +2282,10 @@ def test_existing_mistral_models_preserve_history_pdf_and_continuation_behavior(
 @pytest.mark.integration
 @pytest.mark.parametrize("model", ["mistral-large-4-0", "mistral-large-latest"])
 def test_unregistered_mistral_large_4_like_ids_stay_unverified(
-    mistral_runtime,
-    caplog,
-    model,
-):
+    mistral_runtime: RegistrySpec,
+    caplog: pytest.LogCaptureFixture,
+    model: str,
+) -> None:
     caplog.set_level(logging.WARNING)
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
@@ -2292,7 +2321,7 @@ def test_unregistered_mistral_large_4_like_ids_stay_unverified(
     )
     payload = transport.requests[0].payload
     assert payload["model"] == model
-    assert "reasoning_effort" not in payload
+    assert "reasoning" not in payload
     assert response.cost_input is None
     assert response.cost_output is None
     assert response.cost_total is None
@@ -2300,8 +2329,8 @@ def test_unregistered_mistral_large_4_like_ids_stay_unverified(
 
 @pytest.mark.integration
 def test_mistral_large_4_keeps_caller_history_and_does_not_replay_previous_thinking(
-    mistral_runtime,
-):
+    mistral_runtime: RegistrySpec,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-4",
@@ -2359,7 +2388,18 @@ def test_mistral_large_4_keeps_caller_history_and_does_not_replay_previous_think
     assert len(transport.requests) == 1
     payload = transport.requests[0].payload
     assert payload["model"] == "mistral-large-4"
-    assert payload["messages"] == history
+    assert "instructions" not in payload
+    assert payload["input"] == [
+        {"role": "user", "content": "Weather in Paris?"},
+        {
+            "type": "function_call", "call_id": "call_weather_1",
+            "name": "get_weather", "arguments": '{"city": "Paris"}',
+        },
+        {
+            "type": "function_call_output", "call_id": "call_weather_1",
+            "output": '{"temperature_c":21}',
+        },
+    ]
     _assert_no_continuation_fields(payload, "cmpl-previous-with-thinking")
     serialized_payload = repr(payload)
     assert "Do not replay this private thought." not in serialized_payload
@@ -2368,8 +2408,8 @@ def test_mistral_large_4_keeps_caller_history_and_does_not_replay_previous_think
 
 @pytest.mark.integration
 def test_universal_chat_builds_direct_mistral_payload_and_finalizes_pricing(
-    mistral_runtime,
-):
+    mistral_runtime: RegistrySpec,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-small-2603",
@@ -2416,7 +2456,7 @@ def test_universal_chat_builds_direct_mistral_payload_and_finalizes_pricing(
     assert response.cost_total == pytest.approx(0.0000135)
 
     request = transport.requests[0]
-    assert request.url == "https://api.mistral.ai/v1/chat/completions"
+    assert request.url == "https://api.mistral.ai/v1/responses"
     assert request.headers_dict() == {
         "Authorization": "Bearer mistral-test-key",
         "Content-Type": "application/json",
@@ -2424,14 +2464,13 @@ def test_universal_chat_builds_direct_mistral_payload_and_finalizes_pricing(
     assert request.timeout == 12.5
     assert request.payload == {
         "model": "mistral-small-2603",
-        "messages": [
-            {"role": "system", "content": "Reply in French."},
-            {"role": "user", "content": "Hello"},
-        ],
-        "max_tokens": 40,
+        "instructions": "Reply in French.",
+        "input": [{"role": "user", "content": "Hello"}],
+        "max_output_tokens": 40,
         "temperature": 0.7,
         "top_p": 0.8,
-        "reasoning_effort": "none",
+        "reasoning": {"effort": "none"},
+        "store": False,
     }
 
 
@@ -2463,8 +2502,8 @@ def test_mistral_accepts_previous_response_without_serializing_it(
 
 @pytest.mark.integration
 def test_mistral_serializes_image_bytes_and_urls_in_vision_format(
-    mistral_runtime,
-):
+    mistral_runtime: RegistrySpec,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-2512",
@@ -2491,18 +2530,20 @@ def test_mistral_serializes_image_bytes_and_urls_in_vision_format(
     )
 
     assert response.content == "A blue square."
-    assert transport.requests[0].payload["messages"] == [
+    assert transport.requests[0].payload["input"] == [
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "Describe these images."},
+                {"type": "input_text", "text": "Describe these images."},
                 {
-                    "type": "image_url",
+                    "type": "input_image",
                     "image_url": "data:image/png;base64,cG5n",
+                    "detail": "auto",
                 },
                 {
-                    "type": "image_url",
+                    "type": "input_image",
                     "image_url": "https://example.com/image.jpg",
+                    "detail": "auto",
                 },
             ],
         }
@@ -2511,8 +2552,8 @@ def test_mistral_serializes_image_bytes_and_urls_in_vision_format(
 
 @pytest.mark.integration
 def test_mistral_processes_document_bytes_and_urls_through_ocr(
-    mistral_runtime,
-):
+    mistral_runtime: RegistrySpec,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-2512",
@@ -2572,7 +2613,7 @@ def test_mistral_processes_document_bytes_and_urls_through_ocr(
     assert [request.url for request in transport.requests] == [
         "https://api.mistral.ai/v1/ocr",
         "https://api.mistral.ai/v1/ocr",
-        "https://api.mistral.ai/v1/chat/completions",
+        "https://api.mistral.ai/v1/responses",
     ]
     assert transport.requests[0].payload == {
         "model": "mistral-ocr-4-1",
@@ -2588,16 +2629,14 @@ def test_mistral_processes_document_bytes_and_urls_through_ocr(
             "document_url": "https://example.com/two.pdf",
         },
     }
-    assert transport.requests[2].payload["messages"] == [
-        {
-            "role": "user",
-            "content": (
-                "Summarize these documents.\n\n"
-                "<document index=\"1\">\n# One\n</document>\n\n"
-                "<document index=\"2\">\n# Two\n\n---\n\nMore\n</document>"
-            ),
-        }
-    ]
+    assert transport.requests[2].payload["input"] == [{
+        "role": "user",
+        "content": (
+            "Summarize these documents.\n\n"
+            "<document index=\"1\">\n# One\n</document>\n\n"
+            "<document index=\"2\">\n# Two\n\n---\n\nMore\n</document>"
+        ),
+    }]
 
 
 @pytest.mark.integration
@@ -2813,8 +2852,8 @@ def test_mistral_prepared_documents_leave_documentless_messages_unchanged(mistra
 
 @pytest.mark.integration
 def test_mistral_normalizes_tool_calls_and_thinking(
-    mistral_runtime,
-):
+    mistral_runtime: RegistrySpec,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-medium-3-5",
@@ -2876,15 +2915,14 @@ def test_mistral_normalizes_tool_calls_and_thinking(
     assert [event.text for event in response.reasoning_events] == ["Need weather."]
     assert response.usage is not None
     assert response.usage.total_tokens == 11
-    assert transport.requests[0].payload["reasoning_effort"] == "high"
+    assert transport.requests[0].payload["reasoning"]["effort"] == "high"
     assert transport.requests[0].payload["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "get_weather"},
+        "type": "function", "name": "get_weather",
     }
 
 
 @pytest.mark.integration
-def test_mistral_uses_official_json_schema_payload_shape(mistral_runtime):
+def test_mistral_uses_official_json_schema_payload_shape(mistral_runtime: RegistrySpec) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-small-2603",
@@ -2903,23 +2941,21 @@ def test_mistral_uses_official_json_schema_payload_shape(mistral_runtime):
     )
 
     assert response.parsed_json == {"answer": "Bonjour"}
-    assert transport.requests[0].payload["response_format"] == {
+    assert transport.requests[0].payload["text"]["format"] == {
         "type": "json_schema",
-        "json_schema": {
-            "name": "response",
-            "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {"answer": {"type": "string"}},
-                    "required": ["answer"],
-                    "additionalProperties": False,
-                },
+        "name": "response",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
         },
     }
 
 
 @pytest.mark.integration
-def test_mistral_streams_text_tools_reasoning_and_usage(mistral_runtime):
+def test_mistral_streams_text_tools_reasoning_and_usage(mistral_runtime: RegistrySpec) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-small-2603",
@@ -3062,14 +3098,14 @@ def test_mistral_streams_text_tools_reasoning_and_usage(mistral_runtime):
     stream_request = transport.stream_requests[0]
     assert stream_request.timeout is None
     assert stream_request.payload["stream"] is True
-    assert stream_request.payload["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in stream_request.payload
 
 
 @pytest.mark.integration
 def test_mistral_async_chat_and_stream_use_shared_async_transport(
-    mistral_runtime,
-    monkeypatch,
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-small-2603",
@@ -3175,7 +3211,7 @@ def test_mistral_async_chat_and_stream_use_shared_async_transport(
     assert completed[0].usage.total_tokens == 6
     assert request_calls == [
         (
-            "https://api.mistral.ai/v1/chat/completions",
+            "https://api.mistral.ai/v1/responses",
             {
                 "headers": {
                     "Authorization": "Bearer mistral-test-key",
@@ -3183,29 +3219,28 @@ def test_mistral_async_chat_and_stream_use_shared_async_transport(
                 },
                 "payload": {
                     "model": "mistral-small-2603",
-                    "messages": [{"role": "user", "content": "Say hello."}],
+                    "input": [{"role": "user", "content": "Say hello."}],
                     "temperature": 1.0,
                     "top_p": 1.0,
-                    "reasoning_effort": "none",
+                    "reasoning": {"effort": "none"},
+                    "store": False,
                 },
                 "timeout": 7.5,
                 "http_error_handler": adapter.adapter._handle_http_error,
             },
         )
     ]
-    assert stream_calls[0][0] == "https://api.mistral.ai/v1/chat/completions"
+    assert stream_calls[0][0] == "https://api.mistral.ai/v1/responses"
     assert stream_calls[0][1]["timeout"] == 8.5
     assert stream_calls[0][1]["payload"]["stream"] is True
-    assert stream_calls[0][1]["payload"]["stream_options"] == {
-        "include_usage": True
-    }
+    assert "stream_options" not in stream_calls[0][1]["payload"]
 
 
 @pytest.mark.integration
 def test_mistral_async_chat_processes_document_through_ocr(
-    mistral_runtime,
-    monkeypatch,
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-2512",
@@ -3259,16 +3294,19 @@ def test_mistral_async_chat_processes_document_through_ocr(
     assert [item.quantity for item in response.cost_breakdown] == [2.0]
     assert [url for url, _ in request_calls] == [
         "https://api.mistral.ai/v1/ocr",
-        "https://api.mistral.ai/v1/chat/completions",
+        "https://api.mistral.ai/v1/responses",
     ]
-    assert request_calls[1][1]["payload"]["messages"][0]["content"] == (
-        "Summarize this document.\n\n"
-        "<document index=\"1\">\n# Async document\n</document>"
-    )
+    assert request_calls[1][1]["payload"]["input"] == [{
+        "role": "user",
+        "content": (
+            "Summarize this document.\n\n"
+            "<document index=\"1\">\n# Async document\n</document>"
+        ),
+    }]
 
 
 @pytest.mark.integration
-def test_mistral_large_4_async_pdf_urls_and_bytes_use_ocr(mistral_runtime, monkeypatch):
+def test_mistral_large_4_async_pdf_urls_and_bytes_use_ocr(mistral_runtime: RegistrySpec, monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-4",
@@ -3317,7 +3355,7 @@ def test_mistral_large_4_async_pdf_urls_and_bytes_use_ocr(mistral_runtime, monke
     assert [url for url, _ in request_calls] == [
         "https://api.mistral.ai/v1/ocr",
         "https://api.mistral.ai/v1/ocr",
-        "https://api.mistral.ai/v1/chat/completions",
+        "https://api.mistral.ai/v1/responses",
     ]
     assert [call[1]["payload"]["model"] for call in request_calls] == [
         "mistral-ocr-4-1",
@@ -3332,13 +3370,18 @@ def test_mistral_large_4_async_pdf_urls_and_bytes_use_ocr(mistral_runtime, monke
     )
     chat_payload = request_calls[2][1]["payload"]
     assert chat_payload["model"] == "mistral-large-4"
-    chat_content = chat_payload["messages"][0]["content"]
-    assert "# Bytes PDF" in chat_content
-    assert "# URL PDF" in chat_content
+    assert chat_payload["input"] == [{
+        "role": "user",
+        "content": (
+            "Summarize these PDFs.\n\n"
+            "<document index=\"1\">\n# Bytes PDF\n</document>\n\n"
+            "<document index=\"2\">\n# URL PDF\n</document>"
+        ),
+    }]
 
 
 @pytest.mark.integration
-def test_mistral_async_stream_includes_ocr_costs(mistral_runtime, monkeypatch):
+def test_mistral_async_stream_includes_ocr_costs(mistral_runtime: RegistrySpec, monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-2512",
@@ -3413,7 +3456,7 @@ def test_mistral_async_stream_includes_ocr_costs(mistral_runtime, monkeypatch):
 
     assert streamed == ["Async summary."]
     assert [url for url, _ in request_calls] == ["https://api.mistral.ai/v1/ocr"]
-    assert stream_calls[0][0] == "https://api.mistral.ai/v1/chat/completions"
+    assert stream_calls[0][0] == "https://api.mistral.ai/v1/responses"
     assert len(completed) == 1
     response = completed[0]
     assert response.cost_total == pytest.approx(0.0080055)
@@ -3422,9 +3465,9 @@ def test_mistral_async_stream_includes_ocr_costs(mistral_runtime, monkeypatch):
 
 
 @pytest.mark.unit
-def test_mistral_maps_context_errors_to_shared_error_hierarchy():
+def test_mistral_maps_context_errors_to_shared_error_hierarchy() -> None:
     with pytest.raises(LLMAPITokenLimitError):
-        MistralAdapter._raise_mapped_error(
+        mistral_sync_client_module.MistralSyncClient._raise_mapped_error(
             status_code=400,
             error_type="context_length_exceeded",
             detail="context is too long",
@@ -3441,13 +3484,13 @@ def test_mistral_maps_context_errors_to_shared_error_hierarchy():
         "expected_cache",
     ),
     [
-        ({"completion_tokens": 13}, None, 13, None, None),
+        ({"output_tokens": 13}, None, 13, None, None),
         (
             {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
                 "total_tokens": 0,
-                "prompt_tokens_details": {"cached_tokens": 0},
+                "input_tokens_details": {"cached_tokens": 0},
             },
             0,
             0,
@@ -3458,13 +3501,13 @@ def test_mistral_maps_context_errors_to_shared_error_hierarchy():
     ids=["input-omitted", "reported-zero"],
 )
 def test_mistral_preserves_omitted_and_reported_zero_usage(
-    usage,
-    expected_input,
-    expected_output,
-    expected_total,
-    expected_cache,
-):
-    parsed = MistralAdapter._parse_usage(usage)
+    usage: dict[str, int | dict[str, int]],
+    expected_input: int | None,
+    expected_output: int | None,
+    expected_total: int | None,
+    expected_cache: int | None,
+) -> None:
+    parsed = MistralAdapter._parse_responses_usage(usage)
 
     assert parsed is not None
     assert parsed.input_tokens == expected_input
@@ -3475,13 +3518,13 @@ def test_mistral_preserves_omitted_and_reported_zero_usage(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("cached_tokens", [-1, True, 1.5, "2"])
-def test_mistral_rejects_malformed_automatic_cache_counts(cached_tokens):
+def test_mistral_rejects_malformed_automatic_cache_counts(cached_tokens: int | bool | float | str | None) -> None:
     with pytest.raises(LLMAPIClientError, match="cached_tokens"):
-        MistralAdapter._parse_usage(
+        MistralAdapter._parse_responses_usage(
             {
-                "prompt_tokens": 10,
-                "completion_tokens": 2,
-                "prompt_tokens_details": {"cached_tokens": cached_tokens},
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "input_tokens_details": {"cached_tokens": cached_tokens},
             }
         )
 
@@ -3792,10 +3835,10 @@ def test_mistral_large_4_absent_usage_keeps_usage_and_costs_unknown(mistral_runt
 @pytest.mark.integration
 @pytest.mark.parametrize("api_kind", ["sync", "async", "sync-stream", "async-stream"])
 def test_mistral_large_4_pdf_ocr_costs_finalize_for_all_chat_modes(
-    mistral_runtime,
-    monkeypatch,
-    api_kind,
-):
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    api_kind: str,
+) -> None:
     adapter = UniversalLLMAPIAdapter(
         organization="mistral",
         model="mistral-large-4",
@@ -3898,7 +3941,7 @@ def test_mistral_large_4_pdf_ocr_costs_finalize_for_all_chat_modes(
             assert [request.url for request in transport.requests] == [
                 "https://api.mistral.ai/v1/ocr",
                 "https://api.mistral.ai/v1/ocr",
-                "https://api.mistral.ai/v1/chat/completions",
+                "https://api.mistral.ai/v1/responses",
             ]
         else:
             assert [request.url for request in transport.requests] == [
@@ -3906,7 +3949,7 @@ def test_mistral_large_4_pdf_ocr_costs_finalize_for_all_chat_modes(
                 "https://api.mistral.ai/v1/ocr",
             ]
             assert [request.url for request in transport.stream_requests] == [
-                "https://api.mistral.ai/v1/chat/completions"
+                "https://api.mistral.ai/v1/responses"
             ]
     else:
         fake_async_calls()
@@ -3928,7 +3971,7 @@ def test_mistral_large_4_pdf_ocr_costs_finalize_for_all_chat_modes(
         assert request_urls == [
             "https://api.mistral.ai/v1/ocr",
             "https://api.mistral.ai/v1/ocr",
-            "https://api.mistral.ai/v1/chat/completions",
+            "https://api.mistral.ai/v1/responses",
         ]
 
     assert response.content == "PDF summary."

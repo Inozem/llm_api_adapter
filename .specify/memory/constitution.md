@@ -1,3 +1,15 @@
+<!--
+Sync Impact Report (temporary; remove before committing the amended constitution)
+Version: 0.9.1 -> 0.10.0 (MINOR: material expansion of isolation guidance)
+Modified principle: II. Shared Contract, Isolated Organization Behavior (title unchanged)
+Added sections: Compatible Foundation Evolution Boundary
+Removed sections: None
+Compatibility impact: provider/model integration must adapt to the existing Core foundation;
+provider-driven Core hooks, flags and implementation changes are prohibited.
+Documentation work: living architecture and Mistral feature planning reconciled separately.
+Template changes: None; templates and commands consume the constitution at runtime.
+Follow-up TODOs: None
+-->
 # llm-api-adapter Constitution
 
 ## Core Principles
@@ -26,6 +38,39 @@ capability profile and its tests define supported behavior and exceptions.
 
 Rationale: the facade and `LLMAdapterBase` remain predictable while providers can evolve
 independently.
+
+#### Compatible Foundation Evolution Boundary
+
+Connecting, adding or migrating a provider or model MUST NOT change the Core compatible
+foundations. This restriction includes compatible adapters and clients, protocol payloads and
+normalizers, stream consumers, shared utilities and any shared validation, transport or public
+type changed to accommodate that integration. A provider need MUST NOT be moved into Core by
+presenting it as a generic hook, finalizer, resource resolver, policy flag or missing-field fix.
+
+Provider/model adaptation MUST remain in its owning native adapter/client or organization
+package and use the existing Core interfaces without modifying them. Provider-specific endpoint,
+authentication, reasoning, sampling, tools, document preparation, usage and accounting differences
+remain native policy. Reuse requirements do not authorize extending the shared foundation.
+Verified model metadata remains in the owning native registry under principle III; it MUST NOT
+introduce native policy into a generic compatible connection.
+
+Core compatible implementation changes MUST be driven only by an officially documented change
+to the upstream API/protocol implemented by that compatible foundation. A separately scoped
+change MUST identify the official upstream primary source and the actual before/after protocol
+change, demonstrate its applicability independently of a particular provider/model, and include
+affected deterministic compatibility regressions. Another provider's claim of compatibility,
+its own API documentation, a new model, or a provider-driven integration gap is insufficient
+evidence of an upstream protocol change. Calling such work a general improvement or bug fix
+MUST NOT bypass this boundary.
+
+If the existing interfaces cannot preserve a required native capability, contributors MUST
+record the concrete limitation and revise the package-local design or obtain an explicit scope
+decision. They MUST NOT silently change Core, weaken compatibility tests, drop a capability or
+introduce fallback. Integration plans and task packets MUST state allowed write paths and
+verify that the Core compatible implementation remains unchanged.
+
+Rationale: the compatible foundation follows its official protocol; independent provider/model
+evolution must not accumulate unrelated policy or extension mechanisms in that foundation.
 
 ### III. Registry and Abstraction First
 Verified model limits, pricing tiers, reasoning capabilities, and request exceptions MUST be
@@ -380,4 +425,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.9.1 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-20
+**Version**: 0.10.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-22

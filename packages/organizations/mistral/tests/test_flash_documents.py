@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import socket
 import sys
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import Any, Mapping
 
 import pytest
 
@@ -21,9 +25,19 @@ import llm_api_adapter_mistral.clients.async_client as mistral_async_client_modu
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
 from llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
 from llm_api_adapter.llms.requests_transport import RequestsSyncTransport
-from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
+from llm_api_adapter.llms.transports import (
+    HTTPErrorHandler,
+    JSONResponse,
+    MultipartForm,
+    SSEEvent,
+    StreamErrorHandler,
+    SyncTransport,
+    TransportRequest,
+)
+from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIAuthorizationError
 from llm_api_adapter.models.messages.chat_message import UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart
+from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.service_provider_registry import ServiceProviderRegistry
 from llm_api_adapter.universal_adapter import UniversalLLMAPIAdapter
 from llm_api_adapter_mistral.plugin import PLUGIN
@@ -31,7 +45,7 @@ from llm_api_adapter_mistral.plugin import PLUGIN
 
 MODEL = "glm-5.3-flash"
 WIRE_MODEL = "zai-glm-5-3-flash"
-CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
+CHAT_URL = "https://api.mistral.ai/v1/responses"
 OCR_URL = "https://api.mistral.ai/v1/ocr"
 TOKEN_USAGE = {
     "prompt_tokens": 100,
@@ -98,6 +112,35 @@ def mistral_runtime(monkeypatch):
     return registry
 
 
+@pytest.fixture(autouse=True)
+def deny_external_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_getaddrinfo = socket.getaddrinfo
+    original_connect = socket.socket.connect
+
+    def is_loopback(host: Any) -> bool:
+        if host in {"localhost", b"localhost"}:
+            return True
+        if isinstance(host, bytes):
+            host = host.decode("ascii", "ignore")
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except (ValueError, TypeError):
+            return False
+
+    def guarded_getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
+        if not is_loopback(host):
+            raise AssertionError("document test attempted external DNS")
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    def guarded_connect(connection: socket.socket, address: Any) -> None:
+        if isinstance(address, tuple) and address and not is_loopback(address[0]):
+            raise AssertionError("document test attempted external network")
+        original_connect(connection, address)
+
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+
+
 def new_adapter(transport="requests", *, organization="zai", model=MODEL):
     return UniversalLLMAPIAdapter(
         organization=organization,
@@ -158,6 +201,142 @@ def configure_async(monkeypatch, *, page_counts=(1,), response=None, events=()):
 
 async def collect_async_stream(adapter, messages, **kwargs):
     return [item async for item in adapter.astream_chat(messages, **kwargs)]
+
+
+class SyntheticErrorResponse:
+    status_code: int
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+    def json(self) -> Mapping[str, Any]:
+        return {"error": {"type": "authentication_error", "message": "synthetic OCR denial"}}
+
+
+class SyntheticHTTPError(Exception):
+    response: SyntheticErrorResponse
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__("synthetic OCR HTTP failure")
+        self.response = SyntheticErrorResponse(status_code)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("api_kind", ["sync", "async", "sync-stream", "async-stream"])
+@pytest.mark.parametrize("failure_kind", ["empty-pages", "malformed-pages", "provider-error"])
+def test_second_pdf_ocr_failure_stops_remaining_calls_and_stream_completion(
+    mistral_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    api_kind: str,
+    failure_kind: str,
+) -> None:
+    adapter = new_adapter(organization="mistral", model="mistral-large-4")
+    messages = [UserMessage("Summarize", files=[
+        DocumentPart(url="https://example.com/first.pdf"),
+        DocumentPart(url="https://example.com/second.pdf"),
+        DocumentPart(url="https://example.com/third.pdf"),
+    ])]
+    completed: list[ChatResponse] = []
+
+    class ErrorTransport(SyncTransport):
+        def __init__(self) -> None:
+            self.ocr_requests: list[TransportRequest] = []
+            self.model_requests: list[TransportRequest] = []
+
+        def post_json(
+            self,
+            request: TransportRequest,
+            *,
+            http_error_handler: HTTPErrorHandler | None = None,
+        ) -> JSONResponse:
+            if request.url == OCR_URL:
+                self.ocr_requests.append(request)
+                if len(self.ocr_requests) == 1:
+                    return JSONResponse(ocr_payload(2))
+                if failure_kind == "empty-pages":
+                    return JSONResponse({"pages": []})
+                if failure_kind == "malformed-pages":
+                    return JSONResponse({"pages": "not-a-list"})
+                assert http_error_handler is not None
+                http_error_handler(SyntheticHTTPError(403))
+                raise AssertionError("native OCR error handler should raise")
+            self.model_requests.append(request)
+            return JSONResponse(chat_payload())
+
+        def post_sse(
+            self,
+            request: TransportRequest,
+            *,
+            http_error_handler: HTTPErrorHandler | None = None,
+            stream_error_handler: StreamErrorHandler | None = None,
+        ) -> Iterator[SSEEvent]:
+            self.model_requests.append(request)
+            return iter((stream_event(),))
+
+        def post_multipart(
+            self,
+            request: TransportRequest,
+            form: MultipartForm,
+            *,
+            http_error_handler: HTTPErrorHandler | None = None,
+        ) -> JSONResponse:
+            raise AssertionError("OCR and Responses use JSON/SSE")
+
+    recorder = ErrorTransport()
+    set_sync_recorder(adapter, recorder)
+    async_ocr_calls: list[str] = []
+
+    async def async_request(
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        payload: Any = None,
+        timeout: float | None = None,
+        http_error_handler: HTTPErrorHandler | None = None,
+    ) -> dict[str, Any]:
+        if url == OCR_URL:
+            async_ocr_calls.append(url)
+            if len(async_ocr_calls) == 1:
+                return ocr_payload(2)
+            if failure_kind == "empty-pages":
+                return {"pages": []}
+            if failure_kind == "malformed-pages":
+                return {"pages": "not-a-list"}
+            assert http_error_handler is not None
+            http_error_handler(SyntheticHTTPError(403))
+            raise AssertionError("native async OCR error handler should raise")
+        raise AssertionError("model request must not run after OCR failure")
+
+    def async_stream_request(
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        payload: Any = None,
+        timeout: float | None = None,
+        http_error_handler: HTTPErrorHandler | None = None,
+        stream_error_handler: StreamErrorHandler | None = None,
+    ) -> AsyncIterator[SSEEvent]:
+        raise AssertionError("model stream must not run after OCR failure")
+
+    monkeypatch.setattr(mistral_async_client_module, "async_request", async_request)
+    monkeypatch.setattr(mistral_async_client_module, "async_stream_request", async_stream_request)
+
+    expected_error = LLMAPIAuthorizationError if failure_kind == "provider-error" else LLMAPIClientError
+    error_match = "synthetic OCR denial" if failure_kind == "provider-error" else "Mistral OCR response"
+    with pytest.raises(expected_error, match=error_match):
+        if api_kind == "sync":
+            adapter.chat(messages)
+        elif api_kind == "async":
+            asyncio.run(adapter.achat(messages))
+        elif api_kind == "sync-stream":
+            list(adapter.stream_chat(messages, on_done=completed.append))
+        else:
+            asyncio.run(collect_async_stream(adapter, messages, on_done=completed.append))
+
+    assert len(recorder.ocr_requests) == (2 if api_kind.startswith("sync") else 0)
+    assert len(async_ocr_calls) == (0 if api_kind.startswith("sync") else 2)
+    assert recorder.model_requests == []
+    assert completed == []
 
 
 @pytest.mark.integration

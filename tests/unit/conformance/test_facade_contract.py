@@ -1706,7 +1706,7 @@ def test_facade_rejects_invalid_constructor_values_before_provider_selection():
 
 
 @pytest.mark.unit
-def test_flash_facade_selection_uses_mistral_provider_without_zai_catalogue():
+def test_flash_facade_selection_uses_mistral_provider_without_zai_catalogue() -> None:
     """Keep optional Flash coverage local so Core-only runs remain available."""
     plugin_module = pytest.importorskip("llm_api_adapter_mistral.plugin")
     import llm_api_adapter.adapters.base_adapter as base_adapter_module
@@ -1735,15 +1735,22 @@ def test_flash_facade_selection_uses_mistral_provider_without_zai_catalogue():
         )
         wire_model = facade.adapter.model_spec.provider_model
         response_payload = {
+            "object": "response",
             "model": wire_model,
-            "choices": [{"message": {"content": '{"answer": "ok"}'}}],
+            "status": "completed",
+            "output": [{
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": '{"answer": "ok"}'}],
+            }],
         }
         refusal_payload = {
+            "object": "response",
             "model": wire_model,
-            "choices": [{"message": {
-                "content": None,
-                "refusal": "I can't help with that.",
-            }}],
+            "status": "completed",
+            "output": [{
+                "type": "message", "role": "assistant",
+                "content": [{"type": "refusal", "refusal": "I can't help with that."}],
+            }],
         }
         transport = Mock(side_effect=[response_payload, refusal_payload])
         facade.adapter._post_payload = transport
