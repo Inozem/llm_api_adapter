@@ -627,10 +627,6 @@ class KimiAdapter(OpenAICompatibleAdapter):
         raise error from None
 
     @staticmethod
-    def _parse_usage(raw_usage: Any) -> KimiUsage | None:
-        return parse_kimi_usage(raw_usage)
-
-    @staticmethod
     def _parse_response(
         response: Mapping[str, Any],
         *,
