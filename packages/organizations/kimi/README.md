@@ -2,33 +2,33 @@
 
 An optional Kimi / Moonshot organization package for
 [LLM API Adapter](https://github.com/Inozem/llm_api_adapter/), a Python SDK with
-one shared interface for calling LLM APIs.
-
-Calls Kimi / Moonshot through `POST /v1/chat/completions` without a provider SDK.
+one shared interface for calling LLM APIs. Select Kimi natively with
+`organization="kimi"` to use its official Chat Completions API at
+`POST https://api.moonshot.ai/v1/chat/completions`.
+The Kimi adapter and sync/async clients inherit Core's OpenAI Compatible
+execution while retaining native selection and Chat Completions.
 
 ## Installation
 
-Install through the Core package extra:
+The package requires Core `llm-api-adapter>=0.10.0,<1.0.0` and adds no provider
+SDK. Install the package directly or through Core's Kimi extra.
 
 ```bash
-pip install "llm-api-adapter[kimi]"
+pip install "llm-api-adapter-kimi>=0.1.0,<0.2.0"
+# Or: pip install "llm-api-adapter[kimi]"
 ```
 
-Direct installation is also supported when Core is managed separately:
+Requests is the default synchronous transport. Install optional extras for
+async support or sync HTTPX. Install both extras together as shown here.
 
 ```bash
-pip install llm-api-adapter-kimi
+pip install "llm-api-adapter-kimi[async]"
+pip install "llm-api-adapter-kimi[httpx]"
+pip install "llm-api-adapter-kimi[async,httpx]"
 ```
 
-Async requests need HTTPX:
-
-```bash
-pip install "llm-api-adapter[kimi,async]"
-```
-
-Synchronous `requests` remains the default. To opt into HTTPX for sync
-`chat()` and `stream_chat()`, install `"llm-api-adapter[kimi,httpx]"` and pass
-`transport="httpx"`.
+Use `transport="httpx"` to select HTTPX for synchronous calls. `achat` and
+`astream_chat` require HTTPX installed with the `[async]` extra.
 
 ## Quick start
 
@@ -51,63 +51,70 @@ response = adapter.chat(
 print(response.content)
 ```
 
-## Supported models
+Running this example sends a real request to Kimi.
 
-- `kimi-k3`
-- `kimi-k3.1-pro`
-- `kimi-k3.1-pro-highspeed`
-- `kimi-k2.6`
+## Models and capabilities
 
-## Capabilities
-
-| Capability | Supported models |
+| Model | Tool choice |
 | --- | --- |
-| Text chat; sync/async streaming; application tools; portable JSON Schema/Pydantic output; image bytes and data URIs | All models |
-| Public `ImagePart` URLs and every `DocumentPart` PDF URL or byte | Unsupported; rejected before HTTP |
+| `kimi-k3` | `auto`, `none`, `any` |
+| `kimi-k3.1-pro` | `auto`, `none`, `any` |
+| `kimi-k3.1-pro-highspeed` | `auto`, `none`, `any` |
+| `kimi-k2.6` | `auto`, `none` |
 
-`reasoning_level` is resolved automatically from registry metadata. K3 and K3.1
-Pro cannot disable reasoning, so `reasoning_level="none"` uses the registered
-minimum and warns. K2.6 maps `"none"` to disabled thinking and every other valid
-level to enabled thinking. When omitted, no thinking control is sent and Kimi's
-native default is preserved.
-Reasoning is never mixed into visible text; use
-`capture_reasoning=True` for opt-in observability.
+All four models support text chat, application tool calls, portable JSON Schema
+and Pydantic structured output, and inline images from bytes or data URIs.
+The SDK does not execute application tools. Named tool choice is rejected for
+all models. Explicit
+`parallel_tool_calls=False` and `True` are both unsupported and rejected before
+transport. Omit the option. Public `ImagePart` URLs and PDF `DocumentPart`
+bytes or URLs are unsupported and rejected before HTTP. The adapter does not
+download, upload, extract, or OCR files.
 
-All models reject named tool choice before transport. `kimi-k3` and the K3.1 Pro
-models accept `tool_choice="any"`; `kimi-k2.6` rejects it and accepts only
-automatic or disabled tool choice. Exact supported values, request rules, and
-exceptions are recorded in the [Kimi registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/kimi/src/llm_api_adapter_kimi/registry/organizations/kimi.json).
+The [Kimi model registry](https://github.com/Inozem/llm_api_adapter/blob/main/packages/organizations/kimi/src/llm_api_adapter_kimi/registry/organizations/kimi.json)
+is authoritative for exact-model context and output limits, capabilities,
+request rules, and pricing.
 
-## History and files
+## Reasoning and conversation history
 
-Kimi Chat Completions is stateless: `previous_response` is accepted for the
-shared API but is not serialized. Send the complete `messages` history on
+Reasoning settings are resolved automatically for the selected model. Use
+`capture_reasoning=True` for separate reasoning observations and `on_reasoning`
+for stream callbacks.
+
+Kimi Chat Completions is stateless. Send the complete `messages` history on
 each turn, including assistant tool calls and `ToolMessage` results.
+`previous_response` is accepted for shared API compatibility and ignored.
+Existing history normalization is unchanged. Reasoning content from an
+assistant history dictionary is not automatically replayed or preserved by
+this package.
 
-Image bytes are encoded as data URIs. Public image URLs and every
-`DocumentPart` are rejected before transport. Kimi's Files API provides
-extracted text rather than a Chat Completions attachment, so the adapter does
-not upload, retain, download, extract, or delete caller files.
+## Streaming and validation
 
-Kimi maps authentication/authorization (401/403), rate-limit (429), timeout
-(408/504), documented token/quota, and server failures to the matching public
-`LLMAPI*Error`; other client or SSE failures become `LLMAPIClientError`.
+`stream_chat` and `astream_chat` use Core's lazy streaming. Validation and
+request opening happen during iteration, so catch errors around the `for` or
+`async for` loop. See the main [streaming guide](https://github.com/Inozem/llm_api_adapter/#streaming)
+for general examples and [Handling Errors](https://github.com/Inozem/llm_api_adapter/#handling-errors)
+for shared public error types.
 
-## Automatic cache usage and pricing
+Kimi rejects explicit `parallel_tool_calls=False` and `True` on an otherwise
+valid request with `NotImplementedError`. When `temperature=-1` and
+`parallel_tool_calls=False`, the shared sampling `ValueError` is raised first,
+before provider I/O.
 
-`usage.prompt_tokens_details.cached_tokens` becomes `Usage.cached_tokens`;
-the legacy `usage.cached_tokens` field is also accepted. K3 and K3.1 Pro
-additionally report `prompt_tokens_details.cache_write_tokens` as
-`Usage.cache_write_tokens`
-for their automatic cache-write component. Both are disjoint subsets of total
-`Usage.input_tokens`. K2.6 has registered automatic cache-read pricing only.
+## Usage and pricing
 
-Input cost uses ordinary, read, and applicable write rates from the USD
-registry tier without double counting. If a required read or write count is
-omitted, `cost_input` and `cost_total` stay `None`; known output cost can still
-be exposed. An explicitly reported zero stays zero. The adapter does not enable
-opt-in cache modes or account for selectable TTLs or storage charges. See the
-shared [usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
+Usage and pricing follow Kimi's registered model data. Responses may expose
+`Usage.cached_tokens`; K3 and K3.1 Pro also expose automatic cache writes as
+`Usage.cache_write_tokens`. Cache reads and applicable writes are disjoint
+subsets of input tokens. If a required count is missing, `cost_input` and
+`cost_total` remain `None`, while known output cost can still be exposed. A
+reported zero remains zero. K2.6 has registered automatic cache-read pricing
+only. See the shared
+[usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#token-usage-and-pricing).
 
-See the main [llm-api-adapter README](https://github.com/Inozem/llm_api_adapter/#readme)
-for the shared API contract, error mapping, and E2E/release documentation.
+## Validation status
+
+Local mocked checks covered Core `0.10.0` with and without HTTPX. Live provider
+validation remains in the existing Kimi release lane. See the main
+[README](https://github.com/Inozem/llm_api_adapter/#readme) for the shared API
+contract and release process.
