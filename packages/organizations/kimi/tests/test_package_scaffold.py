@@ -39,14 +39,16 @@ def test_kimi_plugin_entry_point_matches_the_core_contract():
 def test_kimi_project_forwards_only_core_transport_extras():
     project = read_project_metadata(PACKAGE_ROOT / "pyproject.toml")
 
+    assert project["dependencies"] == ["llm-api-adapter>=0.10.0,<1.0.0"]
     assert [requirement_target(item) for item in project["dependencies"]] == [
         "llm-api-adapter"
     ]
     for extra in ("async", "httpx"):
-        assert [
-            requirement_target(item)
-            for item in project["optional-dependencies"][extra]
-        ] == [f"llm-api-adapter[{extra}]"]
+        forwarded = project["optional-dependencies"][extra]
+        assert forwarded == [f"llm-api-adapter[{extra}]>=0.10.0,<1.0.0"]
+        assert [requirement_target(item) for item in forwarded] == [
+            f"llm-api-adapter[{extra}]"
+        ]
     assert project["entry-points"]["llm_api_adapter.organizations"]["kimi"] == (
         "llm_api_adapter_kimi.plugin:PLUGIN"
     )

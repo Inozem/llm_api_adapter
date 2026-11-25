@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 import sys
@@ -21,6 +22,7 @@ for source in (str(PACKAGE_SOURCE), str(CORE_SOURCE), str(REPOSITORY_ROOT)):
         sys.path.insert(0, source)
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
+import llm_api_adapter_kimi.adapter as kimi_adapter_module
 import llm_api_adapter.organization_registry as organization_registry_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.errors.llm_api_error import (
@@ -36,9 +38,14 @@ from llm_api_adapter.errors.llm_api_error import (
 from llm_api_adapter.errors.llm_api_error import JSONSchemaError
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec, resolve_model_spec
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent
-from llm_api_adapter.models.messages.chat_message import UserMessage
+from llm_api_adapter.models.messages.chat_message import (
+    AIMessage,
+    ToolMessage,
+    UserMessage,
+)
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse
+from llm_api_adapter.models.tools.tool_call import ToolCall
 from llm_api_adapter.models.tools.tool_spec import ToolSpec
 from llm_api_adapter.organization_registry import (
     ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP,
@@ -288,6 +295,19 @@ def kimi_chat_sse_events(model: str = "kimi-k3") -> list[SSEEvent]:
         ),
         SSEEvent(event=None, data="[DONE]", done=True),
     ]
+
+
+def kimi_structured_sse_events(
+    model: str,
+    content: str,
+    *,
+    finish_reason: str = "stop",
+) -> list[SSEEvent]:
+    events = kimi_chat_sse_events(model)
+    events[1].data["choices"][0]["delta"]["content"] = content
+    events[2].data["choices"][0]["delta"]["content"] = ""
+    events[2].data["choices"][0]["finish_reason"] = finish_reason
+    return events
 
 
 def kimi_tool_call_sse_events(model: str = "kimi-k3") -> list[SSEEvent]:
@@ -657,7 +677,7 @@ def test_kimi_rejects_file_inputs_that_cannot_meet_the_shared_contract(
     [
         ("kimi-k3", "auto", "auto"),
         ("kimi-k3", "none", "none"),
-        ("kimi-k3", "any", "required"),
+        *[(model, "any", "required") for model in sorted(KIMI_K3_MODELS)],
         ("kimi-k2.6", "auto", "auto"),
         ("kimi-k2.6", "none", "none"),
     ],
@@ -799,6 +819,139 @@ def test_kimi_uses_explicit_tool_history_and_ignores_previous_response(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("model", KIMI_MODELS)
+def test_typed_dict_and_mixed_tool_histories_normalize_equally(
+    kimi_runtime,
+    model,
+):
+    user_dict = {"role": "user", "content": "What is the weather?"}
+    assistant_dict = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_history",
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "arguments": '{"city":"Tel Aviv"}',
+                },
+            },
+        ],
+    }
+    tool_dict = {
+        "role": "tool",
+        "tool_call_id": "call_history",
+        "content": "Sunny, 25 C",
+    }
+    typed_user = UserMessage("What is the weather?")
+    typed_assistant = AIMessage(
+        content="",
+        tool_calls=[
+            ToolCall(
+                name="get_weather",
+                arguments={"city": "Tel Aviv"},
+                call_id="call_history",
+            ),
+        ],
+    )
+    typed_tool = ToolMessage(content="Sunny, 25 C", tool_call_id="call_history")
+    histories = (
+        (user_dict, assistant_dict, tool_dict),
+        (typed_user, typed_assistant, typed_tool),
+        (typed_user, assistant_dict, typed_tool),
+    )
+    normalized_payloads = []
+
+    for history in histories:
+        adapter = UniversalLLMAPIAdapter(
+            organization="kimi",
+            model=model,
+            api_key="kimi-test-key",
+        )
+        transport = FakeSyncTransport(kimi_response(model))
+        adapter.adapter._sync_transport = transport
+        adapter.chat(
+            list(history),
+            tools=[WEATHER_TOOL],
+            previous_response=ChatResponse(response_id="ignored-history-token"),
+        )
+        payload = transport.requests[0].payload
+        assert "previous_response" not in payload
+        assert "previous_response_id" not in payload
+        normalized_payloads.append(payload["messages"])
+
+    assert normalized_payloads[0] == normalized_payloads[1] == normalized_payloads[2]
+    assert normalized_payloads[0][1] == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_history",
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "arguments": '{"city": "Tel Aviv"}',
+                },
+            },
+        ],
+    }
+    assert normalized_payloads[0][2] == tool_dict
+
+
+@pytest.mark.integration
+def test_generic_openai_compatible_mode_does_not_borrow_kimi_profile(
+    kimi_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
+
+    native = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="native-profile-key",
+    )
+    native_transport = FakeSyncTransport(kimi_response("kimi-k3"))
+    native.adapter._sync_transport = native_transport
+    native_response = native.chat([UserMessage("Native request")], max_tokens=32)
+
+    native_request = native_transport.requests[0]
+    assert native.adapter.model_spec is not None
+    assert native.adapter.model_spec.limits is not None
+    assert native_request.url == "https://api.moonshot.ai/v1/chat/completions"
+    assert native_request.headers_dict()["Authorization"] == "Bearer native-profile-key"
+    assert native_request.payload["model"] == "kimi-k3"
+    assert native_response.cost_total is not None
+
+    universal_module.SERVICE_PROVIDER_REGISTRY.register(
+        "openai_compatible",
+        OpenAICompatibleAdapter,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="openai_compatible",
+        model="kimi-k3",
+        api_key="generic-test-key",
+        base_url="https://generic.example/v1",
+    )
+    transport = FakeSyncTransport(kimi_response("kimi-k3"))
+    client = adapter.adapter._create_sync_client()
+    client._sync_transport = transport
+    adapter.adapter._create_sync_client = lambda: client
+
+    response = adapter.chat([UserMessage("Hello")], max_tokens=32)
+
+    request = transport.requests[0]
+    assert adapter.adapter.model_spec is None
+    assert adapter.adapter.pricing is None
+    assert request.url == "https://generic.example/v1/chat/completions"
+    assert request.headers_dict()["Authorization"] == "Bearer generic-test-key"
+    assert request.payload["model"] == "kimi-k3"
+    assert request.payload["max_completion_tokens"] == 32
+    assert "reasoning_effort" not in request.payload
+    assert response.cost_total is None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("model", KIMI_MODELS)
 def test_kimi_chat_supports_core_portable_json_schema(kimi_runtime, model):
     adapter = UniversalLLMAPIAdapter(
         organization="kimi",
@@ -818,6 +971,36 @@ def test_kimi_chat_supports_core_portable_json_schema(kimi_runtime, model):
     assert response.parsed_json == {"answer": "Hello"}
     assert transport.requests[0].payload["response_format"] == kimi_response_format(
         FLAT_OBJECT_SCHEMA,
+    )
+
+
+@pytest.mark.integration
+def test_kimi_chat_supports_typed_pydantic_structured_output(kimi_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport(
+        kimi_structured_response("kimi-k3", NESTED_PYDANTIC_RESPONSE_JSON),
+    )
+    adapter.adapter._sync_transport = transport
+
+    response = adapter.chat(
+        [UserMessage("Reply with a contact.")],
+        response_model=NestedPydanticResponse,
+    )
+
+    assert response.parsed_json == {"contact": {"name": "Ada"}}
+    assert response.parsed_model == NestedPydanticResponse(contact={"name": "Ada"})
+    response_format = transport.requests[0].payload["response_format"]
+    assert response_format["json_schema"]["name"] == "response"
+    assert response_format["json_schema"]["strict"] is True
+    serialized_schema = response_format["json_schema"]["schema"]
+    assert "$defs" not in serialized_schema
+    assert (
+        serialized_schema["properties"]["contact"]["properties"]["name"]["type"]
+        == "string"
     )
 
 
@@ -862,6 +1045,38 @@ async def test_kimi_achat_supports_pydantic_structured_output(
     assert contact_schema["properties"]["name"]["type"] == "string"
     assert contact_schema["required"] == ["name"]
     assert "$defs" not in serialized_schema
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_kimi_achat_supports_core_portable_json_schema(
+    kimi_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    requests = []
+
+    async def fake_async_request(url: str, **kwargs: Any) -> dict[str, Any]:
+        requests.append((url, kwargs))
+        return kimi_structured_response("kimi-k3", '{"answer":"Hello"}')
+
+    monkeypatch.setattr(async_client_module, "async_request", fake_async_request)
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+
+    response = await adapter.achat(
+        [UserMessage("Reply as JSON.")],
+        json_schema=FLAT_OBJECT_SCHEMA,
+    )
+
+    assert response.parsed_json == {"answer": "Hello"}
+    assert requests[0][1]["payload"]["response_format"] == kimi_response_format(
+        FLAT_OBJECT_SCHEMA,
+    )
 
 
 @pytest.mark.unit
@@ -1349,7 +1564,11 @@ def test_kimi_resolves_reasoning_controls_from_registry_metadata(
 
 
 @pytest.mark.unit
-def test_kimi_rejects_unsupported_parallel_tool_calls_before_transport(kimi_runtime):
+@pytest.mark.parametrize("parallel_tool_calls", [False, True])
+def test_kimi_rejects_unsupported_parallel_tool_calls_before_transport(
+    kimi_runtime,
+    parallel_tool_calls,
+):
     adapter = UniversalLLMAPIAdapter(
         organization="kimi",
         model="kimi-k3",
@@ -1362,10 +1581,145 @@ def test_kimi_rejects_unsupported_parallel_tool_calls_before_transport(kimi_runt
         adapter.chat(
             [{"role": "user", "content": "Hello"}],
             tools=[WEATHER_TOOL],
-            parallel_tool_calls=False,
+            parallel_tool_calls=parallel_tool_calls,
         )
 
     assert transport.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("route", ["achat", "stream_chat", "astream_chat"])
+@pytest.mark.parametrize(
+    ("model", "tool_choice", "parallel_tool_calls", "file_part", "expected_error", "detail"),
+    [
+        (
+            "kimi-k3",
+            {"type": "tool", "name": "get_weather"},
+            None,
+            None,
+            ToolChoiceError,
+            "does not support tool_choice mode",
+        ),
+        ("kimi-k2.6", "any", None, None, ToolChoiceError, "does not support tool_choice mode"),
+        (
+            "kimi-k3",
+            None,
+            None,
+            ImagePart(url="https://example.com/kimi.png"),
+            ValueError,
+            "public ImagePart URLs",
+        ),
+        (
+            "kimi-k3",
+            None,
+            None,
+            DocumentPart(data=b"%PDF-kimi", media_type="application/pdf"),
+            ValueError,
+            "does not support DocumentPart",
+        ),
+        (
+            "kimi-k3",
+            None,
+            None,
+            DocumentPart(url="https://example.com/kimi.pdf"),
+            ValueError,
+            "does not support DocumentPart",
+        ),
+        (
+            "kimi-k3",
+            None,
+            False,
+            None,
+            NotImplementedError,
+            "parallel_tool_calls",
+        ),
+        (
+            "kimi-k3",
+            None,
+            True,
+            None,
+            NotImplementedError,
+            "parallel_tool_calls",
+        ),
+    ],
+)
+async def test_kimi_rejects_unsupported_capabilities_before_transport(
+    kimi_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    model: str,
+    tool_choice: str | dict[str, str] | None,
+    parallel_tool_calls: bool | None,
+    file_part: ImagePart | DocumentPart | None,
+    expected_error: type[Exception],
+    detail: str,
+) -> None:
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    async_calls: dict[str, list[tuple[str, dict[str, Any]]]] = {
+        "json": [],
+        "sse": [],
+    }
+
+    async def unexpected_async_request(
+        url: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        async_calls["json"].append((url, kwargs))
+        raise AssertionError("Invalid request reached async JSON transport")
+
+    def unexpected_async_stream_request(
+        url: str,
+        **kwargs: Any,
+    ) -> AsyncIterator[SSEEvent]:
+        async_calls["sse"].append((url, kwargs))
+        raise AssertionError("Invalid request reached async SSE transport")
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_request",
+        unexpected_async_request,
+    )
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        unexpected_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model=model,
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport(kimi_response(model), events=kimi_chat_sse_events(model))
+    adapter.adapter._sync_transport = transport
+    messages = (
+        [UserMessage("Request.", files=[file_part])]
+        if file_part is not None
+        else [UserMessage("Request.")]
+    )
+    call_kwargs: dict[str, Any] = {}
+    if tool_choice is not None:
+        call_kwargs.update(tools=[WEATHER_TOOL], tool_choice=tool_choice)
+    if parallel_tool_calls is not None:
+        call_kwargs.update(tools=[WEATHER_TOOL], parallel_tool_calls=parallel_tool_calls)
+
+    if route == "stream_chat":
+        stream = adapter.stream_chat(messages, **call_kwargs)
+    elif route == "astream_chat":
+        stream = adapter.astream_chat(messages, **call_kwargs)
+
+    with pytest.raises(expected_error, match=detail):
+        if route == "achat":
+            await adapter.achat(messages, **call_kwargs)
+        elif route == "stream_chat":
+            next(stream)
+        else:
+            await anext(stream)
+
+    assert transport.requests == []
+    assert transport.sse_requests == []
+    assert async_calls == {"json": [], "sse": []}
 
 
 @pytest.mark.integration
@@ -1474,6 +1828,117 @@ def test_kimi_stream_reconstructs_chat_completion_and_callback_order(
 
 
 @pytest.mark.integration
+def test_kimi_stream_retains_native_malformed_interim_frame_tolerance(kimi_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    adapter.adapter._sync_transport = FakeSyncTransport(
+        {},
+        events=[
+            SSEEvent(event=None, data="malformed interim frame"),
+            SSEEvent(
+                event=None,
+                data={
+                    "model": "",
+                    "usage": {},
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "content": "a",
+                                "refusal": "ignored refusal",
+                                "tool_calls": [
+                                    {
+                                        "index": True,
+                                        "id": "ignored-bool-index",
+                                        "function": {"name": "ignored", "arguments": "{}"},
+                                    },
+                                    {
+                                        "index": "invalid",
+                                        "id": "ignored-string-index",
+                                        "function": {"name": "ignored", "arguments": "{}"},
+                                    },
+                                    {
+                                        "index": 0,
+                                        "id": "call-mapping-args",
+                                        "function": {
+                                            "name": "native_mapping",
+                                            "arguments": {"answer": 42},
+                                        },
+                                    },
+                                ],
+                            },
+                            "finish_reason": 7,
+                        },
+                    ],
+                },
+            ),
+            SSEEvent(
+                event=None,
+                data={
+                    "choices": [
+                        {"index": 0, "delta": {"content": "b"}, "finish_reason": "stop"},
+                    ],
+                },
+            ),
+        ],
+    )
+    completed = []
+    assert list(
+        adapter.stream_chat(
+            [{"role": "user", "content": "Hi"}],
+            on_done=completed.append,
+        ),
+    ) == ["a", "b"]
+    response = completed[0]
+    assert response.model == "kimi-k3"
+    assert response.refusal is None
+    assert response.finish_reason == "stop"
+    assert response.usage is None
+    assert response.tool_calls is not None
+    assert [(call.name, call.arguments) for call in response.tool_calls] == [
+        ("native_mapping", {"answer": 42}),
+    ]
+
+
+@pytest.mark.integration
+def test_kimi_sync_early_close_explicitly_closes_late_bound_observer(
+    kimi_runtime,
+    monkeypatch,
+):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport({}, events=kimi_chat_sse_events())
+    adapter.adapter._sync_transport = transport
+    inherited_observer = kimi_adapter_module.observe_sync_events
+    observer_closed: list[bool] = []
+
+    def tracking_observer(adapter_arg, inherited, invocation):
+        observer = inherited_observer(adapter_arg, inherited, invocation)
+
+        def observe():
+            try:
+                yield from observer
+            finally:
+                observer_closed.append(True)
+
+        return observe()
+
+    monkeypatch.setattr(kimi_adapter_module, "observe_sync_events", tracking_observer)
+    stream = adapter.stream_chat([{"role": "user", "content": "Hello"}])
+    assert next(stream) == "Hello "
+    stream.close()
+
+    assert observer_closed == [True]
+    assert transport.sse_closed is True
+
+
+@pytest.mark.integration
 def test_kimi_stream_keeps_reasoning_out_of_visible_text_without_capture(kimi_runtime):
     adapter = UniversalLLMAPIAdapter(
         organization="kimi",
@@ -1529,6 +1994,42 @@ def test_kimi_stream_finalizes_core_structured_output(kimi_runtime, model):
     )
 
 
+@pytest.mark.integration
+def test_kimi_stream_finalizes_typed_pydantic_structured_output(kimi_runtime):
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport(
+        {},
+        events=kimi_structured_sse_events(
+            "kimi-k3",
+            NESTED_PYDANTIC_RESPONSE_JSON,
+        ),
+    )
+    adapter.adapter._sync_transport = transport
+    completed = []
+
+    output = list(
+        adapter.stream_chat(
+            [UserMessage("Reply with a contact.")],
+            response_model=NestedPydanticResponse,
+            on_done=completed.append,
+        ),
+    )
+
+    assert output == [NESTED_PYDANTIC_RESPONSE_JSON]
+    assert completed[0].parsed_json == {"contact": {"name": "Ada"}}
+    assert completed[0].parsed_model == NestedPydanticResponse(
+        contact={"name": "Ada"},
+    )
+    assert (
+        transport.sse_requests[0].payload["response_format"]["json_schema"]["strict"]
+        is True
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_kimi_astream_finalizes_core_structured_output(
@@ -1577,6 +2078,210 @@ async def test_kimi_astream_finalizes_core_structured_output(
     assert requests[0][1]["payload"]["response_format"] == kimi_response_format(
         FLAT_OBJECT_SCHEMA,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_kimi_astream_finalizes_typed_pydantic_structured_output(
+    kimi_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    requests = []
+
+    def fake_async_stream_request(
+        url: str,
+        **kwargs: Any,
+    ) -> AsyncIterator[SSEEvent]:
+        requests.append((url, kwargs))
+
+        async def stream_events() -> AsyncIterator[SSEEvent]:
+            for event in kimi_structured_sse_events(
+                "kimi-k3",
+                NESTED_PYDANTIC_RESPONSE_JSON,
+            ):
+                yield event
+
+        return stream_events()
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    completed = []
+    output = [
+        text
+        async for text in adapter.astream_chat(
+            [UserMessage("Reply with a contact.")],
+            response_model=NestedPydanticResponse,
+            on_done=completed.append,
+        )
+    ]
+
+    assert output == [NESTED_PYDANTIC_RESPONSE_JSON]
+    assert completed[0].parsed_json == {"contact": {"name": "Ada"}}
+    assert completed[0].parsed_model == NestedPydanticResponse(
+        contact={"name": "Ada"},
+    )
+    assert (
+        requests[0][1]["payload"]["response_format"]["json_schema"]["strict"]
+        is True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("route", ["stream_chat", "astream_chat"])
+@pytest.mark.parametrize("invalid_request", ["schema", "tools"])
+async def test_kimi_stream_structured_request_validation_precedes_transport(
+    kimi_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    invalid_request: str,
+) -> None:
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    async_calls: dict[str, list[tuple[str, dict[str, Any]]]] = {
+        "json": [],
+        "sse": [],
+    }
+
+    async def unexpected_async_request(
+        url: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        async_calls["json"].append((url, kwargs))
+        raise AssertionError("Invalid structured request reached async JSON transport")
+
+    def unexpected_async_stream_request(
+        url: str,
+        **kwargs: Any,
+    ) -> AsyncIterator[SSEEvent]:
+        async_calls["sse"].append((url, kwargs))
+        raise AssertionError("Invalid structured request reached async SSE transport")
+
+    monkeypatch.setattr(
+        async_client_module,
+        "async_request",
+        unexpected_async_request,
+    )
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        unexpected_async_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    transport = FakeSyncTransport({}, events=kimi_chat_sse_events())
+    adapter.adapter._sync_transport = transport
+    kwargs = (
+        {"json_schema": {"type": "object", "properties": {"answer": True}}}
+        if invalid_request == "schema"
+        else {"json_schema": FLAT_OBJECT_SCHEMA, "tools": [WEATHER_TOOL]}
+    )
+    expected_message = (
+        "Core portable profile"
+        if invalid_request == "schema"
+        else "json_schema and tools"
+    )
+    if route == "astream_chat":
+        stream = adapter.astream_chat([UserMessage("Reply as JSON.")], **kwargs)
+    else:
+        stream = adapter.stream_chat([UserMessage("Reply as JSON.")], **kwargs)
+
+    with pytest.raises(JSONSchemaError, match=expected_message):
+        if route == "astream_chat":
+            await anext(stream)
+        else:
+            next(stream)
+
+    assert transport.requests == []
+    assert transport.sse_requests == []
+    assert async_calls == {"json": [], "sse": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("route", ["stream_chat", "astream_chat"])
+async def test_kimi_incomplete_structured_stream_is_not_parsed(
+    kimi_runtime: RegistrySpec,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+) -> None:
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    events = kimi_structured_sse_events(
+        "kimi-k3",
+        '{"answer":"partial"}',
+        finish_reason="length",
+    )
+    transport = FakeSyncTransport({}, events=events)
+    adapter.adapter._sync_transport = transport
+    completed = []
+
+    if route == "astream_chat":
+        from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+        requests = []
+
+        def fake_async_stream_request(
+            url: str,
+            **kwargs: Any,
+        ) -> AsyncIterator[SSEEvent]:
+            requests.append((url, kwargs))
+
+            async def stream_events() -> AsyncIterator[SSEEvent]:
+                for event in events:
+                    yield event
+
+            return stream_events()
+
+        monkeypatch.setattr(
+            async_client_module,
+            "async_stream_request",
+            fake_async_stream_request,
+        )
+
+        async def consume() -> list[str]:
+            return [
+                text
+                async for text in adapter.astream_chat(
+                    [UserMessage("Reply as JSON.")],
+                    json_schema=FLAT_OBJECT_SCHEMA,
+                    on_done=completed.append,
+                )
+            ]
+
+        output = await consume()
+        assert requests[0][1]["payload"]["response_format"] == kimi_response_format(
+            FLAT_OBJECT_SCHEMA,
+        )
+    else:
+        output = list(
+            adapter.stream_chat(
+                [UserMessage("Reply as JSON.")],
+                json_schema=FLAT_OBJECT_SCHEMA,
+                on_done=completed.append,
+            ),
+        )
+
+    assert output == ['{"answer":"partial"}']
+    assert completed[0].incomplete_reason == "length"
+    assert completed[0].parsed_json is None
+    assert completed[0].parsed_model is None
 
 
 @pytest.mark.integration
@@ -1967,6 +2672,84 @@ async def test_kimi_async_stream_cancellation_closes_resources(
         await pending_chunk
 
     assert stream_closed is True
+    assert completed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kimi_async_early_close_explicitly_closes_late_bound_observer(
+    kimi_runtime,
+    monkeypatch,
+):
+    from llm_api_adapter_kimi import adapter as kimi_adapter_module
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    closed: list[str] = []
+    retained_observers: list[AsyncIterator[SSEEvent]] = []
+    inherited_observer = kimi_adapter_module.observe_async_events
+
+    def tracking_observer(
+        adapter_arg: Any,
+        inherited: AsyncIterator[SSEEvent],
+        invocation: Any,
+    ) -> AsyncIterator[SSEEvent]:
+        observer = inherited_observer(adapter_arg, inherited, invocation)
+
+        async def watch() -> AsyncIterator[SSEEvent]:
+            try:
+                async for event in observer:
+                    yield event
+            finally:
+                closed.append("observer")
+
+        tracked = watch()
+        retained_observers.append(tracked)
+        return tracked
+
+    def fake_stream_request(url: str, **kwargs: Any) -> AsyncIterator[SSEEvent]:
+        async def events() -> AsyncIterator[SSEEvent]:
+            try:
+                yield SSEEvent(
+                    event=None,
+                    data={
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": "Hello "},
+                                "finish_reason": None,
+                            }
+                        ],
+                    },
+                )
+                await asyncio.Event().wait()
+            finally:
+                closed.append("source")
+
+        return events()
+
+    monkeypatch.setattr(kimi_adapter_module, "observe_async_events", tracking_observer)
+    monkeypatch.setattr(
+        async_client_module,
+        "async_stream_request",
+        fake_stream_request,
+    )
+    adapter = UniversalLLMAPIAdapter(
+        organization="kimi",
+        model="kimi-k3",
+        api_key="kimi-test-key",
+    )
+    completed = []
+    stream = adapter.astream_chat(
+        [{"role": "user", "content": "Hello"}],
+        on_done=completed.append,
+    )
+
+    assert await anext(stream) == "Hello "
+    assert len(retained_observers) == 1
+    await stream.aclose()
+
+    assert closed == ["source", "observer"]
+    assert retained_observers[0].ag_frame is None
     assert completed == []
 
 
