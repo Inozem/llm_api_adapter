@@ -25,6 +25,7 @@ from llm_api_adapter.llms.transports import (
     StreamErrorHandler,
     SyncTransport,
     TransportRequest,
+    raise_default_http_error,
 )
 
 KIMI_CHAT_COMPLETIONS_URL = "https://api.moonshot.ai/v1/chat/completions"
@@ -98,10 +99,7 @@ class KimiSyncClient(OpenAICompatibleSyncClient):
         """Snapshot credentials and transport for one raw invocation."""
         return _KimiRequestView(
             transport=self._sync_transport,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
+            api_key=api_key,
             http_error_handler=self._handle_http_error,
             stream_error_handler=self._handle_stream_error,
         )
@@ -192,17 +190,14 @@ class KimiSyncClient(OpenAICompatibleSyncClient):
             "usage_limit_exceeded",
         }:
             raise LLMAPIUsageLimitError(detail=detail)
-        if status_code is not None and 500 <= status_code < 600:
-            raise LLMAPIServerError(detail=detail)
         if normalized_type in {"api_error", "internal_error", "overloaded_error"}:
             raise LLMAPIServerError(detail=detail)
-        raise LLMAPIClientError(detail=detail)
+        raise_default_http_error(status_code=status_code, detail=detail)
 
 
 class _KimiRequestView(KimiSyncClient):
     """Compatible request view with invocation-local credentials and handlers."""
 
-    _request_headers: dict[str, str]
     _request_http_error_handler: HTTPErrorHandler
     _request_stream_error_handler: StreamErrorHandler
 
@@ -210,17 +205,14 @@ class _KimiRequestView(KimiSyncClient):
         self,
         *,
         transport: SyncTransport,
-        headers: Mapping[str, str],
+        api_key: str,
         http_error_handler: HTTPErrorHandler,
         stream_error_handler: StreamErrorHandler,
     ) -> None:
         super().__init__(_CloseableSyncTransport(transport))
-        self._request_headers = dict(headers)
+        self.api_key = api_key
         self._request_http_error_handler = http_error_handler
         self._request_stream_error_handler = stream_error_handler
-
-    def _headers(self) -> dict[str, str]:
-        return dict(self._request_headers)
 
     def _handle_http_error(self, http_error: Any) -> None:
         self._request_http_error_handler(http_error)

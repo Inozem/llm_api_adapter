@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from typing import Any
 
 from llm_api_adapter.errors.llm_api_error import LLMAPIClientError
@@ -88,10 +88,7 @@ class KimiAsyncClient(OpenAICompatibleAsyncClient, KimiSyncClient):
     def _async_request_view(self, api_key: str) -> _KimiAsyncRequestView:
         """Snapshot per-call credentials and dynamically dispatched handlers."""
         return _KimiAsyncRequestView(
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
+            api_key=api_key,
             http_error_handler=self._handle_http_error,
             stream_error_handler=self._handle_stream_error,
         )
@@ -122,24 +119,20 @@ class KimiAsyncClient(OpenAICompatibleAsyncClient, KimiSyncClient):
 class _KimiAsyncRequestView(KimiAsyncClient):
     """Compatible request view with immutable invocation-local bindings."""
 
-    _request_headers: dict[str, str]
     _request_http_error_handler: HTTPErrorHandler
     _request_stream_error_handler: StreamErrorHandler
 
     def __init__(
         self,
         *,
-        headers: Mapping[str, str],
+        api_key: str,
         http_error_handler: HTTPErrorHandler,
         stream_error_handler: StreamErrorHandler,
     ) -> None:
         super().__init__()
-        self._request_headers = dict(headers)
+        self.api_key = api_key
         self._request_http_error_handler = http_error_handler
         self._request_stream_error_handler = stream_error_handler
-
-    def _headers(self) -> dict[str, str]:
-        return dict(self._request_headers)
 
     def _handle_http_error(self, http_error: Any) -> None:
         self._request_http_error_handler(http_error)

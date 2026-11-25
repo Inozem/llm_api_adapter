@@ -192,14 +192,6 @@ class KimiAdapter(OpenAICompatibleAdapter):
                 "the Chat Completions API has no documented parameter for it",
             )
 
-    def _resolve_protocol_reasoning_effort(
-        self,
-        reasoning_level: str | int | None,
-    ) -> str | None:
-        """Leave native reasoning resolution to the native payload policy."""
-        _ = reasoning_level
-        return None
-
     def _apply_reasoning_options(
         self,
         payload: dict[str, Any],
@@ -222,7 +214,7 @@ class KimiAdapter(OpenAICompatibleAdapter):
 
     def _map_tool_choice_to_openai(self, tool_choice: Optional[str]) -> Any:
         if tool_choice is None:
-            return None
+            return super()._map_tool_choice_to_openai(tool_choice)
         mode = tool_choice if tool_choice in {"auto", "none", "any"} else "tool"
         allowed_modes = (
             self.model_spec.request_rules.allowed_tool_choice_modes
@@ -237,11 +229,7 @@ class KimiAdapter(OpenAICompatibleAdapter):
                     f"{mode!r}; allowed modes: {allowed}."
                 ),
             )
-        if tool_choice in {"auto", "none"}:
-            return tool_choice
-        if tool_choice == "any":
-            return "required"
-        return {"type": "function", "function": {"name": tool_choice}}
+        return super()._map_tool_choice_to_openai(tool_choice)
 
     @staticmethod
     def _to_openai_structured_output_schema(schema: dict) -> dict:
@@ -316,10 +304,14 @@ class KimiAdapter(OpenAICompatibleAdapter):
         payload: Mapping[str, Any],
         legacy_response: dict[str, Any],
     ) -> None:
-        for field_name in ("id", "model", "created"):
-            if field_name in payload:
-                legacy_response[field_name] = payload[field_name]
-        usage = payload.get("usage")
+        if "usage" not in payload:
+            super()._update_legacy_stream_metadata(payload, legacy_response)
+            return
+
+        shared_fields = {key: value for key, value in payload.items() if key != "usage"}
+        super()._update_legacy_stream_metadata(shared_fields, legacy_response)
+
+        usage = payload["usage"]
         if isinstance(usage, Mapping):
             existing = legacy_response.get("usage")
             merged = dict(existing) if isinstance(existing, Mapping) else {}
