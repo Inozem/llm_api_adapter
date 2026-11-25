@@ -1,13 +1,14 @@
 <!--
 Sync Impact Report (temporary; remove before committing the amended constitution)
-Version: 0.9.1 -> 0.10.0 (MINOR: material expansion of isolation guidance)
-Modified principle: II. Shared Contract, Isolated Organization Behavior (title unchanged)
-Added sections: Compatible Foundation Evolution Boundary
+Version: 0.10.0 -> 0.11.0 (MINOR: targeted expansion of native E2E guidance)
+Modified guidance: Compatible connections and native policy, under Compatibility and Data
+Constraints. This adds an explicit-request exception to the evidence rules of Principle IV.
+Added sections: None
 Removed sections: None
-Compatibility impact: provider/model integration must adapt to the existing Core foundation;
-provider-driven Core hooks, flags and implementation changes are prohibited.
-Documentation work: living architecture and Mistral feature planning reconciled separately.
-Template changes: None; templates and commands consume the constitution at runtime.
+Compatibility impact: an explicitly requested adjustment can preserve exception evidence when
+shared execution changes the timing of an observable check, such as stream validation.
+Documentation work: reconcile approved scenario scope in the affected feature before implementation.
+Template changes: None
 Follow-up TODOs: None
 -->
 # llm-api-adapter Constitution
@@ -241,12 +242,17 @@ work before the corrected behavior may be used for a release decision.
   Exact-model native profiles, scenario selection and candidate validation remain authoritative
   for their existing native scope.
 - Adding compatible connections or sharing protocol execution MUST preserve existing native E2E
-  scenario bodies, assertions, fixtures, harness, capability routes, markers, workflows and
-  current-model coverage. A separately approved exact-model addition MAY extend only its verified
-  profile and necessary model inventory/selection data within the existing provider lane; it MUST
-  retain applicable baseline-positive evidence and all old-model coverage. No separate generic
-  compatible-mode or model-specific paid case/lane is introduced by this foundation. Final native
-  acceptance MUST retain the existing exact-TestPyPI post-staging-merge provider gates.
+  scenario bodies and assertions except where the rule below permits an edit. It MUST preserve
+  fixtures, harness, capability routes, markers, workflows and current-model coverage. A separately
+  approved exact-model addition MAY extend only its verified profile and necessary model
+  inventory/selection data within the existing provider lane and MUST retain applicable
+  baseline-positive evidence and all old-model coverage. No separate generic compatible-mode or
+  model-specific paid case/lane is introduced by this foundation. Final native acceptance MUST
+  retain the existing exact-TestPyPI post-staging-merge provider gates.
+- A contributor MAY edit the body or assertions of an adapter-specific native E2E scenario
+  mapped to a declared exact-model capability exception only when the developer explicitly
+  requests that edit. The reviewed change MUST identify the adapter, affected models, declared
+  exceptions and scenario, and MUST preserve evidence for the declared behavior.
 
 Rationale: explicit compatible modes reuse the common SDK contract without fabricating verified
 provider metadata. A neutral Messages owner reduces duplicate execution while native policy and
@@ -425,4 +431,4 @@ amendment MUST update the temporary Sync Impact Report before review; remove tha
 committing the amended constitution. Compliance is checked during planning, implementation,
 review, and release preparation.
 
-**Version**: 0.10.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-22
+**Version**: 0.11.0 | **Ratified**: 2026-09-16 | **Last Amended**: 2026-11-24
