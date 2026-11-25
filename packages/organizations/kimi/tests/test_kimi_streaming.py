@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 import sys
 import warnings
@@ -22,6 +22,11 @@ for source in (PACKAGE_ROOT / "src", REPOSITORY_ROOT / "src", REPOSITORY_ROOT):
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
+from llm_api_adapter.errors.llm_api_error import (
+    InvalidToolArgumentsError,
+    LLMAPIClientError,
+    LLMAPIError,
+)
 from llm_api_adapter.llms.transports import (
     HTTPErrorHandler,
     JSONResponse,
@@ -33,6 +38,7 @@ from llm_api_adapter.llms.transports import (
 )
 from llm_api_adapter.models.responses.chat_response import ChatResponse
 from llm_api_adapter.models.responses.reasoning_event import ReasoningEvent
+from llm_api_adapter.models.tools import ToolCall
 from llm_api_adapter.organization_registry import (
     ORGANIZATION_PLUGIN_ENTRY_POINT_GROUP,
     OrganizationPluginDiscovery,
@@ -586,3 +592,594 @@ def test_completed_reasoning_capture_and_history_continuation_policy(
     assert "previous_response" not in payload
     assert "previous_response_id" not in payload
     assert transport.opened == (["json"] if path == "sync" else ["async-json"])
+
+class _TrackedSyncSource:
+    """Controlled source that exposes consumption and close calls."""
+
+    def __init__(
+        self,
+        events: list[SSEEvent],
+        *,
+        failure: Exception | None = None,
+        close_error: Exception | None = None,
+    ) -> None:
+        self._events = iter(events)
+        self.failure = failure
+        self.close_error = close_error
+        self.read_count = 0
+        self.close_count = 0
+
+    def __iter__(self) -> _TrackedSyncSource:
+        return self
+
+    def __next__(self) -> SSEEvent:
+        self.read_count += 1
+        if self.failure is not None:
+            raise self.failure
+        return next(self._events)
+
+    def close(self) -> None:
+        self.close_count += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+class _TrackedAsyncSource:
+    """Controlled async source with deterministic cancellation and closure."""
+
+    def __init__(
+        self,
+        events: list[SSEEvent],
+        started: asyncio.Event,
+        blocked: asyncio.Event,
+        *,
+        close_error: Exception | None = None,
+    ) -> None:
+        self._events = iter(events)
+        self.started = started
+        self.blocked = blocked
+        self.close_error = close_error
+        self.read_count = 0
+        self.close_count = 0
+
+    def __aiter__(self) -> _TrackedAsyncSource:
+        return self
+
+    async def __anext__(self) -> SSEEvent:
+        self.read_count += 1
+        try:
+            event = next(self._events)
+        except StopIteration:
+            self.blocked.set()
+            await asyncio.Future()
+            raise StopAsyncIteration
+        if self.read_count == 1:
+            self.started.set()
+        return event
+
+    async def aclose(self) -> None:
+        self.close_count += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def _stream_event(
+    *,
+    content: str | None = None,
+    reasoning: str | None = None,
+    tool_call: dict[str, Any] | None = None,
+    finish_reason: str | None = None,
+) -> SSEEvent:
+    delta: dict[str, Any] = {}
+    if content is not None:
+        delta["content"] = content
+    if reasoning is not None:
+        delta["reasoning_content"] = reasoning
+    if tool_call is not None:
+        delta["tool_calls"] = [tool_call]
+    return SSEEvent(
+        event=None,
+        data={
+            "id": "stream-kimi-lifecycle",
+            "created": 2,
+            "model": "kimi-k3",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        },
+    )
+
+
+def _install_sync_source(
+    monkeypatch: pytest.MonkeyPatch,
+    transport: _ControlledTransport,
+    source: _TrackedSyncSource,
+) -> None:
+    def post_sse(
+        request: TransportRequest,
+        *,
+        http_error_handler: HTTPErrorHandler | None = None,
+        stream_error_handler: StreamErrorHandler | None = None,
+    ) -> Iterator[SSEEvent]:
+        _ = http_error_handler, stream_error_handler
+        transport.opened.append("sse")
+        transport.stream_requests.append(request)
+        return source
+
+    monkeypatch.setattr(transport, "post_sse", post_sse)
+
+
+def _install_async_source(
+    monkeypatch: pytest.MonkeyPatch,
+    transport: _ControlledTransport,
+    source: _TrackedAsyncSource,
+) -> None:
+    from llm_api_adapter_kimi.clients import async_client as async_client_module
+
+    def async_stream_request(
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        payload: dict[str, Any] | None = None,
+        timeout: float | None = None,
+        http_error_handler: HTTPErrorHandler | None = None,
+        stream_error_handler: StreamErrorHandler | None = None,
+    ) -> AsyncIterator[SSEEvent]:
+        _ = (url, headers, timeout, http_error_handler, stream_error_handler)
+        transport.opened.append("async-sse")
+        transport.async_payloads.append(dict(payload or {}))
+        return source
+
+    monkeypatch.setattr(async_client_module, "async_stream_request", async_stream_request)
+
+
+@pytest.mark.unit
+def test_visible_stream_is_incremental_and_positive_buffer_is_bounded(
+    lazy_kimi: tuple[UniversalLLMAPIAdapter, _ControlledTransport],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, transport = lazy_kimi
+    source = _TrackedSyncSource(
+        [
+            _stream_event(content="ab", reasoning="private"),
+            _stream_event(content="cdef"),
+            _stream_event(content="xyz"),
+            SSEEvent(event=None, data="[DONE]", done=True),
+        ],
+    )
+    _install_sync_source(monkeypatch, transport, source)
+    done: list[ChatResponse] = []
+    iterator = adapter.stream_chat(
+        [{"role": "user", "content": "incremental"}],
+        capture_reasoning=True,
+        buffer_chars=3,
+        on_done=done.append,
+    )
+
+    assert transport.opened == []
+    assert next(iterator) == "abc"
+    assert source.read_count == 2
+    assert done == []
+    assert next(iterator) == "def"
+    assert next(iterator) == "xyz"
+    with pytest.raises(StopIteration):
+        next(iterator)
+    assert done[0].content == "abcdefxyz"
+    assert [event.text for event in done[0].reasoning_events] == ["private"]
+    assert all(len(chunk) <= 3 for chunk in ("abc", "def", "xyz"))
+    assert "private" not in "".join(("abc", "def", "xyz"))
+    assert source.close_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("buffer_chars", [0, -1])
+def test_nonpositive_buffer_fails_before_sync_provider_open(
+    lazy_kimi: tuple[UniversalLLMAPIAdapter, _ControlledTransport],
+    buffer_chars: int,
+) -> None:
+    adapter, transport = lazy_kimi
+    iterator = adapter.stream_chat(
+        [{"role": "user", "content": "invalid buffer"}],
+        buffer_chars=buffer_chars,
+    )
+    with pytest.raises(ValueError, match="buffer_chars"):
+        next(iterator)
+    assert transport.opened == []
+    assert transport.stream_requests == []
+
+
+@pytest.mark.unit
+def test_fragmented_tool_arguments_are_normalized_before_completion(
+    lazy_kimi: tuple[UniversalLLMAPIAdapter, _ControlledTransport],
+) -> None:
+    adapter, transport = lazy_kimi
+    transport.events = [
+        _stream_event(
+            tool_call={"index": 0, "id": "call-1", "type": "function", "function": {"name": "lookup", "arguments": "{\"q\":"}},
+        ),
+        _stream_event(
+            tool_call={"index": 0, "function": {"arguments": "\"weather\"}"}},
+            finish_reason="tool_calls",
+        ),
+        SSEEvent(event=None, data="[DONE]", done=True),
+    ]
+    callback_order: list[str] = []
+    observed_tools: list[ToolCall] = []
+    completed: list[ChatResponse] = []
+
+    def on_tool(call: ToolCall) -> None:
+        callback_order.append("tool")
+        observed_tools.append(call)
+
+    def on_done(response: ChatResponse) -> None:
+        callback_order.append("done")
+        completed.append(response)
+
+    assert list(adapter.stream_chat(
+        [{"role": "user", "content": "use tool"}],
+        on_tool_call=on_tool,
+        on_done=on_done,
+    )) == []
+    assert callback_order == ["tool", "done"]
+    assert observed_tools[0].name == "lookup"
+    assert observed_tools[0].call_id == "call-1"
+    assert observed_tools[0].arguments == {"q": "weather"}
+    assert completed[0].tool_calls[0] is observed_tools[0]
+    assert transport.opened == ["sse"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("failure_kind", ["provider", "parser"])
+def test_provider_and_parser_failures_teardown_without_success_callbacks(
+    lazy_kimi: tuple[UniversalLLMAPIAdapter, _ControlledTransport],
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+) -> None:
+    adapter, transport = lazy_kimi
+    failure: LLMAPIError
+    if failure_kind == "provider":
+        failure = LLMAPIClientError(detail="controlled provider failure")
+        source = _TrackedSyncSource([_stream_event(content="pending")], failure=failure)
+    else:
+        failure = InvalidToolArgumentsError(detail="controlled malformed arguments")
+        source = _TrackedSyncSource(
+            [
+                _stream_event(content="pending"),
+                _stream_event(
+                    tool_call={"index": 0, "id": "bad", "function": {"name": "f", "arguments": "{"}},
+                ),
+            ],
+        )
+    _install_sync_source(monkeypatch, transport, source)
+    deltas: list[str] = []
+    done: list[ChatResponse] = []
+    iterator = adapter.stream_chat(
+        [{"role": "user", "content": "failure"}],
+        buffer_chars=32,
+        on_delta=deltas.append,
+        on_done=done.append,
+    )
+    with pytest.raises(type(failure)) as caught:
+        list(iterator)
+    if failure_kind == "provider":
+        assert caught.value is failure
+    assert source.close_count == 1
+    assert deltas == []
+    assert done == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("callback_kind", "error_factory"),
+    [
+        ("reasoning", lambda: RuntimeError("ordinary reasoning failure")),
+        ("reasoning", lambda: LLMAPIError("public reasoning failure")),
+        ("delta", lambda: RuntimeError("ordinary delta failure")),
+        ("delta", lambda: LLMAPIError("public delta failure")),
+    ],
+)
+def test_sync_callback_errors_preserve_identity_and_close_source_once(
+    lazy_kimi: tuple[UniversalLLMAPIAdapter, _ControlledTransport],
+    monkeypatch: pytest.MonkeyPatch,
+    callback_kind: str,
+    error_factory: Callable[[], Exception],
+) -> None:
+    adapter, transport = lazy_kimi
+    primary = error_factory()
+    source = _TrackedSyncSource(
+        [
+            _stream_event(content="abcd!"),
+            _stream_event(content="efgh", reasoning="thought"),
+        ],
+        close_error=RuntimeError("secondary close failure"),
+    )
+    _install_sync_source(monkeypatch, transport, source)
+    done: list[ChatResponse] = []
+    delta_chunks: list[str] = []
+    reasoning_events: list[ReasoningEvent] = []
+    delta_calls = 0
+
+    def fail_reasoning(event: ReasoningEvent) -> None:
+        reasoning_events.append(event)
+        raise primary
+
+    def fail_delta(text: str) -> None:
+        nonlocal delta_calls
+        delta_calls += 1
+        delta_chunks.append(text)
+        if delta_calls == 2:
+            raise primary
+
+    def observe_delta(text: str) -> None:
+        delta_chunks.append(text)
+
+    iterator = adapter.stream_chat(
+        [{"role": "user", "content": "callback"}],
+        capture_reasoning=True,
+        buffer_chars=4,
+        on_reasoning=fail_reasoning if callback_kind == "reasoning" else None,
+        on_delta=fail_delta if callback_kind == "delta" else observe_delta,
+        on_done=done.append,
+    )
+    with pytest.raises(type(primary)) as caught:
+        list(iterator)
+    assert source.close_count == 1
+    assert caught.value is primary
+    assert delta_chunks[0] == "abcd"
+    if callback_kind == "reasoning":
+        assert len(reasoning_events) == 1
+        assert delta_chunks == ["abcd"]
+    else:
+        assert delta_chunks == ["abcd", "!efg"]
+    assert done == []
+
+
+@pytest.mark.unit
+def test_explicit_sync_close_tears_down_without_flushing_or_completing(
+    lazy_kimi: tuple[UniversalLLMAPIAdapter, _ControlledTransport],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, transport = lazy_kimi
+    source = _TrackedSyncSource(
+        [_stream_event(content="visible"), _stream_event(content="unread")],
+    )
+    _install_sync_source(monkeypatch, transport, source)
+    deltas: list[str] = []
+    done: list[ChatResponse] = []
+    iterator = adapter.stream_chat(
+        [{"role": "user", "content": "early close"}],
+        buffer_chars=3,
+        on_delta=deltas.append,
+        on_done=done.append,
+    )
+    assert next(iterator) == "vis"
+    assert source.read_count == 1
+    iterator.close()
+    assert source.close_count == 1
+    assert deltas == ["vis"]
+    assert done == []
+
+@pytest.mark.unit
+def test_sync_interleaved_and_reentrant_streams_keep_callbacks_local(
+    lazy_kimi: tuple[UniversalLLMAPIAdapter, _ControlledTransport],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, transport = lazy_kimi
+    sources = [
+        _TrackedSyncSource([
+            _stream_event(content="A", reasoning="reason-A"),
+            SSEEvent(event=None, data="[DONE]", done=True),
+        ]),
+        _TrackedSyncSource([
+            _stream_event(content="B", reasoning="reason-B"),
+            SSEEvent(event=None, data="[DONE]", done=True),
+        ]),
+    ]
+    interleaved_sources = list(sources)
+
+    def post_sse(
+        request: TransportRequest,
+        *,
+        http_error_handler: HTTPErrorHandler | None = None,
+        stream_error_handler: StreamErrorHandler | None = None,
+    ) -> Iterator[SSEEvent]:
+        _ = http_error_handler, stream_error_handler
+        transport.opened.append("sse")
+        transport.stream_requests.append(request)
+        return sources.pop(0)
+
+    monkeypatch.setattr(transport, "post_sse", post_sse)
+    seen_a: list[str] = []
+    seen_b: list[str] = []
+    done_a: list[ChatResponse] = []
+    done_b: list[ChatResponse] = []
+    stream_a = adapter.stream_chat(
+        [{"role": "user", "content": "A"}],
+        capture_reasoning=True,
+        on_reasoning=lambda event: seen_a.append(event.text),
+        on_done=done_a.append,
+    )
+    stream_b = adapter.stream_chat(
+        [{"role": "user", "content": "B"}],
+        capture_reasoning=True,
+        on_reasoning=lambda event: seen_b.append(event.text),
+        on_done=done_b.append,
+    )
+
+    assert next(stream_a) == "A"
+    assert next(stream_b) == "B"
+    with pytest.raises(StopIteration):
+        next(stream_a)
+    with pytest.raises(StopIteration):
+        next(stream_b)
+    assert seen_a == ["reason-A"]
+    assert seen_b == ["reason-B"]
+    assert not sources
+    assert [event.text for event in done_a[0].reasoning_events] == ["reason-A"]
+    assert [event.text for event in done_b[0].reasoning_events] == ["reason-B"]
+    assert [source.close_count for source in interleaved_sources] == [1, 1]
+
+    nested_source = _TrackedSyncSource([
+        _stream_event(content="inner", reasoning="inner-only"),
+        SSEEvent(event=None, data="[DONE]", done=True),
+    ])
+    outer_source = _TrackedSyncSource([
+        _stream_event(content="outer", reasoning="outer-only"),
+        SSEEvent(event=None, data="[DONE]", done=True),
+    ])
+    queued = iter((outer_source, nested_source))
+
+    def post_reentrant(
+        request: TransportRequest,
+        *,
+        http_error_handler: HTTPErrorHandler | None = None,
+        stream_error_handler: StreamErrorHandler | None = None,
+    ) -> Iterator[SSEEvent]:
+        _ = request, http_error_handler, stream_error_handler
+        return next(queued)
+
+    monkeypatch.setattr(transport, "post_sse", post_reentrant)
+    outer_seen: list[str] = []
+    inner_seen: list[str] = []
+    nested_output: list[str] = []
+    outer_done: list[ChatResponse] = []
+    inner_done: list[ChatResponse] = []
+
+    def reenter(event: ReasoningEvent) -> None:
+        outer_seen.append(event.text)
+        nested_output.extend(adapter.stream_chat(
+            [{"role": "user", "content": "nested"}],
+            capture_reasoning=True,
+            on_reasoning=lambda nested: inner_seen.append(nested.text),
+            on_done=inner_done.append,
+        ))
+
+    outer_output = list(adapter.stream_chat(
+        [{"role": "user", "content": "outer"}],
+        capture_reasoning=True,
+        on_reasoning=reenter,
+        on_done=outer_done.append,
+    ))
+    assert outer_output == ["outer"]
+    assert nested_output == ["inner"]
+    assert outer_seen == ["outer-only"]
+    assert inner_seen == ["inner-only"]
+    assert [event.text for event in outer_done[0].reasoning_events] == ["outer-only"]
+    assert [event.text for event in inner_done[0].reasoning_events] == ["inner-only"]
+    assert outer_source.close_count == nested_source.close_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("interrupt", ["aclose", "cancel"])
+def test_async_interruption_closes_source_without_successful_flush(
+    lazy_kimi: tuple[UniversalLLMAPIAdapter, _ControlledTransport],
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt: str,
+) -> None:
+    adapter, transport = lazy_kimi
+
+    async def run() -> None:
+        started = asyncio.Event()
+        blocked = asyncio.Event()
+        source = _TrackedAsyncSource([_stream_event(content="pending")], started, blocked)
+        _install_async_source(monkeypatch, transport, source)
+        deltas: list[str] = []
+        done: list[ChatResponse] = []
+        iterator = adapter.astream_chat(
+            [{"role": "user", "content": "interrupt"}],
+            buffer_chars=3 if interrupt == "aclose" else 32,
+            on_delta=deltas.append,
+            on_done=done.append,
+        )
+        if interrupt == "aclose":
+            assert await asyncio.wait_for(anext(iterator), timeout=2) == "pen"
+            assert started.is_set()
+            await asyncio.wait_for(iterator.aclose(), timeout=2)
+        else:
+            async def consume() -> None:
+                await anext(iterator)
+
+            task = asyncio.create_task(consume())
+            await asyncio.wait_for(blocked.wait(), timeout=2)
+            assert not task.done()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert source.read_count == (1 if interrupt == "aclose" else 2)
+        assert source.close_count == 1
+        assert deltas == (["pen"] if interrupt == "aclose" else [])
+        assert done == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("callback_kind", "error_factory"),
+    [
+        ("reasoning", lambda: RuntimeError("async reasoning failure")),
+        ("reasoning", lambda: LLMAPIError("async public reasoning failure")),
+        ("delta", lambda: LLMAPIError("async public delta failure")),
+    ],
+)
+def test_async_callback_errors_preserve_identity_and_close_source(
+    lazy_kimi: tuple[UniversalLLMAPIAdapter, _ControlledTransport],
+    monkeypatch: pytest.MonkeyPatch,
+    callback_kind: str,
+    error_factory: Callable[[], Exception],
+) -> None:
+    adapter, transport = lazy_kimi
+    primary = error_factory()
+
+    async def run() -> None:
+        started = asyncio.Event()
+        blocked = asyncio.Event()
+        source = _TrackedAsyncSource(
+            [
+                _stream_event(content="abcd!"),
+                _stream_event(content="efgh", reasoning="thought"),
+            ],
+            started,
+            blocked,
+            close_error=RuntimeError("secondary async close failure"),
+        )
+        _install_async_source(monkeypatch, transport, source)
+        delta_chunks: list[str] = []
+        reasoning_events: list[ReasoningEvent] = []
+        done: list[ChatResponse] = []
+        delta_calls = 0
+
+        async def fail_reasoning(event: ReasoningEvent) -> None:
+            reasoning_events.append(event)
+            raise primary
+
+        async def fail_delta(text: str) -> None:
+            nonlocal delta_calls
+            delta_calls += 1
+            delta_chunks.append(text)
+            if delta_calls == 2:
+                raise primary
+
+        async def observe_delta(text: str) -> None:
+            delta_chunks.append(text)
+
+        iterator = adapter.astream_chat(
+            [{"role": "user", "content": "callback"}],
+            capture_reasoning=True,
+            buffer_chars=4,
+            on_reasoning=fail_reasoning if callback_kind == "reasoning" else None,
+            on_delta=fail_delta if callback_kind == "delta" else observe_delta,
+            on_done=done.append,
+        )
+        with pytest.raises(type(primary)) as caught:
+            async for _ in iterator:
+                pass
+        assert caught.value is primary
+        assert source.close_count == 1
+        assert delta_chunks[0] == "abcd"
+        if callback_kind == "reasoning":
+            assert len(reasoning_events) == 1
+            assert delta_chunks == ["abcd"]
+        else:
+            assert delta_chunks == ["abcd", "!efg"]
+        assert done == []
+
+    asyncio.run(run())
