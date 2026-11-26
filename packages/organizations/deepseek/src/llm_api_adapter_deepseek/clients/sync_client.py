@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from json import JSONDecodeError
 from typing import Any, Iterator, Mapping
 
 from llm_api_adapter.errors.llm_api_error import (
+    LLMAPIError,
     LLMAPIAuthorizationError,
     LLMAPIClientError,
     LLMAPIRateLimitError,
@@ -19,6 +21,8 @@ from llm_api_adapter.llms.openai_compatible.sync_client import (
 )
 from llm_api_adapter.llms.transports import (
     JSONResponse,
+    MultipartFile,
+    MultipartForm,
     SSEEvent,
     SyncTransport,
     TransportRequest,
@@ -28,6 +32,9 @@ from llm_api_adapter.llms.transports import (
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_RESPONSES_URL = f"{DEEPSEEK_BASE_URL}/responses"
+DEEPSEEK_FILES_URL = f"{DEEPSEEK_BASE_URL}/files"
+_FILE_UPLOAD_TIMEOUT = 300.0
+_FILE_UPLOAD_FAILURE = "DeepSeek file upload failed"
 
 
 @dataclass(repr=False, init=False)
@@ -86,6 +93,39 @@ class DeepSeekResponsesSyncClient(OpenAICompatibleSyncClient):
                 detail="DeepSeek Responses API returned a non-object response",
             )
         return result
+
+    def _upload_pdf(self, content: bytes, timeout: float | None = None) -> str:
+        """Upload one PDF and return its private provider receipt."""
+        request = TransportRequest(
+            url=DEEPSEEK_FILES_URL,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            timeout=_FILE_UPLOAD_TIMEOUT if timeout is None else timeout,
+        )
+        form = _pdf_upload_form(content)
+        try:
+            response = self._sync_transport.post_multipart(
+                request,
+                form,
+                http_error_handler=self._handle_file_upload_http_error,
+            )
+            payload = response.json()
+        except LLMAPIError as error:
+            raise type(error)(detail=_FILE_UPLOAD_FAILURE) from None
+        except (JSONDecodeError, UnicodeDecodeError):
+            raise LLMAPIClientError(detail=_FILE_UPLOAD_FAILURE) from None
+        return _file_id_from_upload(payload)
+
+    @staticmethod
+    def _handle_file_upload_http_error(error: Any) -> None:
+        status_code, error_type, detail = (
+            DeepSeekResponsesSyncClient._http_error_details(error)
+        )
+        DeepSeekResponsesSyncClient._raise_mapped_error(
+            status_code=status_code,
+            error_type=error_type,
+            detail=detail,
+            public_detail=_FILE_UPLOAD_FAILURE,
+        )
 
     def stream(
         self,
@@ -222,10 +262,12 @@ class DeepSeekResponsesSyncClient(OpenAICompatibleSyncClient):
         status_code: int | None,
         error_type: str | None,
         detail: str,
+        public_detail: str | None = None,
     ) -> None:
         """Map documented DeepSeek failures without introducing retries."""
         normalized_type = (error_type or "").strip().lower()
         normalized_detail = detail.strip().lower()
+        safe_detail = public_detail if public_detail is not None else detail
 
         if status_code in {401, 403} or normalized_type in {
             "authentication_error",
@@ -244,14 +286,14 @@ class DeepSeekResponsesSyncClient(OpenAICompatibleSyncClient):
                 "invalid credentials",
             )
         ):
-            raise LLMAPIAuthorizationError(detail=detail)
+            raise LLMAPIAuthorizationError(detail=safe_detail)
 
         if status_code == 429 or normalized_type in {
             "rate_limit_error",
             "rate_limit_exceeded",
             "rate_limit_reached",
         }:
-            raise LLMAPIRateLimitError(detail=detail)
+            raise LLMAPIRateLimitError(detail=safe_detail)
 
         if status_code == 402 or normalized_type in {
             "insufficient_balance",
@@ -259,7 +301,7 @@ class DeepSeekResponsesSyncClient(OpenAICompatibleSyncClient):
             "quota_exceeded",
             "usage_limit_exceeded",
         } or "insufficient balance" in normalized_detail:
-            raise LLMAPIUsageLimitError(detail=detail)
+            raise LLMAPIUsageLimitError(detail=safe_detail)
 
         if normalized_type in {
             "context_length_exceeded",
@@ -267,18 +309,18 @@ class DeepSeekResponsesSyncClient(OpenAICompatibleSyncClient):
             "max_tokens_exceeded",
             "max_output_tokens_exceeded",
         }:
-            raise LLMAPITokenLimitError(detail=detail)
+            raise LLMAPITokenLimitError(detail=safe_detail)
 
         if status_code in {408, 504} or normalized_type in {
             "timeout",
             "timeout_error",
         }:
-            raise LLMAPITimeoutError(detail=detail)
+            raise LLMAPITimeoutError(detail=safe_detail)
 
         if status_code is not None and 500 <= status_code < 600:
-            raise LLMAPIServerError(detail=detail)
+            raise LLMAPIServerError(detail=safe_detail)
 
-        raise LLMAPIClientError(detail=detail)
+        raise LLMAPIClientError(detail=safe_detail)
 
 
 class _BoundEventSource:
@@ -379,6 +421,31 @@ DeepSeekResponsesSyncClient.__dataclass_fields__ = {
 
 
 DeepSeekSyncClient = DeepSeekResponsesSyncClient
+
+
+def _pdf_upload_form(content: bytes) -> MultipartForm:
+    return MultipartForm(
+        fields=(
+            ("purpose", "rich_layout_recognition"),
+            ("expires_after[anchor]", "created_at"),
+            ("expires_after[seconds]", "3600"),
+        ),
+        files=(
+            MultipartFile(
+                field_name="file",
+                filename="document.pdf",
+                content=content,
+                content_type="application/pdf",
+            ),
+        ),
+    )
+
+
+def _file_id_from_upload(payload: Any) -> str:
+    file_id = payload.get("id") if isinstance(payload, Mapping) else None
+    if not isinstance(file_id, str) or not file_id.strip():
+        raise LLMAPIClientError(detail=_FILE_UPLOAD_FAILURE)
+    return file_id
 
 
 __all__ = [

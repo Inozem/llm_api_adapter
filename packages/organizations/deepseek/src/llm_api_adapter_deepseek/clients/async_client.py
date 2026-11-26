@@ -3,18 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from json import JSONDecodeError
 from typing import Any, AsyncIterator, Mapping
 
-from llm_api_adapter.errors.llm_api_error import LLMAPIClientError
-from llm_api_adapter.llms.async_streaming import async_request, async_stream_request
+from llm_api_adapter.errors.llm_api_error import LLMAPIClientError, LLMAPIError
+from llm_api_adapter.llms.async_streaming import (
+    async_multipart_request,
+    async_request,
+    async_stream_request,
+)
 from llm_api_adapter.llms.openai_compatible.async_client import (
     OpenAICompatibleAsyncClient,
 )
 from llm_api_adapter.llms.transports import SSEEvent
 
 from .sync_client import (
+    DEEPSEEK_FILES_URL,
     DEEPSEEK_RESPONSES_URL,
     DeepSeekResponsesSyncClient,
+    _FILE_UPLOAD_FAILURE,
+    _FILE_UPLOAD_TIMEOUT,
+    _file_id_from_upload,
+    _pdf_upload_form,
 )
 
 
@@ -59,6 +69,30 @@ class DeepSeekResponsesAsyncClient(OpenAICompatibleAsyncClient):
                 detail="DeepSeek Responses API returned a non-object response",
             )
         return result
+
+    async def _upload_pdf(
+        self,
+        content: bytes,
+        timeout: float | None = None,
+    ) -> str:
+        """Upload one PDF asynchronously and return its private receipt."""
+        try:
+            payload = await async_multipart_request(
+                DEEPSEEK_FILES_URL,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                form=_pdf_upload_form(content),
+                timeout=_FILE_UPLOAD_TIMEOUT if timeout is None else timeout,
+                http_error_handler=self._handle_file_upload_http_error,
+            )
+        except LLMAPIError as error:
+            raise type(error)(detail=_FILE_UPLOAD_FAILURE) from None
+        except (JSONDecodeError, UnicodeDecodeError):
+            raise LLMAPIClientError(detail=_FILE_UPLOAD_FAILURE) from None
+        return _file_id_from_upload(payload)
+
+    @staticmethod
+    def _handle_file_upload_http_error(error: Any) -> None:
+        DeepSeekResponsesSyncClient._handle_file_upload_http_error(error)
 
     def stream(
         self,
