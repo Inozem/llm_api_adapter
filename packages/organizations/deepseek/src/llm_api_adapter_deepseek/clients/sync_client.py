@@ -11,7 +11,6 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPIAuthorizationError,
     LLMAPIClientError,
     LLMAPIRateLimitError,
-    LLMAPIServerError,
     LLMAPITimeoutError,
     LLMAPITokenLimitError,
     LLMAPIUsageLimitError,
@@ -28,6 +27,7 @@ from llm_api_adapter.llms.transports import (
     SyncTransport,
     TransportRequest,
     create_sync_transport,
+    raise_default_http_error,
 )
 
 
@@ -323,10 +323,7 @@ class DeepSeekResponsesSyncClient(OpenAICompatibleSyncClient):
         }:
             raise LLMAPITimeoutError(detail=safe_detail)
 
-        if status_code is not None and 500 <= status_code < 600:
-            raise LLMAPIServerError(detail=safe_detail)
-
-        raise LLMAPIClientError(detail=safe_detail)
+        raise_default_http_error(status_code=status_code, detail=safe_detail)
 
 
 class _BoundEventSource:

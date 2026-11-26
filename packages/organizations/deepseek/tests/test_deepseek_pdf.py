@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import json
 from types import SimpleNamespace
 from pathlib import Path
@@ -637,6 +637,10 @@ def test_pdf_preflight_rejects_late_invalid_items_before_any_upload(deepseek_run
             {"type": "input_file", "file_data": f"data:application/pdf;base64,{base64.b64encode(PDF_A).decode()}"},
             {"type": "input_file", "file_data": "data:application/pdf;base64,%%bad"},
         ]}],
+        [{"role": "user", "content": [
+            {"type": "input_file", "file_data": f"data:application/pdf;base64,{base64.b64encode(PDF_A).decode()}", "file_url": "https://example.test/a.pdf"},
+        ]}],
+        [{"role": "user", "content": [{"type": "input_file", "file_data": 7}]}],
         [{"role": "assistant", "content": [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "cGRm"}}]}],
     ]
     for messages in cases:
@@ -657,7 +661,6 @@ def test_pdf_size_and_count_bounds_are_checked_before_upload(deepseek_runtime, m
     with pytest.raises(ValueError, match="100 MiB"):
         adapter.chat([UserMessage("Read", files=[DocumentPart(data=PDF_A, media_type="application/pdf")])])
     assert calls == []
-
     monkeypatch.setattr(document_module, "MAX_PDF_BYTES", 100 * 1024 * 1024)
     monkeypatch.setattr(document_module, "MAX_PDFS_PER_REQUEST", 1)
     with pytest.raises(ValueError, match="at most 20 PDFs"):
@@ -665,6 +668,33 @@ def test_pdf_size_and_count_bounds_are_checked_before_upload(deepseek_runtime, m
             DocumentPart(data=PDF_A, media_type="application/pdf"),
             DocumentPart(data=PDF_B, media_type="application/pdf"),
         ])])
+    assert calls == []
+
+
+@pytest.mark.unit
+def test_typed_pdf_copy_preserves_subclass_and_invalid_file_collection(deepseek_runtime) -> None:
+    @dataclass
+    class ExtendedUserMessage(UserMessage):
+        label: str = "preserve"
+
+    uri = "data:application/pdf;base64," + base64.b64encode(PDF_A).decode()
+    original = ExtendedUserMessage(
+        "Read",
+        files=[DocumentPart(url=uri)],
+        label="caller value",
+    )
+    prepared = document_module.validate_raw_document_forms([original])[0]
+    assert isinstance(prepared, ExtendedUserMessage)
+    assert prepared.label == "caller value"
+    assert original.files[0].url == uri
+    assert prepared.files[0].data == PDF_A
+
+    adapter = _adapter()
+    calls: list[tuple[str, Any]] = []
+    _configure_sync(adapter, calls)
+    malformed = UserMessage("Read", files=(DocumentPart(data=PDF_A, media_type="application/pdf"),))
+    with pytest.raises(ValueError, match="files must be a list"):
+        adapter.chat([malformed])
     assert calls == []
 
 
@@ -678,6 +708,66 @@ def test_valid_inline_pdf_data_uri_uploads_decoded_bytes(deepseek_runtime) -> No
         {"type": "text", "text": "Read this PDF"},
         {"type": "input_file", "file_data": uri},
     ]}])
+    assert calls[0] == ("upload", (PDF_A, None))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("form", ["typed", "input_file", "anthropic"])
+def test_inline_pdf_base64_is_decoded_once_per_attachment(
+    deepseek_runtime,
+    monkeypatch,
+    form,
+) -> None:
+    adapter = _adapter()
+    calls: list[tuple[str, Any]] = []
+    _configure_sync(adapter, calls)
+    encoded = base64.b64encode(PDF_A).decode()
+    uri = f"data:application/pdf;base64,{encoded}"
+    if form == "typed":
+        messages = [UserMessage("Read", files=[DocumentPart(url=uri)])]
+    elif form == "input_file":
+        messages = [{"role": "user", "content": [{"type": "input_file", "file_data": uri}]}]
+    else:
+        messages = [{"role": "user", "content": [{
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": encoded},
+        }]}]
+
+    original_decode = base64.b64decode
+    decoded_inputs: list[Any] = []
+
+    def counted_decode(value, *args, **kwargs):
+        decoded_inputs.append(value)
+        return original_decode(value, *args, **kwargs)
+
+    monkeypatch.setattr(document_module.base64, "b64decode", counted_decode)
+    adapter.chat(messages)
+
+    assert len(decoded_inputs) == 1
+    assert calls[0] == ("upload", (PDF_A, None))
+    content = _request_input(next(item for item in calls if item[0] == "generate"))[0]["content"]
+    assert content[-1] == {"type": "input_file", "file_id": "receipt-1"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "part",
+    [
+        lambda uri: {"type": "input_file", "file_data": uri, "file_url": ""},
+        lambda uri: {"type": "file", "file": {"file_data": uri, "file_url": "https://ignored.test/file"}},
+    ],
+)
+def test_supported_inline_pdf_forms_keep_existing_url_field_precedence(
+    deepseek_runtime,
+    part,
+) -> None:
+    adapter = _adapter()
+    calls: list[tuple[str, Any]] = []
+    _configure_sync(adapter, calls)
+    uri = "data:application/pdf;base64," + base64.b64encode(PDF_A).decode()
+
+    adapter.chat([{"role": "user", "content": [part(uri)]}])
+
     assert calls[0] == ("upload", (PDF_A, None))
 
 

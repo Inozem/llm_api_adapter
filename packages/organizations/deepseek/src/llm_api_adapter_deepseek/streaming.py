@@ -16,6 +16,53 @@ from llm_api_adapter.llms.transports import SSEEvent
 from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 
 
+def normalize_deepseek_usage(raw_usage: Any) -> Optional[Usage]:
+    if not isinstance(raw_usage, Mapping):
+        return None
+
+    def valid_count(value: Any) -> bool:
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0
+        )
+
+    input_tokens = raw_usage.get("input_tokens")
+    output_tokens = raw_usage.get("output_tokens")
+    total_tokens = raw_usage.get("total_tokens")
+    counts = (input_tokens, output_tokens, total_tokens)
+    if any(value is not None and not valid_count(value) for value in counts):
+        return None
+    if input_tokens is None and output_tokens is None and total_tokens is None:
+        return None
+    if input_tokens is not None and output_tokens is not None:
+        exact_total = input_tokens + output_tokens
+        if total_tokens is not None and total_tokens != exact_total:
+            return None
+        total_tokens = exact_total
+    cached_tokens = None
+    input_details = raw_usage.get("input_tokens_details")
+    if input_details is not None:
+        if not isinstance(input_details, Mapping):
+            return None
+        if "cached_tokens" in input_details:
+            cached_tokens = input_details.get("cached_tokens")
+            if cached_tokens is not None and not valid_count(cached_tokens):
+                return None
+            if (
+                cached_tokens is not None
+                and input_tokens is not None
+                and cached_tokens > input_tokens
+            ):
+                return None
+    return Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
+    )
+
+
 @dataclass
 class DeepSeekResponsesStreamState(_StreamState):
     """Request-local state used to reconstruct one DeepSeek response."""
@@ -561,52 +608,7 @@ class DeepSeekResponsesStreamParser:
 
     @staticmethod
     def _normalize_usage(raw_usage: Any) -> Optional[Usage]:
-        if not isinstance(raw_usage, Mapping):
-            return None
-
-        def valid_count(value: Any) -> bool:
-            return (
-                isinstance(value, int)
-                and not isinstance(value, bool)
-                and value >= 0
-            )
-
-        input_tokens = raw_usage.get("input_tokens")
-        output_tokens = raw_usage.get("output_tokens")
-        total_tokens = raw_usage.get("total_tokens")
-        counts = (input_tokens, output_tokens, total_tokens)
-        if any(value is not None and not valid_count(value) for value in counts):
-            return None
-        if input_tokens is None and output_tokens is None and total_tokens is None:
-            return None
-        if input_tokens is not None and output_tokens is not None:
-            exact_total = input_tokens + output_tokens
-            if total_tokens is not None and total_tokens != exact_total:
-                return None
-            total_tokens = exact_total
-
-        cached_tokens = None
-        input_details = raw_usage.get("input_tokens_details")
-        if input_details is not None:
-            if not isinstance(input_details, Mapping):
-                return None
-            if "cached_tokens" in input_details:
-                cached_tokens = input_details.get("cached_tokens")
-                if cached_tokens is not None and not valid_count(cached_tokens):
-                    return None
-                if (
-                    cached_tokens is not None
-                    and input_tokens is not None
-                    and cached_tokens > input_tokens
-                ):
-                    return None
-
-        return Usage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=total_tokens,
-            cached_tokens=cached_tokens,
-        )
+        return normalize_deepseek_usage(raw_usage)
 
 
 __all__ = [

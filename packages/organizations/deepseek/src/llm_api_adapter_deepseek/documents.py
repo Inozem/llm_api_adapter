@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import base64
 import binascii
-from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from dataclasses import dataclass, replace
+from typing import Any, Mapping
 
 from llm_api_adapter.models.messages.chat_message import Messages, UserMessage
 from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
@@ -54,68 +54,95 @@ def decode_pdf_part(part: DocumentPart) -> bytes:
     return content
 
 
-def validate_raw_document_forms(messages: Any) -> None:
-    """Catch document parts that Core normalization could drop or decode loosely."""
+def validate_raw_document_forms(messages: Any) -> Any:
+    """Preflight and copy inline PDFs before Core normalization can decode them."""
     if isinstance(messages, Messages):
-        raw_items: Iterable[Any] = messages.items
+        raw_items: list[Any] = list(messages.items)
+        as_messages = True
     elif isinstance(messages, (list, tuple)):
-        raw_items = messages
+        raw_items = list(messages)
+        as_messages = False
     else:
-        return
+        return messages
 
-    for message in raw_items:
-        if isinstance(message, Mapping):
-            role = message.get("role")
-            content = message.get("content")
-            if isinstance(content, list):
-                parts = [*content, *(message.get("files") or ())]
-            else:
-                parts = message.get("files") or ()
-        else:
-            role = getattr(message, "role", None)
-            files = getattr(message, "files", None)
-            parts = files if isinstance(files, list) else ()
-        for part in parts:
-            if isinstance(part, DocumentPart):
-                if role != "user":
-                    raise ValueError("DeepSeek PDF parts are supported only in user messages")
-                decode_pdf_part(part)
-                continue
-            if not isinstance(part, Mapping):
-                continue
-            part_type = part.get("type")
-            is_document = part_type in {"document", "input_file", "file"}
-            source = part.get("source")
-            if isinstance(source, Mapping) and source.get("media_type") == "application/pdf":
-                is_document = True
-            if not is_document:
-                continue
+    def prepare(part: Any, role: Any) -> Any:
+        if isinstance(part, DocumentPart):
             if role != "user":
                 raise ValueError("DeepSeek PDF parts are supported only in user messages")
-            if part_type == "document" and isinstance(source, Mapping):
-                if source.get("type") == "base64":
-                    value = DocumentPart(
-                        data=_strict_base64(source.get("data")),
-                        media_type=source.get("media_type"),
-                    )
-                    decode_pdf_part(value)
-                elif source.get("type") == "url":
+            content = decode_pdf_part(part)
+            if part.data is not None:
+                return part
+            return replace(
+                part,
+                url=None,
+                data=content,
+                media_type=part._get_media_type(),
+            )
+        if not isinstance(part, Mapping):
+            return part
+        part_type = part.get("type")
+        source = part.get("source")
+        is_document = part_type in {"document", "input_file", "file"}
+        if isinstance(source, Mapping) and source.get("media_type") == "application/pdf":
+            is_document = True
+        if not is_document:
+            return part
+        if role != "user":
+            raise ValueError("DeepSeek PDF parts are supported only in user messages")
+        if part_type == "document" and isinstance(source, Mapping):
+            if source.get("type") == "base64":
+                raw = _strict_base64(source.get("data"))
+                return DocumentPart(data=decode_pdf_part(DocumentPart(
+                    data=raw,
+                    media_type=source.get("media_type"),
+                )), media_type=source.get("media_type"))
+            if source.get("type") == "url":
+                raise ValueError("DeepSeek does not support document URLs")
+        if part_type == "input_file":
+            if part.get("file_url"):
+                raise ValueError("DeepSeek does not support document URLs")
+            file_data = part.get("file_data")
+            if file_data is not None:
+                if not isinstance(file_data, str) or not file_data.startswith("data:"):
                     raise ValueError("DeepSeek does not support document URLs")
-            elif part_type == "input_file":
-                file_data = part.get("file_data")
+                return DocumentPart(
+                    data=decode_pdf_part(DocumentPart(url=file_data)),
+                    media_type="application/pdf",
+                )
+        if part_type == "file":
+            file_obj = part.get("file")
+            if isinstance(file_obj, Mapping):
+                file_data = file_obj.get("file_data")
                 if file_data is not None:
                     if not isinstance(file_data, str) or not file_data.startswith("data:"):
                         raise ValueError("DeepSeek does not support document URLs")
-                    decode_pdf_part(DocumentPart(url=file_data))
-                elif part.get("file_url") is not None:
-                    raise ValueError("DeepSeek does not support document URLs")
-            elif part_type == "file":
-                file_obj = part.get("file")
-                if isinstance(file_obj, Mapping) and file_obj.get("file_data") is not None:
-                    file_data = file_obj.get("file_data")
-                    if not isinstance(file_data, str) or not file_data.startswith("data:"):
-                        raise ValueError("DeepSeek does not support document URLs")
-                    decode_pdf_part(DocumentPart(url=file_data))
+                    return DocumentPart(
+                        data=decode_pdf_part(DocumentPart(url=file_data)),
+                        media_type="application/pdf",
+                    )
+        return part
+
+    for index, message in enumerate(raw_items):
+        if isinstance(message, UserMessage):
+            files = getattr(message, "files", None)
+            if isinstance(files, list) and files:
+                prepared_files = [prepare(part, message.role) for part in files]
+                if any(prepared is not original for original, prepared in zip(files, prepared_files)):
+                    raw_items[index] = replace(message, files=prepared_files)
+            continue
+        if not isinstance(message, Mapping):
+            files = getattr(message, "files", None)
+            if isinstance(files, list):
+                for part in files:
+                    prepare(part, getattr(message, "role", None))
+            continue
+        copied = dict(message)
+        if isinstance(message.get("content"), list):
+            copied["content"] = [prepare(part, message.get("role")) for part in message["content"]]
+        if isinstance(message.get("files"), (list, tuple)):
+            copied["files"] = [prepare(part, message.get("role")) for part in message["files"]]
+        raw_items[index] = copied
+    return Messages(raw_items) if as_messages else raw_items
 
 
 def preserve_raw_pdf_parts(messages: Any) -> Any:
@@ -151,7 +178,8 @@ def preserve_raw_pdf_parts(messages: Any) -> Any:
         content_files = [
             part
             for part in content
-            if isinstance(part, Mapping) and part.get("type") in file_types
+            if isinstance(part, DocumentPart)
+            or (isinstance(part, Mapping) and part.get("type") in file_types)
         ]
         normalizer = Messages([])
         files = [
@@ -171,7 +199,9 @@ def _strict_base64(value: Any) -> bytes:
         raise ValueError("DeepSeek PDF base64 data is invalid") from None
 
 
-def pdf_slots(messages: Messages) -> tuple[PDFSlot, ...]:
+def pdf_slots(
+    messages: Messages,
+) -> tuple[PDFSlot, ...]:
     """Validate every normalized attachment and return PDFs in message order."""
     slots: list[PDFSlot] = []
     for message_index, message in enumerate(messages.items):

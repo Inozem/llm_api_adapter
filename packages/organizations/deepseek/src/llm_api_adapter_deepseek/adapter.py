@@ -68,6 +68,7 @@ from .registry import ORGANIZATION_DATA
 from .streaming import (
     DeepSeekResponsesStreamParser,
     DeepSeekResponsesStreamState,
+    normalize_deepseek_usage,
 )
 
 
@@ -95,14 +96,6 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@dataclass
-class DeepSeekUsage(Usage):
-    """Provider usage with optional cache and reasoning token details."""
-
-    cached_tokens: Optional[int] = None
-    reasoning_tokens: Optional[int] = None
-
-
 @dataclass(frozen=True)
 class _PreparedResponsesRequest:
     """Normalized request data shared by the adapter's request paths."""
@@ -114,6 +107,14 @@ class _PreparedResponsesRequest:
     capture_reasoning: bool
     request_context: _ChatRequestContext
     pdf_slots: tuple[PDFSlot, ...] = ()
+
+
+@dataclass
+class DeepSeekUsage(Usage):
+    """Provider usage with optional native reasoning token details."""
+
+    cached_tokens: Optional[int] = None
+    reasoning_tokens: Optional[int] = None
 
 
 @dataclass
@@ -853,10 +854,10 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             temperature,
             top_p,
         )
-        validate_raw_document_forms(messages)
+        prepared_messages = validate_raw_document_forms(messages)
         request_context = LLMAdapterBase._prepare_chat_request(
             self,
-            preserve_raw_pdf_parts(messages),
+            preserve_raw_pdf_parts(prepared_messages),
             tools,
             tool_choice,
             json_schema,
@@ -895,8 +896,8 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             "max_output_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
-            "tools": self._map_tools(tools),
-            "tool_choice": self._map_tool_choice(
+            "tools": self._map_tools_for_deepseek(tools),
+            "tool_choice": self._map_tool_choice_to_openai_responses(
                 request_context.normalized_tool_choice,
             ),
         }
@@ -1086,26 +1087,13 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
                     if primary_error is None:
                         raise
 
-    @staticmethod
-    async def _safe_pdf_events_async(events, upload_ids: tuple[str, ...]):
-        primary_error = None
-        try:
-            async for event in events:
-                yield DeepSeekAdapter._redact_pdf_event(event, upload_ids)
-        except LLMAPIError as error:
-            primary_error = error
-            raise DeepSeekAdapter._redact_pdf_error(error) from None
-        except BaseException as error:
-            primary_error = error
-            raise
-        finally:
-            close = getattr(events, "aclose", None)
-            if callable(close):
-                try:
-                    await close()
-                except BaseException:
-                    if primary_error is None:
-                        raise
+    async def _safe_pdf_events_async(self, events, upload_ids: tuple[str, ...]):
+        async with self._closing_async_source(events):
+            try:
+                async for event in events:
+                    yield self._redact_pdf_event(event, upload_ids)
+            except LLMAPIError as error:
+                raise DeepSeekAdapter._redact_pdf_error(error) from None
 
     @staticmethod
     def _redact_pdf_event(event: SSEEvent, upload_ids: tuple[str, ...]) -> SSEEvent:
@@ -1333,6 +1321,18 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             replay_items.append({"type": "reasoning", "content": content})
         return tuple(replay_items)
 
+    def _map_tools_for_deepseek(
+        self,
+        tools: Optional[List[ToolSpec]],
+    ) -> Optional[list[dict[str, Any]]]:
+        if tools:
+            for tool in tools:
+                if not isinstance(tool.description, str) or not tool.description.strip():
+                    raise InvalidToolSchemaError(
+                        detail=f"DeepSeek function {tool.name!r} requires a description",
+                    )
+        return self._map_tools_to_openai_responses(tools)
+
     @staticmethod
     def _to_deepseek_responses_input(
         messages: Messages,
@@ -1352,29 +1352,19 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
                 continue
             if isinstance(message, AIMessage):
                 last_assistant_start = len(input_items)
-                if message.content:
-                    input_items.append(
-                        {"role": "assistant", "content": message.content},
-                    )
                 for tool_call in message.tool_calls or []:
                     if not tool_call.call_id:
                         raise ValueError(
                             "DeepSeek function_call history requires a non-empty "
                             "call_id",
                         )
-                    input_items.append(
-                        {
-                            "type": "function_call",
-                            "call_id": tool_call.call_id,
-                            "name": tool_call.name,
-                            "arguments": json.dumps(
-                                tool_call.arguments,
-                                ensure_ascii=False,
-                            ),
-                        },
-                    )
+                input_items.extend(message.to_openai_responses_input())
                 continue
-            if isinstance(message, UserMessage) and message.files:
+            if (
+                isinstance(message, UserMessage)
+                and message.files
+                and any(isinstance(part, DocumentPart) for part in message.files)
+            ):
                 content: list[dict[str, Any]] = [{"type": "input_text", "text": message.content}]
                 for file_index, part in enumerate(message.files):
                     if isinstance(part, DocumentPart):
@@ -1455,68 +1445,34 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
     @staticmethod
     def _normalize_deepseek_usage(raw_usage: Any) -> Optional[DeepSeekUsage]:
         """Normalize confirmed usage counts while retaining omitted values."""
-        if not isinstance(raw_usage, Mapping):
+        usage = normalize_deepseek_usage(raw_usage)
+        if usage is None:
             return None
-
-        def valid_count(value: Any) -> bool:
-            return (
-                isinstance(value, int)
-                and not isinstance(value, bool)
-                and value >= 0
-            )
-
-        counts = tuple(
-            raw_usage.get(field)
-            for field in ("input_tokens", "output_tokens", "total_tokens")
-        )
-        if any(value is not None and not valid_count(value) for value in counts):
-            return None
-        input_tokens, output_tokens, total_tokens = counts
-        if input_tokens is None and output_tokens is None and total_tokens is None:
-            return None
-        if input_tokens is not None and output_tokens is not None:
-            exact_total = input_tokens + output_tokens
-            if total_tokens is not None and total_tokens != exact_total:
-                return None
-            total_tokens = exact_total
-
-        cached_tokens: Optional[int] = None
-        input_details = raw_usage.get("input_tokens_details")
-        if input_details is not None:
-            if not isinstance(input_details, Mapping):
-                return None
-            if "cached_tokens" in input_details:
-                cached_tokens = input_details.get("cached_tokens")
-                if cached_tokens is not None and not valid_count(cached_tokens):
-                    return None
-                if (
-                    cached_tokens is not None
-                    and input_tokens is not None
-                    and cached_tokens > input_tokens
-                ):
-                    return None
-
-        reasoning_tokens: Optional[int] = None
+        reasoning_tokens = None
         output_details = raw_usage.get("output_tokens_details")
         if output_details is not None:
             if not isinstance(output_details, Mapping):
                 return None
             if "reasoning_tokens" in output_details:
                 reasoning_tokens = output_details.get("reasoning_tokens")
-                if reasoning_tokens is not None and not valid_count(reasoning_tokens):
-                    return None
                 if (
                     reasoning_tokens is not None
-                    and output_tokens is not None
-                    and reasoning_tokens > output_tokens
+                    and (
+                        not isinstance(reasoning_tokens, int)
+                        or isinstance(reasoning_tokens, bool)
+                        or reasoning_tokens < 0
+                        or (
+                            usage.output_tokens is not None
+                            and reasoning_tokens > usage.output_tokens
+                        )
+                    )
                 ):
                     return None
-
         return DeepSeekUsage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=total_tokens,
-            cached_tokens=cached_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+            cached_tokens=usage.cached_tokens,
             reasoning_tokens=reasoning_tokens,
         )
 
