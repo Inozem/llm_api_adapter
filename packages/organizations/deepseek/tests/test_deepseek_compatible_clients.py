@@ -617,9 +617,12 @@ def test_async_stream_cancellation_remains_primary_when_close_fails(monkeypatch)
         input=[],
     )
 
-    with pytest.raises(asyncio.CancelledError) as caught:
-        asyncio.run(_collect_async(events))
-    assert caught.value is cancellation
+    async def consume_cancelled_stream():
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await _collect_async(events)
+        assert caught.value is cancellation
+
+    asyncio.run(consume_cancelled_stream())
 
 
 @pytest.mark.unit
