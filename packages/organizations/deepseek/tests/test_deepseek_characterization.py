@@ -1258,4 +1258,3 @@ def test_sync_callback_failure_remains_caller_error_and_closes_stream(deepseek_r
         list(adapter.stream_chat(messages=[UserMessage("hello")], on_delta=on_delta))
     assert caught.value is failure
     assert transport.closed is True
-
