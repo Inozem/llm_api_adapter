@@ -50,6 +50,8 @@ def test_sync_upload_uses_core_multipart_transport(
             self.closed = True
 
     response = Response()
+    sent_requests = []
+    httpx_clients = []
 
     if transport == "requests":
         monkeypatch.setattr(
@@ -58,38 +60,66 @@ def test_sync_upload_uses_core_multipart_transport(
             lambda url, **kwargs: calls.append({"url": url, **kwargs}) or response,
         )
     else:
-        pytest.importorskip("httpx")
+        httpx = pytest.importorskip("httpx")
 
-        class Client:
-            def post(self, url: str, **kwargs: Any) -> Response:
-                calls.append({"url": url, **kwargs})
-                return response
+        def handler(request):
+            sent_requests.append(request)
+            return httpx.Response(200, json={"id": "file_receipt_private"})
 
-            def close(self) -> None:
-                pass
+        def make_client():
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            httpx_clients.append(client)
+            return client
 
         monkeypatch.setattr(
             httpx_transport,
             "_require_httpx",
-            lambda: SimpleNamespace(Client=Client),
+            lambda: SimpleNamespace(
+                Client=make_client,
+                TimeoutException=httpx.TimeoutException,
+                HTTPStatusError=httpx.HTTPStatusError,
+                RequestError=httpx.RequestError,
+            ),
         )
 
     client = DeepSeekResponsesSyncClient("native-secret", transport=transport)
     assert client._upload_pdf(PDF) == "file_receipt_private"
 
-    call = calls[0]
-    assert call["url"] == DEEPSEEK_FILES_URL
-    assert call["headers"] == {"Authorization": "Bearer native-secret"}
-    assert call["timeout"] == 300.0
-    assert call["data"] == [
-        ("purpose", "rich_layout_recognition"),
-        ("expires_after[anchor]", "created_at"),
-        ("expires_after[seconds]", "3600"),
-    ]
-    assert call["files"] == [
-        ("file", ("document.pdf", PDF, "application/pdf")),
-    ]
-    assert response.closed
+    if transport == "requests":
+        call = calls[0]
+        assert call["url"] == DEEPSEEK_FILES_URL
+        assert call["headers"] == {"Authorization": "Bearer native-secret"}
+        assert call["timeout"] == 300.0
+        assert call["data"] == [
+            ("purpose", "rich_layout_recognition"),
+            ("expires_after[anchor]", "created_at"),
+            ("expires_after[seconds]", "3600"),
+        ]
+        assert call["files"] == [
+            ("file", ("document.pdf", PDF, "application/pdf")),
+        ]
+        assert response.closed
+    else:
+        request = sent_requests[0]
+        assert str(request.url) == DEEPSEEK_FILES_URL
+        assert request.method == "POST"
+        assert request.headers["Authorization"] == "Bearer native-secret"
+        assert request.headers["Content-Type"].startswith("multipart/form-data; boundary=")
+        body = request.content
+        purpose = body.index(b'name="purpose"')
+        anchor = body.index(b'name="expires_after[anchor]"')
+        seconds = body.index(b'name="expires_after[seconds]"')
+        file_field = body.index(b'name="file"')
+        assert purpose < anchor < seconds < file_field
+        assert body.index(b"rich_layout_recognition") < file_field
+        assert body.index(b"created_at") < file_field
+        assert body.index(b"3600") < file_field
+        assert b'filename="document.pdf"' in body
+        assert b"application/pdf" in body
+        assert PDF in body
+        assert request.extensions["timeout"]["connect"] == 300.0
+        assert request.extensions["timeout"]["read"] == 300.0
+        assert httpx_clients[0].is_closed
 
 
 @pytest.mark.unit

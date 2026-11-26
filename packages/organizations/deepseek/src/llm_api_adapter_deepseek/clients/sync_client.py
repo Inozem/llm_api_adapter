@@ -16,6 +16,7 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPITokenLimitError,
     LLMAPIUsageLimitError,
 )
+from llm_api_adapter.llms.httpx_transport import HttpxSyncTransport
 from llm_api_adapter.llms.openai_compatible.sync_client import (
     OpenAICompatibleSyncClient,
 )
@@ -102,6 +103,11 @@ class DeepSeekResponsesSyncClient(OpenAICompatibleSyncClient):
             timeout=_FILE_UPLOAD_TIMEOUT if timeout is None else timeout,
         )
         form = _pdf_upload_form(content)
+        if isinstance(self._sync_transport, HttpxSyncTransport):
+            form = _HttpxOrderedMultipartForm(
+                fields=form.fields,
+                files=form.files,
+            )
         try:
             response = self._sync_transport.post_multipart(
                 request,
@@ -439,6 +445,11 @@ def _pdf_upload_form(content: bytes) -> MultipartForm:
             ),
         ),
     )
+
+
+class _HttpxOrderedMultipartForm(MultipartForm):
+    def fields_list(self) -> dict[str, str]:  # type: ignore[override]
+        return dict(self.fields)
 
 
 def _file_id_from_upload(payload: Any) -> str:

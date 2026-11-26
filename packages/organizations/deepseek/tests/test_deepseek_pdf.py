@@ -308,7 +308,12 @@ def test_real_sync_transport_orders_multipart_before_generation(
 
     assert [call["url"].rsplit("/", 1)[-1] for call in provider.calls] == ["files", "responses"]
     upload, generation = provider.calls
-    assert upload["data"] == [
+    upload_fields = (
+        list(upload["data"].items())
+        if backend == "httpx"
+        else upload["data"]
+    )
+    assert upload_fields == [
         ("purpose", "rich_layout_recognition"),
         ("expires_after[anchor]", "created_at"),
         ("expires_after[seconds]", "3600"),
