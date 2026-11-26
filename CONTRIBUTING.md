@@ -228,10 +228,11 @@ python -m pytest -v --import-mode=importlib -m e2e_deepseek --rootdir=. tests/e2
 ```
 
 It runs every applicable shared and package-local E2E contract for the canonical
-`deepseek-flash` profile. Direct document-input scenarios are replaced by
-package-local rejection evidence according to the exact-model exception. The package-local
-DeepSeek suite and the Core discovery/selector checks remain credential-free;
-never add `DEEPSEEK_API_KEY` to those commands.
+`deepseek-flash` profile. The direct profile selects the shared
+[`test_document_bytes_returns_non_empty_response` PDF-bytes scenario](tests/e2e/test_file_uploads.py).
+The DeepSeek package suite and Core discovery/selector checks remain
+credential-free. Never add
+`DEEPSEEK_API_KEY` to those commands.
 
 Run Z.ai's targeted external-package profile only after installing the Z.ai
 package and deliberately configuring its key:
