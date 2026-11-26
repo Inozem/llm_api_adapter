@@ -21,6 +21,7 @@ for source in (str(PACKAGE_ROOT / "src"), str(REPOSITORY_ROOT / "src")):
 
 import llm_api_adapter.adapters.base_adapter as base_adapter_module
 from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
+from llm_api_adapter.errors.llm_api_error import LLMAPIClientError
 import llm_api_adapter_deepseek.adapter as deepseek_adapter_module
 import llm_api_adapter.universal_adapter as universal_module
 from llm_api_adapter.llm_registry.llm_registry import RegistrySpec
@@ -792,6 +793,431 @@ def test_stream_pricing_uses_dispatch_time_across_peak_boundary(
     assert completed[0].cost_total == pytest.approx(
         (25 * 0.006 + 75 * 0.3 + 40 * 1.2) / 1_000_000,
     )
+
+
+def test_public_streams_use_inherited_responses_events_and_isolate_dispatch_time(
+    deepseek_runtime,
+    monkeypatch,
+):
+    adapter = _adapter().adapter
+    dispatch_time = datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(deepseek_adapter_module, "_utc_now", lambda: dispatch_time)
+    event = SSEEvent(
+        event="response.output_text.delta",
+        data={"type": "response.output_text.delta", "delta": "hello"},
+    )
+    terminal = SSEEvent(
+        event="response.completed",
+        data={
+            "type": "response.completed",
+            "response": _priced_deepseek_response("stream", "hello"),
+        },
+    )
+    sync_events = iter((event, terminal))
+    async_events = iter((event, terminal))
+    monkeypatch.setattr(
+        adapter._client,
+        "stream",
+        lambda **kwargs: sync_events,
+    )
+
+    def async_stream(**kwargs):
+        async def events():
+            for item in async_events:
+                yield item
+        return events()
+
+    monkeypatch.setattr(adapter._async_client, "stream", async_stream)
+    inherited_calls = []
+    original = OpenAICompatibleAdapter._consume_responses_stream_event
+
+    def consume(self, raw_event, state, **kwargs):
+        inherited_calls.append(raw_event.event)
+        return original(self, raw_event, state, **kwargs)
+
+    monkeypatch.setattr(
+        OpenAICompatibleAdapter,
+        "_consume_responses_stream_event",
+        consume,
+    )
+    from llm_api_adapter.adapters.openai_compatible.responses.streaming import (
+        _ResponsesStreamingMixin,
+    )
+
+    async_inherited_calls = []
+    original_async = _ResponsesStreamingMixin._consume_responses_stream_event_async
+
+    async def consume_async(self, raw_event, state, **kwargs):
+        async_inherited_calls.append(raw_event.event)
+        async for chunk in original_async(self, raw_event, state, **kwargs):
+            yield chunk
+
+    monkeypatch.setattr(
+        _ResponsesStreamingMixin,
+        "_consume_responses_stream_event_async",
+        consume_async,
+    )
+
+    sync_callback_order = []
+    sync_chunks = adapter.stream_chat(
+        [UserMessage("hello")],
+        on_delta=lambda text: sync_callback_order.append(("delta", text)),
+        on_done=lambda response: sync_callback_order.append(
+            ("done", response.content),
+        ),
+    )
+    assert next(sync_chunks) == "hello"
+    assert deepseek_adapter_module._DEEPSEEK_DISPATCH_TIME.get() is None
+    with pytest.raises(StopIteration):
+        next(sync_chunks)
+    assert sync_callback_order == [("delta", "hello"), ("done", "hello")]
+    assert inherited_calls == ["response.output_text.delta"]
+
+    async def consume_async_stream():
+        async_callback_order = []
+
+        async def on_delta(text):
+            async_callback_order.append(("delta", text))
+
+        async def on_done(response):
+            async_callback_order.append(("done", response.content))
+
+        chunks = adapter.astream_chat(
+            [UserMessage("hello")],
+            on_delta=on_delta,
+            on_done=on_done,
+        )
+        assert await chunks.__anext__() == "hello"
+        assert deepseek_adapter_module._DEEPSEEK_DISPATCH_TIME.get() is None
+        with pytest.raises(StopAsyncIteration):
+            await chunks.__anext__()
+        assert async_callback_order == [("delta", "hello"), ("done", "hello")]
+
+    asyncio.run(consume_async_stream())
+    assert async_inherited_calls == [
+        "response.output_text.delta",
+    ]
+
+
+def test_async_public_stream_close_closes_native_events_without_completion(
+    deepseek_runtime,
+    monkeypatch,
+):
+    adapter = _adapter().adapter
+    closed = []
+    completed = []
+
+    def async_stream(**kwargs):
+        async def events():
+            try:
+                yield SSEEvent(
+                    event="response.output_text.delta",
+                    data={
+                        "type": "response.output_text.delta",
+                        "delta": "partial",
+                    },
+                )
+                await asyncio.Event().wait()
+            finally:
+                closed.append(True)
+
+        return events()
+
+    monkeypatch.setattr(adapter._async_client, "stream", async_stream)
+
+    async def consume_then_close():
+        stream = adapter.astream_chat(
+            [UserMessage("hello")],
+            on_done=completed.append,
+        )
+        assert await stream.__anext__() == "partial"
+        assert deepseek_adapter_module._DEEPSEEK_DISPATCH_TIME.get() is None
+        await stream.aclose()
+        assert closed == [True]
+
+    asyncio.run(consume_then_close())
+    assert closed == [True]
+    assert completed == []
+
+
+def test_sync_public_stream_closes_injected_source_once(
+    deepseek_runtime,
+    monkeypatch,
+):
+    adapter = _adapter().adapter
+
+    class CloseableEvents:
+        def __init__(self):
+            self.events = iter((SSEEvent(
+                event="response.output_text.delta",
+                data={"type": "response.output_text.delta", "delta": "partial"},
+            ),))
+            self.close_count = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.events)
+
+        def close(self):
+            self.close_count += 1
+
+    source = CloseableEvents()
+    monkeypatch.setattr(adapter._client, "stream", lambda **kwargs: source)
+    stream = adapter.stream_chat([UserMessage("hello")])
+    assert next(stream) == "partial"
+    stream.close()
+    assert source.close_count == 1
+
+
+@pytest.mark.parametrize("first_terminal", ["response.completed", "response.incomplete"])
+def test_native_first_terminal_blocks_late_text_and_conflicting_terminal(
+    deepseek_runtime,
+    monkeypatch,
+    first_terminal,
+):
+    adapter = _adapter().adapter
+    success_response = _priced_deepseek_response("first", "before terminal")
+    incomplete_response = {
+        **_priced_deepseek_response("incomplete", "partial"),
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+    }
+    first_response = (
+        success_response
+        if first_terminal == "response.completed"
+        else incomplete_response
+    )
+    second_terminal = (
+        "response.incomplete"
+        if first_terminal == "response.completed"
+        else "response.completed"
+    )
+    second_response = (
+        incomplete_response
+        if second_terminal == "response.incomplete"
+        else success_response
+    )
+    events = [
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"type": "response.output_text.delta", "delta": "before"},
+        ),
+        SSEEvent(
+            event=first_terminal,
+            data={"type": first_terminal, "response": first_response},
+        ),
+        SSEEvent(
+            event="response.output_text.delta",
+            data={"type": "response.output_text.delta", "delta": "late"},
+        ),
+        SSEEvent(
+            event=second_terminal,
+            data={"type": second_terminal, "response": second_response},
+        ),
+    ]
+    monkeypatch.setattr(adapter._client, "stream", lambda **kwargs: iter(events))
+    completed = []
+
+    if first_terminal == "response.completed":
+        assert list(adapter.stream_chat(
+            [UserMessage("hello")], on_done=completed.append,
+        )) == ["before"]
+        assert [response.content for response in completed] == ["before terminal"]
+    else:
+        with pytest.raises(LLMAPIClientError, match="ended incomplete"):
+            list(adapter.stream_chat(
+                [UserMessage("hello")], on_done=completed.append,
+            ))
+        assert completed == []
+
+
+def test_native_delta_null_is_ignored_and_malformed_delta_keeps_native_error(
+    deepseek_runtime,
+    monkeypatch,
+):
+    adapter = _adapter().adapter
+    terminal = SSEEvent(
+        event="response.completed",
+        data={
+            "type": "response.completed",
+            "response": _priced_deepseek_response("empty", "not emitted"),
+        },
+    )
+    null_delta = SSEEvent(
+        event="response.output_text.delta",
+        data={"type": "response.output_text.delta", "delta": None},
+    )
+    monkeypatch.setattr(
+        adapter._client,
+        "stream",
+        lambda **kwargs: iter((null_delta, terminal)),
+    )
+    assert list(adapter.stream_chat([UserMessage("hello")])) == []
+
+    malformed_delta = SSEEvent(
+        event="response.output_text.delta",
+        data={"type": "response.output_text.delta", "delta": 7},
+    )
+    monkeypatch.setattr(
+        adapter._client,
+        "stream",
+        lambda **kwargs: iter((malformed_delta, terminal)),
+    )
+    with pytest.raises(
+        LLMAPIClientError,
+        match="DeepSeek Responses output_text delta must be a string",
+    ):
+        list(adapter.stream_chat([UserMessage("hello")]))
+
+
+def test_interleaved_sync_streams_keep_distinct_dispatch_times(
+    deepseek_runtime,
+    monkeypatch,
+):
+    adapter = _adapter().adapter
+    dispatch_times = iter((
+        datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc),
+    ))
+    monkeypatch.setattr(
+        deepseek_adapter_module, "_utc_now", lambda: next(dispatch_times),
+    )
+    streams = iter((
+        [
+            SSEEvent(
+                event="response.output_text.delta",
+                data={"type": "response.output_text.delta", "delta": "one"},
+            ),
+            SSEEvent(
+                event="response.completed",
+                data={
+                    "type": "response.completed",
+                    "response": _priced_deepseek_response("one", "one"),
+                },
+            ),
+        ],
+        [
+            SSEEvent(
+                event="response.output_text.delta",
+                data={"type": "response.output_text.delta", "delta": "two"},
+            ),
+            SSEEvent(
+                event="response.completed",
+                data={
+                    "type": "response.completed",
+                    "response": _priced_deepseek_response("two", "two"),
+                },
+            ),
+        ],
+    ))
+    monkeypatch.setattr(adapter._client, "stream", lambda **kwargs: iter(next(streams)))
+    callback_times = []
+    completed = []
+    first = adapter.stream_chat(
+        [UserMessage("one")],
+        on_done=completed.append,
+        on_delta=lambda _text: callback_times.append(
+            deepseek_adapter_module._DEEPSEEK_DISPATCH_TIME.get(),
+        ),
+    )
+    second = adapter.stream_chat(
+        [UserMessage("two")],
+        on_done=completed.append,
+        on_delta=lambda _text: callback_times.append(
+            deepseek_adapter_module._DEEPSEEK_DISPATCH_TIME.get(),
+        ),
+    )
+    assert next(first) == "one"
+    assert deepseek_adapter_module._DEEPSEEK_DISPATCH_TIME.get() is None
+    assert next(second) == "two"
+    assert deepseek_adapter_module._DEEPSEEK_DISPATCH_TIME.get() is None
+    assert callback_times == [
+        datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc),
+    ]
+    assert list(first) == []
+    assert list(second) == []
+    assert [response.content for response in completed] == ["one", "two"]
+    peak_input = (25 * 0.006 + 75 * 0.3) / 1_000_000
+    off_peak_input = (25 * 0.003 + 75 * 0.15) / 1_000_000
+    assert completed[0].cost_input == pytest.approx(peak_input)
+    assert completed[1].cost_input == pytest.approx(off_peak_input)
+    first.close()
+    second.close()
+
+
+def test_interleaved_async_streams_keep_distinct_dispatch_times(
+    deepseek_runtime,
+    monkeypatch,
+):
+    adapter = _adapter().adapter
+    dispatch_times = iter((
+        datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc),
+    ))
+    monkeypatch.setattr(
+        deepseek_adapter_module, "_utc_now", lambda: next(dispatch_times),
+    )
+    streams = iter(("one", "two"))
+
+    def async_stream(**kwargs):
+        text = next(streams)
+
+        async def events():
+            yield SSEEvent(
+                event="response.output_text.delta",
+                data={"type": "response.output_text.delta", "delta": text},
+            )
+            yield SSEEvent(
+                event="response.completed",
+                data={
+                    "type": "response.completed",
+                    "response": _priced_deepseek_response(text, text),
+                },
+            )
+
+        return events()
+
+    monkeypatch.setattr(adapter._async_client, "stream", async_stream)
+    callback_times = []
+    completed = []
+
+    async def consume():
+        first = adapter.astream_chat(
+            [UserMessage("one")],
+            on_done=completed.append,
+            on_delta=lambda _text: callback_times.append(
+                deepseek_adapter_module._DEEPSEEK_DISPATCH_TIME.get(),
+            ),
+        )
+        second = adapter.astream_chat(
+            [UserMessage("two")],
+            on_done=completed.append,
+            on_delta=lambda _text: callback_times.append(
+                deepseek_adapter_module._DEEPSEEK_DISPATCH_TIME.get(),
+            ),
+        )
+        assert await first.__anext__() == "one"
+        assert deepseek_adapter_module._DEEPSEEK_DISPATCH_TIME.get() is None
+        assert await second.__anext__() == "two"
+        assert deepseek_adapter_module._DEEPSEEK_DISPATCH_TIME.get() is None
+        with pytest.raises(StopAsyncIteration):
+            await first.__anext__()
+        with pytest.raises(StopAsyncIteration):
+            await second.__anext__()
+
+    asyncio.run(consume())
+    assert callback_times == [
+        datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc),
+    ]
+    assert [response.content for response in completed] == ["one", "two"]
+    peak_input = (25 * 0.006 + 75 * 0.3) / 1_000_000
+    off_peak_input = (25 * 0.003 + 75 * 0.15) / 1_000_000
+    assert completed[0].cost_input == pytest.approx(peak_input)
+    assert completed[1].cost_input == pytest.approx(off_peak_input)
 
 
 def test_sync_callback_failure_remains_caller_error_and_closes_stream(deepseek_runtime):

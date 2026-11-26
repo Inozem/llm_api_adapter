@@ -38,6 +38,7 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPIClientError,
 )
 from llm_api_adapter.errors.config_errors import LLMConfigError
+from llm_api_adapter.llms.transports import SSEEvent
 from llm_api_adapter.models.messages.chat_message import (
     AIMessage,
     Message,
@@ -52,6 +53,7 @@ from llm_api_adapter.models.tools import ToolSpec
 
 from .clients.sync_client import (
     DEEPSEEK_RESPONSES_URL,
+    _BoundEventSource,
     DeepSeekResponsesSyncClient,
 )
 from .clients.async_client import DeepSeekResponsesAsyncClient
@@ -83,15 +85,6 @@ logger = logging.getLogger(__name__)
 def _utc_now() -> datetime:
     """Return an aware UTC instant for time-of-use pricing."""
     return datetime.now(timezone.utc)
-
-
-def _reset_dispatch_time(token: Any) -> None:
-    """Reset a request context token when the async generator context permits it."""
-    try:
-        _DEEPSEEK_DISPATCH_TIME.reset(token)
-    except ValueError:
-        # Async-generator cancellation may finalize in a different context.
-        pass
 
 
 @dataclass
@@ -441,14 +434,19 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             buffer_chars=buffer_chars,
             capture_reasoning=prepared.capture_reasoning,
         )
-        dispatch_token = _DEEPSEEK_DISPATCH_TIME.set(_utc_now())
+        dispatch_time = _utc_now()
+        events = None
+        runner = None
+        primary_error = None
         try:
-            events = self._client.stream(
-                model=self.model,
-                timeout=timeout_s,
-                **prepared.parameters,
+            events = _BoundEventSource(
+                self._client.stream(
+                    model=self.model,
+                    timeout=timeout_s,
+                    **prepared.parameters,
+                ),
             )
-            yield from self._run_sync_stream(
+            runner = self._run_sync_stream(
                 events,
                 state,
                 consume_event=self._consume_stream_event,
@@ -462,8 +460,30 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
                 capture_reasoning=prepared.capture_reasoning,
                 on_reasoning=on_reasoning,
             )
+            while True:
+                token = _DEEPSEEK_DISPATCH_TIME.set(dispatch_time)
+                try:
+                    text = next(runner)
+                except StopIteration:
+                    break
+                finally:
+                    _DEEPSEEK_DISPATCH_TIME.reset(token)
+                yield text
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            _reset_dispatch_time(dispatch_token)
+            close_errors = []
+            for stream in (runner, events):
+                close = getattr(stream, "close", None)
+                if close is None:
+                    continue
+                try:
+                    close()
+                except BaseException as error:
+                    close_errors.append(error)
+            if primary_error is None and close_errors:
+                raise close_errors[0]
 
     async def astream_chat(
         self,
@@ -507,14 +527,17 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             buffer_chars=buffer_chars,
             capture_reasoning=prepared.capture_reasoning,
         )
-        dispatch_token = _DEEPSEEK_DISPATCH_TIME.set(_utc_now())
+        dispatch_time = _utc_now()
+        events = None
+        runner = None
+        primary_error = None
         try:
             events = self._async_client.stream(
                 model=self.model,
                 timeout=timeout_s,
                 **prepared.parameters,
             )
-            async for text in self._run_async_stream(
+            runner = self._run_async_stream(
                 events,
                 state,
                 consume_event=self._consume_stream_event_async,
@@ -527,10 +550,31 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
                 on_chunk=on_chunk,
                 capture_reasoning=prepared.capture_reasoning,
                 on_reasoning=on_reasoning,
-            ):
+            )
+            while True:
+                token = _DEEPSEEK_DISPATCH_TIME.set(dispatch_time)
+                try:
+                    text = await runner.__anext__()
+                except StopAsyncIteration:
+                    break
+                finally:
+                    _DEEPSEEK_DISPATCH_TIME.reset(token)
                 yield text
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            _reset_dispatch_time(dispatch_token)
+            close_errors = []
+            for stream in (runner, events):
+                close = getattr(stream, "aclose", None)
+                if close is None:
+                    continue
+                try:
+                    await close()
+                except BaseException as error:
+                    close_errors.append(error)
+            if primary_error is None and close_errors:
+                raise close_errors[0]
 
     def _consume_stream_event(
         self,
@@ -541,17 +585,33 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
         on_delta: Optional[OnDelta],
         on_reasoning: Optional[OnReasoning],
     ) -> Iterator[str]:
+        event_type = self._stream_event_type(event)
+        if state.terminal_event is not None or not isinstance(event_type, str):
+            return
         self._record_deepseek_reasoning_event(
             event,
             state,
             on_reasoning=on_reasoning,
         )
-        delta = DeepSeekResponsesStreamParser.consume_event(event, state)
-        if delta is not None:
+        delta = DeepSeekResponsesStreamParser.consume_event(
+            event,
+            state,
+            record_text_delta=event_type != "response.output_text.delta",
+        )
+        if delta is not None and event_type == "response.output_text.delta":
+            yield from super()._consume_responses_stream_event(
+                SSEEvent(
+                    event=event_type,
+                    data={"type": event_type, "delta": delta},
+                ),
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=None,
+            )
+        elif delta is not None:
             yield from self._emit_stream_chunks(
-                state.chunk_buffer.add(delta),
-                on_chunk,
-                on_delta,
+                state.chunk_buffer.add(delta), on_chunk, on_delta,
             )
 
     async def _consume_stream_event_async(
@@ -563,19 +623,45 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
         on_delta: Optional[AsyncOnDelta],
         on_reasoning: Optional[AsyncOnReasoning],
     ) -> AsyncIterator[str]:
+        event_type = self._stream_event_type(event)
+        if state.terminal_event is not None or not isinstance(event_type, str):
+            return
         await self._record_deepseek_reasoning_event_async(
             event,
             state,
             on_reasoning=on_reasoning,
         )
-        delta = DeepSeekResponsesStreamParser.consume_event(event, state)
-        if delta is not None:
+        delta = DeepSeekResponsesStreamParser.consume_event(
+            event,
+            state,
+            record_text_delta=event_type != "response.output_text.delta",
+        )
+        if delta is not None and event_type == "response.output_text.delta":
+            async for text in super()._consume_responses_stream_event_async(
+                SSEEvent(
+                    event=event_type,
+                    data={"type": event_type, "delta": delta},
+                ),
+                state,
+                on_chunk=on_chunk,
+                on_delta=on_delta,
+                on_reasoning=None,
+            ):
+                yield text
+        elif delta is not None:
             async for text in self._emit_async_stream_chunks(
                 state.chunk_buffer.add(delta),
                 on_chunk,
                 on_delta,
             ):
                 yield text
+
+    @staticmethod
+    def _stream_event_type(event: Any) -> Any:
+        payload = getattr(event, "data", None)
+        return getattr(event, "event", None) or (
+            payload.get("type") if isinstance(payload, Mapping) else None
+        )
 
     def _finalize_stream(
         self,

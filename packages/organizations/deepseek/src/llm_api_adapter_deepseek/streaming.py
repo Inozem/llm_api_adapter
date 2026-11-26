@@ -63,6 +63,8 @@ class DeepSeekResponsesStreamParser:
         cls,
         event: SSEEvent,
         state: DeepSeekResponsesStreamState,
+        *,
+        record_text_delta: bool = True,
     ) -> Optional[str]:
         """Record one event and return one visible text delta, if present."""
         payload = event.data if isinstance(event.data, Mapping) else {}
@@ -100,7 +102,8 @@ class DeepSeekResponsesStreamParser:
                     detail="DeepSeek Responses output_text delta must be a string",
                 )
             if delta:
-                state.text_parts.append(delta)
+                if record_text_delta:
+                    state.text_parts.append(delta)
                 cls._record_output_text(
                     payload,
                     delta,
