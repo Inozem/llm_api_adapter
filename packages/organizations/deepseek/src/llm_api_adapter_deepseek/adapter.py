@@ -6,12 +6,12 @@ import base64
 import binascii
 from copy import deepcopy
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time, timezone
 import json
 import logging
 from math import isfinite
-from typing import Any, AsyncIterator, Iterator, List, Mapping, Optional
+from typing import Any, AsyncIterator, ClassVar, Iterator, List, Mapping, Optional
 from urllib.parse import urlparse
 import warnings
 
@@ -27,14 +27,15 @@ from llm_api_adapter.adapters.base_adapter import (
     OnDone,
     OnReasoning,
     OnToolCall,
+    _ChatRequestContext,
 )
+from llm_api_adapter.adapters.openai_compatible.adapter import OpenAICompatibleAdapter
 from llm_api_adapter.adapters.structured_output import (
     validate_core_portable_schema,
 )
 from llm_api_adapter.errors.llm_api_error import (
     InvalidToolSchemaError,
     LLMAPIClientError,
-    LLMAPIError,
 )
 from llm_api_adapter.errors.config_errors import LLMConfigError
 from llm_api_adapter.models.messages.chat_message import (
@@ -72,6 +73,10 @@ _DEEPSEEK_DISPATCH_TIME: ContextVar[Optional[datetime]] = ContextVar(
     "deepseek_dispatch_time",
     default=None,
 )
+_DEEPSEEK_COMPLETED_INVOCATION: ContextVar[Optional["_CompletedResponsesInvocation"]] = ContextVar(
+    "deepseek_completed_invocation",
+    default=None,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -106,13 +111,56 @@ class _PreparedResponsesRequest:
     effective_schema: Optional[dict]
     response_model: Optional[Any]
     capture_reasoning: bool
+    request_context: _ChatRequestContext
+
+
+@dataclass
+class _CompletedResponsesInvocation:
+    prepared: _PreparedResponsesRequest
+    dispatch_time: Optional[datetime] = None
+
+
+class _DeepSeekSyncRequestView:
+    def __init__(self, client: DeepSeekResponsesSyncClient):
+        self._client = client
+
+    @staticmethod
+    def _should_use_responses_api(model: str) -> bool:
+        del model
+        return True
+
+    def complete(self, model: str, timeout: float | None = None, **parameters: Any):
+        invocation = _DEEPSEEK_COMPLETED_INVOCATION.get()
+        if invocation is None:
+            raise RuntimeError("DeepSeek completed execution requires prepared state")
+        invocation.dispatch_time = _utc_now()
+        return self._client.create(model=model, timeout=timeout, **parameters)
+
+
+class _DeepSeekAsyncRequestView:
+    def __init__(self, client: DeepSeekResponsesAsyncClient):
+        self._client = client
+
+    @staticmethod
+    def _should_use_responses_api(model: str) -> bool:
+        del model
+        return True
+
+    async def complete(self, model: str, timeout: float | None = None, **parameters: Any):
+        invocation = _DEEPSEEK_COMPLETED_INVOCATION.get()
+        if invocation is None:
+            raise RuntimeError("DeepSeek completed execution requires prepared state")
+        invocation.dispatch_time = _utc_now()
+        return await self._client.create(model=model, timeout=timeout, **parameters)
 
 
 @dataclass(repr=False)
-class DeepSeekAdapter(LLMAdapterBase):
+class DeepSeekAdapter(OpenAICompatibleAdapter):
     """Map Core's text-chat contract to DeepSeek Responses requests."""
 
     company: str = "deepseek"
+    base_url: ClassVar[str] = ""
+    api_variant: ClassVar[str | None] = None
     endpoint: str = DEEPSEEK_RESPONSES_URL
     _client: DeepSeekResponsesSyncClient = field(
         init=False,
@@ -126,7 +174,7 @@ class DeepSeekAdapter(LLMAdapterBase):
     )
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        LLMAdapterBase.__post_init__(self)
         self._client = DeepSeekResponsesSyncClient(
             api_key=self.api_key,
             transport=self.transport,
@@ -136,6 +184,116 @@ class DeepSeekAdapter(LLMAdapterBase):
             api_key=self.api_key,
             endpoint=self.endpoint,
         )
+
+    def _create_sync_client(self) -> "_DeepSeekSyncRequestView":
+        return _DeepSeekSyncRequestView(self._client)
+
+    def _create_async_client(self) -> "_DeepSeekAsyncRequestView":
+        return _DeepSeekAsyncRequestView(self._async_client)
+
+    def _validate_sampling_parameters(
+        self,
+        temperature: float,
+        top_p: float,
+    ) -> tuple[float, float]:
+        if _DEEPSEEK_COMPLETED_INVOCATION.get() is not None:
+            return temperature, top_p
+        return LLMAdapterBase._validate_sampling_parameters(
+            self,
+            temperature,
+            top_p,
+        )
+
+    def _prepare_chat_request(
+        self,
+        messages: Any,
+        tools: Optional[List[ToolSpec]],
+        tool_choice: Any,
+        json_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> _ChatRequestContext:
+        invocation = _DEEPSEEK_COMPLETED_INVOCATION.get()
+        if invocation is not None:
+            return invocation.prepared.request_context
+        return LLMAdapterBase._prepare_chat_request(
+            self,
+            messages,
+            tools,
+            tool_choice,
+            json_schema,
+            response_model,
+        )
+
+    def _build_chat_params(
+        self,
+        *,
+        normalized_messages: Messages,
+        use_responses_api: bool,
+        max_tokens: Optional[int],
+        temperature: float,
+        top_p: float,
+        reasoning_level: Optional[str | int],
+        tools: Optional[List[ToolSpec]],
+        normalized_tool_choice: Optional[str],
+        parallel_tool_calls: Optional[bool],
+        previous_response: Optional[ChatResponse],
+        effective_schema: Optional[dict],
+        capture_reasoning: bool,
+    ) -> dict[str, Any]:
+        if not use_responses_api:
+            raise AssertionError("DeepSeek uses the Responses API")
+        invocation = _DEEPSEEK_COMPLETED_INVOCATION.get()
+        if invocation is None:
+            raise RuntimeError("DeepSeek completed execution requires prepared state")
+        return {"model": self.model, **invocation.prepared.parameters}
+
+    def _normalize_responses_response(
+        self,
+        response: dict[str, Any],
+        *,
+        capture_reasoning: bool,
+    ) -> ChatResponse:
+        chat_response = self._parse_response(
+            response,
+            capture_reasoning=capture_reasoning,
+        )
+        self._store_reasoning_replay(chat_response, response)
+        return chat_response
+
+    def handle_error(
+        self,
+        error: Exception,
+        error_message: str | None = None,
+    ) -> None:
+        LLMAdapterBase.handle_error(self, error, error_message)
+
+    def _finalize_chat_response(
+        self,
+        chat_response: ChatResponse,
+        *,
+        effective_schema: Optional[dict],
+        response_model: Optional[Any],
+    ) -> ChatResponse:
+        invocation = _DEEPSEEK_COMPLETED_INVOCATION.get()
+        if invocation is None or invocation.dispatch_time is None:
+            return super()._finalize_chat_response(
+                chat_response,
+                effective_schema=effective_schema,
+                response_model=response_model,
+            )
+
+        token = _DEEPSEEK_DISPATCH_TIME.set(invocation.dispatch_time)
+        try:
+            return super()._finalize_chat_response(
+                chat_response,
+                effective_schema=effective_schema,
+                response_model=response_model,
+            )
+        finally:
+            _DEEPSEEK_DISPATCH_TIME.reset(token)
+
+    def __repr__(self) -> str:
+        return LLMAdapterBase.__repr__(self)
 
     def chat(
         self,
@@ -154,7 +312,6 @@ class DeepSeekAdapter(LLMAdapterBase):
         *,
         capture_reasoning: bool = False,
     ) -> ChatResponse:
-        """Create one normalized response through ``POST /responses``."""
         prepared = self._prepare_responses_parameters(
             messages=messages,
             max_tokens=max_tokens,
@@ -169,28 +326,26 @@ class DeepSeekAdapter(LLMAdapterBase):
             response_model=response_model,
             capture_reasoning=capture_reasoning,
         )
-        dispatch_token = None
+        invocation = _CompletedResponsesInvocation(prepared)
+        token = _DEEPSEEK_COMPLETED_INVOCATION.set(invocation)
         try:
-            dispatch_token = _DEEPSEEK_DISPATCH_TIME.set(_utc_now())
-            response = self._client.create(
-                model=self.model,
-                timeout=timeout_s,
-                **prepared.parameters,
+            return super().chat(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                timeout_s=timeout_s,
+                tools=tools,
+                tool_choice=tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
+                previous_response=previous_response,
+                json_schema=json_schema,
+                response_model=response_model,
+                capture_reasoning=capture_reasoning,
             )
-            return self._finalize_deepseek_chat_response(
-                response,
-                effective_schema=prepared.effective_schema,
-                response_model=prepared.response_model,
-                capture_reasoning=prepared.capture_reasoning,
-            )
-        except LLMAPIError as error:
-            self.handle_error(error)
-        except Exception as error:
-            error_message = getattr(error, "text", None) or str(error)
-            self.handle_error(error=error, error_message=error_message)
         finally:
-            if dispatch_token is not None:
-                _reset_dispatch_time(dispatch_token)
+            _DEEPSEEK_COMPLETED_INVOCATION.reset(token)
 
     async def achat(
         self,
@@ -209,7 +364,6 @@ class DeepSeekAdapter(LLMAdapterBase):
         *,
         capture_reasoning: bool = False,
     ) -> ChatResponse:
-        """Create one normalized response through Core's async transport."""
         prepared = self._prepare_responses_parameters(
             messages=messages,
             max_tokens=max_tokens,
@@ -224,28 +378,26 @@ class DeepSeekAdapter(LLMAdapterBase):
             response_model=response_model,
             capture_reasoning=capture_reasoning,
         )
-        dispatch_token = None
+        invocation = _CompletedResponsesInvocation(prepared)
+        token = _DEEPSEEK_COMPLETED_INVOCATION.set(invocation)
         try:
-            dispatch_token = _DEEPSEEK_DISPATCH_TIME.set(_utc_now())
-            response = await self._async_client.create(
-                model=self.model,
-                timeout=timeout_s,
-                **prepared.parameters,
+            return await super().achat(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                reasoning_level=reasoning_level,
+                timeout_s=timeout_s,
+                tools=tools,
+                tool_choice=tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
+                previous_response=previous_response,
+                json_schema=json_schema,
+                response_model=response_model,
+                capture_reasoning=capture_reasoning,
             )
-            return self._finalize_deepseek_chat_response(
-                response,
-                effective_schema=prepared.effective_schema,
-                response_model=prepared.response_model,
-                capture_reasoning=prepared.capture_reasoning,
-            )
-        except LLMAPIError as error:
-            self.handle_error(error)
-        except Exception as error:
-            error_message = getattr(error, "text", None) or str(error)
-            self.handle_error(error=error, error_message=error_message)
         finally:
-            if dispatch_token is not None:
-                _reset_dispatch_time(dispatch_token)
+            _DEEPSEEK_COMPLETED_INVOCATION.reset(token)
 
     def stream_chat(
         self,
@@ -513,8 +665,13 @@ class DeepSeekAdapter(LLMAdapterBase):
         """Normalize Core messages and supported text-request parameters."""
         self._validate_capability_preflight(parallel_tool_calls)
         reasoning_replay = self._replay_from_previous_response(previous_response)
-        temperature, top_p = self._validate_sampling_parameters(temperature, top_p)
-        request_context = self._prepare_chat_request(
+        temperature, top_p = LLMAdapterBase._validate_sampling_parameters(
+            self,
+            temperature,
+            top_p,
+        )
+        request_context = LLMAdapterBase._prepare_chat_request(
+            self,
             messages,
             tools,
             tool_choice,
@@ -533,6 +690,10 @@ class DeepSeekAdapter(LLMAdapterBase):
             effective_schema = validate_core_portable_schema(
                 effective_schema,
                 provider="deepseek",
+            )
+            request_context = replace(
+                request_context,
+                effective_schema=effective_schema,
             )
         parameters: dict[str, Any] = {
             "input": self._to_deepseek_responses_input(
@@ -572,6 +733,7 @@ class DeepSeekAdapter(LLMAdapterBase):
             effective_schema=effective_schema,
             response_model=request_context.response_model,
             capture_reasoning=capture_reasoning,
+            request_context=request_context,
         )
 
     def _reasoning_level_for_function_tool_request(
@@ -946,28 +1108,6 @@ class DeepSeekAdapter(LLMAdapterBase):
             cached_tokens=cached_tokens,
             reasoning_tokens=reasoning_tokens,
         )
-
-    def _finalize_deepseek_chat_response(
-        self,
-        response: dict[str, Any],
-        *,
-        effective_schema: Optional[dict],
-        response_model: Optional[Any],
-        capture_reasoning: bool,
-    ) -> ChatResponse:
-        """Parse and run Core structured-output/pricing finalization."""
-        chat_response = self._parse_response(
-            response,
-            capture_reasoning=capture_reasoning,
-        )
-        self._store_reasoning_replay(chat_response, response)
-        self._prepare_structured_output_response(
-            chat_response,
-            effective_schema,
-            response_model,
-        )
-        self._apply_response_pricing(chat_response)
-        return chat_response
 
     def _apply_response_pricing(self, chat_response: ChatResponse) -> None:
         """Pass verified dispatch-time rates to shared token accounting."""
