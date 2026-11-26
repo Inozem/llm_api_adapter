@@ -1,20 +1,30 @@
-"""DeepSeek sync clients must use Core's compatible request engines."""
+"""DeepSeek sync and async clients must use Core's compatible request engines."""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 import requests
 
-from llm_api_adapter.errors.llm_api_error import LLMAPIRateLimitError
+from llm_api_adapter.errors.llm_api_error import (
+    LLMAPIClientError,
+    LLMAPIRateLimitError,
+)
 from llm_api_adapter.llms.openai_compatible.sync_client import (
     OpenAICompatibleSyncClient,
+)
+from llm_api_adapter.llms.openai_compatible.async_client import (
+    OpenAICompatibleAsyncClient,
 )
 from llm_api_adapter.llms.transports import JSONResponse, SSEEvent, TransportRequest
 from llm_api_adapter_deepseek.clients.sync_client import (
     DEEPSEEK_RESPONSES_URL,
     DeepSeekResponsesSyncClient,
+)
+from llm_api_adapter_deepseek.clients.async_client import (
+    DeepSeekResponsesAsyncClient,
 )
 
 
@@ -338,4 +348,393 @@ def test_httpx_http_error_uses_native_mapper_after_inheritance(monkeypatch):
 
     with pytest.raises(LLMAPIRateLimitError, match="slow"):
         client.create(model="deepseek-flash", input=[])
+
+
+@pytest.mark.unit
+def test_async_client_directly_inherits_and_runs_core_json_engine(monkeypatch):
+    assert DeepSeekResponsesAsyncClient.__bases__ == (OpenAICompatibleAsyncClient,)
+    calls = []
+    dispatches = []
+
+    async def request(url, **kwargs):
+        dispatches.append((url, kwargs))
+        return {"id": "resp_async"}
+
+    monkeypatch.setattr(
+        "llm_api_adapter_deepseek.clients.async_client.async_request",
+        request,
+    )
+    inherited_send = OpenAICompatibleAsyncClient._send_request
+
+    async def trace_send(self, url, payload, timeout=None):
+        calls.append((self, url, payload, timeout))
+        return await inherited_send(self, url, payload, timeout)
+
+    monkeypatch.setattr(OpenAICompatibleAsyncClient, "_send_request", trace_send)
+    endpoint = "https://gateway.example/v1/responses"
+    client = DeepSeekResponsesAsyncClient("test-key", endpoint=endpoint)
+    assert not hasattr(client, "_sync_transport")
+
+    result = asyncio.run(
+        client.create(model="deepseek-flash", input=[], timeout=2.5),
+    )
+
+    assert result == {"id": "resp_async"}
+    assert calls == [
+        (client, endpoint, {"model": "deepseek-flash", "input": []}, 2.5),
+    ]
+    assert dispatches[0][0] == endpoint
+    assert dispatches[0][1]["payload"] == {
+        "model": "deepseek-flash", "input": [],
+    }
+    assert dispatches[0][1]["headers"] == {
+        "Authorization": "Bearer test-key",
+        "Content-Type": "application/json",
+    }
+    assert dispatches[0][1]["http_error_handler"] is client._handle_http_error
+
+
+@pytest.mark.unit
+def test_async_client_runs_core_sse_engine_with_immediate_helper_and_snapshot(
+    monkeypatch,
+):
+    dispatches = []
+    engine_calls = []
+    closed = []
+
+    class Source:
+        def __init__(self):
+            self._events = iter([
+                SSEEvent(event="response.output_text.delta", data={"delta": "hello"}),
+            ])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                raise StopAsyncIteration
+
+        async def aclose(self):
+            closed.append("closed")
+
+    source = Source()
+
+    def stream_request(url, **kwargs):
+        dispatches.append((url, kwargs))
+        return source
+
+    monkeypatch.setattr(
+        "llm_api_adapter_deepseek.clients.async_client.async_stream_request",
+        stream_request,
+    )
+    inherited_stream = OpenAICompatibleAsyncClient._stream_request
+
+    async def trace_stream(self, url, payload, timeout=None):
+        engine_calls.append((self, url, payload, timeout))
+        async for event in inherited_stream(self, url, payload, timeout):
+            yield event
+
+    monkeypatch.setattr(
+        OpenAICompatibleAsyncClient,
+        "_stream_request",
+        trace_stream,
+    )
+    endpoint = "https://gateway.example/v1/prefix/responses"
+    client = DeepSeekResponsesAsyncClient("test-key", endpoint=endpoint)
+    http_error_handler = lambda error: None
+    stream_error_handler = lambda event: None
+    client._handle_http_error = http_error_handler
+    client._handle_stream_error = stream_error_handler
+
+    events = client.stream(model="deepseek-flash", input=[], timeout=3)
+    client.endpoint = "https://changed.example/responses"
+    client.api_key = "changed-key"
+    client._handle_http_error = lambda error: pytest.fail("handler was not captured")
+    client._handle_stream_error = lambda event: pytest.fail("handler was not captured")
+    assert len(dispatches) == 1
+    assert dispatches[0][0] == endpoint
+    assert dispatches[0][1]["headers"]["Authorization"] == "Bearer test-key"
+    assert dispatches[0][1]["http_error_handler"] is http_error_handler
+    assert dispatches[0][1]["stream_error_handler"] is stream_error_handler
+    assert engine_calls == []
+
+    async def consume_one_and_close():
+        event = await events.__anext__()
+        await events.aclose()
+        await events.aclose()
+        return event
+
+    received = asyncio.run(consume_one_and_close())
+    assert received.data == {"delta": "hello"}
+    assert len(engine_calls) == 1
+    view, url, payload, timeout = engine_calls[0]
+    assert isinstance(view, DeepSeekResponsesAsyncClient)
+    assert isinstance(view, OpenAICompatibleAsyncClient)
+    assert view is not client
+    assert repr(view) == object.__repr__(view)
+    assert (url, payload, timeout) == (
+        endpoint,
+        {"model": "deepseek-flash", "input": [], "stream": True},
+        3,
+    )
+    assert dispatches[0][1]["payload"] == payload
+    assert dispatches[0][1]["stream_error_handler"] is stream_error_handler
+    assert closed == ["closed"]
+
+
+async def _collect_async(events):
+    return [event async for event in events]
+
+
+@pytest.mark.unit
+def test_async_stream_close_before_consumption_and_non_object_json(monkeypatch):
+    closed = []
+
+    class Source:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(0)
+            return SSEEvent(event="response.output_text.delta")
+
+        async def aclose(self):
+            closed.append(True)
+
+    monkeypatch.setattr(
+        "llm_api_adapter_deepseek.clients.async_client.async_stream_request",
+        lambda *args, **kwargs: Source(),
+    )
+    events = DeepSeekResponsesAsyncClient("test-key").stream(
+        model="deepseek-flash",
+        input=[],
+    )
+
+    async def close_unconsumed():
+        await events.aclose()
+        await events.aclose()
+
+    asyncio.run(close_unconsumed())
+    assert closed == [True]
+
+    async def request(url, **kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "llm_api_adapter_deepseek.clients.async_client.async_request",
+        request,
+    )
+    with pytest.raises(LLMAPIClientError, match="non-object"):
+        asyncio.run(DeepSeekResponsesAsyncClient("test-key").create(
+            model="deepseek-flash",
+        ))
+
+
+@pytest.mark.unit
+def test_async_stream_supports_plain_source_and_preserves_response_failed(monkeypatch):
+    failure_event = SSEEvent(
+        event="response.failed",
+        data={"type": "response.failed", "response": {"status": "failed"}},
+    )
+
+    class PlainSource:
+        def __init__(self):
+            self._events = iter([failure_event])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    monkeypatch.setattr(
+        "llm_api_adapter_deepseek.clients.async_client.async_stream_request",
+        lambda *args, **kwargs: PlainSource(),
+    )
+    events = DeepSeekResponsesAsyncClient("test-key").stream(
+        model="deepseek-flash",
+        input=[],
+    )
+    assert asyncio.run(_collect_async(events)) == [failure_event]
+
+
+@pytest.mark.unit
+def test_async_stream_iteration_failure_remains_primary_when_close_fails(
+    monkeypatch,
+):
+    iteration_failure = RuntimeError("iteration failed")
+
+    class FailingSource:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise iteration_failure
+
+        async def aclose(self):
+            raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(
+        "llm_api_adapter_deepseek.clients.async_client.async_stream_request",
+        lambda *args, **kwargs: FailingSource(),
+    )
+    events = DeepSeekResponsesAsyncClient("test-key").stream(
+        model="deepseek-flash",
+        input=[],
+    )
+
+    with pytest.raises(RuntimeError, match="iteration failed") as caught:
+        asyncio.run(_collect_async(events))
+    assert caught.value is iteration_failure
+
+
+@pytest.mark.unit
+def test_async_stream_cancellation_remains_primary_when_close_fails(monkeypatch):
+    cancellation = asyncio.CancelledError("request cancelled")
+
+    class CancelledSource:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise cancellation
+
+        async def aclose(self):
+            raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(
+        "llm_api_adapter_deepseek.clients.async_client.async_stream_request",
+        lambda *args, **kwargs: CancelledSource(),
+    )
+    events = DeepSeekResponsesAsyncClient("test-key").stream(
+        model="deepseek-flash",
+        input=[],
+    )
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        asyncio.run(_collect_async(events))
+    assert caught.value is cancellation
+
+
+@pytest.mark.unit
+def test_async_stream_explicit_close_propagates_source_close_failure_once(
+    monkeypatch,
+):
+    close_failure = RuntimeError("explicit cleanup failed")
+
+    class CloseFailingSource:
+        def __init__(self):
+            self.close_calls = 0
+            self._events = iter([
+                SSEEvent(event="response.output_text.delta", data={"delta": "one"}),
+            ])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                raise StopAsyncIteration
+
+        async def aclose(self):
+            self.close_calls += 1
+            raise close_failure
+
+    source = CloseFailingSource()
+    monkeypatch.setattr(
+        "llm_api_adapter_deepseek.clients.async_client.async_stream_request",
+        lambda *args, **kwargs: source,
+    )
+    events = DeepSeekResponsesAsyncClient("test-key").stream(
+        model="deepseek-flash",
+        input=[],
+    )
+
+    async def consume_and_close():
+        await events.__anext__()
+        with pytest.raises(RuntimeError, match="explicit cleanup failed") as caught:
+            await events.aclose()
+        assert caught.value is close_failure
+        await events.aclose()
+
+    asyncio.run(consume_and_close())
+    assert source.close_calls == 1
+
+
+@pytest.mark.unit
+def test_async_stream_close_while_pull_is_running_does_not_close_source(
+    monkeypatch,
+):
+    class WaitingSource:
+        def __init__(self):
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.close_calls = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            self.entered.set()
+            await self.release.wait()
+            return SSEEvent(event="response.output_text.delta", data={"delta": "ok"})
+
+        async def aclose(self):
+            self.close_calls += 1
+
+    source = WaitingSource()
+    monkeypatch.setattr(
+        "llm_api_adapter_deepseek.clients.async_client.async_stream_request",
+        lambda *args, **kwargs: source,
+    )
+    events = DeepSeekResponsesAsyncClient("test-key").stream(
+        model="deepseek-flash",
+        input=[],
+    )
+
+    async def close_during_pull():
+        pending_pull = asyncio.create_task(events.__anext__())
+        await source.entered.wait()
+        with pytest.raises(RuntimeError, match="already running"):
+            await events.aclose()
+        assert source.close_calls == 0
+        source.release.set()
+        assert (await pending_pull).data == {"delta": "ok"}
+        await events.aclose()
+        assert source.close_calls == 1
+
+    asyncio.run(close_during_pull())
+
+
+@pytest.mark.unit
+def test_async_json_dispatch_uses_native_error_mapping(monkeypatch):
+    class Response:
+        status_code = 429
+
+        def json(self):
+            return {"error": {"type": "rate_limit_error", "message": "slow"}}
+
+    class Error(Exception):
+        response = Response()
+
+    async def request(url, **kwargs):
+        del url
+        kwargs["http_error_handler"](Error("rate limited"))
+
+    monkeypatch.setattr(
+        "llm_api_adapter_deepseek.clients.async_client.async_request",
+        request,
+    )
+    with pytest.raises(LLMAPIRateLimitError, match="slow"):
+        asyncio.run(DeepSeekResponsesAsyncClient("test-key").create(
+            model="deepseek-flash",
+        ))
 
