@@ -258,19 +258,12 @@ class DeepSeekResponsesStreamParser:
                 detail="DeepSeek Responses API response.output must be an array",
             )
 
-        response = cls._materialize_response(state, model=model)
+        response = cls._materialize_response(
+            state,
+            terminal_response,
+            model=model,
+        )
         state.final_response = response
-        if response is None or response.get("object") != "response":
-            raise LLMAPIClientError(
-                detail=(
-                    "DeepSeek Responses completed event must include a response "
-                    "object"
-                ),
-            )
-        if not isinstance(response.get("output"), list):
-            raise LLMAPIClientError(
-                detail="DeepSeek Responses API response.output must be an array",
-            )
         if response.get("status") not in {None, "completed"}:
             raise LLMAPIClientError(
                 detail="DeepSeek Responses completed event has a non-completed status",
@@ -512,17 +505,11 @@ class DeepSeekResponsesStreamParser:
     def _materialize_response(
         cls,
         state: DeepSeekResponsesStreamState,
+        terminal_response: Mapping[str, Any],
         *,
         model: str,
-    ) -> Optional[dict[str, Any]]:
-        response_source = (
-            state.final_response
-            if state.final_response is not None
-            else state.response_metadata
-        )
-        response = dict(response_source)
-        if not response and not state.output_items and not state.text_parts:
-            return None
+    ) -> dict[str, Any]:
+        response = dict(terminal_response)
         raw_output = response.get("output")
         output = (
             [dict(item) for item in raw_output if isinstance(item, Mapping)]

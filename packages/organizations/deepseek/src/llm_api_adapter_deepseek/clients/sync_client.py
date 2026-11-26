@@ -245,10 +245,6 @@ class DeepSeekResponsesSyncClient(OpenAICompatibleSyncClient):
             error_data = response_error
         if not isinstance(error_data, Mapping):
             error_data = payload
-        if not isinstance(error_data, Mapping):
-            raise LLMAPIClientError(
-                detail="DeepSeek Responses stream returned an invalid error event",
-            )
         raw_type = error_data.get("type") or error_data.get("code")
         raw_detail = error_data.get("message") or error_data.get("detail")
         detail = (

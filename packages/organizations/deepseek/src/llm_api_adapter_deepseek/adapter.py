@@ -8,7 +8,6 @@ from copy import deepcopy
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime, time, timezone
-import json
 import logging
 from math import isfinite
 from typing import Any, AsyncIterator, ClassVar, Iterator, List, Mapping, Optional
@@ -101,7 +100,6 @@ class _PreparedResponsesRequest:
     """Normalized request data shared by the adapter's request paths."""
 
     parameters: dict[str, Any]
-    normalized_messages: Messages
     effective_schema: Optional[dict]
     response_model: Optional[Any]
     capture_reasoning: bool
@@ -922,7 +920,6 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             parameters={
                 key: value for key, value in parameters.items() if value is not None
             },
-            normalized_messages=normalized_messages,
             effective_schema=effective_schema,
             response_model=request_context.response_model,
             capture_reasoning=capture_reasoning,
@@ -984,25 +981,14 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
 
     @staticmethod
     def _validate_deepseek_file_inputs(messages: Messages) -> None:
-        """Validate every file before upload, permitting only user PDF bytes and images."""
+        """Validate image-specific limits after PDF and attachment preflight."""
         image_count = 0
         for message in messages.items:
             files = getattr(message, "files", None)
             if files is None:
                 continue
-            if not isinstance(message, UserMessage):
-                raise ValueError(
-                    "DeepSeek input_image parts are supported only in user messages",
-                )
-            if not isinstance(files, list):
-                raise ValueError("DeepSeek user message files must be a list")
-
             for part in files:
-                if not isinstance(part, (ImagePart, DocumentPart)):
-                    raise ValueError(
-                        "DeepSeek Responses supports only image and PDF inputs",
-                    )
-                if isinstance(part, DocumentPart):
+                if not isinstance(part, ImagePart):
                     continue
                 image_count += 1
                 if image_count > _MAX_IMAGES_PER_REQUEST:
@@ -1388,36 +1374,6 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
                 list(reasoning_replay),
             )
         return input_items
-
-    @staticmethod
-    def _map_tools(tools: Optional[List[ToolSpec]]) -> Optional[list[dict[str, Any]]]:
-        if not tools:
-            return None
-        mapped_tools: list[dict[str, Any]] = []
-        for tool in tools:
-            if not isinstance(tool.description, str) or not tool.description.strip():
-                raise InvalidToolSchemaError(
-                    detail=f"DeepSeek function {tool.name!r} requires a description",
-                )
-            mapped_tools.append(
-                {
-                    "type": "function",
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.json_schema,
-                }
-            )
-        return mapped_tools
-
-    @staticmethod
-    def _map_tool_choice(tool_choice: Optional[str]) -> Any:
-        if tool_choice is None:
-            return None
-        if tool_choice in {"auto", "none"}:
-            return tool_choice
-        if tool_choice == "any":
-            return "required"
-        return {"type": "function", "name": tool_choice}
 
     @staticmethod
     def _parse_response(
