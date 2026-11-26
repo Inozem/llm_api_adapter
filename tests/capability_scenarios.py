@@ -83,10 +83,6 @@ EXCEPTION_SCENARIOS = _routes(
         "packages/organizations/kimi/tests/e2e/test_file_contract.py::test_kimi_file_contract_rejects_unsupported_parts_before_transport",
     ),
     (
-        ("pdf_bytes", "rejected_before_transport", "deepseek"),
-        "packages/organizations/deepseek/tests/e2e/test_file_contract.py::test_deepseek_file_contract_rejects_documents_before_transport",
-    ),
-    (
         ("pdf_bytes", "rejected_before_transport", "qwen"),
         "packages/organizations/qwen/tests/e2e/test_document_input.py::test_qwen_document_parts_are_rejected_before_messages_transport",
     ),

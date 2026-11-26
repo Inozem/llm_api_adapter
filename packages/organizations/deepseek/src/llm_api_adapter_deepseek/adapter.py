@@ -35,6 +35,7 @@ from llm_api_adapter.adapters.structured_output import (
 )
 from llm_api_adapter.errors.llm_api_error import (
     InvalidToolSchemaError,
+    LLMAPIError,
     LLMAPIClientError,
 )
 from llm_api_adapter.errors.config_errors import LLMConfigError
@@ -47,7 +48,7 @@ from llm_api_adapter.models.messages.chat_message import (
     ToolMessage,
     UserMessage,
 )
-from llm_api_adapter.models.messages.file_parts import ImagePart
+from llm_api_adapter.models.messages.file_parts import DocumentPart, ImagePart
 from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 from llm_api_adapter.models.tools import ToolSpec
 
@@ -57,6 +58,12 @@ from .clients.sync_client import (
     DeepSeekResponsesSyncClient,
 )
 from .clients.async_client import DeepSeekResponsesAsyncClient
+from .documents import (
+    PDFSlot,
+    pdf_slots,
+    preserve_raw_pdf_parts,
+    validate_raw_document_forms,
+)
 from .registry import ORGANIZATION_DATA
 from .streaming import (
     DeepSeekResponsesStreamParser,
@@ -79,6 +86,7 @@ _DEEPSEEK_COMPLETED_INVOCATION: ContextVar[Optional["_CompletedResponsesInvocati
     "deepseek_completed_invocation",
     default=None,
 )
+_DEEPSEEK_PDF_ACTIVE: ContextVar[bool] = ContextVar("deepseek_pdf_active", default=False)
 logger = logging.getLogger(__name__)
 
 
@@ -105,12 +113,14 @@ class _PreparedResponsesRequest:
     response_model: Optional[Any]
     capture_reasoning: bool
     request_context: _ChatRequestContext
+    pdf_slots: tuple[PDFSlot, ...] = ()
 
 
 @dataclass
 class _CompletedResponsesInvocation:
     prepared: _PreparedResponsesRequest
     dispatch_time: Optional[datetime] = None
+    upload_ids: tuple[str, ...] = ()
 
 
 class _DeepSeekSyncRequestView:
@@ -127,7 +137,12 @@ class _DeepSeekSyncRequestView:
         if invocation is None:
             raise RuntimeError("DeepSeek completed execution requires prepared state")
         invocation.dispatch_time = _utc_now()
-        return self._client.create(model=model, timeout=timeout, **parameters)
+        try:
+            return self._client.create(model=model, timeout=timeout, **parameters)
+        except LLMAPIError as error:
+            if invocation.prepared.pdf_slots:
+                raise DeepSeekAdapter._redact_pdf_error(error) from None
+            raise
 
 
 class _DeepSeekAsyncRequestView:
@@ -144,7 +159,12 @@ class _DeepSeekAsyncRequestView:
         if invocation is None:
             raise RuntimeError("DeepSeek completed execution requires prepared state")
         invocation.dispatch_time = _utc_now()
-        return await self._client.create(model=model, timeout=timeout, **parameters)
+        try:
+            return await self._client.create(model=model, timeout=timeout, **parameters)
+        except LLMAPIError as error:
+            if invocation.prepared.pdf_slots:
+                raise DeepSeekAdapter._redact_pdf_error(error) from None
+            raise
 
 
 @dataclass(repr=False)
@@ -246,11 +266,23 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
         *,
         capture_reasoning: bool,
     ) -> ChatResponse:
+        invocation = _DEEPSEEK_COMPLETED_INVOCATION.get()
+        if invocation is not None and invocation.prepared.pdf_slots:
+            response = self._scrub_pdf_response_metadata(response, invocation.upload_ids)
         chat_response = self._parse_response(
             response,
             capture_reasoning=capture_reasoning,
         )
-        self._store_reasoning_replay(chat_response, response)
+        self._store_reasoning_replay(
+            chat_response,
+            response,
+            upload_ids=invocation.upload_ids if invocation is not None else (),
+            pdf_contents=(
+                tuple(slot.content for slot in invocation.prepared.pdf_slots)
+                if invocation is not None and invocation.prepared.pdf_slots
+                else ()
+            ),
+        )
         return chat_response
 
     def handle_error(
@@ -258,6 +290,9 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
         error: Exception,
         error_message: str | None = None,
     ) -> None:
+        if _DEEPSEEK_PDF_ACTIVE.get():
+            logger.error("DeepSeek Responses request failed while processing a PDF")
+            raise
         LLMAdapterBase.handle_error(self, error, error_message)
 
     def _finalize_chat_response(
@@ -277,11 +312,14 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
 
         token = _DEEPSEEK_DISPATCH_TIME.set(invocation.dispatch_time)
         try:
-            return super()._finalize_chat_response(
+            response = super()._finalize_chat_response(
                 chat_response,
                 effective_schema=effective_schema,
                 response_model=response_model,
             )
+            if invocation.prepared.pdf_slots:
+                response.apply_cost_breakdown([], accounting_complete=False)
+            return response
         finally:
             _DEEPSEEK_DISPATCH_TIME.reset(token)
 
@@ -320,8 +358,12 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             capture_reasoning=capture_reasoning,
         )
         invocation = _CompletedResponsesInvocation(prepared)
+        token_pdf = _DEEPSEEK_PDF_ACTIVE.set(bool(prepared.pdf_slots))
         token = _DEEPSEEK_COMPLETED_INVOCATION.set(invocation)
         try:
+            if prepared.pdf_slots:
+                invocation.upload_ids = self._upload_pdfs_sync(prepared, timeout_s)
+                self._bind_pdf_upload_ids(prepared, invocation.upload_ids)
             return super().chat(
                 messages=messages,
                 max_tokens=max_tokens,
@@ -339,6 +381,7 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             )
         finally:
             _DEEPSEEK_COMPLETED_INVOCATION.reset(token)
+            _DEEPSEEK_PDF_ACTIVE.reset(token_pdf)
 
     async def achat(
         self,
@@ -372,8 +415,12 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             capture_reasoning=capture_reasoning,
         )
         invocation = _CompletedResponsesInvocation(prepared)
+        token_pdf = _DEEPSEEK_PDF_ACTIVE.set(bool(prepared.pdf_slots))
         token = _DEEPSEEK_COMPLETED_INVOCATION.set(invocation)
         try:
+            if prepared.pdf_slots:
+                invocation.upload_ids = await self._upload_pdfs_async(prepared, timeout_s)
+                self._bind_pdf_upload_ids(prepared, invocation.upload_ids)
             return await super().achat(
                 messages=messages,
                 max_tokens=max_tokens,
@@ -391,6 +438,7 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             )
         finally:
             _DEEPSEEK_COMPLETED_INVOCATION.reset(token)
+            _DEEPSEEK_PDF_ACTIVE.reset(token_pdf)
 
     def stream_chat(
         self,
@@ -434,23 +482,34 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             buffer_chars=buffer_chars,
             capture_reasoning=prepared.capture_reasoning,
         )
-        dispatch_time = _utc_now()
         events = None
         runner = None
         primary_error = None
         try:
-            events = _BoundEventSource(
-                self._client.stream(
+            upload_ids = self._upload_pdfs_sync(prepared, timeout_s) if prepared.pdf_slots else ()
+            if prepared.pdf_slots:
+                self._bind_pdf_upload_ids(prepared, upload_ids)
+            dispatch_time = _utc_now()
+            pdf_token = _DEEPSEEK_PDF_ACTIVE.set(bool(prepared.pdf_slots))
+            try:
+                raw_events = self._client.stream(
                     model=self.model,
                     timeout=timeout_s,
                     **prepared.parameters,
-                ),
-            )
+                )
+                if prepared.pdf_slots:
+                    raw_events = self._safe_pdf_events(raw_events, upload_ids)
+                events = _BoundEventSource(raw_events)
+            except LLMAPIError as error:
+                if prepared.pdf_slots:
+                    raise self._redact_pdf_error(error) from None
+                raise
+            finally:
+                _DEEPSEEK_PDF_ACTIVE.reset(pdf_token)
             runner = self._run_sync_stream(
                 events,
                 state,
                 consume_event=self._consume_stream_event,
-                finalize_response=self._finalize_stream,
                 effective_schema=prepared.effective_schema,
                 response_model=prepared.response_model,
                 on_delta=on_delta,
@@ -459,15 +518,23 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
                 on_chunk=on_chunk,
                 capture_reasoning=prepared.capture_reasoning,
                 on_reasoning=on_reasoning,
+                finalize_response=lambda state, **kwargs: self._finalize_stream(
+                    state,
+                    upload_ids=upload_ids,
+                    pdf_contents=tuple(slot.content for slot in prepared.pdf_slots),
+                    **kwargs,
+                ),
             )
             while True:
                 token = _DEEPSEEK_DISPATCH_TIME.set(dispatch_time)
+                pdf_token = _DEEPSEEK_PDF_ACTIVE.set(bool(prepared.pdf_slots))
                 try:
                     text = next(runner)
                 except StopIteration:
                     break
                 finally:
                     _DEEPSEEK_DISPATCH_TIME.reset(token)
+                    _DEEPSEEK_PDF_ACTIVE.reset(pdf_token)
                 yield text
         except BaseException as error:
             primary_error = error
@@ -527,21 +594,34 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             buffer_chars=buffer_chars,
             capture_reasoning=prepared.capture_reasoning,
         )
-        dispatch_time = _utc_now()
         events = None
         runner = None
         primary_error = None
         try:
-            events = self._async_client.stream(
-                model=self.model,
-                timeout=timeout_s,
-                **prepared.parameters,
-            )
+            upload_ids = await self._upload_pdfs_async(prepared, timeout_s) if prepared.pdf_slots else ()
+            if prepared.pdf_slots:
+                self._bind_pdf_upload_ids(prepared, upload_ids)
+            dispatch_time = _utc_now()
+            pdf_token = _DEEPSEEK_PDF_ACTIVE.set(bool(prepared.pdf_slots))
+            try:
+                raw_events = self._async_client.stream(
+                    model=self.model,
+                    timeout=timeout_s,
+                    **prepared.parameters,
+                )
+                if prepared.pdf_slots:
+                    raw_events = self._safe_pdf_events_async(raw_events, upload_ids)
+                events = raw_events
+            except LLMAPIError as error:
+                if prepared.pdf_slots:
+                    raise self._redact_pdf_error(error) from None
+                raise
+            finally:
+                _DEEPSEEK_PDF_ACTIVE.reset(pdf_token)
             runner = self._run_async_stream(
                 events,
                 state,
                 consume_event=self._consume_stream_event_async,
-                finalize_response=self._finalize_stream,
                 effective_schema=prepared.effective_schema,
                 response_model=prepared.response_model,
                 on_delta=on_delta,
@@ -550,15 +630,23 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
                 on_chunk=on_chunk,
                 capture_reasoning=prepared.capture_reasoning,
                 on_reasoning=on_reasoning,
+                finalize_response=lambda state, **kwargs: self._finalize_stream(
+                    state,
+                    upload_ids=upload_ids,
+                    pdf_contents=tuple(slot.content for slot in prepared.pdf_slots),
+                    **kwargs,
+                ),
             )
             while True:
                 token = _DEEPSEEK_DISPATCH_TIME.set(dispatch_time)
+                pdf_token = _DEEPSEEK_PDF_ACTIVE.set(bool(prepared.pdf_slots))
                 try:
                     text = await runner.__anext__()
                 except StopAsyncIteration:
                     break
                 finally:
                     _DEEPSEEK_DISPATCH_TIME.reset(token)
+                    _DEEPSEEK_PDF_ACTIVE.reset(pdf_token)
                 yield text
         except BaseException as error:
             primary_error = error
@@ -670,6 +758,8 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
         capture_reasoning: bool,
         effective_schema: Optional[dict],
         response_model: Optional[Any],
+        upload_ids: tuple[str, ...] = (),
+        pdf_contents: tuple[bytes, ...] = (),
     ) -> ChatResponse:
         chat_response = self._finalize_stream_response(
             DeepSeekResponsesStreamParser.finalize(
@@ -681,7 +771,14 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             effective_schema=effective_schema,
             response_model=response_model,
         )
-        self._store_reasoning_replay(chat_response, state.final_response or {})
+        if _DEEPSEEK_PDF_ACTIVE.get():
+            chat_response.apply_cost_breakdown([], accounting_complete=False)
+        self._store_reasoning_replay(
+            chat_response,
+            state.final_response or {},
+            upload_ids=upload_ids,
+            pdf_contents=pdf_contents,
+        )
         return chat_response
 
     def _record_deepseek_reasoning_event(
@@ -756,9 +853,10 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             temperature,
             top_p,
         )
+        validate_raw_document_forms(messages)
         request_context = LLMAdapterBase._prepare_chat_request(
             self,
-            messages,
+            preserve_raw_pdf_parts(messages),
             tools,
             tool_choice,
             json_schema,
@@ -770,7 +868,14 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             normalized_messages,
             reasoning_level,
         )
+        pdf_attachments = pdf_slots(normalized_messages)
         self._validate_deepseek_file_inputs(normalized_messages)
+        if pdf_attachments and not self._pdf_bytes_profile_is_enabled():
+            raise NotImplementedError(
+                f"DeepSeek model {self.model!r} is not registered for PDF byte inputs",
+            )
+        if pdf_attachments and self.endpoint != DEEPSEEK_RESPONSES_URL:
+            raise ValueError("DeepSeek PDF uploads require the official Responses endpoint")
         effective_schema = request_context.effective_schema
         if effective_schema is not None:
             effective_schema = validate_core_portable_schema(
@@ -785,6 +890,7 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             "input": self._to_deepseek_responses_input(
                 normalized_messages,
                 reasoning_replay=reasoning_replay,
+                pdf_slots=pdf_attachments,
             ),
             "max_output_tokens": max_tokens,
             "temperature": temperature,
@@ -820,7 +926,19 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
             response_model=request_context.response_model,
             capture_reasoning=capture_reasoning,
             request_context=request_context,
+            pdf_slots=pdf_attachments,
         )
+
+    def _pdf_bytes_profile_is_enabled(self) -> bool:
+        """Require this exact model's registry profile to opt into PDF bytes."""
+        if self.model_spec is None:
+            return False
+        try:
+            profile = self.model_spec.require_capability_profile()
+        except ValueError:
+            return False
+        matches = [item for item in profile if item.capability_id == "pdf_bytes"]
+        return len(matches) == 1 and matches[0].behavior_id == "pass"
 
     def _reasoning_level_for_function_tool_request(
         self,
@@ -865,7 +983,7 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
 
     @staticmethod
     def _validate_deepseek_file_inputs(messages: Messages) -> None:
-        """Reject files outside DeepSeek's verified Responses image boundary."""
+        """Validate every file before upload, permitting only user PDF bytes and images."""
         image_count = 0
         for message in messages.items:
             files = getattr(message, "files", None)
@@ -879,17 +997,208 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
                 raise ValueError("DeepSeek user message files must be a list")
 
             for part in files:
-                if not isinstance(part, ImagePart):
+                if not isinstance(part, (ImagePart, DocumentPart)):
                     raise ValueError(
-                        "DeepSeek Responses supports only image inputs; "
-                        "DocumentPart and non-image file inputs are unsupported",
+                        "DeepSeek Responses supports only image and PDF inputs",
                     )
+                if isinstance(part, DocumentPart):
+                    continue
                 image_count += 1
                 if image_count > _MAX_IMAGES_PER_REQUEST:
                     raise ValueError(
                         "DeepSeek supports at most 600 images per request",
                     )
                 DeepSeekAdapter._validate_image_part(part)
+
+    def _upload_pdfs_sync(
+        self,
+        prepared: _PreparedResponsesRequest,
+        timeout: Optional[float],
+    ) -> tuple[str, ...]:
+        """Upload this invocation's PDFs in order, without retaining receipts."""
+        receipts = []
+        try:
+            for slot in prepared.pdf_slots:
+                receipts.append(self._client._upload_pdf(slot.content, timeout))
+            return tuple(receipts)
+        except LLMAPIError as error:
+            raise self._redact_pdf_error(error) from None
+
+    async def _upload_pdfs_async(
+        self,
+        prepared: _PreparedResponsesRequest,
+        timeout: Optional[float],
+    ) -> tuple[str, ...]:
+        """Upload this invocation's PDFs serially through the async client."""
+        receipts = []
+        try:
+            for slot in prepared.pdf_slots:
+                receipts.append(await self._async_client._upload_pdf(slot.content, timeout))
+            return tuple(receipts)
+        except LLMAPIError as error:
+            raise self._redact_pdf_error(error) from None
+
+    @staticmethod
+    def _bind_pdf_upload_ids(
+        prepared: _PreparedResponsesRequest,
+        upload_ids: tuple[str, ...],
+    ) -> None:
+        """Replace only the private slot markers created during preflight."""
+        if len(upload_ids) != len(prepared.pdf_slots):
+            raise RuntimeError("DeepSeek PDF upload receipts do not match prepared slots")
+        for slot_index, upload_id in enumerate(upload_ids):
+            marker = f"__deepseek_pdf_slot_{slot_index}__"
+            found = False
+            for item in prepared.parameters["input"]:
+                content = item.get("content") if isinstance(item, Mapping) else None
+                if not isinstance(content, list):
+                    continue
+                for part in content:
+                    if (
+                        isinstance(part, dict)
+                        and part.get("type") == "input_file"
+                        and part.get("file_id") == marker
+                    ):
+                        part["file_id"] = upload_id
+                        found = True
+                        break
+            if not found:
+                raise RuntimeError("DeepSeek PDF slot marker is missing from prepared input")
+
+    @staticmethod
+    def _safe_pdf_events(events: Iterator[SSEEvent], upload_ids: tuple[str, ...]):
+        primary_error = None
+        try:
+            for event in events:
+                yield DeepSeekAdapter._redact_pdf_event(event, upload_ids)
+        except LLMAPIError as error:
+            primary_error = error
+            raise DeepSeekAdapter._redact_pdf_error(error) from None
+        except BaseException as error:
+            primary_error = error
+            raise
+        finally:
+            close = getattr(events, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except BaseException:
+                    if primary_error is None:
+                        raise
+
+    @staticmethod
+    async def _safe_pdf_events_async(events, upload_ids: tuple[str, ...]):
+        primary_error = None
+        try:
+            async for event in events:
+                yield DeepSeekAdapter._redact_pdf_event(event, upload_ids)
+        except LLMAPIError as error:
+            primary_error = error
+            raise DeepSeekAdapter._redact_pdf_error(error) from None
+        except BaseException as error:
+            primary_error = error
+            raise
+        finally:
+            close = getattr(events, "aclose", None)
+            if callable(close):
+                try:
+                    await close()
+                except BaseException:
+                    if primary_error is None:
+                        raise
+
+    @staticmethod
+    def _redact_pdf_event(event: SSEEvent, upload_ids: tuple[str, ...]) -> SSEEvent:
+        if not isinstance(event.data, Mapping):
+            return event
+        event_type = event.event or event.data.get("type")
+        failure_event = event_type in {"error", "response.failed"}
+        response = event.data.get("response")
+        if not failure_event and not isinstance(response, Mapping):
+            return event
+        payload = dict(event.data)
+        if isinstance(response, Mapping):
+            response = dict(response)
+            metadata = response.get("metadata")
+            if isinstance(metadata, Mapping):
+                response["metadata"] = DeepSeekAdapter._scrub_pdf_metadata(
+                    metadata,
+                    upload_ids,
+                )
+            if failure_event and "error" in response:
+                response["error"] = DeepSeekAdapter._scrub_provider_error(
+                    response["error"],
+                )
+            payload["response"] = response
+        if failure_event and "error" in payload:
+            payload["error"] = DeepSeekAdapter._scrub_provider_error(payload["error"])
+        if failure_event and isinstance(payload.get("message"), str):
+            payload["message"] = "DeepSeek Responses request failed"
+        return SSEEvent(
+            event=event.event,
+            data=payload,
+            done=event.done,
+        )
+
+    @staticmethod
+    def _scrub_pdf_response_metadata(
+        response: dict[str, Any],
+        upload_ids: tuple[str, ...],
+    ) -> dict[str, Any]:
+        result = dict(response)
+        metadata = result.get("metadata")
+        if isinstance(metadata, Mapping):
+            result["metadata"] = DeepSeekAdapter._scrub_pdf_metadata(
+                metadata,
+                upload_ids,
+            )
+        return result
+
+    @staticmethod
+    def _scrub_pdf_metadata(
+        metadata: Mapping[str, Any],
+        upload_ids: tuple[str, ...],
+    ) -> dict[str, Any]:
+        private_fields = {
+            "file_id",
+            "file_data",
+            "pdf_data",
+            "pdf_bytes",
+            "pdf_base64",
+        }
+
+        def scrub(value: Any) -> Any:
+            if isinstance(value, Mapping):
+                return {
+                    key: scrub(item)
+                    for key, item in value.items()
+                    if str(key).lower() not in private_fields
+                }
+            if isinstance(value, list):
+                return [scrub(item) for item in value]
+            if isinstance(value, str):
+                for upload_id in upload_ids:
+                    value = value.replace(upload_id, "[redacted]")
+            return value
+
+        return scrub(metadata)
+
+    @staticmethod
+    def _scrub_provider_error(error: Any) -> Any:
+        if isinstance(error, Mapping):
+            cleaned = {}
+            for key, value in error.items():
+                if str(key).lower() in {"message", "detail", "error"}:
+                    cleaned[key] = "DeepSeek Responses request failed"
+                else:
+                    cleaned[key] = value
+            return cleaned
+        return "DeepSeek Responses request failed"
+
+    @staticmethod
+    def _redact_pdf_error(error: LLMAPIError) -> LLMAPIError:
+        """Replace provider details with a generic message for a PDF request."""
+        return type(error)(detail="DeepSeek Responses request failed")
 
     @staticmethod
     def _validate_image_part(part: ImagePart) -> None:
@@ -1029,11 +1338,16 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
         messages: Messages,
         *,
         reasoning_replay: tuple[dict[str, Any], ...] = (),
+        pdf_slots: tuple[PDFSlot, ...] = (),
     ) -> list[dict[str, Any]]:
         """Serialize an application-controlled Responses tool round-trip."""
         input_items: list[dict[str, Any]] = []
         last_assistant_start: Optional[int] = None
-        for message in messages.items:
+        slot_index_by_position = {
+            (slot.message_index, slot.file_index): slot_index
+            for slot_index, slot in enumerate(pdf_slots)
+        }
+        for message_index, message in enumerate(messages.items):
             if isinstance(message, Prompt):
                 continue
             if isinstance(message, AIMessage):
@@ -1060,7 +1374,18 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
                         },
                     )
                 continue
-            input_items.extend(message.to_openai_responses_input())
+            if isinstance(message, UserMessage) and message.files:
+                content: list[dict[str, Any]] = [{"type": "input_text", "text": message.content}]
+                for file_index, part in enumerate(message.files):
+                    if isinstance(part, DocumentPart):
+                        slot_index = slot_index_by_position[(message_index, file_index)]
+                        marker = f"__deepseek_pdf_slot_{slot_index}__"
+                        content.append({"type": "input_file", "file_id": marker})
+                    else:
+                        content.append(message._part_to_openai_responses(part))
+                input_items.append({"role": "user", "content": content})
+            else:
+                input_items.extend(message.to_openai_responses_input())
         if reasoning_replay:
             if last_assistant_start is None:
                 raise LLMConfigError(
@@ -1304,9 +1629,18 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
         self,
         chat_response: ChatResponse,
         response: Mapping[str, Any],
+        *,
+        upload_ids: tuple[str, ...] = (),
+        pdf_contents: tuple[bytes, ...] = (),
     ) -> None:
         """Keep continuation material opaque and outside visible response fields."""
         items = self._reasoning_replay_items(response.get("output"))
+        if upload_ids or pdf_contents:
+            items = self._scrub_reasoning_replay_items(
+                items,
+                upload_ids=upload_ids,
+                pdf_contents=pdf_contents,
+            )
         if not items:
             return
         chat_response.provider_data = {
@@ -1316,6 +1650,49 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
                 "items": items,
             },
         }
+
+    @staticmethod
+    def _scrub_reasoning_replay_items(
+        items: list[dict[str, Any]],
+        *,
+        upload_ids: tuple[str, ...],
+        pdf_contents: tuple[bytes, ...],
+    ) -> list[dict[str, Any]]:
+        """Remove request-local PDF echoes while retaining unrelated replay text."""
+        scrubbed_items: list[dict[str, Any]] = []
+        for item in items:
+            cleaned = {**item}
+            content = []
+            for part in item.get("content", []):
+                text = part.get("text", "")
+                for upload_id in upload_ids:
+                    text = text.replace(upload_id, "[redacted]")
+                if DeepSeekAdapter._contains_pdf_echo(text, pdf_contents):
+                    text = "[DeepSeek PDF content redacted]"
+                content.append({**part, "text": text})
+            cleaned["content"] = content
+            scrubbed_items.append(cleaned)
+        return scrubbed_items
+
+    @staticmethod
+    def _contains_pdf_echo(text: str, pdf_contents: tuple[bytes, ...]) -> bool:
+        """Detect literal or base64 PDF echoes from short byte signatures."""
+        if not text or not pdf_contents:
+            return False
+        for pdf in pdf_contents:
+            for sample in (pdf[:48], pdf[-48:]):
+                if len(sample) < 8:
+                    continue
+                try:
+                    literal = sample.decode("utf-8")
+                except UnicodeDecodeError:
+                    literal = ""
+                if literal and literal in text:
+                    return True
+                encoded = base64.b64encode(sample).decode("ascii")
+                if encoded in text:
+                    return True
+        return False
 
     @staticmethod
     def _reasoning_replay_items(raw_output: Any) -> list[dict[str, Any]]:

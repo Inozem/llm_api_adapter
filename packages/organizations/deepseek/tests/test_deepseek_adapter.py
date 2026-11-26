@@ -1348,12 +1348,11 @@ def test_deepseek_preserves_flat_http_details_and_nested_stream_errors():
     "file_part",
     [
         DocumentPart(url="https://example.test/reference.pdf"),
-        DocumentPart(data=b"%PDF-deepseek", media_type="application/pdf"),
         FilePart(url="https://example.test/reference.txt", media_type="text/plain"),
         FilePart(data=b"plain text", media_type="text/plain"),
     ],
 )
-def test_deepseek_rejects_documents_and_non_image_files_before_transport(
+def test_deepseek_rejects_document_urls_and_other_files_before_transport(
     deepseek_runtime,
     file_part,
 ):
@@ -1361,7 +1360,7 @@ def test_deepseek_rejects_documents_and_non_image_files_before_transport(
     transport = FakeSyncTransport(_response())
     adapter.adapter._client._sync_transport = transport
 
-    with pytest.raises(ValueError, match="DocumentPart|FilePart|non-image|file input"):
+    with pytest.raises(ValueError, match="DeepSeek|document|file input"):
         adapter.chat(
             messages=[UserMessage("Read this attachment.", files=[file_part])],
         )
