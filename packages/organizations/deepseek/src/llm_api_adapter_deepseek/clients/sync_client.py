@@ -1,4 +1,4 @@
-"""Synchronous client for DeepSeek's official Responses API."""
+"""Synchronous DeepSeek Responses client. The ``DeepSeekSyncClient`` alias remains available."""
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ from llm_api_adapter.errors.llm_api_error import (
     LLMAPITokenLimitError,
     LLMAPIUsageLimitError,
 )
+from llm_api_adapter.llms.openai_compatible.sync_client import (
+    OpenAICompatibleSyncClient,
+)
 from llm_api_adapter.llms.transports import (
     JSONResponse,
     SSEEvent,
@@ -27,17 +30,45 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_RESPONSES_URL = f"{DEEPSEEK_BASE_URL}/responses"
 
 
-@dataclass(repr=False)
-class DeepSeekResponsesSyncClient:
-    """Send Responses requests through one of Core's sync transports."""
+@dataclass(repr=False, init=False)
+class DeepSeekResponsesSyncClient(OpenAICompatibleSyncClient):
+    """Use Core's compatible JSON/SSE engines with native DeepSeek policy.
+
+    Retain native dataclass order with ``transport`` before ``endpoint`` and
+    exclude Core-only fields from native dataclass introspection.
+    """
 
     api_key: str
     transport: str = "requests"
     endpoint: str = DEEPSEEK_RESPONSES_URL
     _sync_transport: SyncTransport = field(init=False, repr=False, compare=False)
+    __match_args__ = ("api_key", "transport", "endpoint")
 
-    def __post_init__(self) -> None:
-        self._sync_transport = create_sync_transport(self.transport)
+    def __init__(
+        self,
+        api_key: str,
+        transport: str = "requests",
+        endpoint: str = DEEPSEEK_RESPONSES_URL,
+    ) -> None:
+        self.api_key = api_key
+        self.transport = transport
+        self.endpoint = endpoint
+        self._api_variant_override = "responses"
+        self._diagnostic_formatter = None
+        self.__post_init__()
+
+    def __repr__(self) -> str:
+        """Retain the old opaque object representation without credential data."""
+        return object.__repr__(self)
+
+    @staticmethod
+    def _format_diagnostic(value: object) -> object:
+        """Provide Core transports a class-callable native passthrough."""
+        return value
+
+    def _create_sync_transport(self, transport: str) -> SyncTransport:
+        """Create the transport through the native module patch point."""
+        return create_sync_transport(transport)
 
     def create(
         self,
@@ -46,22 +77,15 @@ class DeepSeekResponsesSyncClient:
         timeout: float | None = None,
         **parameters: Any,
     ) -> dict[str, Any]:
-        """Create one Responses result and validate its JSON envelope."""
-        response: JSONResponse = self._sync_transport.post_json(
-            TransportRequest(
-                url=self.endpoint,
-                headers=self._headers(),
-                payload={"model": model, **parameters},
-                timeout=timeout,
-            ),
-            http_error_handler=self._handle_http_error,
-        )
-        payload = response.json()
-        if not isinstance(payload, dict):
+        """Create a Responses result through the inherited JSON engine."""
+        payload = {"model": model, **parameters}
+        response: JSONResponse = self._send_request(self.endpoint, payload, timeout)
+        result = response.json()
+        if not isinstance(result, dict):
             raise LLMAPIClientError(
                 detail="DeepSeek Responses API returned a non-object response",
             )
-        return payload
+        return result
 
     def stream(
         self,
@@ -70,27 +94,39 @@ class DeepSeekResponsesSyncClient:
         timeout: float | None = None,
         **parameters: Any,
     ) -> Iterator[SSEEvent]:
-        """Stream semantic Responses events without provider-side retries."""
-        return self._sync_transport.post_sse(
-            TransportRequest(
-                url=self.endpoint,
-                headers=self._headers(),
-                payload={
-                    "model": model,
-                    **parameters,
-                    "stream": True,
-                },
-                timeout=timeout,
+        """Call post_sse immediately and defer HTTP opening until iteration."""
+        payload = {"model": model, **parameters, "stream": True}
+        request = TransportRequest(
+            url=self.endpoint,
+            headers=self._headers(),
+            payload=payload,
+            timeout=timeout,
+        )
+        events = _BoundEventSource(
+            self._sync_transport.post_sse(
+                request,
+                http_error_handler=self._handle_http_error,
+                stream_error_handler=self._handle_stream_error,
             ),
-            http_error_handler=self._handle_http_error,
-            stream_error_handler=self._handle_stream_error,
+        )
+        view = self._request_view(request, events)
+        return _CoreStreamIterator(
+            view._stream_request(request.url, request.payload, request.timeout),
+            events,
         )
 
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+    def _request_view(
+        self,
+        request: TransportRequest,
+        events: _BoundEventSource,
+    ) -> "_DeepSeekRequestView":
+        return _DeepSeekRequestView(self, request, events)
+
+    @staticmethod
+    def _is_failed_stream_event(event: SSEEvent) -> bool:
+        """Leave DeepSeek's semantic response.failed event to native parsing."""
+        del event
+        return False
 
     @classmethod
     def _handle_http_error(cls, error: Any) -> None:
@@ -245,8 +281,103 @@ class DeepSeekResponsesSyncClient:
         raise LLMAPIClientError(detail=detail)
 
 
-# Keep the short name available for package-local callers while the explicit
-# Responses name documents the wire protocol at the public client boundary.
+class _BoundEventSource:
+    """Bind one native SSE source to Core and own its idempotent cleanup."""
+
+    def __init__(self, events: Iterator[SSEEvent]) -> None:
+        self._events = events
+        self._closed = False
+        self._iteration_failed = False
+
+    def __iter__(self) -> "_BoundEventSource":
+        return self
+
+    def __next__(self) -> SSEEvent:
+        try:
+            return next(self._events)
+        except StopIteration:
+            raise
+        except BaseException:
+            self._iteration_failed = True
+            raise
+
+    def post_sse(
+        self,
+        request: TransportRequest,
+        *,
+        http_error_handler: Any = None,
+        stream_error_handler: Any = None,
+    ) -> Iterator[SSEEvent]:
+        del request, http_error_handler, stream_error_handler
+        return self
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        close = getattr(self._events, "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except BaseException:
+            if not self._iteration_failed:
+                raise
+
+
+class _DeepSeekRequestView(DeepSeekResponsesSyncClient):
+    """Per-request native view that supplies a captured request to Core."""
+
+    def __init__(
+        self,
+        client: DeepSeekResponsesSyncClient,
+        request: TransportRequest,
+        events: _BoundEventSource,
+    ) -> None:
+        self.api_key = client.api_key
+        self.transport = client.transport
+        self.endpoint = request.url
+        self._api_variant_override = "responses"
+        self._diagnostic_formatter = client._diagnostic_formatter
+        self._sync_transport = events
+        self._request = request
+
+    def _headers(self) -> dict[str, str]:
+        return self._request.headers_dict()
+
+
+class _CoreStreamIterator:
+    """Expose Core's iterator while owning cleanup from the instant of return."""
+
+    def __init__(
+        self,
+        events: Iterator[SSEEvent],
+        source: _BoundEventSource,
+    ) -> None:
+        self._events = events
+        self._source = source
+
+    def __iter__(self) -> "_CoreStreamIterator":
+        return self
+
+    def __next__(self) -> SSEEvent:
+        return next(self._events)
+
+    def close(self) -> None:
+        close = getattr(self._events, "close", None)
+        try:
+            if callable(close):
+                close()
+        finally:
+            self._source.close()
+
+
+DeepSeekResponsesSyncClient.__dataclass_fields__ = {
+    name: DeepSeekResponsesSyncClient.__dataclass_fields__[name]
+    for name in ("api_key", "transport", "endpoint", "_sync_transport")
+}
+
+
 DeepSeekSyncClient = DeepSeekResponsesSyncClient
 
 
