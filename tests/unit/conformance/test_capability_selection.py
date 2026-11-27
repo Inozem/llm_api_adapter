@@ -214,9 +214,7 @@ def test_hosted_and_direct_deepseek_flash_use_provider_owned_pdf_evidence():
     )
 
     assert hosted == (BASELINE_SCENARIOS["pdf_bytes"],)
-    assert direct == (
-        EXCEPTION_SCENARIOS[("pdf_bytes", "rejected_before_transport", "deepseek")],
-    )
+    assert direct == (BASELINE_SCENARIOS["pdf_bytes"],)
 
 
 @pytest.mark.unit

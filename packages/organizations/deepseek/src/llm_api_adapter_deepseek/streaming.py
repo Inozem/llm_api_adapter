@@ -16,6 +16,53 @@ from llm_api_adapter.llms.transports import SSEEvent
 from llm_api_adapter.models.responses.chat_response import ChatResponse, Usage
 
 
+def normalize_deepseek_usage(raw_usage: Any) -> Optional[Usage]:
+    if not isinstance(raw_usage, Mapping):
+        return None
+
+    def valid_count(value: Any) -> bool:
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0
+        )
+
+    input_tokens = raw_usage.get("input_tokens")
+    output_tokens = raw_usage.get("output_tokens")
+    total_tokens = raw_usage.get("total_tokens")
+    counts = (input_tokens, output_tokens, total_tokens)
+    if any(value is not None and not valid_count(value) for value in counts):
+        return None
+    if input_tokens is None and output_tokens is None and total_tokens is None:
+        return None
+    if input_tokens is not None and output_tokens is not None:
+        exact_total = input_tokens + output_tokens
+        if total_tokens is not None and total_tokens != exact_total:
+            return None
+        total_tokens = exact_total
+    cached_tokens = None
+    input_details = raw_usage.get("input_tokens_details")
+    if input_details is not None:
+        if not isinstance(input_details, Mapping):
+            return None
+        if "cached_tokens" in input_details:
+            cached_tokens = input_details.get("cached_tokens")
+            if cached_tokens is not None and not valid_count(cached_tokens):
+                return None
+            if (
+                cached_tokens is not None
+                and input_tokens is not None
+                and cached_tokens > input_tokens
+            ):
+                return None
+    return Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
+    )
+
+
 @dataclass
 class DeepSeekResponsesStreamState(_StreamState):
     """Request-local state used to reconstruct one DeepSeek response."""
@@ -63,6 +110,8 @@ class DeepSeekResponsesStreamParser:
         cls,
         event: SSEEvent,
         state: DeepSeekResponsesStreamState,
+        *,
+        record_text_delta: bool = True,
     ) -> Optional[str]:
         """Record one event and return one visible text delta, if present."""
         payload = event.data if isinstance(event.data, Mapping) else {}
@@ -100,7 +149,8 @@ class DeepSeekResponsesStreamParser:
                     detail="DeepSeek Responses output_text delta must be a string",
                 )
             if delta:
-                state.text_parts.append(delta)
+                if record_text_delta:
+                    state.text_parts.append(delta)
                 cls._record_output_text(
                     payload,
                     delta,
@@ -208,19 +258,12 @@ class DeepSeekResponsesStreamParser:
                 detail="DeepSeek Responses API response.output must be an array",
             )
 
-        response = cls._materialize_response(state, model=model)
+        response = cls._materialize_response(
+            state,
+            terminal_response,
+            model=model,
+        )
         state.final_response = response
-        if response is None or response.get("object") != "response":
-            raise LLMAPIClientError(
-                detail=(
-                    "DeepSeek Responses completed event must include a response "
-                    "object"
-                ),
-            )
-        if not isinstance(response.get("output"), list):
-            raise LLMAPIClientError(
-                detail="DeepSeek Responses API response.output must be an array",
-            )
         if response.get("status") not in {None, "completed"}:
             raise LLMAPIClientError(
                 detail="DeepSeek Responses completed event has a non-completed status",
@@ -462,17 +505,11 @@ class DeepSeekResponsesStreamParser:
     def _materialize_response(
         cls,
         state: DeepSeekResponsesStreamState,
+        terminal_response: Mapping[str, Any],
         *,
         model: str,
-    ) -> Optional[dict[str, Any]]:
-        response_source = (
-            state.final_response
-            if state.final_response is not None
-            else state.response_metadata
-        )
-        response = dict(response_source)
-        if not response and not state.output_items and not state.text_parts:
-            return None
+    ) -> dict[str, Any]:
+        response = dict(terminal_response)
         raw_output = response.get("output")
         output = (
             [dict(item) for item in raw_output if isinstance(item, Mapping)]
@@ -558,52 +595,7 @@ class DeepSeekResponsesStreamParser:
 
     @staticmethod
     def _normalize_usage(raw_usage: Any) -> Optional[Usage]:
-        if not isinstance(raw_usage, Mapping):
-            return None
-
-        def valid_count(value: Any) -> bool:
-            return (
-                isinstance(value, int)
-                and not isinstance(value, bool)
-                and value >= 0
-            )
-
-        input_tokens = raw_usage.get("input_tokens")
-        output_tokens = raw_usage.get("output_tokens")
-        total_tokens = raw_usage.get("total_tokens")
-        counts = (input_tokens, output_tokens, total_tokens)
-        if any(value is not None and not valid_count(value) for value in counts):
-            return None
-        if input_tokens is None and output_tokens is None and total_tokens is None:
-            return None
-        if input_tokens is not None and output_tokens is not None:
-            exact_total = input_tokens + output_tokens
-            if total_tokens is not None and total_tokens != exact_total:
-                return None
-            total_tokens = exact_total
-
-        cached_tokens = None
-        input_details = raw_usage.get("input_tokens_details")
-        if input_details is not None:
-            if not isinstance(input_details, Mapping):
-                return None
-            if "cached_tokens" in input_details:
-                cached_tokens = input_details.get("cached_tokens")
-                if cached_tokens is not None and not valid_count(cached_tokens):
-                    return None
-                if (
-                    cached_tokens is not None
-                    and input_tokens is not None
-                    and cached_tokens > input_tokens
-                ):
-                    return None
-
-        return Usage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=total_tokens,
-            cached_tokens=cached_tokens,
-        )
+        return normalize_deepseek_usage(raw_usage)
 
 
 __all__ = [

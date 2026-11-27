@@ -105,6 +105,11 @@ async remains a native-sync subclass and shares the common async execution mixin
 adapter constructs generic clients directly; its clients have no native-policy switch. Existing
 transports, cleanup and public errors remain the shared authorities.
 
+The optional DeepSeek package directly subclasses the Core OpenAI-compatible Responses adapter
+and both clients. Completed requests and streams use Core execution through native bindings.
+The DeepSeek package owns credentials, endpoints, reasoning replay, error mapping, usage and
+dispatch-time pricing.
+
 #### Messages foundation
 
 The Messages foundation separates shared protocol handling from provider policy.
@@ -222,6 +227,11 @@ Image and PDF inputs use shared file-part types. Native profiles specify
 which forms each model accepts. A package may preprocess a file to honor its
 public contract, as Mistral does for PDF OCR. The adapter rejects unsupported
 forms before dispatch.
+
+Direct DeepSeek validates the full invocation before uploading PDF bytes through the shared
+multipart transports. The package owns ordered document preparation, expiring uploads and
+invocation-local file references. With unreported page quantities, known token costs remain
+available and document processing leaves the request total unset.
 
 ## Usage and Cost Boundary
 

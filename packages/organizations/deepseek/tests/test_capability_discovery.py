@@ -25,6 +25,7 @@ from packages.organizations.deepseek.tests.fixtures.deepseek_capability_discover
     CLOSED_MODEL_IDS,
     DEEPSEEK_CAPABILITY_DISCOVERY,
     EXPECTED_CAPABILITIES,
+    EXPECTED_CAPABILITY_BEHAVIOR_IDS,
     EXPECTED_CAPABILITY_EXCEPTIONS,
     EXPECTED_LIMITS,
     EXPECTED_THINKING_MODES,
@@ -82,6 +83,11 @@ def test_flash_limits_and_thinking_modes_are_exact(discovery_record):
         exception["capability_id"]: exception["behavior"]
         for exception in model_data["capability_exceptions"]
     } == EXPECTED_CAPABILITY_EXCEPTIONS
+    assert {
+        exception["capability_id"]: exception["behavior_id"]
+        for exception in model_data["capability_exceptions"]
+        if exception["capability_id"] in EXPECTED_CAPABILITY_BEHAVIOR_IDS
+    } == EXPECTED_CAPABILITY_BEHAVIOR_IDS
     assert "cache_pricing" not in model_data
     assert model_data["limits"] == EXPECTED_LIMITS
     assert expected_model["limits"] == EXPECTED_LIMITS

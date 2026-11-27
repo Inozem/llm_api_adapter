@@ -35,15 +35,15 @@ EXPECTED_CAPABILITY_EXCEPTIONS: Final = {
         "it changes the caller's request."
     ),
     "pdf_url": (
-        "DocumentPart URLs, including PDFs, are rejected before transport; the "
-        "Responses API does not support file inputs and this package accepts image "
-        "inputs only."
+        "Remote PDF URLs trigger validation before provider I/O."
     ),
     "pdf_bytes": (
-        "DocumentPart bytes, including PDFs, are rejected before transport; the "
-        "Responses API does not support file inputs and this package accepts image "
-        "inputs only."
+        "User messages accept inline PDF bytes through an expiring Files upload."
     ),
+}
+EXPECTED_CAPABILITY_BEHAVIOR_IDS: Final = {
+    "pdf_url": "rejected_before_transport",
+    "pdf_bytes": "pass",
 }
 
 MATRIX_CAPABILITIES: Final = (
