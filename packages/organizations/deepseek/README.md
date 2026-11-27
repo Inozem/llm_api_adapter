@@ -79,8 +79,7 @@ The package uses the official Responses API with the shared Core request shape.
 | Portable JSON Schema and Pydantic output | Supported |
 | Reasoning | Supported levels: `none`, `low`, `high`, `max`; visible reasoning is opt-in |
 | Images | User-message URL, bytes, and base64 data URI; JPEG, PNG, GIF, and WebP only |
-| Documents and generic files | Unsupported; rejected before transport |
-| OCR, Files API upload, local conversion, and document fallback | Not implemented |
+| PDF input | PDF bytes in user messages on the direct `deepseek` route |
 
 The adapter rejects unsupported capabilities before either the synchronous or
 asynchronous client is invoked. It does not infer support from model prefixes,
@@ -103,11 +102,18 @@ base64 data URI. The adapter validates the documented boundary locally:
 - inline image data is limited to 32 MiB per image; and
 - a request may contain at most 600 images.
 
-Every `DocumentPart`, generic `FilePart`, non-user image, unsupported image
-form, OCR/upload/conversion route, and other non-image file input raises a
-compatibility error before an outbound request. The package never fetches
-document URLs, uploads files, runs OCR, converts documents, or silently falls
-back to another endpoint or model.
+### PDF input
+
+On the direct `deepseek-flash` route, PDF bytes supplied with
+`DocumentPart(data=...)` work with `chat()`, `achat()`, `stream_chat()`, and
+`astream_chat()`. Inline `data:application/pdf;base64,...` is treated as the
+same bytes. DeepSeek processes document text and figures it detects. Remote
+PDF URLs fail local validation. Each request may contain up to 20 nonempty
+PDFs of at most 100 MiB each, and uploads expire after one hour. Each request
+whose history contains a PDF uploads it again.
+
+The [PDF from bytes example in the root README](https://github.com/Inozem/llm_api_adapter/blob/main/README.md#pdf-from-bytes)
+works with the adapter configured in the Quick start above.
 
 ## History and continuation privacy
 
@@ -146,10 +152,19 @@ shared [usage and pricing guide](https://github.com/Inozem/llm_api_adapter/#toke
 and [Responses usage](https://api-docs.deepseek.com/guides/responses_api/)
 documentation for provider semantics.
 
+PDF processing has a separate per-page charge for each successful processing.
+A successful repeat upload from conversation history may incur another charge.
+Because the upload receipt does not report a usable page count, the SDK keeps
+available token-cost estimates but leaves `cost_total` unavailable when PDF
+processing succeeds. See [DeepSeek file parsing and billing](https://api-docs.deepseek.com/guides/document_parsing/#billing)
+for current rates.
+
 ## Official DeepSeek references
 
 - [Models and pricing](https://api-docs.deepseek.com/quick_start/pricing/)
 - [Responses API](https://api-docs.deepseek.com/guides/responses_api/)
 - [Vision input](https://api-docs.deepseek.com/guides/vision/)
+- [PDF file parsing and billing](https://api-docs.deepseek.com/guides/document_parsing/)
+- [Files upload API](https://api-docs.deepseek.com/api/create-file/)
 - [Context caching](https://api-docs.deepseek.com/guides/kv_cache/)
 - [Error codes](https://api-docs.deepseek.com/quick_start/error_codes/)

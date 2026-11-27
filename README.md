@@ -487,7 +487,7 @@ The SDK allows you to easily switch between LLM providers and specify the model 
 - **xAI**: Install with `pip install "llm-api-adapter[xai]"`. Fixed model IDs are `grok-4.7`, `grok-4.6`, and `grok-4.5`; see the [xAI package README](packages/organizations/xai/README.md) for its capability matrix and data-handling notes.
 - **Qwen**: Install with `pip install "llm-api-adapter[qwen]"`. Fixed model IDs are `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-plus`, and `qwen3.7-flash`; every operation requires an explicit Frankfurt `workspace_id`. See the [Qwen package README](packages/organizations/qwen/README.md) for its capability boundary, including unsupported PDF input.
 - **Kimi**: Install with `pip install "llm-api-adapter[kimi]"`. Fixed model IDs are `kimi-k3`, `kimi-k3.1-pro`, `kimi-k3.1-pro-highspeed`, and `kimi-k2.6`; image bytes/data URIs are supported, while public image URLs and all PDF `DocumentPart` forms are rejected before HTTP. See the [Kimi package README](packages/organizations/kimi/README.md) for reasoning, cache-pricing, and data-handling details.
-- **DeepSeek**: Install with `pip install "llm-api-adapter[deepseek]"`, or install `llm-api-adapter-deepseek` directly. The package exposes only the verified `deepseek-flash` model through the official Responses API, with text, tools, portable structured output, reasoning, streaming, and image URL/bytes/data-URI input. Documents, generic files, OCR, upload, and conversion are rejected before HTTP. See the [DeepSeek package README](packages/organizations/deepseek/README.md) for its compatibility matrix, continuation privacy, usage/cost boundary, and official references.
+- **DeepSeek**: Install with `pip install "llm-api-adapter[deepseek]"`, or install `llm-api-adapter-deepseek` directly. The direct `deepseek` route exposes the verified `deepseek-flash` model through the official Responses API, with text, tools, portable structured output, reasoning, streaming, images, and PDF bytes. See the [DeepSeek package README](packages/organizations/deepseek/README.md) for its compatibility matrix, continuation privacy, PDF processing and cost limits, and official references.
 - **Z.ai**: Install with `pip install "llm-api-adapter[zai]"`, or install `llm-api-adapter-zai` directly. Supported models are `glm-5.3-flash`, `glm-5.3-flashx`, and `glm-5.3-flashx-legal`, with text, tools, reasoning, streaming, and image URL/bytes/data-URI input. Portable structured output and documents are rejected before HTTP. See the [Z.ai package README](packages/organizations/zai/README.md) for its capability matrix and request boundaries.
 
 Example:
@@ -1180,7 +1180,12 @@ response = adapter.chat(messages=[msg], max_tokens=200)
 print(response.content)
 ```
 
-For bytes, the adapter sends the PDF as base64 data in the provider-specific request format. The same `DocumentPart` works with Anthropic, Google, OpenAI Chat Completions, and the OpenAI Responses API.
+For Anthropic, Google, and both OpenAI APIs, the adapter sends PDF bytes as
+base64 data in the provider-specific request format. The same `DocumentPart`
+works with those APIs.
+
+This example also works with the adapter in the [DeepSeek Quick start](packages/organizations/deepseek/README.md#quick-start).
+For direct-route limits and accounting, see [DeepSeek PDF limits and billing](packages/organizations/deepseek/README.md#pdf-input).
 
 ### File type support
 
@@ -1189,7 +1194,7 @@ For bytes, the adapter sends the PDF as base64 data in the provider-specific req
 | ImagePart (URL) | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 | ImagePart (bytes) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DocumentPart (URL) | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ |
-| DocumentPart (bytes) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| DocumentPart (bytes) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
 
 Qwen supports images, but rejects every `DocumentPart` URL or byte before
 HTTP: PDF and OCR input are outside its package contract. See the
@@ -1200,12 +1205,6 @@ Files API exposes extracted text rather than a Chat Completions attachment, so
 it cannot meet the same bytes-and-URL contract without hidden URL retrieval.
 The adapter does not upload or delete files for Kimi. See the
 [Kimi package README](packages/organizations/kimi/README.md#history-and-files).
-
-DeepSeek rejects every `DocumentPart`, generic non-image `FilePart`,
-OCR/upload/conversion route, and unsupported image form before either client
-is called. It does not fetch document URLs, upload files, process PDFs locally,
-or silently fall back to another endpoint or model. See the [DeepSeek package
-file boundary](packages/organizations/deepseek/README.md#images-and-the-file-boundary).
 
 ## Token Usage and Pricing
 

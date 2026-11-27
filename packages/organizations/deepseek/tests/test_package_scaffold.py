@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+from packaging.requirements import Requirement
 import pytest
 
 
@@ -34,11 +35,18 @@ def test_deepseek_project_declares_core_dependency_extras_and_entry_point():
     assert [requirement_target(item) for item in project["dependencies"]] == [
         "llm-api-adapter"
     ]
+    assert [str(Requirement(item).specifier) for item in project["dependencies"]] == [
+        "<1.0.0,>=0.10.0"
+    ]
     for extra in ("async", "httpx"):
         assert [
             requirement_target(item)
             for item in project["optional-dependencies"][extra]
         ] == [f"llm-api-adapter[{extra}]"]
+        assert [
+            str(Requirement(item).specifier)
+            for item in project["optional-dependencies"][extra]
+        ] == ["<1.0.0,>=0.10.0"]
     assert project["entry-points"]["llm_api_adapter.organizations"]["deepseek"] == (
         "llm_api_adapter_deepseek.plugin:PLUGIN"
     )
